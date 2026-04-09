@@ -1,0 +1,11 @@
+﻿# Roblox / Rojo
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+*.backup
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/settings.json
