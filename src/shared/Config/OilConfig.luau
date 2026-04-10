@@ -16,7 +16,7 @@ local OilConfig = {
 
 	-- Drill economy
 	DrillPlacementCost = 200,
-	DrillBaseFlow = 1.0,
+	DrillBaseFlow = 0.2,
 	DrillMinSpacing = 6,
 	BaseMaxActiveDrills = 9999,
 	DrillsPerOwnedChunk = 0,
@@ -53,7 +53,7 @@ local OilConfig = {
 
 	-- Barrel display system
 	Barrels = {
-		PerBarrelOil = 10,
+		PerBarrelOil = 1,
 		MaxVisualPerTier = 20,
 		BarrelHeight = 3.5,
 		ConveyorTweenSeconds = 4,

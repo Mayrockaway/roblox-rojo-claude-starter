@@ -92,21 +92,51 @@ end
 
 local SUB_TILE_SIZE = 8
 
+-- Computed once at runtime from actual plot position. Falls back to hardcoded if plot not found.
+local _cachedGridConstants = nil
+
 local function plotGridConstants()
+	if _cachedGridConstants then return _cachedGridConstants end
+
 	local sectionCols = OilConfig.Chunks.GridCols -- 3
 	local sectionRows = OilConfig.Chunks.GridRows -- 4
 	local sectionSize = OilConfig.Chunks.Size     -- 40
 	local subTilesPerSide = math.floor(sectionSize / SUB_TILE_SIZE) -- 5
-	local centerX = -840 -- plot center X (matches what was hard-baked in MCP setup)
-	local centerZ = -1020
-	local startX = centerX - ((sectionCols - 1) / 2) * sectionSize -- -880
-	local startZ = centerZ - ((sectionRows - 1) / 2) * sectionSize -- -1080
-	-- Top-left sub-tile (global cell 1,1) center:
-	local cellOriginX = startX - ((subTilesPerSide - 1) / 2) * SUB_TILE_SIZE -- -896
-	local cellOriginZ = startZ - ((subTilesPerSide - 1) / 2) * SUB_TILE_SIZE -- -1096
-	local globalCols = sectionCols * subTilesPerSide -- 15
-	local globalRows = sectionRows * subTilesPerSide -- 20
-	return {
+
+	-- Derive center from actual Plot_01 section attributes instead of hardcoding
+	local centerX, centerZ = -840, -1020
+	local Workspace = game:GetService("Workspace")
+	local map = Workspace:FindFirstChild("Map")
+	local plots = map and map:FindFirstChild("Plots")
+	local plot = plots and plots:FindFirstChild("Plot_01")
+	local ground = plot and plot:FindFirstChild("PlotGround")
+	if ground then
+		local totalX, totalZ, count = 0, 0, 0
+		for _, section in ipairs(ground:GetChildren()) do
+			if section:IsA("Model") then
+				local cx = section:GetAttribute("CenterX")
+				local cz = section:GetAttribute("CenterZ")
+				if typeof(cx) == "number" and typeof(cz) == "number" then
+					totalX += cx
+					totalZ += cz
+					count += 1
+				end
+			end
+		end
+		if count > 0 then
+			centerX = totalX / count
+			centerZ = totalZ / count
+		end
+	end
+
+	local startX = centerX - ((sectionCols - 1) / 2) * sectionSize
+	local startZ = centerZ - ((sectionRows - 1) / 2) * sectionSize
+	local cellOriginX = startX - ((subTilesPerSide - 1) / 2) * SUB_TILE_SIZE
+	local cellOriginZ = startZ - ((subTilesPerSide - 1) / 2) * SUB_TILE_SIZE
+	local globalCols = sectionCols * subTilesPerSide
+	local globalRows = sectionRows * subTilesPerSide
+
+	_cachedGridConstants = {
 		sectionCols = sectionCols,
 		sectionRows = sectionRows,
 		sectionSize = sectionSize,
@@ -116,6 +146,7 @@ local function plotGridConstants()
 		globalCols = globalCols,
 		globalRows = globalRows,
 	}
+	return _cachedGridConstants
 end
 
 local function cellKey(globalRow: number, globalCol: number): string

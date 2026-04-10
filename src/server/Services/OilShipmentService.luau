@@ -65,10 +65,11 @@ local function setInstanceCFrame(instance: Instance, cf: CFrame)
 	end
 end
 
-function OilShipmentService:Init(remoteService, oilStateService, plotService)
+function OilShipmentService:Init(remoteService, oilStateService, plotService, warehouseService)
 	self._remoteService = remoteService
 	self._oilStateService = oilStateService
 	self._plotService = plotService
+	self._warehouseService = warehouseService
 	self._connections = {}
 	self._lanes = {}
 
@@ -292,6 +293,11 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		return
 	end
 
+	if self._warehouseService and not self._warehouseService:CanShip(player.UserId, totalRequested) then
+		self:_sendActionResult(player, false, "ERR_WAREHOUSE_FULL", "Warehouse is full. Sell or upgrade.")
+		return
+	end
+
 	local normalizedManifest = {}
 	for _, tier in ipairs(TIER_ORDER) do
 		normalizedManifest[tier] = floorPositive(tonumber(manifest[tier]) or 0)
@@ -375,6 +381,9 @@ function OilShipmentService:_runShipment(shipment)
 
 	-- Setup physics-driven ship
 	self:_setupShip(shipment.shipmentId, boat, startRaised, initDir)
+
+	-- Add player flag to the ship
+	self:_addPlayerFlag(boat, ownerUserId)
 
 	self:_emitShipmentEvent("ShipmentStarted", {
 		ownerUserId = ownerUserId,
@@ -479,6 +488,12 @@ function OilShipmentService:_runShipment(shipment)
 	if payout > 0 then
 		self._oilStateService:AddCash(ownerUserId, payout)
 	end
+
+	-- Deliver barrels to warehouse
+	if self._warehouseService then
+		self._warehouseService:DeliverBarrels(ownerUserId, deliveredManifest)
+	end
+
 	self._oilStateService:DecrementShipmentCount(ownerUserId)
 	self._oilStateService:PushState(ownerUserId)
 
@@ -566,17 +581,49 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 		HeavyCrude = "Barrel_HeavyCrude",
 	}
 
-	local barrelIndex = 0
+	-- Pre-measure each barrel template's actual height for proper stacking
+	local tierHeights = {}
+	local tierWidths = {}
+	for tier, templateName in pairs(tierTemplates) do
+		local template = assetsFolder:FindFirstChild(templateName)
+		if template then
+			local h, w
+			if template:IsA("Model") then
+				local _, sz = template:GetBoundingBox()
+				h = sz.Y
+				w = math.max(sz.X, sz.Z)
+			else
+				h = template.Size.Y
+				w = math.max(template.Size.X, template.Size.Z)
+			end
+			tierHeights[tier] = h + 0.3 -- small gap
+			tierWidths[tier] = w + 0.5
+		else
+			tierHeights[tier] = 4
+			tierWidths[tier] = 3.5
+		end
+	end
+
+	-- Find the max width for grid spacing
+	local maxWidth = 0
+	for _, w in pairs(tierWidths) do
+		if w > maxWidth then maxWidth = w end
+	end
 	local COLUMNS = 3
-	local SPACING = 3
-	local HEIGHT = 3.5
+	local SPACING = maxWidth
+
+	-- Track cumulative Y per grid column so different-height barrels stack without clipping
+	local columnY = {} -- key = "col_row", value = current Y height
+
+	local barrelIndex = 0
 
 	for _, tier in ipairs(TIER_ORDER) do
 		local count = manifest[tier] or 0
 		local templateName = tierTemplates[tier]
 		local template = templateName and assetsFolder:FindFirstChild(templateName)
+		local barrelH = tierHeights[tier] or 4
 
-		for _ = 1, math.min(count, 10) do -- cap visual at 10 per tier
+		for _ = 1, math.min(count, 10) do
 			local barrel
 			if template then
 				barrel = template:Clone()
@@ -593,13 +640,23 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 
 			local col = barrelIndex % COLUMNS
 			local row = math.floor(barrelIndex / COLUMNS) % COLUMNS
-			local layer = math.floor(barrelIndex / (COLUMNS * COLUMNS))
+			local colKey = col .. "_" .. row
+			local currentY = columnY[colKey] or 0
+
+			-- MeshPart barrels place at their center, Models at their WorldPivot (bottom).
+			-- Add half-height offset for MeshParts so they sit on top of the stack, not halfway in.
+			local yOffset = currentY
+			if barrel:IsA("BasePart") then
+				yOffset = currentY + barrel.Size.Y / 2
+			end
 
 			local offset = Vector3.new(
 				(col - 1) * SPACING,
-				layer * HEIGHT,
+				yOffset,
 				(row - 1) * SPACING
 			)
+
+			columnY[colKey] = currentY + barrelH
 
 			-- Position relative to stackRoot
 			local targetCf = stackRoot.CFrame * CFrame.new(offset)
@@ -626,6 +683,44 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 			barrelIndex += 1
 		end
 	end
+end
+
+function OilShipmentService:_addPlayerFlag(boat: Instance, ownerUserId: number)
+	-- Find the pre-placed PlayerFlag in the cloned template and apply the player's face to it.
+	-- No new parts created — the flag + pole are already positioned in the template by the user.
+	local flag = boat:FindFirstChild("PlayerFlag", true)
+	if not flag then return end
+
+	-- Scale flag 3x (flag only, not pole)
+	flag.Size = flag.Size * 3
+
+	-- Player's head image on all side faces
+	local thumbUrl = string.format("rbxthumb://type=AvatarHeadShot&id=%d&w=420&h=420", ownerUserId)
+	for _, face in ipairs({Enum.NormalId.Front, Enum.NormalId.Back, Enum.NormalId.Left, Enum.NormalId.Right}) do
+		local decal = Instance.new("Decal")
+		decal.Name = "PlayerHead"
+		decal.Texture = thumbUrl
+		decal.Face = face
+		decal.Parent = flag
+	end
+
+	-- Player name label
+	local nameGui = Instance.new("SurfaceGui")
+	nameGui.Name = "FlagNameGui"
+	nameGui.Face = Enum.NormalId.Front
+	nameGui.CanvasSize = Vector2.new(400, 100)
+	nameGui.Parent = flag
+
+	local player = Players:GetPlayerByUserId(ownerUserId)
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Size = UDim2.fromScale(1, 1)
+	nameLabel.Position = UDim2.fromScale(0, 0.7)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = player and player.Name or ("Player " .. ownerUserId)
+	nameLabel.TextColor3 = Color3.fromRGB(30, 30, 35)
+	nameLabel.Font = Enum.Font.GothamBlack
+	nameLabel.TextScaled = true
+	nameLabel.Parent = nameGui
 end
 
 function OilShipmentService:_finishShipmentWithoutPayout(shipment, reason: string)

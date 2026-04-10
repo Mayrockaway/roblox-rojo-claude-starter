@@ -28,6 +28,10 @@ local requestRemovePipe = remotesFolder:WaitForChild(RemoteNames.RequestRemovePi
 local requestPickupBarrel = remotesFolder:WaitForChild(RemoteNames.RequestPickupBarrel) :: RemoteEvent
 local requestTeleportToShip = remotesFolder:WaitForChild(RemoteNames.RequestTeleportToShip) :: RemoteEvent
 local requestTeleportHome = remotesFolder:WaitForChild(RemoteNames.RequestTeleportHome) :: RemoteEvent
+local requestUpgradeWarehouse = remotesFolder:WaitForChild(RemoteNames.RequestUpgradeWarehouse) :: RemoteEvent
+local requestSellAllWarehouse = remotesFolder:WaitForChild(RemoteNames.RequestSellAllWarehouse) :: RemoteEvent
+local requestTeleportToWarehouse = remotesFolder:WaitForChild(RemoteNames.RequestTeleportToWarehouse) :: RemoteEvent
+local warehouseStateUpdate = remotesFolder:WaitForChild(RemoteNames.WarehouseStateUpdate) :: RemoteEvent
 local requestDispatchShipment = remotesFolder:WaitForChild(RemoteNames.RequestDispatchShipment) :: RemoteEvent
 local oilStateUpdate = remotesFolder:WaitForChild(RemoteNames.OilStateUpdate) :: RemoteEvent
 local oilActionResult = remotesFolder:WaitForChild(RemoteNames.OilActionResult) :: RemoteEvent
@@ -74,19 +78,47 @@ local pipeGhost: Model? = nil
 
 -- =================== CLIENT CELL-GRID HELPERS ===================
 local SUB_TILE_SIZE = 8
+local _clientGridCache = nil
 local function plotGridConstants()
+	if _clientGridCache then return unpack(_clientGridCache) end
+
 	local sectionCols = (config.chunks and config.chunks.cols) or 3
 	local sectionRows = (config.chunks and config.chunks.rows) or 4
 	local sectionSize = (config.chunks and config.chunks.size) or 40
 	local subTilesPerSide = math.floor(sectionSize / SUB_TILE_SIZE)
-	local centerX = -840
-	local centerZ = -1020
+
+	-- Derive center from actual plot sections instead of hardcoding
+	local centerX, centerZ = -840, -1020
+	if ownedPlot then
+		local ground = ownedPlot:FindFirstChild("PlotGround")
+		if ground then
+			local totalX, totalZ, count = 0, 0, 0
+			for _, section in ipairs(ground:GetChildren()) do
+				if section:IsA("Model") then
+					local cx = section:GetAttribute("CenterX")
+					local cz = section:GetAttribute("CenterZ")
+					if typeof(cx) == "number" and typeof(cz) == "number" then
+						totalX += cx
+						totalZ += cz
+						count += 1
+					end
+				end
+			end
+			if count > 0 then
+				centerX = totalX / count
+				centerZ = totalZ / count
+			end
+		end
+	end
+
 	local startX = centerX - ((sectionCols - 1) / 2) * sectionSize
 	local startZ = centerZ - ((sectionRows - 1) / 2) * sectionSize
 	local cellOriginX = startX - ((subTilesPerSide - 1) / 2) * SUB_TILE_SIZE
 	local cellOriginZ = startZ - ((subTilesPerSide - 1) / 2) * SUB_TILE_SIZE
 	local globalCols = sectionCols * subTilesPerSide
 	local globalRows = sectionRows * subTilesPerSide
+
+	_clientGridCache = { cellOriginX, cellOriginZ, globalRows, globalCols, subTilesPerSide }
 	return cellOriginX, cellOriginZ, globalRows, globalCols, subTilesPerSide
 end
 
@@ -819,6 +851,42 @@ local function buildUi()
 	homeBtn.MouseButton1Click:Connect(function()
 		requestTeleportHome:FireServer()
 	end)
+
+	-- Warehouse panel (bottom-right, above teleport buttons)
+	local warehouseGui = Instance.new("Frame")
+	warehouseGui.Name = "WarehousePanel"
+	warehouseGui.Size = UDim2.fromOffset(200, 140)
+	warehouseGui.Position = UDim2.new(1, -216, 1, -250)
+	warehouseGui.BackgroundColor3 = Color3.fromRGB(20, 28, 38)
+	warehouseGui.BackgroundTransparency = 0.15
+	warehouseGui.Parent = screenGui
+	local whCorner = Instance.new("UICorner")
+	whCorner.CornerRadius = UDim.new(0, 8)
+	whCorner.Parent = warehouseGui
+
+	ui.warehouseLabel = createLabel(warehouseGui, "Warehouse: --", UDim2.fromOffset(184, 18), UDim2.fromOffset(8, 6), 12)
+	ui.warehouseLabel.TextColor3 = Color3.fromRGB(220, 200, 140)
+
+	local visitBtn = createButton(warehouseGui, "Visit Warehouse", UDim2.fromOffset(184, 26), UDim2.fromOffset(8, 28))
+	visitBtn.BackgroundColor3 = Color3.fromRGB(55, 100, 80)
+	visitBtn.TextSize = 12
+	visitBtn.MouseButton1Click:Connect(function()
+		requestTeleportToWarehouse:FireServer()
+	end)
+
+	ui.upgradeWhBtn = createButton(warehouseGui, "Upgrade ($--)", UDim2.fromOffset(184, 26), UDim2.fromOffset(8, 60))
+	ui.upgradeWhBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 130)
+	ui.upgradeWhBtn.TextSize = 12
+	ui.upgradeWhBtn.MouseButton1Click:Connect(function()
+		requestUpgradeWarehouse:FireServer()
+	end)
+
+	local sellBtn = createButton(warehouseGui, "Sell All (Debug)", UDim2.fromOffset(184, 26), UDim2.fromOffset(8, 92))
+	sellBtn.BackgroundColor3 = Color3.fromRGB(130, 50, 50)
+	sellBtn.TextSize = 12
+	sellBtn.MouseButton1Click:Connect(function()
+		requestSellAllWarehouse:FireServer()
+	end)
 end
 
 local function rebuildBoatButtons()
@@ -998,6 +1066,28 @@ end)
 
 oilActionResult.OnClientEvent:Connect(function(payload)
 	setStatus(tostring(payload.message or "?"), payload.ok == true)
+end)
+
+local warehouseState = nil
+local function updateWarehouseUi()
+	if not warehouseState or not ui.warehouseLabel then return end
+	ui.warehouseLabel.Text = string.format("Warehouse: %d/%d (Tier %d)",
+		warehouseState.totalBarrels or 0,
+		warehouseState.capacity or 20,
+		warehouseState.tier or 1)
+	if ui.upgradeWhBtn then
+		local cost = warehouseState.upgradeCost
+		if cost then
+			ui.upgradeWhBtn.Text = string.format("Upgrade ($%d)", cost)
+		else
+			ui.upgradeWhBtn.Text = "Max Tier"
+		end
+	end
+end
+
+warehouseStateUpdate.OnClientEvent:Connect(function(data)
+	warehouseState = data
+	updateWarehouseUi()
 end)
 
 shipmentVisualEvent.OnClientEvent:Connect(function(packet)
