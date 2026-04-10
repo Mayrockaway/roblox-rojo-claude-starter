@@ -11,6 +11,8 @@ local BoatConfig = {
 			hullHp = 100,
 			travelSeconds = 60,
 			eventRisk = 0.35,
+			-- Extra multiplier on top of auto scale from hull extents (ShipmentFxConfig).
+			fxParticleScale = 1,
 		},
 		Hauler = {
 			displayName = "Hauler",
@@ -19,6 +21,7 @@ local BoatConfig = {
 			hullHp = 160,
 			travelSeconds = 75,
 			eventRisk = 0.28,
+			fxParticleScale = 1,
 		},
 		ArmoredTanker = {
 			displayName = "Armored Tanker",
@@ -27,6 +30,7 @@ local BoatConfig = {
 			hullHp = 240,
 			travelSeconds = 90,
 			eventRisk = 0.22,
+			fxParticleScale = 1,
 		},
 	},
 }

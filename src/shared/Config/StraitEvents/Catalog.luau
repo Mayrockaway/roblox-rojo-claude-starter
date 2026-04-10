@@ -1,7 +1,8 @@
 --!strict
 
--- Central list of strait shipment events. Add new entries here; server resolves impacts from these flags.
--- pause: default ON at each trigger unless skipWaypointPause is true.
+-- Central list of strait shipment events. Server resolves impacts from these flags.
+-- Design / fantasy / backlog: docs/features/strait-waypoint-events/EVENTS.md
+-- pause: default ~5s (StraitEventConfig.DefaultWaypointPauseSeconds) unless pauseSeconds / skipWaypointPause set.
 
 export type Severity = "Low" | "Medium" | "High"
 
@@ -16,7 +17,12 @@ export type StraitEventDef = {
 	-- Multiplies shipment.priceMultiplier (e.g. 0.94 = 6% effective payout hit at resolution).
 	priceMultiplierFactor: number?,
 	totalLoss: boolean?,
+	-- Whole barrels lost: ceil(manifestTotal * fraction), removed HeavyCrude → … → PremiumRefined.
+	looseBarrelLossFraction: number?,
 }
+
+local StraitEventConfig = require(script.Parent.Parent:WaitForChild("StraitEventConfig"))
+local EXT = StraitEventConfig.ExtendedWaypointPauseSeconds
 
 local Catalog = {}
 
@@ -39,15 +45,33 @@ Catalog.Events = {
 		id = "MinorInspection",
 		severity = "Low",
 		displayName = "Minor inspection",
-		pauseSeconds = 3.5,
+		pauseSeconds = EXT,
 		hullDamageFraction = 0.02,
 		priceMultiplierFactor = 0.95,
+	} :: StraitEventDef,
+	{
+		id = "HighWinds",
+		severity = "Low",
+		displayName = "High winds",
+		pauseSeconds = EXT,
+	} :: StraitEventDef,
+	{
+		id = "TurbulentSeas",
+		severity = "Medium",
+		displayName = "Turbulent seas",
+		looseBarrelLossFraction = 0.1,
+	} :: StraitEventDef,
+	{
+		id = "PirateRaid",
+		severity = "Medium",
+		displayName = "Pirate raid",
+		looseBarrelLossFraction = 0.25,
 	} :: StraitEventDef,
 	{
 		id = "ExtendedInspection",
 		severity = "Medium",
 		displayName = "Extended inspection",
-		pauseSeconds = 5,
+		pauseSeconds = EXT,
 		hullDamageFraction = 0.08,
 		priceMultiplierFactor = 0.88,
 	} :: StraitEventDef,
@@ -55,7 +79,6 @@ Catalog.Events = {
 		id = "FuelSiphoningAttempt",
 		severity = "Medium",
 		displayName = "Fuel siphoning attempt",
-		skipWaypointPause = true,
 		hullDamageFraction = 0.05,
 		priceMultiplierFactor = 0.82,
 	} :: StraitEventDef,
@@ -63,7 +86,7 @@ Catalog.Events = {
 		id = "EngineRoomSmoke",
 		severity = "Medium",
 		displayName = "Engine room smoke",
-		pauseSeconds = 4,
+		pauseSeconds = EXT,
 		hullDamageFraction = 0.12,
 		priceMultiplierFactor = 0.9,
 	} :: StraitEventDef,
@@ -77,6 +100,12 @@ Catalog.Events = {
 		id = "MineStrike",
 		severity = "High",
 		displayName = "Mine strike",
+		totalLoss = true,
+	} :: StraitEventDef,
+	{
+		id = "MissileStrike",
+		severity = "High",
+		displayName = "Missile strike",
 		totalLoss = true,
 	} :: StraitEventDef,
 } :: { StraitEventDef }

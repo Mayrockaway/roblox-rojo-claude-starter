@@ -14,6 +14,59 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
+local function straitWaypointFxStub(): { OnStraitWaypointPayload: (data: { [string]: any }) -> () }
+	return {
+		OnStraitWaypointPayload = function() end,
+	}
+end
+
+local function requireStraitWaypointWorldFx(): { OnStraitWaypointPayload: (data: { [string]: any }) -> () }
+	local modScript: ModuleScript? = nil
+
+	-- Rojo: init and StraitWaypointWorldFx are siblings under StarterPlayerScripts.Client
+	local sibling = script.Parent:FindFirstChild("StraitWaypointWorldFx")
+	if sibling and sibling:IsA("ModuleScript") then
+		modScript = sibling
+	end
+
+	-- Wrong parent (e.g. LocalScript under PlayerScripts): module still lives under .Client
+	if not modScript then
+		local ps = player:WaitForChild("PlayerScripts", 30)
+		local clientFolder = ps:FindFirstChild("Client")
+		if clientFolder then
+			local m = clientFolder:FindFirstChild("StraitWaypointWorldFx")
+			if m and m:IsA("ModuleScript") then
+				modScript = m
+			end
+		end
+		if not modScript then
+			clientFolder = ps:WaitForChild("Client", 25)
+			if clientFolder then
+				local m = clientFolder:WaitForChild("StraitWaypointWorldFx", 25)
+				if m and m:IsA("ModuleScript") then
+					modScript = m
+				end
+			end
+		end
+	end
+
+	if modScript then
+		local ok, result = pcall(require, modScript)
+		if ok and typeof(result) == "table" then
+			return result
+		end
+		warn("[Client] StraitWaypointWorldFx failed to load: ", result)
+		return straitWaypointFxStub()
+	end
+
+	warn(
+		"[Client] StraitWaypointWorldFx not found under PlayerScripts.Client after 25s — sync Rojo (src/client) so Client contains the ModuleScript."
+	)
+	return straitWaypointFxStub()
+end
+
+local StraitWaypointWorldFx = requireStraitWaypointWorldFx()
+
 local remotesFolder = Shared:FindFirstChild("Remotes")
 while remotesFolder == nil do
 	task.wait(0.1)
@@ -1181,6 +1234,7 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 	end
 
 	if kind == "StraitWaypointEvent" then
+		StraitWaypointWorldFx.OnStraitWaypointPayload(data)
 		local name = tostring(data.displayName or data.eventId or "Strait event")
 		local sev = tostring(data.severity or "?")
 		local isOwner = data.ownerUserId == player.UserId
@@ -1191,8 +1245,11 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 				false
 			)
 		else
+			local lost = tonumber(data.barrelsLost) or 0
+			local extra = lost > 0 and string.format(" — lost %d barrel(s), %d left", lost, tonumber(data.totalLoaded) or 0) or ""
 			setStatus(
-				isOwner and string.format("STRAIT: %s (%s)", name, sev) or string.format("Strait: event on another shipment (%s)", sev),
+				isOwner and string.format("STRAIT: %s (%s)%s", name, sev, extra)
+					or string.format("Strait: event on another shipment (%s)", sev),
 				true
 			)
 		end

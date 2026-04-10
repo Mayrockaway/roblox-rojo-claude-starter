@@ -9,7 +9,10 @@ local StraitEventConfig = {
 	-- Lane waypoint ordinals (sorted names under each route); path index = 1 + n (dock is path[1]).
 	LaneWaypointTriggers = { 3, 6, 9 } :: { number },
 
-	DefaultWaypointPauseSeconds = 3,
+	-- Universal hold at waypoint for strait VFX (events without a longer explicit pause).
+	DefaultWaypointPauseSeconds = 5,
+	-- Events that already had a dedicated “long” delay use this until tuned (see Catalog).
+	ExtendedWaypointPauseSeconds = 10,
 
 	-- P(trigger) at each trigger point, independent rolls.
 	OccurrenceChance = {

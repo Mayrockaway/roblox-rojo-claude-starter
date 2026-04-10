@@ -14,6 +14,7 @@ local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("Qualit
 local StraitEventCatalog = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("Catalog"))
 local StraitEventConfig = require(Shared:WaitForChild("Config"):WaitForChild("StraitEventConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local ParticleFxScale = require(Shared:WaitForChild("ParticleFxScale"))
 
 local OilShipmentService = {}
 
@@ -22,6 +23,14 @@ local TIER_ORDER = {
 	"LightSweet",
 	"StandardCrude",
 	"HeavyCrude",
+}
+
+-- Barrels lost to spillage: take from cheaper tiers first.
+local BARREL_LOSS_TIER_ORDER = {
+	"HeavyCrude",
+	"StandardCrude",
+	"LightSweet",
+	"PremiumRefined",
 }
 
 local function floorPositive(value: number): number
@@ -387,6 +396,11 @@ function OilShipmentService:_runShipment(shipment)
 	-- Setup physics-driven ship
 	self:_setupShip(shipment.shipmentId, boat, startRaised, initDir)
 
+	if boat:IsA("Model") then
+		boat:SetAttribute("ShipmentId", shipment.shipmentId)
+		boat:SetAttribute("OwnerUserId", ownerUserId)
+	end
+
 	-- Add player flag to the ship
 	self:_addPlayerFlag(boat, ownerUserId)
 
@@ -496,7 +510,8 @@ function OilShipmentService:_runShipment(shipment)
 					ownerUserId,
 					laneN,
 					currentPos,
-					voyageClock
+					voyageClock,
+					boat
 				)
 				if lost then
 					voyageAborted = true
@@ -815,6 +830,48 @@ function OilShipmentService:_straitDebugLogEnabled(): boolean
 	return false
 end
 
+-- Returns barrels removed (whole units). Loss = ceil(manifestSum * fraction); min 0.
+function OilShipmentService:_applyLooseBarrelLoss(shipment, fraction: number): number
+	if fraction <= 0 then
+		return 0
+	end
+	local manifest = shipment.manifest
+	if typeof(manifest) ~= "table" then
+		return 0
+	end
+	local onShip = 0
+	for _, tier in ipairs(TIER_ORDER) do
+		onShip += manifest[tier] or 0
+	end
+	if onShip <= 0 then
+		return 0
+	end
+	local toRemove = math.ceil(onShip * fraction)
+	if toRemove <= 0 then
+		return 0
+	end
+	local removed = 0
+	for _, tier in ipairs(BARREL_LOSS_TIER_ORDER) do
+		local have = manifest[tier] or 0
+		if have > 0 then
+			local take = math.min(have, toRemove - removed)
+			if take > 0 then
+				manifest[tier] = have - take
+				removed += take
+			end
+		end
+		if removed >= toRemove then
+			break
+		end
+	end
+	local newTotal = 0
+	for _, tier in ipairs(TIER_ORDER) do
+		newTotal += manifest[tier] or 0
+	end
+	shipment.totalLoaded = newTotal
+	return removed
+end
+
 function OilShipmentService:_buildStraitTriggerSlots(path: { Vector3 }, segDists: { number })
 	local slots = {}
 	for _, laneN in ipairs(StraitEventConfig.LaneWaypointTriggers) do
@@ -839,7 +896,8 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	ownerUserId: number,
 	laneWaypointIndex: number,
 	worldPosition: Vector3,
-	voyageClock: { startTime: number }
+	voyageClock: { startTime: number },
+	boat: Instance
 ): boolean
 	local dbg = Constants.StraitEventsDebug
 	local log = self:_straitDebugLogEnabled()
@@ -897,19 +955,23 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	if log then
 		print(
 			string.format(
-				"  [StraitShipment DEBUG] ROLLED severity=%s → catalog pick: id=%s  displayName=%q  totalLoss=%s  hullFrac=%s  priceMult×=%s  skipPause=%s",
+				"  [StraitShipment DEBUG] ROLLED severity=%s → catalog pick: id=%s  displayName=%q  totalLoss=%s  hullFrac=%s  priceMult×=%s  barrelLossFrac=%s  skipPause=%s",
 				severity,
 				def.id,
 				def.displayName,
 				tostring(def.totalLoss),
 				def.hullDamageFraction and string.format("%.3f", def.hullDamageFraction) or "—",
 				def.priceMultiplierFactor and string.format("%.3f", def.priceMultiplierFactor) or "—",
+				def.looseBarrelLossFraction and string.format("%.3f", def.looseBarrelLossFraction) or "—",
 				tostring(def.skipWaypointPause == true)
 			)
 		)
 	end
 
+	local particleFxScale = ParticleFxScale.ComputePayloadScale(boat, shipment.boatTypeId)
+
 	if def.totalLoss then
+		local animPause = StraitEventConfig.DefaultWaypointPauseSeconds
 		self:_emitShipmentEvent("StraitWaypointEvent", {
 			ownerUserId = ownerUserId,
 			shipmentId = shipment.shipmentId,
@@ -918,15 +980,19 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			severity = severity,
 			laneWaypointIndex = laneWaypointIndex,
 			totalLoss = true,
+			pauseSeconds = animPause,
 			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+			particleFxScale = particleFxScale,
 		})
+		task.wait(animPause)
 		if log then
 			print(
 				string.format(
-					"  [StraitShipment DEBUG] OUTCOME: TOTAL LOSS (engine=%s bracket=%s event=%s) — shipment ends here.",
+					"  [StraitShipment DEBUG] OUTCOME: TOTAL LOSS (engine=%s bracket=%s event=%s) after %.1fs animation hold — shipment ends here.",
 					engineState,
 					bracket,
-					def.id
+					def.id,
+					animPause
 				)
 			)
 		end
@@ -942,14 +1008,18 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		shipment.priceMultiplier *= def.priceMultiplierFactor
 	end
 
+	local barrelsLost = 0
+	if def.looseBarrelLossFraction and def.looseBarrelLossFraction > 0 then
+		barrelsLost = self:_applyLooseBarrelLoss(shipment, def.looseBarrelLossFraction)
+	end
+
 	local pauseSeconds = 0
 	if not def.skipWaypointPause then
 		pauseSeconds = def.pauseSeconds or StraitEventConfig.DefaultWaypointPauseSeconds
-		task.wait(pauseSeconds)
-		voyageClock.startTime += pauseSeconds
 	end
 
-	self:_emitShipmentEvent("StraitWaypointEvent", {
+	-- Fire visuals before the hold so every client can start FX in sync with the server pause (SPEC §8.2).
+	local payload: { [string]: any } = {
 		ownerUserId = ownerUserId,
 		shipmentId = shipment.shipmentId,
 		eventId = def.id,
@@ -962,16 +1032,29 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		priceMultiplier = shipment.priceMultiplier,
 		pauseSeconds = pauseSeconds,
 		worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
-	})
+		totalLoaded = shipment.totalLoaded,
+		particleFxScale = particleFxScale,
+	}
+	if barrelsLost > 0 then
+		payload.barrelsLost = barrelsLost
+	end
+	self:_emitShipmentEvent("StraitWaypointEvent", payload)
+
+	if not def.skipWaypointPause and pauseSeconds > 0 then
+		task.wait(pauseSeconds)
+		voyageClock.startTime += pauseSeconds
+	end
 	if log then
 		print(
 			string.format(
-				"  [StraitShipment DEBUG] OUTCOME: event applied (engine=%s bracket=%s)  hull=%d/%d  priceMultiplier=%.4f  pause=%.1fs  fired StraitWaypointEvent to clients",
+				"  [StraitShipment DEBUG] OUTCOME: event applied (engine=%s bracket=%s)  hull=%d/%d  priceMultiplier=%.4f  barrelsLost=%d  totalLoaded=%d  pause=%.1fs  fired StraitWaypointEvent to clients",
 				engineState,
 				bracket,
 				shipment.hullCurrent,
 				shipment.hullMax,
 				shipment.priceMultiplier,
+				barrelsLost,
+				shipment.totalLoaded,
 				pauseSeconds
 			)
 		)
