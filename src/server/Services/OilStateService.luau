@@ -7,6 +7,7 @@ local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
+local BiomeConfig = require(Shared:WaitForChild("Config"):WaitForChild("BiomeConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local OilStateService = {}
@@ -328,8 +329,10 @@ function OilStateService:GetStateForClient(userId: number)
 			col = chunk.col,
 			biome = chunk.biome,
 			unlocked = chunk.unlocked,
+			revealed = chunk.revealed or false,
 			worldX = chunk.worldX,
 			worldZ = chunk.worldZ,
+			tiles = chunk.tiles, -- per-tile oil types + obstacles (nil if not revealed)
 		}
 		if not chunk.unlocked then
 			entry.cost = chunkUnlockCost(chunk.row, chunk.col)
@@ -480,9 +483,159 @@ function OilStateService:TryBuyChunk(userId: number, chunkId: string): (boolean,
 	if not self:TrySpendCash(userId, cost) then
 		return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to buy this chunk.", cost)
 	end
+
+	-- Roll a random biome
+	local rng = Random.new(userId * 97 + chunk.row * 31 + chunk.col * 17 + math.floor(workspace:GetServerTimeNow() * 1000))
+	local biomeName = BiomeConfig.RollBiome(rng)
 	chunk.unlocked = true
+	chunk.biome = biomeName
+	chunk.revealed = false -- stays hidden until slot machine animation finishes
+
+	-- Generate per-tile oil types + obstacles for the 5x5 sub-tiles
+	local g = plotGridConstants()
+	local subTiles = g.subTilesPerSide
+	chunk.tiles = {}
+
+	-- First pass: assign tile types (each defines oil type + visual) to all tiles
+	local premiumTileKeys = {}
+	for tr = 1, subTiles do
+		for tc = 1, subTiles do
+			local tileKey = string.format("T%d%d", tr, tc)
+			local tileType = BiomeConfig.RollTileType(biomeName, rng)
+			chunk.tiles[tileKey] = {
+				oilType = tileType.oilType,
+				tileName = tileType.name,
+				tileMaterial = tileType.material.Name, -- store as string for persistence
+				tileColorR = math.floor(tileType.color.R * 255),
+				tileColorG = math.floor(tileType.color.G * 255),
+				tileColorB = math.floor(tileType.color.B * 255),
+				hasObstacle = false,
+				obstacleType = nil,
+			}
+			-- Track premium tiles for obstacle bias
+			if tileType.oilType == "PremiumRefined" or tileType.oilType == "LightSweet" then
+				table.insert(premiumTileKeys, tileKey)
+			end
+		end
+	end
+
+	-- Second pass: place obstacles, biased toward blocking premium tiles
+	local biomeData = BiomeConfig.Biomes[biomeName]
+	local obstacleRate = biomeData and biomeData.obstacleRate or 0.18
+	local totalTiles = subTiles * subTiles
+	local obstacleCount = math.floor(totalTiles * obstacleRate + 0.5)
+
+	-- Prioritize placing obstacles NEAR premium tiles
+	local placed = 0
+	local usedKeys = {}
+
+	-- Place some obstacles adjacent to premium tiles first (the "pain in the ass" spots)
+	for _, pKey in ipairs(premiumTileKeys) do
+		if placed >= obstacleCount then break end
+		local pr = tonumber(string.sub(pKey, 2, 2))
+		local pc = tonumber(string.sub(pKey, 3, 3))
+		if pr and pc then
+			local adjacents = {
+				string.format("T%d%d", pr - 1, pc),
+				string.format("T%d%d", pr + 1, pc),
+				string.format("T%d%d", pr, pc - 1),
+				string.format("T%d%d", pr, pc + 1),
+			}
+			for _, adjKey in ipairs(adjacents) do
+				if placed >= obstacleCount then break end
+				if chunk.tiles[adjKey] and not usedKeys[adjKey] and not chunk.tiles[adjKey].hasObstacle then
+					-- Don't block the premium tile itself, block its neighbor
+					if adjKey ~= pKey then
+						local obstType = BiomeConfig.RollObstacleType(biomeName, rng)
+						chunk.tiles[adjKey].hasObstacle = true
+						chunk.tiles[adjKey].obstacleType = obstType
+						usedKeys[adjKey] = true
+						placed += 1
+					end
+				end
+			end
+		end
+	end
+
+	-- Fill remaining obstacle quota with random tiles
+	local allTileKeys = {}
+	for tr = 1, subTiles do
+		for tc = 1, subTiles do
+			table.insert(allTileKeys, string.format("T%d%d", tr, tc))
+		end
+	end
+	-- Shuffle
+	for i = #allTileKeys, 2, -1 do
+		local j = rng:NextInteger(1, i)
+		allTileKeys[i], allTileKeys[j] = allTileKeys[j], allTileKeys[i]
+	end
+	for _, tKey in ipairs(allTileKeys) do
+		if placed >= obstacleCount then break end
+		if chunk.tiles[tKey] and not usedKeys[tKey] and not chunk.tiles[tKey].hasObstacle then
+			local obstType = BiomeConfig.RollObstacleType(biomeName, rng)
+			chunk.tiles[tKey].hasObstacle = true
+			chunk.tiles[tKey].obstacleType = obstType
+			usedKeys[tKey] = true
+			placed += 1
+		end
+	end
+
 	self:_markDirty(userId)
-	return true, "OK", "Chunk unlocked."
+
+	-- Fire biome reveal event to client for slot machine animation
+	local player = Players:GetPlayerByUserId(userId)
+	if player then
+		local revealEvent = self._remoteService:GetEvent(RemoteNames.BiomeRevealEvent)
+		revealEvent:FireClient(player, {
+			chunkId = chunkId,
+			biome = biomeName,
+			tiles = chunk.tiles,
+		})
+	end
+
+	-- Delay reveal so the slot machine animation plays first
+	task.delay(3, function()
+		local currentState = self._statesByUserId[userId]
+		if currentState then
+			local currentChunk = currentState.chunksById[chunkId]
+			if currentChunk then
+				currentChunk.revealed = true
+				self:_markDirty(userId)
+				self:PushState(userId)
+			end
+		end
+	end)
+
+	return true, "OK", string.format("%s Discovered!", biomeData and biomeData.displayName or biomeName)
+end
+
+function OilStateService:TryClearObstacle(userId: number, chunkId: string, tileKey: string): (boolean, string, string)
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false, "ERR_NO_STATE", "State unavailable."
+	end
+	local chunk = state.chunksById[chunkId]
+	if not chunk or not chunk.unlocked then
+		return false, "ERR_BAD_CHUNK", "Chunk not owned."
+	end
+	if not chunk.tiles or not chunk.tiles[tileKey] then
+		return false, "ERR_BAD_TILE", "Tile does not exist."
+	end
+	local tile = chunk.tiles[tileKey]
+	if not tile.hasObstacle then
+		return false, "ERR_NO_OBSTACLE", "No obstacle on this tile."
+	end
+
+	local biomeName = chunk.biome or "Dustlands"
+	local cost = BiomeConfig.GetObstacleCost(biomeName, tile.obstacleType or "Rock")
+	if not self:TrySpendCash(userId, cost) then
+		return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to clear this obstacle.", cost)
+	end
+
+	tile.hasObstacle = false
+	tile.obstacleType = nil
+	self:_markDirty(userId)
+	return true, "OK", "Obstacle cleared."
 end
 
 local function pointInsideChunk(chunk, x: number, z: number): boolean
@@ -524,13 +677,41 @@ function OilStateService:TryPlaceDrill(userId: number, payload): (boolean, strin
 		return false, "ERR_OUT_OF_CHUNK", "Drill position is not on the targeted chunk.", nil
 	end
 
-	-- Snap Y to the chunk's actual surface so a grazing client raycast can't store a floating drill.
+	-- Check tile for obstacles and pipe exclusivity
+	local drillRow, drillCol = worldToCell(x, z)
+	local drillCellKey = cellKey(drillRow, drillCol)
+
+	-- Obstacle check: can't drill on a tile with an obstacle
+	if chunk.tiles then
+		-- Find which sub-tile within this section
+		local g = plotGridConstants()
+		local sRow = (chunk.row - 1) * g.subTilesPerSide
+		local sCol = (chunk.col - 1) * g.subTilesPerSide
+		local localR = drillRow - sRow
+		local localC = drillCol - sCol
+		local tileKey = string.format("T%d%d", localR, localC)
+		local tile = chunk.tiles[tileKey]
+		if tile and tile.hasObstacle then
+			-- Water obstacles block drills permanently (pipes only)
+			if BiomeConfig.IsPipesOnlyObstacle(tile.obstacleType or "") then
+				return false, "ERR_WATER_TILE", "Can't drill on water. Pipes only.", nil
+			end
+			return false, "ERR_OBSTACLE", "Clear the obstacle first.", nil
+		end
+	end
+
+	-- Pipe exclusivity: can't drill where a pipe already is
+	if state.pipesByCellKey and state.pipesByCellKey[drillCellKey] then
+		return false, "ERR_PIPE_HERE", "Remove the pipe first to place a drill.", nil
+	end
+
+	-- Snap Y to the chunk's actual tile surface (exclude obstacles, overlays, signs)
 	local plot = self._plotService:GetOwnedPlot(userId)
 	local sectionModel = plot and self._plotService:GetChunkModel(plot, chunkId)
 	if sectionModel then
 		local topY: number? = nil
 		for _, d in ipairs(sectionModel:GetChildren()) do
-			if d:IsA("BasePart") and d.Name ~= "LockOverlay" and d.Name ~= "Sign" then
+			if d:IsA("BasePart") and d.Name:match("^T%d%d$") then
 				local surface = d.Position.Y + d.Size.Y / 2
 				if topY == nil or surface > topY then
 					topY = surface
@@ -589,6 +770,21 @@ function OilStateService:TryPlaceDrill(userId: number, payload): (boolean, strin
 
 	local snappedX, snappedZ = cellToWorld(cellRow, cellCol)
 
+	-- Determine the tile's oil type from the chunk's per-tile data
+	local tileOilType = nil
+	if chunk.tiles then
+		local g = plotGridConstants()
+		local sRow = (chunk.row - 1) * g.subTilesPerSide
+		local sCol = (chunk.col - 1) * g.subTilesPerSide
+		local localR = cellRow - sRow
+		local localC = cellCol - sCol
+		local tileKey = string.format("T%d%d", localR, localC)
+		local tile = chunk.tiles[tileKey]
+		if tile then
+			tileOilType = tile.oilType
+		end
+	end
+
 	local drill = {
 		drillId = drillId,
 		chunkId = chunkId,
@@ -598,6 +794,7 @@ function OilStateService:TryPlaceDrill(userId: number, payload): (boolean, strin
 		position = Vector3.new(snappedX, y, snappedZ),
 		flowBase = OilConfig.DrillBaseFlow * biomeConfig.flowMul * scale,
 		tierMix = copyTierMap(biomeConfig.tierMix),
+		tileOilType = tileOilType, -- per-tile oil type (if available)
 		cellKey = cellKey(cellRow, cellCol),
 		cellRow = cellRow,
 		cellCol = cellCol,
@@ -673,6 +870,30 @@ function OilStateService:TryPlacePipe(userId: number, payload): (boolean, string
 	local key = cellKey(row, col)
 	if state.pipesByCellKey[key] then
 		return false, "ERR_CELL_OCCUPIED", "There is already a pipe here.", nil
+	end
+
+	-- Drill exclusivity: can't place pipe where a drill already is
+	for _, drill in pairs(state.drillsById) do
+		if drill.cellKey == key then
+			return false, "ERR_DRILL_HERE", "Remove the drill first to place a pipe.", nil
+		end
+	end
+
+	-- Obstacle check: can't place pipe on a tile with an obstacle UNLESS it's a pipes-only obstacle (Water)
+	if chunk and chunk.tiles then
+		local g = plotGridConstants()
+		local sRow = (chunk.row - 1) * g.subTilesPerSide
+		local sCol = (chunk.col - 1) * g.subTilesPerSide
+		local localR = row - sRow
+		local localC = col - sCol
+		local tileKey = string.format("T%d%d", localR, localC)
+		local tile = chunk.tiles[tileKey]
+		if tile and tile.hasObstacle then
+			if not BiomeConfig.IsPipesOnlyObstacle(tile.obstacleType or "") then
+				return false, "ERR_OBSTACLE", "Clear the obstacle first.", nil
+			end
+			-- Water tiles: pipes allowed, drills blocked
+		end
 	end
 
 	if not self:TrySpendCash(userId, OilConfig.Pipes.Cost or 0) then
@@ -901,16 +1122,45 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 	local chunkDefs = self._plotService:GetPlotChunkDefinitions(plot)
 
 	local chunksById = {}
+	local startRng = Random.new(userId * 12345 + plotId)
 	for _, def in ipairs(chunkDefs) do
-		chunksById[def.chunkId] = {
+		local chunkData = {
 			chunkId = def.chunkId,
 			row = def.row,
 			col = def.col,
 			biome = def.biome,
 			unlocked = def.startingChunk,
+			revealed = def.startingChunk,
 			worldX = def.worldX,
 			worldZ = def.worldZ,
 		}
+
+		-- Starting chunk gets a guaranteed Dustlands biome with tiles (so the player can start playing)
+		if def.startingChunk then
+			chunkData.biome = "DustyDesert"
+			chunkData.revealed = true
+			chunkData.tiles = {}
+			local g = plotGridConstants()
+			local subTiles = g.subTilesPerSide
+			for tr = 1, subTiles do
+				for tc = 1, subTiles do
+					local tileKey = string.format("T%d%d", tr, tc)
+					local tileType = BiomeConfig.RollTileType("DustyDesert", startRng)
+					chunkData.tiles[tileKey] = {
+						oilType = tileType.oilType,
+						tileName = tileType.name,
+						tileMaterial = tileType.material.Name,
+						tileColorR = math.floor(tileType.color.R * 255),
+						tileColorG = math.floor(tileType.color.G * 255),
+						tileColorB = math.floor(tileType.color.B * 255),
+						hasObstacle = false,
+						obstacleType = nil,
+					}
+				end
+			end
+		end
+
+		chunksById[def.chunkId] = chunkData
 	end
 
 	local state = {
@@ -951,6 +1201,11 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 	self:_ensureDefaultPipesForPlayer(state)
 
 	self._statesByUserId[userId] = state
+
+	-- Force a deferred visual refresh so biome tiles + fog get applied after state is fully set
+	task.defer(function()
+		self:PushState(userId)
+	end)
 end
 
 function OilStateService:_ensureDefaultPipesForPlayer(state)
@@ -1071,6 +1326,15 @@ function OilStateService:_applyPersistedIntoState(state, persisted)
 			local chunk = state.chunksById[chunkId]
 			if chunk and isUnlocked == true then
 				chunk.unlocked = true
+				chunk.revealed = true
+				-- Restore biome
+				if typeof(persisted.chunkBiomes) == "table" and typeof(persisted.chunkBiomes[chunkId]) == "string" then
+					chunk.biome = persisted.chunkBiomes[chunkId]
+				end
+				-- Restore per-tile data
+				if typeof(persisted.chunkTiles) == "table" and typeof(persisted.chunkTiles[chunkId]) == "table" then
+					chunk.tiles = persisted.chunkTiles[chunkId]
+				end
 			end
 		end
 	end
@@ -1272,9 +1536,17 @@ function OilStateService:_serializeState(state)
 	persisted.storageCapacity = math.max(1, floorPositive(state.storageCapacity))
 	persisted.oilByTier = copyTierMap(state.oilByTier)
 	persisted.unlockedChunkIds = {}
+	persisted.chunkBiomes = {}
+	persisted.chunkTiles = {}
 	for chunkId, chunk in pairs(state.chunksById) do
 		if chunk.unlocked then
 			persisted.unlockedChunkIds[chunkId] = true
+			if chunk.biome then
+				persisted.chunkBiomes[chunkId] = chunk.biome
+			end
+			if chunk.tiles then
+				persisted.chunkTiles[chunkId] = chunk.tiles
+			end
 		end
 	end
 	persisted.drills = {}

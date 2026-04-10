@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Oil Empire — Tileset & Obstacle Maker</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; padding: 20px; display: flex; gap: 20px; min-height: 100vh; }
+.panel { background: #16213e; border-radius: 12px; padding: 16px; border: 1px solid #333; overflow-y: auto; max-height: 95vh; }
+#left-panel { width: 300px; }
+#center-panel { flex: 1; }
+#right-panel { width: 340px; }
+h2 { color: #ffd700; margin-bottom: 12px; font-size: 18px; }
+h3 { color: #aab; margin: 10px 0 6px; font-size: 14px; }
+.biome-card { display: flex; align-items: center; gap: 10px; padding: 10px; margin: 6px 0; border-radius: 8px; cursor: pointer; border: 2px solid #333; transition: all 0.15s; }
+.biome-card:hover { border-color: #ffd700; }
+.biome-card.active { border-color: #e94560; background: #2a1525; }
+.biome-card .emoji { font-size: 24px; }
+.biome-card .info { flex: 1; }
+.biome-card .info .name { font-weight: bold; font-size: 14px; }
+.biome-card .info .stats { font-size: 11px; color: #889; }
+.biome-card .preview-strip { display: flex; gap: 1px; }
+.biome-card .preview-strip div { width: 8px; height: 20px; border-radius: 2px; }
+.palette-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin: 3px 0; border-radius: 6px; cursor: pointer; border: 2px solid transparent; transition: all 0.12s; font-size: 12px; }
+.palette-item:hover { border-color: #888; }
+.palette-item.selected { border-color: #e94560; box-shadow: 0 0 6px #e94560; }
+.palette-item.obs-selected { border-color: #ff6600; box-shadow: 0 0 6px #ff6600; }
+.swatch { width: 28px; height: 28px; border-radius: 4px; flex-shrink: 0; }
+.obs-swatch { width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 16px; border: 2px solid #ff6600; }
+.item-name { font-weight: bold; }
+.item-sub { font-size: 10px; color: #778; }
+.modes { display: flex; gap: 4px; margin-bottom: 12px; }
+.mode-btn { flex: 1; padding: 8px 4px; border: 2px solid #444; border-radius: 6px; text-align: center; cursor: pointer; font-size: 11px; font-weight: bold; }
+.mode-btn.active { border-color: #e94560; background: #2a1525; }
+.grid-5x5 { display: grid; grid-template-columns: repeat(5, 72px); gap: 3px; margin: 10px 0; }
+.grid-cell { width: 72px; height: 72px; border-radius: 6px; border: 2px solid #333; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 9px; text-align: center; cursor: pointer; transition: all 0.12s; color: rgba(255,255,255,0.9); text-shadow: 0 1px 2px rgba(0,0,0,0.9); position: relative; padding: 2px; word-break: break-word; }
+.grid-cell:hover { border-color: #ffd700; transform: scale(1.04); }
+.grid-cell.empty { background: #222; border-style: dashed; color: #555; }
+.obs-badge { position: absolute; top: 2px; right: 2px; width: 22px; height: 22px; border-radius: 50%; background: rgba(255,100,0,0.9); display: flex; align-items: center; justify-content: center; font-size: 12px; border: 1px solid #fff; }
+.add-section { margin-top: 12px; padding-top: 12px; border-top: 1px solid #333; }
+label { display: block; font-size: 11px; color: #889; margin-top: 5px; }
+input, select { width: 100%; padding: 4px 8px; border-radius: 4px; border: 1px solid #444; background: #1a1a2e; color: #eee; font-size: 12px; margin-top: 2px; }
+input[type="color"] { height: 28px; padding: 2px; cursor: pointer; }
+.btn { padding: 7px 14px; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: bold; }
+.btn-green { background: #27ae60; color: white; width: 100%; margin-top: 8px; }
+.btn-orange { background: #e67e22; color: white; width: 100%; margin-top: 8px; }
+.btn-red { background: #c0392b; color: white; font-size: 11px; padding: 4px 8px; }
+.btn-blue { background: #2980b9; color: white; width: 100%; margin-top: 8px; }
+.btn-gen { background: #e94560; color: white; width: 100%; margin-top: 10px; font-size: 15px; padding: 10px; }
+#output { background: #0d1117; border: 1px solid #333; border-radius: 8px; padding: 10px; white-space: pre-wrap; font-family: 'Consolas', monospace; font-size: 11px; color: #7ee787; max-height: 400px; overflow-y: auto; margin-top: 8px; }
+.copy-btn { background: #3498db; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-top: 4px; }
+.stats-box { background: #0f3460; border-radius: 6px; padding: 8px; margin-top: 10px; font-size: 11px; }
+.stats-box div { margin: 2px 0; }
+.oil-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+.oil-dot.HeavyCrude { background: #888; }
+.oil-dot.StandardCrude { background: #e77c3c; }
+.oil-dot.LightSweet { background: #3498db; }
+.oil-dot.PremiumRefined { background: #f1c40f; }
+.no-edit-msg { text-align: center; color: #556; margin-top: 40px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="panel" id="left-panel">
+    <h2>🗺️ Biomes</h2>
+    <div id="biome-list"></div>
+    <button class="btn btn-blue" onclick="createNewBiome()">+ New Biome</button>
+    <h2 style="margin-top:20px">🎨 Tile Types</h2>
+    <div id="tile-list"></div>
+    <div class="add-section">
+        <label>Name</label><input id="new-tile-name" placeholder="e.g. Lava Pool">
+        <label>Oil Type</label>
+        <select id="new-tile-oil"><option value="HeavyCrude">Heavy Crude</option><option value="StandardCrude">Standard Crude</option><option value="LightSweet">Light Sweet</option><option value="PremiumRefined">Premium Refined</option></select>
+        <label>Color</label><input type="color" id="new-tile-color" value="#aa8855">
+        <label>Material</label><select id="new-tile-mat"></select>
+        <button class="btn btn-green" onclick="addTile()">+ Add Tile</button>
+    </div>
+    <h2 style="margin-top:20px">🪨 Obstacles</h2>
+    <div id="obs-list"></div>
+    <div class="add-section">
+        <label>Name</label><input id="new-obs-name" placeholder="e.g. Cactus">
+        <label>Emoji</label><input id="new-obs-emoji" value="🪨" maxlength="4" style="width:60px">
+        <label>Cost ($)</label><input id="new-obs-cost" type="number" value="500" min="0">
+        <label>Color</label><input type="color" id="new-obs-color" value="#666655">
+        <label>Description</label><input id="new-obs-desc" placeholder="e.g. Tall cactus">
+        <button class="btn btn-orange" onclick="addObstacle()">+ Add Obstacle</button>
+    </div>
+</div>
+<div class="panel" id="center-panel"><div id="editor-area"><div class="no-edit-msg">← Select a biome to edit</div></div></div>
+<div class="panel" id="right-panel">
+    <h2>📋 Output</h2>
+    <button class="btn btn-gen" onclick="generateAll()">Generate Luau Config</button>
+    <button class="copy-btn" onclick="copyOutput()">Copy to Clipboard</button>
+    <div id="output"></div>
+</div>
+<script>
+const USED_MATERIALS=["Sand","Sandstone","Ground","Pebble","Basalt","Mud","Ice","Grass","LeafyGrass","Glacier","Rock"];
+let tiles=[
+    {id:1,name:"Sand",oil:"HeavyCrude",color:"#d2b982",mat:"Sand"},
+    {id:2,name:"Dry Clay",oil:"StandardCrude",color:"#b4825a",mat:"Sandstone"},
+    {id:3,name:"Golden Sand",oil:"LightSweet",color:"#f0d250",mat:"Sand"},
+    {id:4,name:"Peat",oil:"HeavyCrude",color:"#372d23",mat:"Ground"},
+    {id:5,name:"Sulfur",oil:"StandardCrude",color:"#b4aa3c",mat:"Pebble"},
+    {id:6,name:"Ash",oil:"HeavyCrude",color:"#322d28",mat:"Basalt"},
+    {id:7,name:"Hard Magma",oil:"LightSweet",color:"#ff7b42",mat:"Mud"},
+    {id:8,name:"Obsidian",oil:"PremiumRefined",color:"#030303",mat:"Ice"},
+    {id:9,name:"Soil",oil:"StandardCrude",color:"#645037",mat:"Ground"},
+    {id:10,name:"Grass",oil:"StandardCrude",color:"#04ff00",mat:"Grass"},
+    {id:11,name:"Water",oil:"HeavyCrude",color:"#00ffe1",mat:"Mud"},
+    {id:12,name:"Rich Soil",oil:"LightSweet",color:"#a4640a",mat:"Mud"},
+    {id:13,name:"Fern Patch",oil:"HeavyCrude",color:"#32642d",mat:"LeafyGrass"},
+    {id:14,name:"Rocky Ground",oil:"StandardCrude",color:"#31220c",mat:"Ground"},
+    {id:15,name:"Snow",oil:"LightSweet",color:"#e6f0fa",mat:"Glacier"},
+    {id:16,name:"Permafrost",oil:"PremiumRefined",color:"#a0c8f0",mat:"Glacier"},
+    {id:17,name:"Tundra",oil:"HeavyCrude",color:"#78736e",mat:"Rock"},
+];
+let nextTileId=18;
+let obstacles=[
+    {id:1,name:"Rock",emoji:"🪨",cost:300,color:"#787064",desc:"Large grey boulder"},
+    {id:2,name:"Mud Pit",emoji:"💩",cost:250,color:"#37291e",desc:"Deep mud pit"},
+    {id:3,name:"Pyramid",emoji:"🔺",cost:500,color:"#ffff00",desc:"Pyramid"},
+    {id:4,name:"Obsidian Pillar",emoji:"⬛",cost:800,color:"#140f12",desc:"Tall obsidian column"},
+    {id:5,name:"Lava Rock",emoji:"🔥",cost:1000,color:"#281914",desc:"Volcanic lava rock"},
+    {id:6,name:"Bush",emoji:"🌿",cost:300,color:"#325a28",desc:"Dense bush"},
+    {id:7,name:"Water",emoji:"💧",cost:100000,color:"#00fbff",desc:"Water (pipes only)"},
+    {id:8,name:"Tree",emoji:"🌲",cost:500,color:"#2d5a23",desc:"Large tree"},
+    {id:9,name:"Frozen Stump",emoji:"🥶",cost:500,color:"#a0bee0",desc:"Frozen tree stump"},
+];
+let nextObsId=10;
+
+// Pre-fill biomes from the EXACT config the user gave us
+function fillFromWeights(tileWeights, obsRate, obsTypes) {
+    // tileWeights: [{tileId, weight},...] obsTypes: [{obsId, count},...]
+    let cells = Array.from({length:25},()=>({t:null,o:null}));
+    // Fill tiles by weight
+    let totalW = tileWeights.reduce((s,tw)=>s+tw.weight,0);
+    let tileSlots = [];
+    tileWeights.forEach(tw => {
+        let count = Math.round(tw.weight / totalW * 25);
+        for (let i=0;i<count;i++) tileSlots.push(tw.tileId);
+    });
+    // Pad or trim to 25
+    while(tileSlots.length < 25) tileSlots.push(tileWeights[0].tileId);
+    while(tileSlots.length > 25) tileSlots.pop();
+    // Shuffle
+    for(let i=tileSlots.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[tileSlots[i],tileSlots[j]]=[tileSlots[j],tileSlots[i]];}
+    for(let i=0;i<25;i++) cells[i].t = tileSlots[i];
+    // Fill obstacles
+    let obsCount = Math.round(obsRate * 25);
+    let indices = Array.from({length:25},(_,i)=>i);
+    for(let i=indices.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[indices[i],indices[j]]=[indices[j],indices[i]];}
+    for(let i=0;i<obsCount && i<indices.length;i++){
+        let ot = obsTypes[i % obsTypes.length];
+        cells[indices[i]].o = ot;
+    }
+    return cells;
+}
+
+let biomes=[
+    {name:"Dusty Desert",emoji:"🏜️",cells:fillFromWeights([{tileId:1,weight:100}],0.04,[1])},
+    {name:"Decent Desert",emoji:"🌿",cells:fillFromWeights([{tileId:1,weight:64},{tileId:2,weight:20},{tileId:3,weight:4},{tileId:4,weight:12}],0.20,[1,2])},
+    {name:"Clay Desert",emoji:"🌲",cells:fillFromWeights([{tileId:1,weight:48},{tileId:2,weight:52}],0.32,[2,3])},
+    {name:"Frostlands",emoji:"❄️",cells:fillFromWeights([{tileId:1,weight:32},{tileId:2,weight:32},{tileId:3,weight:8},{tileId:4,weight:20},{tileId:5,weight:8}],0.28,[4])},
+    {name:"Volcanic",emoji:"🌋",cells:fillFromWeights([{tileId:4,weight:12},{tileId:6,weight:12},{tileId:5,weight:20},{tileId:7,weight:44},{tileId:8,weight:12}],0.36,[1,5,4])},
+    {name:"MagmaGrounds",emoji:"🌍",cells:fillFromWeights([{tileId:6,weight:48},{tileId:7,weight:52}],0.00,[])},
+    {name:"GrassyFarm",emoji:"🌍",cells:fillFromWeights([{tileId:9,weight:20},{tileId:10,weight:32},{tileId:11,weight:24},{tileId:12,weight:24}],0.44,[6,7])},
+    {name:"Grassy Forrest",emoji:"🌍",cells:fillFromWeights([{tileId:13,weight:36},{tileId:10,weight:40},{tileId:14,weight:24}],0.40,[8])},
+    {name:"IceyArea",emoji:"🌍",cells:fillFromWeights([{tileId:15,weight:28},{tileId:16,weight:32},{tileId:17,weight:28},{tileId:11,weight:12}],0.40,[9,7])},
+];
+
+let activeBiome=-1,selectedTile=null,selectedObs=null,mode='tile';
+function renderBiomeList(){const el=document.getElementById('biome-list');el.innerHTML='';biomes.forEach((b,i)=>{const filled=b.cells.filter(c=>c.t).length;const oc=b.cells.filter(c=>c.o).length;let strip='';b.cells.slice(0,10).forEach(c=>{const t=c.t?tiles.find(x=>x.id===c.t):null;strip+=`<div style="background:${t?t.color:'#222'}"></div>`;});const card=document.createElement('div');card.className=`biome-card ${i===activeBiome?'active':''}`;card.innerHTML=`<span class="emoji">${b.emoji}</span><div class="info"><div class="name">${b.name}</div><div class="stats">${filled}/25 tiles, ${oc} obs</div></div><div class="preview-strip">${strip}</div>`;card.onclick=()=>{activeBiome=i;renderAll();};el.appendChild(card);});}
+function renderTileList(){const el=document.getElementById('tile-list');el.innerHTML='';tiles.forEach(t=>{const d=document.createElement('div');d.className=`palette-item ${t.id===selectedTile?'selected':''}`;d.onclick=()=>{selectedTile=t.id;selectedObs=null;mode='tile';renderAll();};d.innerHTML=`<div class="swatch" style="background:${t.color}"></div><div><div class="item-name">${t.name}</div><div class="item-sub"><span class="oil-dot ${t.oil}"></span>${t.oil} | ${t.mat}</div></div>`;el.appendChild(d);});}
+function renderObsList(){const el=document.getElementById('obs-list');el.innerHTML='';obstacles.forEach(o=>{const d=document.createElement('div');d.className=`palette-item ${o.id===selectedObs?'obs-selected':''}`;d.onclick=()=>{selectedObs=o.id;selectedTile=null;mode='obstacle';renderAll();};d.innerHTML=`<div class="obs-swatch" style="background:${o.color}">${o.emoji}</div><div><div class="item-name">${o.name}</div><div class="item-sub">$${o.cost} | ${o.desc}</div></div><button class="btn-red" onclick="event.stopPropagation();deleteObs(${o.id})">✕</button>`;el.appendChild(d);});}
+function renderEditor(){const el=document.getElementById('editor-area');if(activeBiome<0||!biomes[activeBiome]){el.innerHTML='<div class="no-edit-msg">← Select a biome to edit</div>';return;}const b=biomes[activeBiome];let h=`<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><span style="font-size:28px">${b.emoji}</span><input value="${b.name}" style="background:#1a1a2e;border:1px solid #444;color:#ffd700;font-size:18px;font-weight:bold;padding:4px 10px;border-radius:6px;width:220px" onchange="biomes[${activeBiome}].name=this.value;renderBiomeList()"><input value="${b.emoji}" style="width:50px;background:#1a1a2e;border:1px solid #444;color:#eee;font-size:18px;text-align:center;border-radius:6px" maxlength="4" onchange="biomes[${activeBiome}].emoji=this.value;renderBiomeList()"><button class="btn-red" onclick="deleteBiome(${activeBiome})">Delete</button></div><div class="modes"><div class="mode-btn ${mode==='tile'?'active':''}" onclick="mode='tile';renderAll()">🟩 Tile</div><div class="mode-btn ${mode==='obstacle'?'active':''}" onclick="mode='obstacle';renderAll()">🪨 Obstacle</div><div class="mode-btn ${mode==='erase'?'active':''}" onclick="mode='erase';renderAll()">🗑️ Erase</div></div><div class="grid-5x5">`;for(let i=0;i<25;i++){const c=b.cells[i];const tile=c.t?tiles.find(x=>x.id===c.t):null;const obs=c.o?obstacles.find(x=>x.id===c.o):null;const bg=tile?tile.color:'#222';const cls=tile?'grid-cell':'grid-cell empty';const tn=tile?tile.name:'';const ob=obs?`<div class="obs-badge" title="${obs.name} ($${obs.cost})">${obs.emoji}</div>`:'';h+=`<div class="${cls}" style="background:${bg}" onclick="cellClick(${i})" oncontextmenu="event.preventDefault();cellClear(${i})">${tn}${ob}</div>`;}h+='</div><p style="font-size:10px;color:#556;margin-top:4px">Left-click = place. Right-click = clear.</p>';const oc={};let filled=0,obsC=0;b.cells.forEach(c=>{if(c.t){filled++;const t=tiles.find(x=>x.id===c.t);if(t)oc[t.oil]=(oc[t.oil]||0)+1;}if(c.o)obsC++;});h+='<div class="stats-box">';h+=`<div><b>${filled}/25</b> tiles, <b>${obsC}</b> obstacles (${Math.round(obsC/25*100)}%)</div>`;for(const[oil,count]of Object.entries(oc))h+=`<div><span class="oil-dot ${oil}"></span>${oil}: ${count} (${Math.round(count/Math.max(filled,1)*100)}%)</div>`;h+='</div>';el.innerHTML=h;}
+function renderAll(){renderBiomeList();renderTileList();renderObsList();renderEditor();}
+function cellClick(i){if(activeBiome<0)return;const b=biomes[activeBiome];if(mode==='tile'&&selectedTile)b.cells[i].t=selectedTile;else if(mode==='obstacle'&&selectedObs)b.cells[i].o=selectedObs;else if(mode==='erase')b.cells[i]={t:null,o:null};renderEditor();renderBiomeList();}
+function cellClear(i){if(activeBiome<0)return;const b=biomes[activeBiome];if(mode==='obstacle')b.cells[i].o=null;else b.cells[i]={t:null,o:null};renderEditor();renderBiomeList();}
+function addTile(){const n=document.getElementById('new-tile-name').value.trim();if(!n)return alert('Name?');tiles.push({id:nextTileId++,name:n,oil:document.getElementById('new-tile-oil').value,color:document.getElementById('new-tile-color').value,mat:document.getElementById('new-tile-mat').value});document.getElementById('new-tile-name').value='';renderAll();}
+function addObstacle(){const n=document.getElementById('new-obs-name').value.trim();if(!n)return alert('Name?');obstacles.push({id:nextObsId++,name:n,emoji:document.getElementById('new-obs-emoji').value||'🪨',cost:parseInt(document.getElementById('new-obs-cost').value)||500,color:document.getElementById('new-obs-color').value,desc:document.getElementById('new-obs-desc').value||''});document.getElementById('new-obs-name').value='';document.getElementById('new-obs-desc').value='';renderAll();}
+function deleteObs(id){obstacles=obstacles.filter(o=>o.id!==id);if(selectedObs===id)selectedObs=null;biomes.forEach(b=>b.cells.forEach(c=>{if(c.o===id)c.o=null;}));renderAll();}
+function createNewBiome(){const n=prompt('Biome name:','New Biome');if(!n)return;const e=prompt('Emoji:','🌍')||'🌍';biomes.push({name:n,emoji:e,cells:Array.from({length:25},()=>({t:null,o:null}))});activeBiome=biomes.length-1;renderAll();}
+function deleteBiome(i){if(!confirm('Delete '+biomes[i].name+'?'))return;biomes.splice(i,1);if(activeBiome>=biomes.length)activeBiome=biomes.length-1;renderAll();}
+function hexToRgb(h){return{r:parseInt(h.slice(1,3),16),g:parseInt(h.slice(3,5),16),b:parseInt(h.slice(5,7),16)};}
+function generateAll(){let lua='-- Generated by Oil Empire Tile Designer\n\n';biomes.forEach(b=>{const key=b.name.replace(/\s+/g,'');lua+=`\t\t${key} = {\n\t\t\tdisplayName = "${b.name}",\n\t\t\temoji = "${b.emoji}",\n\t\t\ttileTypes = {\n`;const tc={};let tot=0;b.cells.forEach(c=>{if(c.t){tc[c.t]=(tc[c.t]||0)+1;tot++;}});for(const[id,cnt]of Object.entries(tc)){const t=tiles.find(x=>x.id===parseInt(id));if(!t)continue;const w=Math.round(cnt/Math.max(tot,1)*100);const{r,g,b:bl}=hexToRgb(t.color);lua+=`\t\t\t\t{ name = "${t.name}", oilType = "${t.oil}", weight = ${w}, material = Enum.Material.${t.mat}, color = Color3.fromRGB(${r}, ${g}, ${bl}) },\n`;}lua+='\t\t\t},\n';const occ={};b.cells.forEach(c=>{if(c.o){const o=obstacles.find(x=>x.id===c.o);if(o)occ[o.name]=(occ[o.name]||0)+1;}});const obsTotal=Object.values(occ).reduce((a,b)=>a+b,0);lua+=`\t\t\tobstacleRate = ${(obsTotal/25).toFixed(2)},\n`;const oNames=Object.keys(occ).map(n=>`"${n.replace(/\s+/g,'')}"`);lua+=`\t\t\tobstacleTypes = { ${oNames.join(', ')} },\n`;const oCosts=Object.keys(occ).map(n=>{const o=obstacles.find(x=>x.name===n);return`${n.replace(/\s+/g,'')} = ${o?o.cost:500}`;});lua+=`\t\t\tobstacleCosts = { ${oCosts.join(', ')} },\n\t\t},\n`;});lua+='\n-- ========== OBSTACLES ==========\n\nObstacleTemplates = {\n';obstacles.forEach(o=>{const{r,g,b}=hexToRgb(o.color);lua+=`\t${o.name.replace(/\s+/g,'')} = { templateName = "Obstacle_${o.name.replace(/\s+/g,'')}", cost = ${o.cost}, color = Color3.fromRGB(${r}, ${g}, ${b}), desc = "${o.desc}" },\n`;});lua+='}\n';document.getElementById('output').textContent=lua;}
+function copyOutput(){navigator.clipboard.writeText(document.getElementById('output').textContent).then(()=>alert('Copied!'));}
+const matSelect=document.getElementById('new-tile-mat');USED_MATERIALS.forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;matSelect.appendChild(o);});
+renderAll();
+</script>
+</body>
+</html>

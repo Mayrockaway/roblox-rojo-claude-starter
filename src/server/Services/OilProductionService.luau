@@ -65,9 +65,17 @@ function OilProductionService:_runTick(deltaSeconds: number)
 		for _, drill in ipairs(drills) do
 			local flow = drill.flowBase * deltaSeconds
 			local perDrillAdditions = emptyTierFloats()
-			for _, tier in ipairs(TIERS) do
-				local weightPercent = drill.tierMix[tier] or 0
-				perDrillAdditions[tier] = flow * (weightPercent / 100)
+
+			-- If the drill's tile has a specific oil type, produce 100% of that type.
+			-- Otherwise fall back to the biome tierMix percentage distribution.
+			local tileOilType = drill.tileOilType
+			if tileOilType and perDrillAdditions[tileOilType] ~= nil then
+				perDrillAdditions[tileOilType] = flow
+			else
+				for _, tier in ipairs(TIERS) do
+					local weightPercent = drill.tierMix[tier] or 0
+					perDrillAdditions[tier] = flow * (weightPercent / 100)
+				end
 			end
 
 			if drill.connected then

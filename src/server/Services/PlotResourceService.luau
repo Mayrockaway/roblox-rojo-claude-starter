@@ -47,6 +47,11 @@ function PlotResourceService:Start()
 		self:_handleRemovePipeRequest(player, payload)
 	end))
 
+	local clearObstacleEvent = self._remoteService:GetEvent(RemoteNames.RequestClearObstacle)
+	table.insert(self._connections, clearObstacleEvent.OnServerEvent:Connect(function(player, payload)
+		self:_handleClearObstacleRequest(player, payload)
+	end))
+
 	local pickupBarrelEvent = self._remoteService:GetEvent(RemoteNames.RequestPickupBarrel)
 	table.insert(self._connections, pickupBarrelEvent.OnServerEvent:Connect(function(player, payload)
 		self:_handlePickupBarrelRequest(player, payload)
@@ -239,6 +244,22 @@ function PlotResourceService:_playerHasEmptyHands(player: Player): boolean
 		end
 	end
 	return true
+end
+
+function PlotResourceService:_handleClearObstacleRequest(player: Player, payload)
+	if not self:_allow(player.UserId, "clearObstacle", 10, 10) then
+		self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many requests.")
+		return
+	end
+	if typeof(payload) ~= "table" or typeof(payload.chunkId) ~= "string" or typeof(payload.tileKey) ~= "string" then
+		self:_sendResult(player, false, "ERR_BAD_PAYLOAD", "Missing chunkId or tileKey.")
+		return
+	end
+	local ok, code, message = self._oilStateService:TryClearObstacle(player.UserId, payload.chunkId, payload.tileKey)
+	self:_sendResult(player, ok, code, message)
+	if ok then
+		self._oilStateService:PushState(player.UserId)
+	end
 end
 
 function PlotResourceService:_handlePickupBarrelRequest(player: Player, payload)

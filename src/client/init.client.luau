@@ -32,6 +32,8 @@ local requestUpgradeWarehouse = remotesFolder:WaitForChild(RemoteNames.RequestUp
 local requestSellAllWarehouse = remotesFolder:WaitForChild(RemoteNames.RequestSellAllWarehouse) :: RemoteEvent
 local requestTeleportToWarehouse = remotesFolder:WaitForChild(RemoteNames.RequestTeleportToWarehouse) :: RemoteEvent
 local warehouseStateUpdate = remotesFolder:WaitForChild(RemoteNames.WarehouseStateUpdate) :: RemoteEvent
+local requestClearObstacle = remotesFolder:WaitForChild(RemoteNames.RequestClearObstacle) :: RemoteEvent
+local biomeRevealEvent = remotesFolder:WaitForChild(RemoteNames.BiomeRevealEvent) :: RemoteEvent
 local requestDispatchShipment = remotesFolder:WaitForChild(RemoteNames.RequestDispatchShipment) :: RemoteEvent
 local oilStateUpdate = remotesFolder:WaitForChild(RemoteNames.OilStateUpdate) :: RemoteEvent
 local oilActionResult = remotesFolder:WaitForChild(RemoteNames.OilActionResult) :: RemoteEvent
@@ -375,7 +377,7 @@ local function getChunkSurfaceY(chunkId: string): number?
 	end
 	local topY: number? = nil
 	for _, d in ipairs(sectionModel:GetChildren()) do
-		if d:IsA("BasePart") and d.Name ~= "LockOverlay" and d.Name ~= "Sign" then
+		if d:IsA("BasePart") and d.Name:match("^T%d%d$") then
 			local surface = d.Position.Y + d.Size.Y / 2
 			if topY == nil or surface > topY then
 				topY = surface
@@ -640,11 +642,31 @@ local function updateFocusUi()
 		return
 	end
 	focusBillboard.Adornee = adornee
-	if chunk.unlocked then
-		focusLabel.Text = string.format("%s — Owned", chunk.biome or "?")
+	if chunk.unlocked and chunk.revealed then
+		-- Show biome name + per-tile oil type if we can determine which tile is hovered
+		local tileInfo = ""
+		if chunk.tiles and mouse.Target and mouse.Target:IsA("BasePart") then
+			local targetName = mouse.Target.Name
+			local tileData = chunk.tiles[targetName]
+			if tileData then
+				local oilNames = {
+					HeavyCrude = "Heavy Crude",
+					StandardCrude = "Standard Crude",
+					LightSweet = "Light Sweet",
+					PremiumRefined = "Premium Refined",
+				}
+				local tileName = tileData.tileName or "?"
+				local oilName = oilNames[tileData.oilType] or tileData.oilType or "?"
+				tileInfo = string.format(" | %s — %s", tileName, oilName)
+				if tileData.hasObstacle then
+					tileInfo = tileInfo .. " [BLOCKED]"
+				end
+			end
+		end
+		focusLabel.Text = string.format("%s%s", chunk.biome or "?", tileInfo)
 		focusLabel.TextColor3 = Color3.fromRGB(160, 230, 170)
-	else
-		local label = string.format("%s — $%d", chunk.biome or "?", chunk.cost or 0)
+	elseif not chunk.unlocked then
+		local label = string.format("??? — $%d", chunk.cost or 0)
 		if chunk.canBuy == false then
 			label = label .. " (no neighbour)"
 		end
@@ -1168,6 +1190,281 @@ Workspace.DescendantAdded:Connect(function(descendant)
 					requestPickupBarrel:FireServer({ barrelName = cursor.Name })
 					return
 				end
+			end
+		end)
+	end
+end)
+
+-- Biome reveal slot machine animation
+biomeRevealEvent.OnClientEvent:Connect(function(data)
+	if typeof(data) ~= "table" or not data.biome or not data.chunkId then return end
+	local biomeName = data.biome
+	local chunkId = data.chunkId
+
+	-- Find the section model to animate its tiles
+	local sectionModel = nil
+	if ownedPlot then
+		local ground = ownedPlot:FindFirstChild("PlotGround")
+		if ground then
+			sectionModel = ground:FindFirstChild(chunkId)
+		end
+	end
+
+	-- Remove the fog overlay immediately
+	if sectionModel then
+		local overlay = sectionModel:FindFirstChild("LockOverlay")
+		if overlay and overlay:IsA("BasePart") then
+			overlay.Transparency = 1
+		end
+		local sign = sectionModel:FindFirstChild("Sign")
+		if sign then
+			for _, d in ipairs(sign:GetDescendants()) do
+				if d:IsA("BasePart") then d.Transparency = 1 end
+				if d:IsA("ProximityPrompt") then d.Enabled = false end
+				if d:IsA("SurfaceGui") then d.Enabled = false end
+			end
+		end
+	end
+
+	-- UI popup
+	local popup = Instance.new("ScreenGui")
+	popup.Name = "BiomeRevealPopup"
+	popup.Parent = playerGui
+
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.fromOffset(420, 90)
+	frame.Position = UDim2.new(0.5, -210, 0.25, 0)
+	frame.BackgroundColor3 = Color3.fromRGB(20, 25, 35)
+	frame.BackgroundTransparency = 0.05
+	frame.Parent = popup
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 12)
+	corner.Parent = frame
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.Text = "Rolling..."
+	label.TextColor3 = Color3.fromRGB(255, 255, 255)
+	label.Font = Enum.Font.GothamBlack
+	label.TextSize = 32
+	label.Parent = frame
+
+	-- Slot machine: flash REAL biome tile sets onto the 5x5 grid
+	task.spawn(function()
+		-- All 9 biomes with their actual tile types
+		local biomePresets = {
+			{ name = "Dusty Desert", tiles = {
+				{ mat = Enum.Material.Sand, col = Color3.fromRGB(210,185,130), w = 100 },
+			}},
+			{ name = "Decent Desert", tiles = {
+				{ mat = Enum.Material.Sand, col = Color3.fromRGB(210,185,130), w = 64 },
+				{ mat = Enum.Material.Sandstone, col = Color3.fromRGB(180,130,90), w = 20 },
+				{ mat = Enum.Material.Sand, col = Color3.fromRGB(240,210,80), w = 4 },
+				{ mat = Enum.Material.Ground, col = Color3.fromRGB(55,45,35), w = 12 },
+			}},
+			{ name = "Clay Desert", tiles = {
+				{ mat = Enum.Material.Sand, col = Color3.fromRGB(210,185,130), w = 48 },
+				{ mat = Enum.Material.Sandstone, col = Color3.fromRGB(180,130,90), w = 52 },
+			}},
+			{ name = "Frostlands", tiles = {
+				{ mat = Enum.Material.Sand, col = Color3.fromRGB(210,185,130), w = 32 },
+				{ mat = Enum.Material.Sandstone, col = Color3.fromRGB(180,130,90), w = 32 },
+				{ mat = Enum.Material.Sand, col = Color3.fromRGB(240,210,80), w = 8 },
+				{ mat = Enum.Material.Ground, col = Color3.fromRGB(55,45,35), w = 20 },
+				{ mat = Enum.Material.Pebble, col = Color3.fromRGB(180,170,60), w = 8 },
+			}},
+			{ name = "Volcanic", tiles = {
+				{ mat = Enum.Material.Ground, col = Color3.fromRGB(55,45,35), w = 12 },
+				{ mat = Enum.Material.Basalt, col = Color3.fromRGB(50,45,40), w = 12 },
+				{ mat = Enum.Material.Pebble, col = Color3.fromRGB(180,170,60), w = 20 },
+				{ mat = Enum.Material.Mud, col = Color3.fromRGB(255,123,66), w = 44 },
+				{ mat = Enum.Material.Ice, col = Color3.fromRGB(3,3,3), w = 12 },
+			}},
+			{ name = "MagmaGrounds", tiles = {
+				{ mat = Enum.Material.Basalt, col = Color3.fromRGB(50,45,40), w = 48 },
+				{ mat = Enum.Material.Mud, col = Color3.fromRGB(255,123,66), w = 52 },
+			}},
+			{ name = "GrassyFarm", tiles = {
+				{ mat = Enum.Material.Ground, col = Color3.fromRGB(100,80,55), w = 20 },
+				{ mat = Enum.Material.Grass, col = Color3.fromRGB(4,255,0), w = 32 },
+				{ mat = Enum.Material.Mud, col = Color3.fromRGB(0,255,225), w = 24 },
+				{ mat = Enum.Material.Mud, col = Color3.fromRGB(164,100,10), w = 24 },
+			}},
+			{ name = "Grassy Forrest", tiles = {
+				{ mat = Enum.Material.LeafyGrass, col = Color3.fromRGB(50,100,45), w = 36 },
+				{ mat = Enum.Material.Grass, col = Color3.fromRGB(4,255,0), w = 40 },
+				{ mat = Enum.Material.Ground, col = Color3.fromRGB(49,34,12), w = 24 },
+			}},
+			{ name = "IceyArea", tiles = {
+				{ mat = Enum.Material.Glacier, col = Color3.fromRGB(230,240,250), w = 28 },
+				{ mat = Enum.Material.Glacier, col = Color3.fromRGB(160,200,240), w = 32 },
+				{ mat = Enum.Material.Rock, col = Color3.fromRGB(120,115,110), w = 28 },
+				{ mat = Enum.Material.Mud, col = Color3.fromRGB(0,255,225), w = 12 },
+			}},
+		}
+
+		local function rollTile(preset)
+			local totalW = 0
+			for _, t in ipairs(preset.tiles) do totalW += t.w end
+			local r = math.random(1, totalW)
+			local cursor = 0
+			for _, t in ipairs(preset.tiles) do
+				cursor += t.w
+				if r <= cursor then return t end
+			end
+			return preset.tiles[1]
+		end
+
+		-- Collect tile parts
+		local tileParts = {}
+		if sectionModel then
+			for _, child in ipairs(sectionModel:GetChildren()) do
+				if child:IsA("BasePart") and child.Name:match("^T%d%d$") then
+					table.insert(tileParts, child)
+				end
+			end
+		end
+
+		-- Obstacle preview data per biome
+		local biomeObstacles = {
+			["Dusty Desert"] = { rate = 0.04, types = {"Obstacle_Rock"} },
+			["Decent Desert"] = { rate = 0.20, types = {"Obstacle_Rock", "Obstacle_MudPit"} },
+			["Clay Desert"] = { rate = 0.32, types = {"Obstacle_MudPit", "Obstacle_Pyramid"} },
+			["Frostlands"] = { rate = 0.28, types = {"Obstacle_ObsidianPillar"} },
+			["Volcanic"] = { rate = 0.36, types = {"Obstacle_Rock", "Obstacle_LavaRock", "Obstacle_ObsidianPillar"} },
+			["MagmaGrounds"] = { rate = 0, types = {} },
+			["GrassyFarm"] = { rate = 0.44, types = {"Obstacle_Bush", "Obstacle_Water"} },
+			["Grassy Forrest"] = { rate = 0.40, types = {"Obstacle_Tree"} },
+			["IceyArea"] = { rate = 0.40, types = {"Obstacle_FrozenStump", "Obstacle_Water"} },
+		}
+		local assetsFolder = ReplicatedStorage:FindFirstChild("Assets")
+		local previewObstacles = {} -- track spawned preview obstacles to clean up
+
+		local function clearPreviewObstacles()
+			for _, obj in ipairs(previewObstacles) do
+				if obj.Parent then obj:Destroy() end
+			end
+			previewObstacles = {}
+		end
+
+		-- Track tiles hidden by water preview so we can restore them
+		local hiddenTiles = {}
+
+		local function spawnPreviewObstacles(preset)
+			clearPreviewObstacles()
+			-- Restore any tiles hidden by water preview
+			for _, t in ipairs(hiddenTiles) do
+				if t and t.Parent then t.Transparency = 0 end
+			end
+			hiddenTiles = {}
+
+			local obsData = biomeObstacles[preset.name]
+			if not obsData or obsData.rate <= 0 or #obsData.types == 0 or not assetsFolder then return end
+
+			for _, part in ipairs(tileParts) do
+				if math.random() < obsData.rate then
+					local templateName = obsData.types[math.random(1, #obsData.types)]
+					local isWater = templateName == "Obstacle_Water"
+					local template = assetsFolder:FindFirstChild(templateName)
+					if template then
+						if isWater then
+							-- Water: hide tile, place water block at tile level
+							part.Transparency = 1
+							table.insert(hiddenTiles, part)
+							local waterParts = {}
+							if template:IsA("Folder") or template:IsA("Model") then
+								for _, child in ipairs(template:GetChildren()) do
+									if child:IsA("BasePart") then table.insert(waterParts, child) end
+								end
+							elseif template:IsA("BasePart") then
+								table.insert(waterParts, template)
+							end
+							for _, wp in ipairs(waterParts) do
+								local wc = wp:Clone()
+								wc.Name = "PreviewObstacle"
+								wc.Anchored = true
+								wc.CanCollide = false
+								wc.CanQuery = false
+								wc.Size = Vector3.new(part.Size.X, wp.Size.Y, part.Size.Z)
+								wc.Position = part.Position + Vector3.new(0, (wp.Size.Y - part.Size.Y) / 2, 0)
+								wc.Parent = sectionModel
+								table.insert(previewObstacles, wc)
+							end
+						else
+							-- Normal obstacles: spawn on top
+							local clone = template:Clone()
+							clone.Name = "PreviewObstacle"
+							if clone:IsA("BasePart") then
+								clone.Anchored = true
+								clone.CanCollide = false
+								clone.CanQuery = false
+								clone.Position = part.Position + Vector3.new(0, clone.Size.Y / 2 + part.Size.Y / 2, 0)
+							elseif clone:IsA("Model") then
+								clone:PivotTo(CFrame.new(part.Position + Vector3.new(0, 2, 0)))
+							end
+							clone.Parent = sectionModel
+							table.insert(previewObstacles, clone)
+						end
+					end
+				end
+			end
+		end
+
+		-- Flash through biomes, each time randomizing tiles + obstacles
+		local intervals = { 0.12, 0.12, 0.15, 0.18, 0.22, 0.3, 0.4, 0.6 }
+		for i, interval in ipairs(intervals) do
+			local preset = biomePresets[((i - 1) % #biomePresets) + 1]
+			label.Text = preset.name .. "?"
+			frame.BackgroundColor3 = preset.tiles[1].col
+
+			-- Apply random tiles from this biome's set to each cell
+			for _, part in ipairs(tileParts) do
+				local t = rollTile(preset)
+				part.Material = t.mat
+				part.Color = t.col
+			end
+
+			-- Spawn preview obstacles for this biome
+			spawnPreviewObstacles(preset)
+
+			task.wait(interval)
+		end
+
+		-- Clean up preview obstacles before final reveal
+		clearPreviewObstacles()
+		for _, t in ipairs(hiddenTiles) do
+			if t and t.Parent then t.Transparency = 0 end
+		end
+		hiddenTiles = {}
+
+		-- Land on the final biome
+		label.Text = biomeName .. " Discovered!"
+		label.TextColor3 = Color3.fromRGB(255, 220, 100)
+		frame.BackgroundColor3 = Color3.fromRGB(20, 30, 45)
+
+		-- Wait for server to set revealed=true and push the final tile visuals
+		task.wait(3.5)
+		popup:Destroy()
+	end)
+end)
+
+-- Obstacle clear prompts: bind when they appear
+Workspace.DescendantAdded:Connect(function(descendant)
+	if descendant:IsA("ProximityPrompt") and descendant.Name == "ClearPrompt" then
+		descendant.Triggered:Connect(function(triggeringPlayer)
+			if triggeringPlayer ~= player then return end
+			local obstacle = descendant.Parent
+			while obstacle and obstacle.Parent do
+				if obstacle:GetAttribute("IsObstacle") then
+					local chunkId = obstacle:GetAttribute("ChunkId")
+					local tileKey = obstacle:GetAttribute("TileKey")
+					if chunkId and tileKey then
+						requestClearObstacle:FireServer({ chunkId = chunkId, tileKey = tileKey })
+					end
+					return
+				end
+				obstacle = obstacle.Parent
 			end
 		end)
 	end
