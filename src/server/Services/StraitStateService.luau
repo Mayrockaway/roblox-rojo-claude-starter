@@ -65,6 +65,7 @@ function StraitStateService:Start()
 	end)
 
 	self:_broadcast()
+	self:_wireDevStraitUi()
 end
 
 function StraitStateService:Stop()
@@ -249,6 +250,55 @@ end
 function StraitStateService:_broadcast()
 	local event = self._remoteService:GetEvent(RemoteNames.GlobalStateUpdate)
 	event:FireAllClients(self:GetSnapshot())
+end
+
+-- UI "Open" / "Restricted" / "Closed" → engine state (Restricted → Dangerous as the mid-tier representative).
+function StraitStateService:_bracketLabelToEngineState(bracket: string): string?
+	local b = string.lower(string.gsub(bracket, "%s+", ""))
+	if b == "open" then
+		return "Open"
+	elseif b == "closed" then
+		return "Closed"
+	elseif b == "restricted" then
+		return "Dangerous"
+	end
+	return nil
+end
+
+function StraitStateService:_applyDevEngineState(engineState: string)
+	if StraitConfig.States[engineState] == nil then
+		return
+	end
+	self._forcedClosedUntil = nil
+	self._state = engineState
+	self._version += 1
+	self._nextRollAt = workspace:GetServerTimeNow() + Constants.StraitDevStateHoldSeconds
+	self:_publishState()
+	self:_broadcast()
+	if RunService:IsStudio() or Constants.StraitDevUiEnabled then
+		print(string.format("[StraitStateService] Dev UI → engine state %s (auto-roll delayed %ds)", engineState, Constants.StraitDevStateHoldSeconds))
+	end
+end
+
+function StraitStateService:_wireDevStraitUi()
+	local remote = self._remoteService:GetEvent(RemoteNames.RequestDevSetStraitBracket)
+	table.insert(self._connections, remote.OnServerEvent:Connect(function(_player: Player, payload)
+		if not (RunService:IsStudio() or Constants.StraitDevUiEnabled) then
+			return
+		end
+		if typeof(payload) ~= "table" then
+			return
+		end
+		local bracket = payload.bracket
+		if typeof(bracket) ~= "string" then
+			return
+		end
+		local engineState = self:_bracketLabelToEngineState(bracket)
+		if not engineState then
+			return
+		end
+		self:_applyDevEngineState(engineState)
+	end))
 end
 
 return StraitStateService

@@ -4,11 +4,15 @@ local HttpService = game:GetService("HttpService")
 local PhysicsService = game:GetService("PhysicsService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Constants = require(Shared:WaitForChild("Constants"))
 local BoatConfig = require(Shared:WaitForChild("Config"):WaitForChild("BoatConfig"))
 local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
+local StraitEventCatalog = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("Catalog"))
+local StraitEventConfig = require(Shared:WaitForChild("Config"):WaitForChild("StraitEventConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local OilShipmentService = {}
@@ -65,11 +69,12 @@ local function setInstanceCFrame(instance: Instance, cf: CFrame)
 	end
 end
 
-function OilShipmentService:Init(remoteService, oilStateService, plotService, warehouseService)
+function OilShipmentService:Init(remoteService, oilStateService, plotService, warehouseService, straitStateService)
 	self._remoteService = remoteService
 	self._oilStateService = oilStateService
 	self._plotService = plotService
 	self._warehouseService = warehouseService
+	self._straitStateService = straitStateService
 	self._connections = {}
 	self._lanes = {}
 
@@ -326,7 +331,7 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		travelSeconds = boatDef.travelSeconds,
 		hullMax = boatDef.hullHp,
 		hullCurrent = boatDef.hullHp,
-		eventRisk = boatDef.eventRisk,
+		eventRisk = boatDef.eventRisk, -- reserved for future upgrade-based mitigation
 		priceMultiplier = BoatConfig.DefaultPriceMultiplier,
 	}
 
@@ -406,9 +411,7 @@ function OilShipmentService:_runShipment(shipment)
 
 	-- Voyage: follow the polyline path over travelSeconds
 	local voyageTime = shipment.travelSeconds
-	local eventTimes = self:_buildEventTimes(shipment.eventRisk, voyageTime)
-	local startTime = workspace:GetServerTimeNow()
-	local eventCursor = 1
+	local voyageClock = { startTime = workspace:GetServerTimeNow() }
 
 	-- Pre-compute cumulative segment distances for the polyline
 	local segDists = { 0 }
@@ -416,10 +419,38 @@ function OilShipmentService:_runShipment(shipment)
 		segDists[i] = segDists[i - 1] + (path[i] - path[i - 1]).Magnitude
 	end
 
-	local lastPos = path[1]
+	local triggerSlots = self:_buildStraitTriggerSlots(path, segDists)
+	local firedAtLaneWaypoint: { [number]: boolean } = {}
+	local prevTargetDist = 0.0
+
+	if self:_straitDebugLogEnabled() then
+		if #triggerSlots == 0 then
+			warn(
+				string.format(
+					"[StraitShipment DEBUG] shipment %s: NO strait trigger slots (need lane waypoints 3,6,9 on path). Path has %d vertices.",
+					shipment.shipmentId,
+					#path
+				)
+			)
+		else
+			local parts = {}
+			for _, s in ipairs(triggerSlots) do
+				table.insert(parts, string.format("laneWP=%d@dist=%.1f", s.laneWaypointIndex, s.distance))
+			end
+			print(
+				string.format(
+					"[StraitShipment DEBUG] shipment %s userId=%d | strait triggers: %s | engineState=%s",
+					shipment.shipmentId,
+					ownerUserId,
+					table.concat(parts, ", "),
+					self:_getStraitEngineState()
+				)
+			)
+		end
+	end
 
 	while true do
-		local elapsed = workspace:GetServerTimeNow() - startTime
+		local elapsed = workspace:GetServerTimeNow() - voyageClock.startTime
 		local alpha = clamp01(elapsed / voyageTime)
 
 		-- Map alpha (0..1) to a position along the polyline
@@ -443,22 +474,47 @@ function OilShipmentService:_runShipment(shipment)
 
 		self:_updateShipPosition(shipment.shipmentId, boat, raisedPos, flatDir)
 
-		lastPos = currentPos
+		local voyageAborted = false
+		for _, slot in ipairs(triggerSlots) do
+			local laneN = slot.laneWaypointIndex
+			if not firedAtLaneWaypoint[laneN] and prevTargetDist < slot.distance and targetDist >= slot.distance then
+				firedAtLaneWaypoint[laneN] = true
+				if self:_straitDebugLogEnabled() then
+					print(
+						string.format(
+							"[StraitShipment DEBUG] ── CROSSING lane waypoint %d (path vertex ~%d) shipment=%s distAlongPath=%.1f engineState=%s ──",
+							laneN,
+							1 + laneN,
+							shipment.shipmentId,
+							slot.distance,
+							self:_getStraitEngineState()
+						)
+					)
+				end
+				local lost = self:_handleStraitWaypointTrigger(
+					shipment,
+					ownerUserId,
+					laneN,
+					currentPos,
+					voyageClock
+				)
+				if lost then
+					voyageAborted = true
+					break
+				end
+			end
+		end
 
-		-- Fire damage events at scheduled times
-		if eventCursor <= #eventTimes and elapsed >= eventTimes[eventCursor] then
-			local damagePercent = self:_rollDamagePercent(shipment.eventRisk)
-			local damage = floorPositive(shipment.hullMax * damagePercent)
-			shipment.hullCurrent = math.max(0, shipment.hullCurrent - damage)
+		prevTargetDist = targetDist
 
-			self:_emitShipmentEvent("ShipmentEvent", {
-				ownerUserId = ownerUserId,
-				shipmentId = shipment.shipmentId,
-				damage = damage,
-				hullCurrent = shipment.hullCurrent,
-				hullMax = shipment.hullMax,
-			})
-			eventCursor += 1
+		if voyageAborted then
+			if boardConnection then
+				boardConnection:Disconnect()
+			end
+			self:_unseatPlayersFromBoat(boat)
+			self:_cleanupShip(shipment.shipmentId, boat)
+			self:_finishShipmentWithoutPayout(shipment, "Strait event: total loss")
+			return
 		end
 
 		if alpha >= 1 then
@@ -740,29 +796,187 @@ function OilShipmentService:_finishShipmentWithoutPayout(shipment, reason: strin
 	})
 end
 
-function OilShipmentService:_buildEventTimes(eventRisk: number, travelSeconds: number)
-	local times = {}
-	local roll = math.random()
-	local eventCount = 0
-	if roll < eventRisk * 0.25 then
-		eventCount = 2
-	elseif roll < eventRisk then
-		eventCount = 1
+function OilShipmentService:_getStraitEngineState(): string
+	if self._straitStateService and self._straitStateService.GetCurrentState then
+		return self._straitStateService:GetCurrentState()
 	end
-
-	for _ = 1, eventCount do
-		table.insert(times, math.random() * (travelSeconds * 0.75) + (travelSeconds * 0.15))
-	end
-	table.sort(times, function(a, b)
-		return a < b
-	end)
-	return times
+	return "Open"
 end
 
-function OilShipmentService:_rollDamagePercent(eventRisk: number): number
-	local minDamage = 0.08 + (eventRisk * 0.08)
-	local maxDamage = 0.22 + (eventRisk * 0.20)
-	return math.random() * (maxDamage - minDamage) + minDamage
+-- Server Output: strait waypoint diagnostics. Studio prints by default (Constants.StraitEventsDebug.VerboseStraitWaypointLogsInStudio).
+function OilShipmentService:_straitDebugLogEnabled(): boolean
+	local d = Constants.StraitEventsDebug
+	if d.LogWaypointTriggers then
+		return true
+	end
+	if RunService:IsStudio() and d.VerboseStraitWaypointLogsInStudio ~= false then
+		return true
+	end
+	return false
+end
+
+function OilShipmentService:_buildStraitTriggerSlots(path: { Vector3 }, segDists: { number })
+	local slots = {}
+	for _, laneN in ipairs(StraitEventConfig.LaneWaypointTriggers) do
+		local pathIndex = 1 + laneN
+		if pathIndex <= #path and pathIndex >= 2 then
+			table.insert(slots, {
+				laneWaypointIndex = laneN,
+				pathIndex = pathIndex,
+				distance = segDists[pathIndex],
+			})
+		end
+	end
+	table.sort(slots, function(a, b)
+		return a.distance < b.distance
+	end)
+	return slots
+end
+
+-- Returns true if shipment is a total loss (caller must cleanup boat and exit _runShipment).
+function OilShipmentService:_handleStraitWaypointTrigger(
+	shipment,
+	ownerUserId: number,
+	laneWaypointIndex: number,
+	worldPosition: Vector3,
+	voyageClock: { startTime: number }
+): boolean
+	local dbg = Constants.StraitEventsDebug
+	local log = self:_straitDebugLogEnabled()
+	local engineState = self:_getStraitEngineState()
+	local bracketFromEngine = StraitEventConfig.PublicBracketFromEngineState(engineState)
+	local bracket = bracketFromEngine
+	local bracketNote = ""
+	if dbg.ForceBracket then
+		bracket = dbg.ForceBracket
+		bracketNote = string.format("  [FORCE] event bracket overridden → %s (engine maps to %s)", tostring(dbg.ForceBracket), bracketFromEngine)
+	end
+
+	local occurrenceChance = StraitEventConfig.GetOccurrenceChance(bracket)
+	local rng = Random.new()
+	local rollOcc = rng:NextNumber()
+	local occurrenceHit = dbg.ForceOccurrenceAtWaypoint or rollOcc < occurrenceChance
+
+	if log then
+		print(
+			string.format(
+				"  [StraitShipment DEBUG] shipment=%s laneWP=%d\n    strait ENGINE state: %s\n    event BRACKET (for odds/severity): %s (from engine would be: %s)%s\n    occurrence: P(hit)=%.0f%%  roll=%.4f  forceAllCrossings=%s  → %s",
+				shipment.shipmentId,
+				laneWaypointIndex,
+				engineState,
+				bracket,
+				bracketFromEngine,
+				bracketNote == "" and "" or "\n    " .. bracketNote,
+				occurrenceChance * 100,
+				rollOcc,
+				tostring(dbg.ForceOccurrenceAtWaypoint),
+				occurrenceHit and "HIT (will roll severity)" or "MISS (no strait event this waypoint)"
+			)
+		)
+	end
+
+	if not occurrenceHit then
+		return false
+	end
+
+	local severity = StraitEventConfig.RollSeverity(bracket, rng)
+	local def = StraitEventCatalog.PickRandom(severity, rng)
+	if not def then
+		if log then
+			warn(
+				string.format(
+					"  [StraitShipment DEBUG] laneWP=%d: occurrence HIT but catalog empty for severity=%s",
+					laneWaypointIndex,
+					severity
+				)
+			)
+		end
+		return false
+	end
+
+	if log then
+		print(
+			string.format(
+				"  [StraitShipment DEBUG] ROLLED severity=%s → catalog pick: id=%s  displayName=%q  totalLoss=%s  hullFrac=%s  priceMult×=%s  skipPause=%s",
+				severity,
+				def.id,
+				def.displayName,
+				tostring(def.totalLoss),
+				def.hullDamageFraction and string.format("%.3f", def.hullDamageFraction) or "—",
+				def.priceMultiplierFactor and string.format("%.3f", def.priceMultiplierFactor) or "—",
+				tostring(def.skipWaypointPause == true)
+			)
+		)
+	end
+
+	if def.totalLoss then
+		self:_emitShipmentEvent("StraitWaypointEvent", {
+			ownerUserId = ownerUserId,
+			shipmentId = shipment.shipmentId,
+			eventId = def.id,
+			displayName = def.displayName,
+			severity = severity,
+			laneWaypointIndex = laneWaypointIndex,
+			totalLoss = true,
+			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+		})
+		if log then
+			print(
+				string.format(
+					"  [StraitShipment DEBUG] OUTCOME: TOTAL LOSS (engine=%s bracket=%s event=%s) — shipment ends here.",
+					engineState,
+					bracket,
+					def.id
+				)
+			)
+		end
+		return true
+	end
+
+	if def.hullDamageFraction and def.hullDamageFraction > 0 then
+		local damage = floorPositive(shipment.hullMax * def.hullDamageFraction)
+		shipment.hullCurrent = math.max(0, shipment.hullCurrent - damage)
+	end
+
+	if def.priceMultiplierFactor and def.priceMultiplierFactor > 0 then
+		shipment.priceMultiplier *= def.priceMultiplierFactor
+	end
+
+	local pauseSeconds = 0
+	if not def.skipWaypointPause then
+		pauseSeconds = def.pauseSeconds or StraitEventConfig.DefaultWaypointPauseSeconds
+		task.wait(pauseSeconds)
+		voyageClock.startTime += pauseSeconds
+	end
+
+	self:_emitShipmentEvent("StraitWaypointEvent", {
+		ownerUserId = ownerUserId,
+		shipmentId = shipment.shipmentId,
+		eventId = def.id,
+		displayName = def.displayName,
+		severity = severity,
+		laneWaypointIndex = laneWaypointIndex,
+		totalLoss = false,
+		hullCurrent = shipment.hullCurrent,
+		hullMax = shipment.hullMax,
+		priceMultiplier = shipment.priceMultiplier,
+		pauseSeconds = pauseSeconds,
+		worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+	})
+	if log then
+		print(
+			string.format(
+				"  [StraitShipment DEBUG] OUTCOME: event applied (engine=%s bracket=%s)  hull=%d/%d  priceMultiplier=%.4f  pause=%.1fs  fired StraitWaypointEvent to clients",
+				engineState,
+				bracket,
+				shipment.hullCurrent,
+				shipment.hullMax,
+				shipment.priceMultiplier,
+				pauseSeconds
+			)
+		)
+	end
+	return false
 end
 
 function OilShipmentService:_spawnBoat(plot: Model): Instance

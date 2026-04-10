@@ -11,6 +11,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 local mouse = player:GetMouse()
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Constants = require(Shared:WaitForChild("Constants"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local remotesFolder = Shared:FindFirstChild("Remotes")
@@ -38,6 +39,8 @@ local requestDispatchShipment = remotesFolder:WaitForChild(RemoteNames.RequestDi
 local oilStateUpdate = remotesFolder:WaitForChild(RemoteNames.OilStateUpdate) :: RemoteEvent
 local oilActionResult = remotesFolder:WaitForChild(RemoteNames.OilActionResult) :: RemoteEvent
 local shipmentVisualEvent = remotesFolder:WaitForChild(RemoteNames.ShipmentVisualEvent) :: RemoteEvent
+local requestDevSetStraitBracket = remotesFolder:WaitForChild(RemoteNames.RequestDevSetStraitBracket) :: RemoteEvent
+local globalStateUpdate = remotesFolder:WaitForChild(RemoteNames.GlobalStateUpdate) :: RemoteEvent
 
 local TOOL_DRILL = "Drill"
 local TOOL_PIPE = "Pipe"
@@ -909,6 +912,61 @@ local function buildUi()
 	sellBtn.MouseButton1Click:Connect(function()
 		requestSellAllWarehouse:FireServer()
 	end)
+
+	-- Strait dev: Open / Restricted / Closed → server maps to engine states (Restricted → Dangerous).
+	if RunService:IsStudio() or Constants.StraitDevUiEnabled then
+		local straitDev = Instance.new("Frame")
+		straitDev.Name = "StraitDevPanel"
+		straitDev.Size = UDim2.fromOffset(172, 124)
+		straitDev.Position = UDim2.new(1, -188, 0, 90)
+		straitDev.BackgroundColor3 = Color3.fromRGB(28, 22, 40)
+		straitDev.BackgroundTransparency = 0.1
+		straitDev.Parent = screenGui
+		local sdCorner = Instance.new("UICorner")
+		sdCorner.CornerRadius = UDim.new(0, 8)
+		sdCorner.Parent = straitDev
+
+		createLabel(straitDev, "Strait (dev)", UDim2.fromOffset(156, 16), UDim2.fromOffset(8, 6), 12)
+		ui.straitDevEngineLabel = createLabel(straitDev, "Engine: —", UDim2.fromOffset(156, 14), UDim2.fromOffset(8, 22), 10)
+		ui.straitDevEngineLabel.TextColor3 = Color3.fromRGB(200, 190, 220)
+
+		local function pushBracket(bracket: string)
+			requestDevSetStraitBracket:FireServer({ bracket = bracket })
+		end
+
+		local y0 = 40
+		local row = 30
+		local openBtn = createButton(straitDev, "Open", UDim2.fromOffset(156, 26), UDim2.fromOffset(8, y0))
+		openBtn.BackgroundColor3 = Color3.fromRGB(50, 110, 70)
+		openBtn.TextSize = 12
+		openBtn.MouseButton1Click:Connect(function()
+			pushBracket("Open")
+		end)
+
+		local resBtn = createButton(straitDev, "Restricted", UDim2.fromOffset(156, 26), UDim2.fromOffset(8, y0 + row))
+		resBtn.BackgroundColor3 = Color3.fromRGB(120, 90, 40)
+		resBtn.TextSize = 12
+		resBtn.MouseButton1Click:Connect(function()
+			pushBracket("Restricted")
+		end)
+
+		local closedBtn = createButton(straitDev, "Closed", UDim2.fromOffset(156, 26), UDim2.fromOffset(8, y0 + row * 2))
+		closedBtn.BackgroundColor3 = Color3.fromRGB(110, 40, 45)
+		closedBtn.TextSize = 12
+		closedBtn.MouseButton1Click:Connect(function()
+			pushBracket("Closed")
+		end)
+
+		globalStateUpdate.OnClientEvent:Connect(function(snapshot)
+			if typeof(snapshot) ~= "table" then
+				return
+			end
+			local st = snapshot.state
+			if typeof(st) == "string" and ui.straitDevEngineLabel then
+				ui.straitDevEngineLabel.Text = string.format("Engine: %s", st)
+			end
+		end)
+	end
 end
 
 local function rebuildBoatButtons()
@@ -1121,6 +1179,26 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 	if typeof(data) ~= "table" then
 		return
 	end
+
+	if kind == "StraitWaypointEvent" then
+		local name = tostring(data.displayName or data.eventId or "Strait event")
+		local sev = tostring(data.severity or "?")
+		local isOwner = data.ownerUserId == player.UserId
+		if data.totalLoss then
+			setStatus(
+				isOwner and string.format("STRAIT: %s (%s) — shipment lost", name, sev)
+					or string.format("Strait: another vessel lost cargo (%s)", sev),
+				false
+			)
+		else
+			setStatus(
+				isOwner and string.format("STRAIT: %s (%s)", name, sev) or string.format("Strait: event on another shipment (%s)", sev),
+				true
+			)
+		end
+		return
+	end
+
 	if data.ownerUserId ~= player.UserId then
 		return
 	end

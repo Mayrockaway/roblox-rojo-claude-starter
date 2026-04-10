@@ -34,6 +34,7 @@ local RemoteNames = {
 	RequestDispatchShipment = "RequestDispatchShipment",
 	OilStateUpdate = "OilStateUpdate",
 	OilActionResult = "OilActionResult",
+	RequestDevSetStraitBracket = "RequestDevSetStraitBracket",
 }
 
 return RemoteNames
