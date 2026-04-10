@@ -9,6 +9,7 @@ local RemoteService = {}
 
 local remoteFunctionNames = {
 	[RemoteNames.RequestInitialState] = true,
+	[RemoteNames.RequestOilSnapshot] = true,
 }
 
 function RemoteService:Init()

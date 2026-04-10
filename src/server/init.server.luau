@@ -1,84 +1,64 @@
 --!strict
 
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
-print("[OilEmpire] SERVER_BOOT_V2")
+local legacyPlotScript = ServerScriptService:FindFirstChild("PlotService")
+if legacyPlotScript and legacyPlotScript:IsA("Script") then
+	legacyPlotScript:Destroy()
+end
 
-local sharedFolder = ReplicatedStorage:WaitForChild("Shared")
-if sharedFolder:FindFirstChild("Remotes") == nil then
-	local remotes = Instance.new("Folder")
-	remotes.Name = "Remotes"
-	remotes.Parent = sharedFolder
+for _, child in ipairs(ServerScriptService:GetChildren()) do
+	if child:IsA("Script") and child ~= script then
+		warn(string.format("[Server] Extra Script in ServerScriptService: %s (can conflict with Rojo services)", child.Name))
+	end
 end
 
 local serviceFolder = script:WaitForChild("Services")
-local testsFolder = script:WaitForChild("Tests")
 
 local RemoteService = require(serviceFolder:WaitForChild("RemoteService"))
-local RateLimitService = require(serviceFolder:WaitForChild("RateLimitService"))
-local IdempotencyService = require(serviceFolder:WaitForChild("IdempotencyService"))
-local TelemetryService = require(serviceFolder:WaitForChild("TelemetryService"))
-local PersistenceService = require(serviceFolder:WaitForChild("PersistenceService"))
-local VisualService = require(serviceFolder:WaitForChild("VisualService"))
-local StraitStateService = require(serviceFolder:WaitForChild("StraitStateService"))
-local PlayerStateService = require(serviceFolder:WaitForChild("PlayerStateService"))
-local UpgradeService = require(serviceFolder:WaitForChild("UpgradeService"))
-local ShipmentService = require(serviceFolder:WaitForChild("ShipmentService"))
-local AdminService = require(serviceFolder:WaitForChild("AdminService"))
-local DeterministicShipmentEngineSelfTest = require(testsFolder:WaitForChild("DeterministicShipmentEngineSelfTest"))
+local PlotService = require(serviceFolder:WaitForChild("PlotService"))
+local OilStateService = require(serviceFolder:WaitForChild("OilStateService"))
+local PlotResourceService = require(serviceFolder:WaitForChild("PlotResourceService"))
+local OilProductionService = require(serviceFolder:WaitForChild("OilProductionService"))
+local ToolService = require(serviceFolder:WaitForChild("ToolService"))
+local OilVisualService = require(serviceFolder:WaitForChild("OilVisualService"))
+local OilShipmentService = require(serviceFolder:WaitForChild("OilShipmentService"))
+local ChunkOwnershipService = require(serviceFolder:WaitForChild("ChunkOwnershipService"))
+local PipeNetworkService = require(serviceFolder:WaitForChild("PipeNetworkService"))
 
 RemoteService:Init()
-RateLimitService:Init()
-IdempotencyService:Init()
-TelemetryService:Init()
-PersistenceService:Init(TelemetryService)
-VisualService:Init()
-StraitStateService:Init(RemoteService, TelemetryService)
-PlayerStateService:Init(RemoteService, PersistenceService, TelemetryService)
-UpgradeService:Init(RemoteService, PlayerStateService, RateLimitService, TelemetryService)
-ShipmentService:Init(
-	RemoteService,
-	StraitStateService,
-	PlayerStateService,
-	UpgradeService,
-	RateLimitService,
-	IdempotencyService,
-	TelemetryService,
-	VisualService
-)
-AdminService:Init(RemoteService, StraitStateService, RateLimitService, TelemetryService)
-
-local selfTestOk, selfTestErr = pcall(function()
-	DeterministicShipmentEngineSelfTest.Run()
-end)
-if not selfTestOk then
-	warn("[Server] Deterministic shipment self-test failed:", selfTestErr)
-end
+PlotService:Init()
+OilStateService:Init(RemoteService, PlotService)
+OilVisualService:Init(OilStateService, PlotService)
+OilShipmentService:Init(RemoteService, OilStateService, PlotService)
+ChunkOwnershipService:Init(PlotService, OilStateService)
+PipeNetworkService:Init()
+PlotResourceService:Init(RemoteService, OilStateService, PlotService, OilVisualService, OilShipmentService, ChunkOwnershipService)
+OilProductionService:Init(OilStateService, PipeNetworkService)
+ToolService:Init()
 
 RemoteService:Start()
-RateLimitService:Start()
-IdempotencyService:Start()
-TelemetryService:Start()
-PersistenceService:Start()
-VisualService:Start()
-StraitStateService:Start()
-PlayerStateService:Start()
-UpgradeService:Start()
-ShipmentService:Start()
-AdminService:Start()
+PlotService:Start()
+OilStateService:Start()
+OilVisualService:Start()
+OilShipmentService:Start()
+ChunkOwnershipService:Start()
+PipeNetworkService:Start()
+PlotResourceService:Start()
+OilProductionService:Start()
+ToolService:Start()
 
 game:BindToClose(function()
-	AdminService:Stop()
-	ShipmentService:Stop()
-	UpgradeService:Stop()
-	PlayerStateService:Stop()
-	StraitStateService:Stop()
-	VisualService:Stop()
-	PersistenceService:Stop()
-	TelemetryService:Stop()
-	IdempotencyService:Stop()
-	RateLimitService:Stop()
+	ToolService:Stop()
+	OilProductionService:Stop()
+	PlotResourceService:Stop()
+	PipeNetworkService:Stop()
+	ChunkOwnershipService:Stop()
+	OilShipmentService:Stop()
+	OilVisualService:Stop()
+	OilStateService:Stop()
+	PlotService:Stop()
 	RemoteService:Stop()
 end)
 
-print("[Server] Oil Empire MVP systems started")
+print("[Server] Oil mining mode active: chunked plot + free-placed drills")
