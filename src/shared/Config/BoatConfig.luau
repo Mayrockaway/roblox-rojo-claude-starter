@@ -9,7 +9,7 @@ local BoatConfig = {
 			dispatchFee = 150,
 			capacity = 8,
 			hullHp = 100,
-			travelSeconds = 14,
+			travelSeconds = 60,
 			eventRisk = 0.35,
 		},
 		Hauler = {
@@ -17,7 +17,7 @@ local BoatConfig = {
 			dispatchFee = 600,
 			capacity = 20,
 			hullHp = 160,
-			travelSeconds = 18,
+			travelSeconds = 75,
 			eventRisk = 0.28,
 		},
 		ArmoredTanker = {
@@ -25,7 +25,7 @@ local BoatConfig = {
 			dispatchFee = 1800,
 			capacity = 45,
 			hullHp = 240,
-			travelSeconds = 24,
+			travelSeconds = 90,
 			eventRisk = 0.22,
 		},
 	},

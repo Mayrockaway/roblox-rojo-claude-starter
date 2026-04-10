@@ -26,6 +26,8 @@ local requestBuyChunk = remotesFolder:WaitForChild(RemoteNames.RequestBuyChunk) 
 local requestPlacePipe = remotesFolder:WaitForChild(RemoteNames.RequestPlacePipe) :: RemoteEvent
 local requestRemovePipe = remotesFolder:WaitForChild(RemoteNames.RequestRemovePipe) :: RemoteEvent
 local requestPickupBarrel = remotesFolder:WaitForChild(RemoteNames.RequestPickupBarrel) :: RemoteEvent
+local requestTeleportToShip = remotesFolder:WaitForChild(RemoteNames.RequestTeleportToShip) :: RemoteEvent
+local requestTeleportHome = remotesFolder:WaitForChild(RemoteNames.RequestTeleportHome) :: RemoteEvent
 local requestDispatchShipment = remotesFolder:WaitForChild(RemoteNames.RequestDispatchShipment) :: RemoteEvent
 local oilStateUpdate = remotesFolder:WaitForChild(RemoteNames.OilStateUpdate) :: RemoteEvent
 local oilActionResult = remotesFolder:WaitForChild(RemoteNames.OilActionResult) :: RemoteEvent
@@ -790,6 +792,32 @@ local function buildUi()
 			boatTypeId = selectedBoatTypeId,
 			manifest = manifest,
 		})
+	end)
+
+	-- Teleport buttons (bottom-right of screen)
+	local teleportGui = Instance.new("Frame")
+	teleportGui.Name = "TeleportButtons"
+	teleportGui.Size = UDim2.fromOffset(160, 80)
+	teleportGui.Position = UDim2.new(1, -176, 1, -96)
+	teleportGui.BackgroundColor3 = Color3.fromRGB(17, 23, 33)
+	teleportGui.BackgroundTransparency = 0.15
+	teleportGui.Parent = screenGui
+	local teleportCorner = Instance.new("UICorner")
+	teleportCorner.CornerRadius = UDim.new(0, 8)
+	teleportCorner.Parent = teleportGui
+
+	local shipBtn = createButton(teleportGui, "Board Ship", UDim2.fromOffset(144, 30), UDim2.fromOffset(8, 6))
+	shipBtn.BackgroundColor3 = Color3.fromRGB(45, 90, 120)
+	shipBtn.TextSize = 13
+	shipBtn.MouseButton1Click:Connect(function()
+		requestTeleportToShip:FireServer()
+	end)
+
+	local homeBtn = createButton(teleportGui, "Teleport Home", UDim2.fromOffset(144, 30), UDim2.fromOffset(8, 42))
+	homeBtn.BackgroundColor3 = Color3.fromRGB(90, 55, 40)
+	homeBtn.TextSize = 13
+	homeBtn.MouseButton1Click:Connect(function()
+		requestTeleportHome:FireServer()
 	end)
 end
 
