@@ -2,8 +2,8 @@
 -- Cosmetic world feedback for StraitWaypointEvent (SPEC §8.2). Server remains authoritative;
 -- all clients spawn local copies from the same replicated packet (start aligned when server fires before hold).
 --
--- Workflow: author templates under Workspace in Studio → move to ReplicatedStorage.Assets.StraitWaypointsFx.<eventId>/
--- → optional: add a dedicated handler in EVENT_FX below. No generic severity/event particle fallbacks.
+-- Workflow: author VFX under ReplicatedStorage.Assets.StraitWaypointsFx.<eventId>/ (clone at runtime; do not Instance.new art).
+-- Optional: EVENT_FX[id] for attach logic (e.g. weld to boat). No generic severity particle fallbacks.
 
 local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -154,30 +154,6 @@ end
 local ROUTINE_PAPERWORK_ID = "RoutinePaperwork"
 local ROUTINE_PAPERWORK_DECK_OFFSET = CFrame.new(0, 8, 0)
 
---- Match FXDev / Studio-tuned paper burst (Rojo only syncs Texture + Rate; rest applied here).
-local function applyRoutinePaperworkEmitterVisuals(emitter: ParticleEmitter)
-	emitter.Rate = 0
-	emitter.Enabled = true
-	emitter.Texture = "rbxassetid://3440288322"
-	emitter.Acceleration = Vector3.new(0, -38, 0)
-	emitter.Drag = 1.85
-	emitter.EmissionDirection = Enum.NormalId.Top
-	emitter.Lifetime = NumberRange.new(0.85, 1.9)
-	emitter.LightEmission = 0
-	emitter.Orientation = Enum.ParticleOrientation.VelocityParallel
-	emitter.RotSpeed = NumberRange.new(-220, 220)
-	emitter.Rotation = NumberRange.new(0, 360)
-	emitter.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.35),
-		NumberSequenceKeypoint.new(0.45, 0.7),
-		NumberSequenceKeypoint.new(1, 0.2),
-	})
-	emitter.Speed = NumberRange.new(10, 22)
-	emitter.SpreadAngle = Vector2.new(42, 42)
-	emitter.Transparency = NumberSequence.new(0)
-	emitter.Color = ColorSequence.new(Color3.new(1, 1, 1))
-end
-
 local function findActiveShipmentBoatByShipmentId(shipmentId: string): Model?
 	if shipmentId == "" then
 		return nil
@@ -211,7 +187,7 @@ local function getBoatAttachmentPart(boat: Model): BasePart?
 	return best
 end
 
---- ReplicatedStorage.Assets.StraitWaypointsFx.RoutinePaperwork.RoutinePaperworkAnchor (Part + ParticleEmitter + Sound template)
+--- Template lives in RS only: clone, then scale + parent/weld. Tune ParticleEmitter/Sound on the template in Studio (not in Luau).
 local function getRoutinePaperworkAnchorTemplate(): BasePart?
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	local fxRoot = assets and assets:FindFirstChild(STRAIT_FX_ASSETS_FOLDER)
@@ -249,14 +225,13 @@ local function playRoutinePaperworkFx(worldPos: Vector3, holdSeconds: number, da
 		warn("[StraitWaypointWorldFx] RoutinePaperworkAnchor has no ParticleEmitter")
 		return
 	end
-	if soundTmpl and soundTmpl:IsA("Sound") then
-		soundTmpl.Looped = false
-		soundTmpl.Playing = false
-	else
+	if not (soundTmpl and soundTmpl:IsA("Sound")) then
 		soundTmpl = nil
 	end
 
-	applyRoutinePaperworkEmitterVisuals(emitter)
+	-- Burst uses Rate=0 + Emit; keep template emitter off between bursts.
+	emitter.Rate = 0
+	emitter.Enabled = false
 	ParticleFxScale.ApplyToEmitter(emitter, fxScale)
 
 	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""

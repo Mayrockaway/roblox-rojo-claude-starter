@@ -16,35 +16,7 @@
           "$ignoreUnknownInstances": true,
           "RoutinePaperwork": {
             "$className": "Folder",
-            "$ignoreUnknownInstances": true,
-            "RoutinePaperworkAnchor": {
-              "$className": "Part",
-              "$properties": {
-                "Size": [0.2, 0.2, 0.2],
-                "Transparency": 1,
-                "Anchored": false,
-                "CanCollide": false,
-                "CanQuery": false,
-                "CanTouch": false,
-                "Massless": true
-              },
-              "ParticleEmitter": {
-                "$className": "ParticleEmitter",
-                "$properties": {
-                  "Rate": 0,
-                  "Enabled": true,
-                  "Texture": "rbxassetid://3440288322"
-                }
-              },
-              "RoutinePaperworkBurst": {
-                "$className": "Sound",
-                "$properties": {
-                  "SoundId": "rbxassetid://70425940510671",
-                  "Looped": false,
-                  "Volume": 1
-                }
-              }
-            }
+            "$ignoreUnknownInstances": true
           }
         }
       }
@@ -69,14 +41,7 @@
       "$ignoreUnknownInstances": true,
       "FXDev": {
         "$className": "Folder",
-        "$ignoreUnknownInstances": true,
-        "Part": {
-          "$className": "Part",
-          "$ignoreUnknownInstances": true,
-          "PaperBurstTest": {
-            "$path": "workspace/FXDev/Part/PaperBurstTest.server.luau"
-          }
-        }
+        "$ignoreUnknownInstances": true
       }
     }
   }
