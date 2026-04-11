@@ -196,16 +196,26 @@ end
 
 function OilShipmentService:_handleTeleportToShip(player: Player)
 	local character = player.Character
-	if not character then return end
+	if not character then
+		warn("[TeleportToShip] No character")
+		return
+	end
 
-	-- Find an active shipment boat for this player
 	local plot = self._plotService:GetOwnedPlot(player.UserId)
-	if not plot then return end
+	if not plot then
+		warn("[TeleportToShip] No plot for " .. player.Name)
+		return
+	end
 	local visuals = plot:FindFirstChild("OilVisuals")
-	if not visuals then return end
+	if not visuals then
+		warn("[TeleportToShip] No OilVisuals folder in plot")
+		return
+	end
 
+	local boatCount = 0
 	for _, child in ipairs(visuals:GetChildren()) do
 		if child.Name == "ActiveShipmentBoat" then
+			boatCount += 1
 			local seat = child:FindFirstChild("DeckSeat", true)
 			if seat and seat:IsA("Seat") then
 				character:PivotTo(seat.CFrame + Vector3.new(0, 3, 0))
@@ -213,10 +223,14 @@ function OilShipmentService:_handleTeleportToShip(player: Player)
 				if humanoid then
 					seat:Sit(humanoid)
 				end
+				print("[TeleportToShip] SUCCESS — teleported to boat")
 				return
+			else
+				warn("[TeleportToShip] Boat found but no DeckSeat inside it")
 			end
 		end
 	end
+	warn("[TeleportToShip] Found " .. boatCount .. " boats in OilVisuals, none had DeckSeat")
 end
 
 function OilShipmentService:_handleTeleportHome(player: Player)
@@ -1696,8 +1710,19 @@ function OilShipmentService:DebugDispatchPirate(player: Player)
 		dbg.ForcePirateRaid = prevForcePirate
 	end)
 
-	task.delay(2, function()
-		self:_handleTeleportToShip(player)
+	task.spawn(function()
+		for _ = 1, 20 do
+			task.wait(0.5)
+			self:_handleTeleportToShip(player)
+			-- Check if player is now seated (teleport worked)
+			local char = player.Character
+			if char then
+				local hum = char:FindFirstChildOfClass("Humanoid")
+				if hum and hum.SeatPart then
+					return
+				end
+			end
+		end
 	end)
 end
 
