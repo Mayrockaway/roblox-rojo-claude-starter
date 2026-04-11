@@ -94,6 +94,9 @@ local oilActionResult = remotesFolder:WaitForChild(RemoteNames.OilActionResult) 
 local shipmentVisualEvent = remotesFolder:WaitForChild(RemoteNames.ShipmentVisualEvent) :: RemoteEvent
 local requestDevSetStraitBracket = remotesFolder:WaitForChild(RemoteNames.RequestDevSetStraitBracket) :: RemoteEvent
 local globalStateUpdate = remotesFolder:WaitForChild(RemoteNames.GlobalStateUpdate) :: RemoteEvent
+local marketPriceUpdate = remotesFolder:WaitForChild(RemoteNames.MarketPriceUpdate) :: RemoteEvent
+local requestSellWarehouseType = remotesFolder:WaitForChild(RemoteNames.RequestSellWarehouseType) :: RemoteEvent
+local requestMarketSnapshot = remotesFolder:WaitForChild(RemoteNames.RequestMarketSnapshot) :: RemoteFunction
 
 local TOOL_DRILL = "Drill"
 local TOOL_PIPE = "Pipe"
@@ -959,12 +962,9 @@ local function buildUi()
 		requestUpgradeWarehouse:FireServer()
 	end)
 
-	local sellBtn = createButton(warehouseGui, "Sell All (Debug)", UDim2.fromOffset(184, 26), UDim2.fromOffset(8, 92))
-	sellBtn.BackgroundColor3 = Color3.fromRGB(130, 50, 50)
-	sellBtn.TextSize = 12
-	sellBtn.MouseButton1Click:Connect(function()
-		requestSellAllWarehouse:FireServer()
-	end)
+	ui.marketToggleBtn = createButton(warehouseGui, "Oil Market", UDim2.fromOffset(184, 26), UDim2.fromOffset(8, 92))
+	ui.marketToggleBtn.BackgroundColor3 = Color3.fromRGB(180, 150, 40)
+	ui.marketToggleBtn.TextSize = 12
 
 	-- Strait dev: Open / Restricted / Closed → server maps to engine states (Restricted → Dangerous).
 	if RunService:IsStudio() or Constants.StraitDevUiEnabled then
@@ -1603,6 +1603,467 @@ Workspace.DescendantAdded:Connect(function(descendant)
 			end
 		end)
 	end
+end)
+
+-- =================== OIL MARKET UI ===================
+
+local MARKET_OIL_TYPES = { "HeavyCrude", "StandardCrude", "LightSweet", "PremiumRefined" }
+local MARKET_DISPLAY_NAMES = {
+	HeavyCrude = "Heavy Crude",
+	StandardCrude = "Std Crude",
+	LightSweet = "Light Sweet",
+	PremiumRefined = "Premium",
+}
+local MARKET_TYPE_MULS = { HeavyCrude = 0.8, StandardCrude = 1.0, LightSweet = 1.4, PremiumRefined = 2.0 }
+local MARKET_TIER_COLORS = {
+	HeavyCrude = Color3.fromRGB(80, 60, 40),
+	StandardCrude = Color3.fromRGB(60, 70, 90),
+	LightSweet = Color3.fromRGB(70, 90, 50),
+	PremiumRefined = Color3.fromRGB(100, 60, 100),
+}
+
+local marketState = {
+	basePrice = 10,
+	prices = {},
+	trend = "stable",
+	straitState = "Open",
+	nextChangeAt = 0,
+	globalBaseMin = 8,
+	globalBaseMax = 80,
+	typeMultipliers = MARKET_TYPE_MULS,
+}
+
+local marketPanelVisible = false
+local marketRows = {}
+local confirmTimers = {}
+
+-- Compact indicator (always visible)
+local screenGui = playerGui:FindFirstChild("OilHud")
+
+local marketIndicator = Instance.new("TextButton")
+marketIndicator.Name = "MarketIndicator"
+marketIndicator.Size = UDim2.fromOffset(200, 22)
+marketIndicator.Position = UDim2.new(1, -216, 1, -124)
+marketIndicator.BackgroundColor3 = Color3.fromRGB(25, 30, 40)
+marketIndicator.BackgroundTransparency = 0.2
+marketIndicator.TextColor3 = Color3.fromRGB(200, 200, 200)
+marketIndicator.Font = Enum.Font.GothamBold
+marketIndicator.TextSize = 11
+marketIndicator.Text = "Oil: $--/bbl"
+marketIndicator.AutoButtonColor = true
+marketIndicator.Parent = screenGui
+local miCorner = Instance.new("UICorner")
+miCorner.CornerRadius = UDim.new(0, 6)
+miCorner.Parent = marketIndicator
+
+-- Full sell panel (toggleable)
+local marketPanel = Instance.new("Frame")
+marketPanel.Name = "MarketPanel"
+marketPanel.Size = UDim2.fromOffset(320, 380)
+marketPanel.Position = UDim2.new(1, -336, 0.5, -190)
+marketPanel.BackgroundColor3 = Color3.fromRGB(18, 22, 32)
+marketPanel.BackgroundTransparency = 0.05
+marketPanel.Visible = false
+marketPanel.Parent = screenGui
+local mpCorner = Instance.new("UICorner")
+mpCorner.CornerRadius = UDim.new(0, 10)
+mpCorner.Parent = marketPanel
+
+-- Header: title + strait + timer
+local headerFrame = Instance.new("Frame")
+headerFrame.Size = UDim2.new(1, 0, 0, 50)
+headerFrame.BackgroundColor3 = Color3.fromRGB(30, 35, 50)
+headerFrame.BackgroundTransparency = 0.3
+headerFrame.Parent = marketPanel
+local hCorner = Instance.new("UICorner")
+hCorner.CornerRadius = UDim.new(0, 10)
+hCorner.Parent = headerFrame
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(0.5, 0, 0, 22)
+titleLabel.Position = UDim2.fromOffset(12, 6)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "SELL OIL"
+titleLabel.TextColor3 = Color3.fromRGB(255, 220, 100)
+titleLabel.Font = Enum.Font.GothamBlack
+titleLabel.TextSize = 16
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = headerFrame
+
+ui.marketStraitLabel = Instance.new("TextLabel")
+ui.marketStraitLabel.Size = UDim2.new(0.5, -12, 0, 22)
+ui.marketStraitLabel.Position = UDim2.new(0.5, 0, 0, 6)
+ui.marketStraitLabel.BackgroundTransparency = 1
+ui.marketStraitLabel.Text = "Strait: Open"
+ui.marketStraitLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+ui.marketStraitLabel.Font = Enum.Font.GothamSemibold
+ui.marketStraitLabel.TextSize = 12
+ui.marketStraitLabel.TextXAlignment = Enum.TextXAlignment.Right
+ui.marketStraitLabel.Parent = headerFrame
+
+ui.marketTimerLabel = Instance.new("TextLabel")
+ui.marketTimerLabel.Size = UDim2.new(1, -24, 0, 16)
+ui.marketTimerLabel.Position = UDim2.fromOffset(12, 30)
+ui.marketTimerLabel.BackgroundTransparency = 1
+ui.marketTimerLabel.Text = "Next price change: --"
+ui.marketTimerLabel.TextColor3 = Color3.fromRGB(140, 140, 140)
+ui.marketTimerLabel.Font = Enum.Font.Gotham
+ui.marketTimerLabel.TextSize = 10
+ui.marketTimerLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.marketTimerLabel.Parent = headerFrame
+
+-- Base oil price section with gradient bar
+local basePriceY = 56
+ui.marketBasePriceLabel = Instance.new("TextLabel")
+ui.marketBasePriceLabel.Size = UDim2.new(1, -16, 0, 22)
+ui.marketBasePriceLabel.Position = UDim2.fromOffset(8, basePriceY)
+ui.marketBasePriceLabel.BackgroundTransparency = 1
+ui.marketBasePriceLabel.Text = "Oil Price: $10/bbl"
+ui.marketBasePriceLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.marketBasePriceLabel.Font = Enum.Font.GothamBlack
+ui.marketBasePriceLabel.TextSize = 18
+ui.marketBasePriceLabel.TextXAlignment = Enum.TextXAlignment.Center
+ui.marketBasePriceLabel.Parent = marketPanel
+
+-- Gradient bar for base price
+local barBg = Instance.new("Frame")
+barBg.Name = "BaseBarBg"
+barBg.Size = UDim2.new(1, -32, 0, 14)
+barBg.Position = UDim2.fromOffset(16, basePriceY + 26)
+barBg.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+barBg.Parent = marketPanel
+local barCorner = Instance.new("UICorner")
+barCorner.CornerRadius = UDim.new(0, 5)
+barCorner.Parent = barBg
+
+local gradient = Instance.new("UIGradient")
+gradient.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(180, 50, 50)),
+	ColorSequenceKeypoint.new(0.5, Color3.fromRGB(200, 180, 50)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(50, 180, 50)),
+})
+gradient.Parent = barBg
+
+ui.marketBaseMarker = Instance.new("Frame")
+ui.marketBaseMarker.Name = "Marker"
+ui.marketBaseMarker.Size = UDim2.fromOffset(10, 10)
+ui.marketBaseMarker.AnchorPoint = Vector2.new(0.5, 0.5)
+ui.marketBaseMarker.Position = UDim2.new(0.5, 0, 0.5, 0)
+ui.marketBaseMarker.Rotation = 45
+ui.marketBaseMarker.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ui.marketBaseMarker.BorderSizePixel = 0
+ui.marketBaseMarker.Parent = barBg
+
+ui.marketBaseMinLabel = Instance.new("TextLabel")
+ui.marketBaseMinLabel.Size = UDim2.new(0.3, 0, 0, 12)
+ui.marketBaseMinLabel.Position = UDim2.fromOffset(16, basePriceY + 42)
+ui.marketBaseMinLabel.BackgroundTransparency = 1
+ui.marketBaseMinLabel.Text = "$8"
+ui.marketBaseMinLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
+ui.marketBaseMinLabel.Font = Enum.Font.Gotham
+ui.marketBaseMinLabel.TextSize = 9
+ui.marketBaseMinLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.marketBaseMinLabel.Parent = marketPanel
+
+ui.marketBaseMaxLabel = Instance.new("TextLabel")
+ui.marketBaseMaxLabel.Size = UDim2.new(0.3, -16, 0, 12)
+ui.marketBaseMaxLabel.Position = UDim2.new(0.7, 0, 0, basePriceY + 42)
+ui.marketBaseMaxLabel.BackgroundTransparency = 1
+ui.marketBaseMaxLabel.Text = "$80"
+ui.marketBaseMaxLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
+ui.marketBaseMaxLabel.Font = Enum.Font.Gotham
+ui.marketBaseMaxLabel.TextSize = 9
+ui.marketBaseMaxLabel.TextXAlignment = Enum.TextXAlignment.Right
+ui.marketBaseMaxLabel.Parent = marketPanel
+
+-- Per-type rows (compact: name, multiplier, price, barrels, sell button)
+local ROW_HEIGHT = 52
+local ROW_START_Y = basePriceY + 60
+
+for i, oilType in ipairs(MARKET_OIL_TYPES) do
+	local yPos = ROW_START_Y + (i - 1) * ROW_HEIGHT
+	local row = Instance.new("Frame")
+	row.Name = "Row_" .. oilType
+	row.Size = UDim2.new(1, -16, 0, ROW_HEIGHT - 4)
+	row.Position = UDim2.fromOffset(8, yPos)
+	row.BackgroundColor3 = MARKET_TIER_COLORS[oilType]
+	row.BackgroundTransparency = 0.7
+	row.Parent = marketPanel
+	local rCorner = Instance.new("UICorner")
+	rCorner.CornerRadius = UDim.new(0, 6)
+	rCorner.Parent = row
+
+	-- Name + multiplier
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Size = UDim2.new(0.45, 0, 0, 16)
+	nameLabel.Position = UDim2.fromOffset(8, 4)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = MARKET_DISPLAY_NAMES[oilType]
+	nameLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.TextSize = 12
+	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+	nameLabel.Parent = row
+
+	local mulLabel = Instance.new("TextLabel")
+	mulLabel.Name = "MulLabel"
+	mulLabel.Size = UDim2.new(0.15, 0, 0, 16)
+	mulLabel.Position = UDim2.new(0.45, 0, 0, 4)
+	mulLabel.BackgroundTransparency = 1
+	mulLabel.Text = string.format("x%.1f", MARKET_TYPE_MULS[oilType])
+	mulLabel.TextColor3 = Color3.fromRGB(160, 160, 160)
+	mulLabel.Font = Enum.Font.Gotham
+	mulLabel.TextSize = 10
+	mulLabel.TextXAlignment = Enum.TextXAlignment.Left
+	mulLabel.Parent = row
+
+	-- Price
+	local priceLabel = Instance.new("TextLabel")
+	priceLabel.Name = "PriceLabel"
+	priceLabel.Size = UDim2.new(0.35, -8, 0, 16)
+	priceLabel.Position = UDim2.new(0.65, 0, 0, 4)
+	priceLabel.BackgroundTransparency = 1
+	priceLabel.Text = "$--/bbl"
+	priceLabel.TextColor3 = Color3.fromRGB(255, 220, 100)
+	priceLabel.Font = Enum.Font.GothamBold
+	priceLabel.TextSize = 13
+	priceLabel.TextXAlignment = Enum.TextXAlignment.Right
+	priceLabel.Parent = row
+
+	-- Barrel count + value
+	local infoLabel = Instance.new("TextLabel")
+	infoLabel.Name = "InfoLabel"
+	infoLabel.Size = UDim2.new(0.6, 0, 0, 14)
+	infoLabel.Position = UDim2.fromOffset(8, 24)
+	infoLabel.BackgroundTransparency = 1
+	infoLabel.Text = "0 barrels"
+	infoLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+	infoLabel.Font = Enum.Font.Gotham
+	infoLabel.TextSize = 10
+	infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+	infoLabel.Parent = row
+
+	-- Sell button
+	local sellBtn = Instance.new("TextButton")
+	sellBtn.Name = "SellBtn"
+	sellBtn.Size = UDim2.new(0.32, -8, 0, 22)
+	sellBtn.Position = UDim2.new(0.68, 0, 0, 22)
+	sellBtn.BackgroundColor3 = Color3.fromRGB(50, 100, 70)
+	sellBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	sellBtn.Font = Enum.Font.GothamBold
+	sellBtn.TextSize = 10
+	sellBtn.Text = "SELL"
+	sellBtn.AutoButtonColor = true
+	sellBtn.Parent = row
+	local sbCorner = Instance.new("UICorner")
+	sbCorner.CornerRadius = UDim.new(0, 4)
+	sbCorner.Parent = sellBtn
+
+	sellBtn.MouseButton1Click:Connect(function()
+		if confirmTimers[oilType] then
+			confirmTimers[oilType] = nil
+			sellBtn.Text = "SELL"
+			sellBtn.BackgroundColor3 = Color3.fromRGB(50, 100, 70)
+			requestSellWarehouseType:FireServer({ oilType = oilType })
+		else
+			confirmTimers[oilType] = true
+			sellBtn.Text = "CONFIRM?"
+			sellBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
+			task.delay(3, function()
+				if confirmTimers[oilType] then
+					confirmTimers[oilType] = nil
+					sellBtn.Text = "SELL"
+					sellBtn.BackgroundColor3 = Color3.fromRGB(50, 100, 70)
+				end
+			end)
+		end
+	end)
+
+	marketRows[oilType] = {
+		row = row,
+		priceLabel = priceLabel,
+		infoLabel = infoLabel,
+		sellBtn = sellBtn,
+	}
+end
+
+-- Footer: total + sell all
+local footerY = ROW_START_Y + #MARKET_OIL_TYPES * ROW_HEIGHT + 4
+
+ui.marketTotalLabel = Instance.new("TextLabel")
+ui.marketTotalLabel.Size = UDim2.new(0.5, 0, 0, 20)
+ui.marketTotalLabel.Position = UDim2.fromOffset(12, footerY)
+ui.marketTotalLabel.BackgroundTransparency = 1
+ui.marketTotalLabel.Text = "Total: $0"
+ui.marketTotalLabel.TextColor3 = Color3.fromRGB(255, 220, 100)
+ui.marketTotalLabel.Font = Enum.Font.GothamBold
+ui.marketTotalLabel.TextSize = 13
+ui.marketTotalLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.marketTotalLabel.Parent = marketPanel
+
+local sellAllBtn = Instance.new("TextButton")
+sellAllBtn.Name = "SellAllBtn"
+sellAllBtn.Size = UDim2.new(0.45, -12, 0, 26)
+sellAllBtn.Position = UDim2.new(0.55, 0, 0, footerY - 2)
+sellAllBtn.BackgroundColor3 = Color3.fromRGB(180, 150, 40)
+sellAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+sellAllBtn.Font = Enum.Font.GothamBold
+sellAllBtn.TextSize = 11
+sellAllBtn.Text = "SELL ALL"
+sellAllBtn.AutoButtonColor = true
+sellAllBtn.Parent = marketPanel
+local saCorner = Instance.new("UICorner")
+saCorner.CornerRadius = UDim.new(0, 5)
+saCorner.Parent = sellAllBtn
+
+local sellAllConfirm = false
+sellAllBtn.MouseButton1Click:Connect(function()
+	if sellAllConfirm then
+		sellAllConfirm = false
+		sellAllBtn.Text = "SELL ALL"
+		sellAllBtn.BackgroundColor3 = Color3.fromRGB(180, 150, 40)
+		requestSellAllWarehouse:FireServer()
+	else
+		sellAllConfirm = true
+		sellAllBtn.Text = "CONFIRM?"
+		sellAllBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
+		task.delay(3, function()
+			if sellAllConfirm then
+				sellAllConfirm = false
+				sellAllBtn.Text = "SELL ALL"
+				sellAllBtn.BackgroundColor3 = Color3.fromRGB(180, 150, 40)
+			end
+		end)
+	end
+end)
+
+marketPanel.Size = UDim2.fromOffset(320, footerY + 34)
+
+-- Toggle panel
+local function toggleMarketPanel()
+	marketPanelVisible = not marketPanelVisible
+	marketPanel.Visible = marketPanelVisible
+end
+
+marketIndicator.MouseButton1Click:Connect(toggleMarketPanel)
+if ui.marketToggleBtn then
+	ui.marketToggleBtn.MouseButton1Click:Connect(toggleMarketPanel)
+end
+
+-- Update market UI
+local function updateMarketUi()
+	local basePrice = marketState.basePrice or 10
+	local gMin = marketState.globalBaseMin or 8
+	local gMax = marketState.globalBaseMax or 80
+	local trend = marketState.trend or "stable"
+
+	-- Compact indicator: show base price + trend
+	local trendIcon = ""
+	if trend == "up" then
+		trendIcon = " ▲"
+		marketIndicator.TextColor3 = Color3.fromRGB(100, 220, 100)
+	elseif trend == "down" then
+		trendIcon = " ▼"
+		marketIndicator.TextColor3 = Color3.fromRGB(220, 100, 100)
+	else
+		trendIcon = ""
+		marketIndicator.TextColor3 = Color3.fromRGB(200, 200, 140)
+	end
+	marketIndicator.Text = string.format("Oil: $%d/bbl%s", basePrice, trendIcon)
+
+	-- Strait label
+	if ui.marketStraitLabel then
+		ui.marketStraitLabel.Text = "Strait: " .. (marketState.straitState or "?")
+	end
+
+	-- Base price display
+	if ui.marketBasePriceLabel then
+		local trendColor = Color3.fromRGB(255, 255, 255)
+		if trend == "up" then trendColor = Color3.fromRGB(100, 220, 100)
+		elseif trend == "down" then trendColor = Color3.fromRGB(220, 100, 100) end
+		ui.marketBasePriceLabel.Text = string.format("Oil Price: $%d/bbl%s", basePrice, trendIcon)
+		ui.marketBasePriceLabel.TextColor3 = trendColor
+	end
+
+	-- Gradient bar marker
+	if ui.marketBaseMarker then
+		local range = math.max(1, gMax - gMin)
+		local frac = math.clamp((basePrice - gMin) / range, 0, 1)
+		ui.marketBaseMarker.Position = UDim2.new(frac, 0, 0.5, 0)
+	end
+
+	-- Range labels
+	if ui.marketBaseMinLabel then ui.marketBaseMinLabel.Text = "$" .. tostring(gMin) end
+	if ui.marketBaseMaxLabel then ui.marketBaseMaxLabel.Text = "$" .. tostring(gMax) end
+
+	-- Update each type row
+	local totalValue = 0
+	for _, oilType in ipairs(MARKET_OIL_TYPES) do
+		local rowUi = marketRows[oilType]
+		if not rowUi then continue end
+
+		local price = marketState.prices[oilType] or 0
+		local barrels = warehouseState and warehouseState.barrels and warehouseState.barrels[oilType] or 0
+		local value = barrels * price
+		totalValue += value
+
+		rowUi.priceLabel.Text = string.format("$%d/bbl", price)
+
+		if barrels > 0 then
+			rowUi.infoLabel.Text = string.format("%d barrels → $%d", barrels, value)
+		else
+			rowUi.infoLabel.Text = "0 barrels"
+		end
+	end
+
+	if ui.marketTotalLabel then
+		ui.marketTotalLabel.Text = string.format("Total: $%d", totalValue)
+	end
+end
+
+-- Countdown timer
+RunService.Heartbeat:Connect(function()
+	if not marketPanel.Visible then return end
+	if not ui.marketTimerLabel then return end
+	local remaining = math.max(0, (marketState.nextChangeAt or 0) - workspace:GetServerTimeNow())
+	local mins = math.floor(remaining / 60)
+	local secs = math.floor(remaining % 60)
+	ui.marketTimerLabel.Text = string.format("Next price change: %d:%02d", mins, secs)
+end)
+
+-- Market price update listener
+marketPriceUpdate.OnClientEvent:Connect(function(data)
+	if typeof(data) ~= "table" then return end
+	marketState.basePrice = data.basePrice or marketState.basePrice
+	marketState.prices = data.prices or marketState.prices
+	marketState.trend = data.trend or marketState.trend
+	marketState.straitState = data.straitState or marketState.straitState
+	marketState.nextChangeAt = data.nextChangeAt or marketState.nextChangeAt
+	marketState.globalBaseMin = data.globalBaseMin or marketState.globalBaseMin
+	marketState.globalBaseMax = data.globalBaseMax or marketState.globalBaseMax
+	if data.typeMultipliers then marketState.typeMultipliers = data.typeMultipliers end
+	updateMarketUi()
+end)
+
+-- Initial market fetch
+task.spawn(function()
+	local snapshot = requestMarketSnapshot:InvokeServer()
+	if typeof(snapshot) == "table" then
+		marketState.basePrice = snapshot.basePrice or 10
+		marketState.prices = snapshot.prices or {}
+		marketState.trend = snapshot.trend or "stable"
+		marketState.straitState = snapshot.straitState or "Open"
+		marketState.nextChangeAt = snapshot.nextChangeAt or 0
+		marketState.globalBaseMin = snapshot.globalBaseMin or 8
+		marketState.globalBaseMax = snapshot.globalBaseMax or 80
+		if snapshot.typeMultipliers then marketState.typeMultipliers = snapshot.typeMultipliers end
+		updateMarketUi()
+	end
+end)
+
+-- Also update market UI when warehouse state changes
+warehouseStateUpdate.OnClientEvent:Connect(function()
+	task.defer(updateMarketUi)
 end)
 
 print("[Client] Chunked plot mode active.")

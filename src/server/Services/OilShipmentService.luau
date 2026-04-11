@@ -541,26 +541,15 @@ function OilShipmentService:_runShipment(shipment)
 	local hpPercent = clamp01(shipment.hullCurrent / shipment.hullMax)
 	local deliveredManifest = {}
 	local totalDelivered = 0
-	local payoutBase = 0
 
 	for _, tier in ipairs(TIER_ORDER) do
 		local loadedTier = shipment.manifest[tier] or 0
 		local deliveredTier = floorPositive(loadedTier * hpPercent)
 		deliveredManifest[tier] = deliveredTier
 		totalDelivered += deliveredTier
-
-		local tierInfo = QualityConfig.Tiers[tier]
-		if tierInfo then
-			payoutBase += deliveredTier * tierInfo.basePricePerBarrel
-		end
 	end
 
-	local payout = floorPositive(payoutBase * shipment.priceMultiplier)
-	if payout > 0 then
-		self._oilStateService:AddCash(ownerUserId, payout)
-	end
-
-	-- Deliver barrels to warehouse
+	-- Deliver barrels to warehouse (no auto-payout — player sells via Market UI)
 	if self._warehouseService then
 		self._warehouseService:DeliverBarrels(ownerUserId, deliveredManifest)
 	end
@@ -576,7 +565,6 @@ function OilShipmentService:_runShipment(shipment)
 		loaded = shipment.totalLoaded,
 		delivered = totalDelivered,
 		lost = shipment.totalLoaded - totalDelivered,
-		payout = payout,
 		dispatchFee = shipment.dispatchFee,
 		deliveredByTier = deliveredManifest,
 	})

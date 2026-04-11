@@ -88,11 +88,7 @@ function WarehouseService:Start()
 		self:PushState(player.UserId)
 	end))
 
-	local sellEvent = self._remoteService:GetEvent(RemoteNames.RequestSellAllWarehouse)
-	table.insert(self._connections, sellEvent.OnServerEvent:Connect(function(player)
-		self:SellAll(player.UserId)
-		self:PushState(player.UserId)
-	end))
+	-- RequestSellAllWarehouse is deprecated — selling handled by OilMarketService
 
 	local teleportEvent = self._remoteService:GetEvent(RemoteNames.RequestTeleportToWarehouse)
 	table.insert(self._connections, teleportEvent.OnServerEvent:Connect(function(player)
@@ -321,13 +317,52 @@ function WarehouseService:TryUpgrade(userId: number): (boolean, string)
 end
 
 function WarehouseService:SellAll(userId: number)
-	local state = self._stateByUserId[userId]
-	if not state then return end
+	-- Deprecated debug stub. Selling is now handled by OilMarketService.
+end
 
-	state.barrels = emptyBarrelMap()
+function WarehouseService:GetBarrelsByType(userId: number, oilType: string): number
+	local state = self._stateByUserId[userId]
+	if not state then return 0 end
+	return state.barrels[oilType] or 0
+end
+
+function WarehouseService:GetAllBarrels(userId: number)
+	local state = self._stateByUserId[userId]
+	if not state then return emptyBarrelMap() end
+	return {
+		HeavyCrude = state.barrels.HeavyCrude or 0,
+		StandardCrude = state.barrels.StandardCrude or 0,
+		LightSweet = state.barrels.LightSweet or 0,
+		PremiumRefined = state.barrels.PremiumRefined or 0,
+	}
+end
+
+function WarehouseService:RemoveBarrelsByType(userId: number, oilType: string): number
+	local state = self._stateByUserId[userId]
+	if not state then return 0 end
+	local count = state.barrels[oilType] or 0
+	if count <= 0 then return 0 end
+	state.barrels[oilType] = 0
 	self._dirtyByUserId[userId] = true
 	self:_syncBarrelVisuals(userId)
 	self:_updateSign(userId)
+	self:PushState(userId)
+	return count
+end
+
+function WarehouseService:RemoveAllBarrels(userId: number)
+	local state = self._stateByUserId[userId]
+	if not state then return emptyBarrelMap() end
+	local removed = {}
+	for _, tier in ipairs(TIER_ORDER) do
+		removed[tier] = state.barrels[tier] or 0
+		state.barrels[tier] = 0
+	end
+	self._dirtyByUserId[userId] = true
+	self:_syncBarrelVisuals(userId)
+	self:_updateSign(userId)
+	self:PushState(userId)
+	return removed
 end
 
 function WarehouseService:GetWarehouseForClient(userId: number)

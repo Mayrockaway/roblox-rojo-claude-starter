@@ -22,6 +22,7 @@ function StraitStateService:Init(remoteService, telemetryService)
 	self._jobId = game.JobId ~= "" and game.JobId or HttpService:GenerateGUID(false)
 
 	self._state = StraitConfig.InitialState
+	self._onStateChangedCallbacks = {}
 	self._version = 1
 	self._nextRollAt = workspace:GetServerTimeNow() + self:_sampleRollDelaySeconds()
 	self._forcedClosedUntil = nil
@@ -91,6 +92,10 @@ function StraitStateService:GetSnapshot()
 		isLeader = self._isLeader,
 		forcedClosedUntil = self._forcedClosedUntil,
 	}
+end
+
+function StraitStateService:OnStateChanged(callback)
+	table.insert(self._onStateChangedCallbacks, callback)
 end
 
 function StraitStateService:ForceCloseForDuration(seconds: number)
@@ -248,8 +253,12 @@ function StraitStateService:_rollState()
 end
 
 function StraitStateService:_broadcast()
+	local snapshot = self:GetSnapshot()
 	local event = self._remoteService:GetEvent(RemoteNames.GlobalStateUpdate)
-	event:FireAllClients(self:GetSnapshot())
+	event:FireAllClients(snapshot)
+	for _, cb in ipairs(self._onStateChangedCallbacks or {}) do
+		task.spawn(cb, snapshot)
+	end
 end
 
 -- UI "Open" / "Restricted" / "Closed" → engine state (Restricted → Dangerous as the mid-tier representative).
