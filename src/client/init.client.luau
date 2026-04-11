@@ -11,7 +11,6 @@ local playerGui = player:WaitForChild("PlayerGui")
 local mouse = player:GetMouse()
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
-local Constants = require(Shared:WaitForChild("Constants"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local function straitWaypointFxStub(): { OnStraitWaypointPayload: (data: { [string]: any }) -> () }
@@ -100,14 +99,8 @@ local requestMarketSnapshot = remotesFolder:WaitForChild(RemoteNames.RequestMark
 
 local TOOL_DRILL = "Drill"
 local TOOL_PIPE = "Pipe"
-local TIER_ORDER = { "PremiumRefined", "LightSweet", "StandardCrude", "HeavyCrude" }
 
-local ui = {}
-local shipmentInputs = {}
-local shipmentOwnedLabels = {}
-local boatButtons = {}
 local state = nil
-local selectedBoatTypeId: string? = nil
 local config = {
 	drillPlacementCost = 200,
 	drillMinSpacing = 6,
@@ -206,67 +199,8 @@ local function clientCellInBounds(row, col): boolean
 	return row >= 1 and row <= globalRows and col >= 1 and col <= globalCols
 end
 
-local function createLabel(parent: Instance, text: string, size: UDim2, position: UDim2, textSize: number)
-	local label = Instance.new("TextLabel")
-	label.Size = size
-	label.Position = position
-	label.BackgroundTransparency = 1
-	label.Text = text
-	label.TextColor3 = Color3.fromRGB(236, 236, 236)
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.Font = Enum.Font.GothamSemibold
-	label.TextSize = textSize
-	label.Parent = parent
-	return label
-end
-
-local function createButton(parent: Instance, text: string, size: UDim2, position: UDim2)
-	local button = Instance.new("TextButton")
-	button.Size = size
-	button.Position = position
-	button.Text = text
-	button.BackgroundColor3 = Color3.fromRGB(35, 74, 101)
-	button.TextColor3 = Color3.fromRGB(245, 245, 245)
-	button.Font = Enum.Font.GothamBold
-	button.TextSize = 12
-	button.AutoButtonColor = true
-	button.Parent = parent
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 5)
-	corner.Parent = button
-	return button
-end
-
-local function createTextBox(parent: Instance, size: UDim2, position: UDim2, defaultText: string)
-	local box = Instance.new("TextBox")
-	box.Size = size
-	box.Position = position
-	box.BackgroundColor3 = Color3.fromRGB(18, 40, 58)
-	box.TextColor3 = Color3.fromRGB(245, 245, 245)
-	box.Font = Enum.Font.GothamSemibold
-	box.TextSize = 12
-	box.ClearTextOnFocus = false
-	box.PlaceholderText = "0"
-	box.Text = defaultText
-	box.Parent = parent
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 5)
-	corner.Parent = box
-	return box
-end
-
-local function setStatus(message: string, ok: boolean?)
-	if not ui.statusLabel then
-		return
-	end
-	ui.statusLabel.Text = message
-	if ok == nil then
-		ui.statusLabel.TextColor3 = Color3.fromRGB(190, 190, 190)
-	elseif ok then
-		ui.statusLabel.TextColor3 = Color3.fromRGB(160, 223, 178)
-	else
-		ui.statusLabel.TextColor3 = Color3.fromRGB(245, 135, 135)
-	end
+local function setStatus(_message: string, _ok: boolean?)
+	-- Previously OilHud status label; rebind to StarterGui `HUD` when wired.
 end
 
 local function getEquippedToolName(): string?
@@ -735,328 +669,8 @@ local function updateFocusUi()
 	focusBillboard.Enabled = true
 end
 
-local function parseIntText(text: string): number
-	return math.max(0, math.floor(tonumber(text) or 0))
-end
-
-local function getSelectedBoatDef()
-	for _, boat in ipairs(config.boatCatalog or {}) do
-		if boat.boatTypeId == selectedBoatTypeId then
-			return boat
-		end
-	end
-	return nil
-end
-
-local function parseManifest()
-	local manifest = {}
-	local total = 0
-	for _, tier in ipairs(TIER_ORDER) do
-		local input = shipmentInputs[tier]
-		local value = 0
-		if input then
-			value = parseIntText(input.Text)
-		end
-		manifest[tier] = value
-		total += value
-	end
-	return manifest, total
-end
-
-local function applyBoatButtonStyles()
-	for boatTypeId, button in pairs(boatButtons) do
-		if boatTypeId == selectedBoatTypeId then
-			button.BackgroundColor3 = Color3.fromRGB(72, 146, 196)
-		else
-			button.BackgroundColor3 = Color3.fromRGB(35, 74, 101)
-		end
-	end
-end
-
 local function updateUi()
-	if not state or not ui.cashLabel then
-		return
-	end
-
-	ui.cashLabel.Text = string.format("Cash: $%d", state.cash or 0)
-	ui.storageLabel.Text = string.format("Storage: %d / %d", state.totalOil or 0, state.storageCapacity or 0)
-	local stalled = state.stalledDrillCount or 0
-	ui.drillsLabel.Text = string.format("Active Drills: %d / %d  (Stalled: %d)", state.activeDrillCount or 0, state.maxActiveDrills or 0, stalled)
-	local ownedCount = 0
-	for _, chunk in pairs(chunkStateById) do
-		if chunk.unlocked then
-			ownedCount += 1
-		end
-	end
-	ui.chunksLabel.Text = string.format("Owned Chunks: %d", ownedCount)
-	ui.shipmentsLabel.Text = string.format("Active Shipments: %d", state.activeShipmentCount or 0)
-
-	local oilByTier = state.oilByTier or {}
-	for _, tier in ipairs(TIER_ORDER) do
-		local label = shipmentOwnedLabels[tier]
-		if label then
-			label.Text = string.format("Owned: %d", oilByTier[tier] or 0)
-		end
-	end
-
-	local boatDef = getSelectedBoatDef()
-	local _, manifestTotal = parseManifest()
-	if boatDef and ui.shipSummaryLabel then
-		ui.shipSummaryLabel.Text = string.format(
-			"%s | Cap %d | Fee $%d | Selected %d",
-			boatDef.displayName or boatDef.boatTypeId,
-			boatDef.capacity or 0,
-			boatDef.dispatchFee or 0,
-			manifestTotal
-		)
-	elseif ui.shipSummaryLabel then
-		ui.shipSummaryLabel.Text = "Pick a boat"
-	end
-
-	applyBoatButtonStyles()
-end
-
-local function buildShipmentInputs(parent: Instance)
-	for i, tier in ipairs(TIER_ORDER) do
-		local y = 92 + (i - 1) * 34
-		local short = tier
-		if tier == "PremiumRefined" then
-			short = "Premium"
-		elseif tier == "StandardCrude" then
-			short = "Standard"
-		elseif tier == "LightSweet" then
-			short = "Light"
-		elseif tier == "HeavyCrude" then
-			short = "Heavy"
-		end
-
-		createLabel(parent, short, UDim2.fromOffset(86, 16), UDim2.fromOffset(12, y), 11)
-		local box = createTextBox(parent, UDim2.fromOffset(56, 22), UDim2.fromOffset(102, y - 2), "0")
-		box.FocusLost:Connect(function()
-			box.Text = tostring(parseIntText(box.Text))
-			updateUi()
-		end)
-		shipmentInputs[tier] = box
-
-		local owned = createLabel(parent, "Owned: 0", UDim2.fromOffset(105, 16), UDim2.fromOffset(164, y), 11)
-		owned.TextColor3 = Color3.fromRGB(180, 198, 210)
-		shipmentOwnedLabels[tier] = owned
-	end
-end
-
-local function buildUi()
-	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "OilHud"
-	screenGui.ResetOnSpawn = false
-	screenGui.Parent = playerGui
-
-	local root = Instance.new("Frame")
-	root.Size = UDim2.fromOffset(280, 150)
-	root.Position = UDim2.fromOffset(16, 90)
-	root.BackgroundColor3 = Color3.fromRGB(17, 23, 33)
-	root.BackgroundTransparency = 0.15
-	root.Parent = screenGui
-
-	local rootCorner = Instance.new("UICorner")
-	rootCorner.CornerRadius = UDim.new(0, 8)
-	rootCorner.Parent = root
-
-	ui.cashLabel = createLabel(root, "Cash: --", UDim2.fromOffset(260, 20), UDim2.fromOffset(10, 8), 13)
-	ui.storageLabel = createLabel(root, "Storage: --", UDim2.fromOffset(260, 20), UDim2.fromOffset(10, 28), 13)
-	ui.drillsLabel = createLabel(root, "Active Drills: --", UDim2.fromOffset(260, 20), UDim2.fromOffset(10, 48), 13)
-	ui.chunksLabel = createLabel(root, "Owned Chunks: --", UDim2.fromOffset(260, 20), UDim2.fromOffset(10, 68), 13)
-	ui.shipmentsLabel = createLabel(root, "Active Shipments: --", UDim2.fromOffset(260, 20), UDim2.fromOffset(10, 88), 13)
-	ui.hintLabel = createLabel(root, "", UDim2.fromOffset(260, 18), UDim2.fromOffset(10, 110), 11)
-	ui.hintLabel.TextColor3 = Color3.fromRGB(172, 172, 172)
-	ui.statusLabel = createLabel(root, "Buy chunks, place drills, dispatch at terminal.", UDim2.fromOffset(260, 18), UDim2.fromOffset(10, 128), 10)
-	ui.statusLabel.TextColor3 = Color3.fromRGB(190, 190, 190)
-
-	local shipFrame = Instance.new("Frame")
-	shipFrame.Size = UDim2.fromOffset(290, 258)
-	shipFrame.Position = UDim2.fromOffset(16, 252)
-	shipFrame.BackgroundColor3 = Color3.fromRGB(15, 31, 45)
-	shipFrame.BackgroundTransparency = 0.12
-	shipFrame.Parent = screenGui
-	local shipCorner = Instance.new("UICorner")
-	shipCorner.CornerRadius = UDim.new(0, 8)
-	shipCorner.Parent = shipFrame
-
-	createLabel(shipFrame, "Dock Terminal", UDim2.fromOffset(270, 18), UDim2.fromOffset(10, 8), 14)
-	ui.shipSummaryLabel = createLabel(shipFrame, "Pick a boat", UDim2.fromOffset(270, 16), UDim2.fromOffset(10, 30), 11)
-	ui.shipSummaryLabel.TextColor3 = Color3.fromRGB(186, 212, 226)
-
-	local buttonsHost = Instance.new("Frame")
-	buttonsHost.Size = UDim2.fromOffset(270, 40)
-	buttonsHost.Position = UDim2.fromOffset(10, 48)
-	buttonsHost.BackgroundTransparency = 1
-	buttonsHost.Parent = shipFrame
-	ui.boatsHost = buttonsHost
-
-	buildShipmentInputs(shipFrame)
-
-	local dispatchButton = createButton(shipFrame, "Dispatch Shipment", UDim2.fromOffset(268, 28), UDim2.fromOffset(11, 228))
-	dispatchButton.MouseButton1Click:Connect(function()
-		if not selectedBoatTypeId then
-			setStatus("Pick a boat type first.", false)
-			return
-		end
-		local manifest = parseManifest()
-		requestDispatchShipment:FireServer({
-			boatTypeId = selectedBoatTypeId,
-			manifest = manifest,
-		})
-	end)
-
-	-- Teleport buttons (bottom-right of screen)
-	local teleportGui = Instance.new("Frame")
-	teleportGui.Name = "TeleportButtons"
-	teleportGui.Size = UDim2.fromOffset(160, 80)
-	teleportGui.Position = UDim2.new(1, -176, 1, -96)
-	teleportGui.BackgroundColor3 = Color3.fromRGB(17, 23, 33)
-	teleportGui.BackgroundTransparency = 0.15
-	teleportGui.Parent = screenGui
-	local teleportCorner = Instance.new("UICorner")
-	teleportCorner.CornerRadius = UDim.new(0, 8)
-	teleportCorner.Parent = teleportGui
-
-	local shipBtn = createButton(teleportGui, "Board Ship", UDim2.fromOffset(144, 30), UDim2.fromOffset(8, 6))
-	shipBtn.BackgroundColor3 = Color3.fromRGB(45, 90, 120)
-	shipBtn.TextSize = 13
-	shipBtn.MouseButton1Click:Connect(function()
-		requestTeleportToShip:FireServer()
-	end)
-
-	local homeBtn = createButton(teleportGui, "Teleport Home", UDim2.fromOffset(144, 30), UDim2.fromOffset(8, 42))
-	homeBtn.BackgroundColor3 = Color3.fromRGB(90, 55, 40)
-	homeBtn.TextSize = 13
-	homeBtn.MouseButton1Click:Connect(function()
-		requestTeleportHome:FireServer()
-	end)
-
-	-- Warehouse panel (bottom-right, above teleport buttons)
-	local warehouseGui = Instance.new("Frame")
-	warehouseGui.Name = "WarehousePanel"
-	warehouseGui.Size = UDim2.fromOffset(200, 140)
-	warehouseGui.Position = UDim2.new(1, -216, 1, -250)
-	warehouseGui.BackgroundColor3 = Color3.fromRGB(20, 28, 38)
-	warehouseGui.BackgroundTransparency = 0.15
-	warehouseGui.Parent = screenGui
-	local whCorner = Instance.new("UICorner")
-	whCorner.CornerRadius = UDim.new(0, 8)
-	whCorner.Parent = warehouseGui
-
-	ui.warehouseLabel = createLabel(warehouseGui, "Warehouse: --", UDim2.fromOffset(184, 18), UDim2.fromOffset(8, 6), 12)
-	ui.warehouseLabel.TextColor3 = Color3.fromRGB(220, 200, 140)
-
-	local visitBtn = createButton(warehouseGui, "Visit Warehouse", UDim2.fromOffset(184, 26), UDim2.fromOffset(8, 28))
-	visitBtn.BackgroundColor3 = Color3.fromRGB(55, 100, 80)
-	visitBtn.TextSize = 12
-	visitBtn.MouseButton1Click:Connect(function()
-		requestTeleportToWarehouse:FireServer()
-	end)
-
-	ui.upgradeWhBtn = createButton(warehouseGui, "Upgrade ($--)", UDim2.fromOffset(184, 26), UDim2.fromOffset(8, 60))
-	ui.upgradeWhBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 130)
-	ui.upgradeWhBtn.TextSize = 12
-	ui.upgradeWhBtn.MouseButton1Click:Connect(function()
-		requestUpgradeWarehouse:FireServer()
-	end)
-
-	ui.marketToggleBtn = createButton(warehouseGui, "Oil Market", UDim2.fromOffset(184, 26), UDim2.fromOffset(8, 92))
-	ui.marketToggleBtn.BackgroundColor3 = Color3.fromRGB(180, 150, 40)
-	ui.marketToggleBtn.TextSize = 12
-
-	-- Strait dev: Open / Restricted / Closed → server maps to engine states (Restricted → Dangerous).
-	if RunService:IsStudio() or Constants.StraitDevUiEnabled then
-		local straitDev = Instance.new("Frame")
-		straitDev.Name = "StraitDevPanel"
-		straitDev.Size = UDim2.fromOffset(172, 124)
-		straitDev.Position = UDim2.new(1, -188, 0, 90)
-		straitDev.BackgroundColor3 = Color3.fromRGB(28, 22, 40)
-		straitDev.BackgroundTransparency = 0.1
-		straitDev.Parent = screenGui
-		local sdCorner = Instance.new("UICorner")
-		sdCorner.CornerRadius = UDim.new(0, 8)
-		sdCorner.Parent = straitDev
-
-		createLabel(straitDev, "Strait (dev)", UDim2.fromOffset(156, 16), UDim2.fromOffset(8, 6), 12)
-		ui.straitDevEngineLabel = createLabel(straitDev, "Engine: —", UDim2.fromOffset(156, 14), UDim2.fromOffset(8, 22), 10)
-		ui.straitDevEngineLabel.TextColor3 = Color3.fromRGB(200, 190, 220)
-
-		local function pushBracket(bracket: string)
-			requestDevSetStraitBracket:FireServer({ bracket = bracket })
-		end
-
-		local y0 = 40
-		local row = 30
-		local openBtn = createButton(straitDev, "Open", UDim2.fromOffset(156, 26), UDim2.fromOffset(8, y0))
-		openBtn.BackgroundColor3 = Color3.fromRGB(50, 110, 70)
-		openBtn.TextSize = 12
-		openBtn.MouseButton1Click:Connect(function()
-			pushBracket("Open")
-		end)
-
-		local resBtn = createButton(straitDev, "Restricted", UDim2.fromOffset(156, 26), UDim2.fromOffset(8, y0 + row))
-		resBtn.BackgroundColor3 = Color3.fromRGB(120, 90, 40)
-		resBtn.TextSize = 12
-		resBtn.MouseButton1Click:Connect(function()
-			pushBracket("Restricted")
-		end)
-
-		local closedBtn = createButton(straitDev, "Closed", UDim2.fromOffset(156, 26), UDim2.fromOffset(8, y0 + row * 2))
-		closedBtn.BackgroundColor3 = Color3.fromRGB(110, 40, 45)
-		closedBtn.TextSize = 12
-		closedBtn.MouseButton1Click:Connect(function()
-			pushBracket("Closed")
-		end)
-
-		globalStateUpdate.OnClientEvent:Connect(function(snapshot)
-			if typeof(snapshot) ~= "table" then
-				return
-			end
-			local st = snapshot.state
-			if typeof(st) == "string" and ui.straitDevEngineLabel then
-				ui.straitDevEngineLabel.Text = string.format("Engine: %s", st)
-			end
-		end)
-	end
-end
-
-local function rebuildBoatButtons()
-	local host = ui.boatsHost
-	if not host then
-		return
-	end
-
-	for _, child in ipairs(host:GetChildren()) do
-		child:Destroy()
-	end
-	boatButtons = {}
-
-	local catalog = config.boatCatalog or {}
-	if #catalog == 0 then
-		return
-	end
-	local width = math.floor((270 - ((#catalog - 1) * 6)) / #catalog)
-
-	for i, boat in ipairs(catalog) do
-		local button = createButton(
-			host,
-			string.format("%s | $%d / %d", boat.displayName or boat.boatTypeId, boat.dispatchFee or 0, boat.capacity or 0),
-			UDim2.fromOffset(width, 40),
-			UDim2.fromOffset((i - 1) * (width + 6), 0)
-		)
-		button.TextSize = 10
-		button.MouseButton1Click:Connect(function()
-			selectedBoatTypeId = boat.boatTypeId
-			updateUi()
-		end)
-		boatButtons[boat.boatTypeId] = button
-	end
-
-	if not selectedBoatTypeId then
-		selectedBoatTypeId = catalog[1].boatTypeId
-	end
+	-- Oil HUD is StarterGui `HUD` (cloned to PlayerGui). Rebind labels/buttons here when ready.
 end
 
 local function getTargetedDrillId(): number?
@@ -1115,7 +729,6 @@ local function clearRemoveHold()
 	removeHoldDrillId = nil
 end
 
-buildUi()
 bindOwnedPlot()
 
 local initial = requestOilSnapshot:InvokeServer()
@@ -1128,7 +741,6 @@ if typeof(initial) == "table" then
 	end
 end
 rebuildStateMaps()
-rebuildBoatButtons()
 updateUi()
 
 player:GetAttributeChangedSignal("PlotId"):Connect(function()
@@ -1201,26 +813,43 @@ oilActionResult.OnClientEvent:Connect(function(payload)
 	setStatus(tostring(payload.message or "?"), payload.ok == true)
 end)
 
-local warehouseState = nil
+local warehouseState: any = nil
+
+local MARKET_TYPE_MULS = { HeavyCrude = 0.8, StandardCrude = 1.0, LightSweet = 1.4, PremiumRefined = 2.0 }
+local marketState = {
+	basePrice = 10,
+	prices = {} :: { [string]: number },
+	trend = "stable",
+	straitState = "Open",
+	nextChangeAt = 0,
+	globalBaseMin = 8,
+	globalBaseMax = 80,
+	typeMultipliers = MARKET_TYPE_MULS,
+}
+
+local function updateMarketUi()
+	-- Rebind to StarterGui `HUD` oil price / market UI when wired.
+	_ = marketState
+	_ = warehouseState
+end
+
 local function updateWarehouseUi()
-	if not warehouseState or not ui.warehouseLabel then return end
-	ui.warehouseLabel.Text = string.format("Warehouse: %d/%d (Tier %d)",
-		warehouseState.totalBarrels or 0,
-		warehouseState.capacity or 20,
-		warehouseState.tier or 1)
-	if ui.upgradeWhBtn then
-		local cost = warehouseState.upgradeCost
-		if cost then
-			ui.upgradeWhBtn.Text = string.format("Upgrade ($%d)", cost)
-		else
-			ui.upgradeWhBtn.Text = "Max Tier"
-		end
-	end
+	-- Rebind to StarterGui `HUD` warehouse labels/buttons when wired.
+	_ = warehouseState
 end
 
 warehouseStateUpdate.OnClientEvent:Connect(function(data)
 	warehouseState = data
 	updateWarehouseUi()
+	updateMarketUi()
+end)
+
+globalStateUpdate.OnClientEvent:Connect(function(snapshot)
+	if typeof(snapshot) ~= "table" then
+		return
+	end
+	-- Rebind strait / global HUD (was Strait dev panel engine label).
+	_ = snapshot
 end)
 
 shipmentVisualEvent.OnClientEvent:Connect(function(packet)
@@ -1278,17 +907,6 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 end)
 
 RunService.RenderStepped:Connect(function()
-	local equipped = getEquippedToolName()
-	if ui.hintLabel then
-		if equipped == TOOL_DRILL then
-			ui.hintLabel.Text = string.format("Drill equipped: Click an owned chunk ($%d).", config.drillPlacementCost or 200)
-		elseif equipped == TOOL_PIPE then
-			ui.hintLabel.Text = string.format("Pipe equipped: click a grid cell ($%d). Hold E on a pipe to remove.", config.pipeCost or 50)
-		else
-			ui.hintLabel.Text = string.format("Hands empty: Hold E %.1fs on a drill to remove. E on a pipe to delete.", config.removeDrillHoldSeconds or 2)
-		end
-	end
-
 	updateFocusUi()
 	updateGhost()
 	updatePipeGhost()
@@ -1361,31 +979,7 @@ biomeRevealEvent.OnClientEvent:Connect(function(data)
 		end
 	end
 
-	-- UI popup
-	local popup = Instance.new("ScreenGui")
-	popup.Name = "BiomeRevealPopup"
-	popup.Parent = playerGui
-
-	local frame = Instance.new("Frame")
-	frame.Size = UDim2.fromOffset(420, 90)
-	frame.Position = UDim2.new(0.5, -210, 0.25, 0)
-	frame.BackgroundColor3 = Color3.fromRGB(20, 25, 35)
-	frame.BackgroundTransparency = 0.05
-	frame.Parent = popup
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 12)
-	corner.Parent = frame
-
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.fromScale(1, 1)
-	label.BackgroundTransparency = 1
-	label.Text = "Rolling..."
-	label.TextColor3 = Color3.fromRGB(255, 255, 255)
-	label.Font = Enum.Font.GothamBlack
-	label.TextSize = 32
-	label.Parent = frame
-
-	-- Slot machine: flash REAL biome tile sets onto the 5x5 grid
+	-- Slot machine: flash REAL biome tile sets onto the 5x5 grid (no runtime ScreenGui; rewire banner to HUD later)
 	task.spawn(function()
 		-- All 9 biomes with their actual tile types
 		local biomePresets = {
@@ -1550,8 +1144,6 @@ biomeRevealEvent.OnClientEvent:Connect(function(data)
 		local intervals = { 0.12, 0.12, 0.15, 0.18, 0.22, 0.3, 0.4, 0.6 }
 		for i, interval in ipairs(intervals) do
 			local preset = biomePresets[((i - 1) % #biomePresets) + 1]
-			label.Text = preset.name .. "?"
-			frame.BackgroundColor3 = preset.tiles[1].col
 
 			-- Apply random tiles from this biome's set to each cell
 			for _, part in ipairs(tileParts) do
@@ -1573,14 +1165,9 @@ biomeRevealEvent.OnClientEvent:Connect(function(data)
 		end
 		hiddenTiles = {}
 
-		-- Land on the final biome
-		label.Text = biomeName .. " Discovered!"
-		label.TextColor3 = Color3.fromRGB(255, 220, 100)
-		frame.BackgroundColor3 = Color3.fromRGB(20, 30, 45)
-
 		-- Wait for server to set revealed=true and push the final tile visuals
+		_ = biomeName
 		task.wait(3.5)
-		popup:Destroy()
 	end)
 end)
 
@@ -1605,435 +1192,12 @@ Workspace.DescendantAdded:Connect(function(descendant)
 	end
 end)
 
--- =================== OIL MARKET UI ===================
+-- =================== OIL MARKET (data only; wire StarterGui HUD later) ===================
 
-local MARKET_OIL_TYPES = { "HeavyCrude", "StandardCrude", "LightSweet", "PremiumRefined" }
-local MARKET_DISPLAY_NAMES = {
-	HeavyCrude = "Heavy Crude",
-	StandardCrude = "Std Crude",
-	LightSweet = "Light Sweet",
-	PremiumRefined = "Premium",
-}
-local MARKET_TYPE_MULS = { HeavyCrude = 0.8, StandardCrude = 1.0, LightSweet = 1.4, PremiumRefined = 2.0 }
-local MARKET_TIER_COLORS = {
-	HeavyCrude = Color3.fromRGB(80, 60, 40),
-	StandardCrude = Color3.fromRGB(60, 70, 90),
-	LightSweet = Color3.fromRGB(70, 90, 50),
-	PremiumRefined = Color3.fromRGB(100, 60, 100),
-}
-
-local marketState = {
-	basePrice = 10,
-	prices = {},
-	trend = "stable",
-	straitState = "Open",
-	nextChangeAt = 0,
-	globalBaseMin = 8,
-	globalBaseMax = 80,
-	typeMultipliers = MARKET_TYPE_MULS,
-}
-
-local marketPanelVisible = false
-local marketRows = {}
-local confirmTimers = {}
-
--- Compact indicator (always visible)
-local screenGui = playerGui:FindFirstChild("OilHud")
-
-local marketIndicator = Instance.new("TextButton")
-marketIndicator.Name = "MarketIndicator"
-marketIndicator.Size = UDim2.fromOffset(200, 22)
-marketIndicator.Position = UDim2.new(1, -216, 1, -124)
-marketIndicator.BackgroundColor3 = Color3.fromRGB(25, 30, 40)
-marketIndicator.BackgroundTransparency = 0.2
-marketIndicator.TextColor3 = Color3.fromRGB(200, 200, 200)
-marketIndicator.Font = Enum.Font.GothamBold
-marketIndicator.TextSize = 11
-marketIndicator.Text = "Oil: $--/bbl"
-marketIndicator.AutoButtonColor = true
-marketIndicator.Parent = screenGui
-local miCorner = Instance.new("UICorner")
-miCorner.CornerRadius = UDim.new(0, 6)
-miCorner.Parent = marketIndicator
-
--- Full sell panel (toggleable)
-local marketPanel = Instance.new("Frame")
-marketPanel.Name = "MarketPanel"
-marketPanel.Size = UDim2.fromOffset(320, 380)
-marketPanel.Position = UDim2.new(1, -336, 0.5, -190)
-marketPanel.BackgroundColor3 = Color3.fromRGB(18, 22, 32)
-marketPanel.BackgroundTransparency = 0.05
-marketPanel.Visible = false
-marketPanel.Parent = screenGui
-local mpCorner = Instance.new("UICorner")
-mpCorner.CornerRadius = UDim.new(0, 10)
-mpCorner.Parent = marketPanel
-
--- Header: title + strait + timer
-local headerFrame = Instance.new("Frame")
-headerFrame.Size = UDim2.new(1, 0, 0, 50)
-headerFrame.BackgroundColor3 = Color3.fromRGB(30, 35, 50)
-headerFrame.BackgroundTransparency = 0.3
-headerFrame.Parent = marketPanel
-local hCorner = Instance.new("UICorner")
-hCorner.CornerRadius = UDim.new(0, 10)
-hCorner.Parent = headerFrame
-
-local titleLabel = Instance.new("TextLabel")
-titleLabel.Size = UDim2.new(0.5, 0, 0, 22)
-titleLabel.Position = UDim2.fromOffset(12, 6)
-titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "SELL OIL"
-titleLabel.TextColor3 = Color3.fromRGB(255, 220, 100)
-titleLabel.Font = Enum.Font.GothamBlack
-titleLabel.TextSize = 16
-titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-titleLabel.Parent = headerFrame
-
-ui.marketStraitLabel = Instance.new("TextLabel")
-ui.marketStraitLabel.Size = UDim2.new(0.5, -12, 0, 22)
-ui.marketStraitLabel.Position = UDim2.new(0.5, 0, 0, 6)
-ui.marketStraitLabel.BackgroundTransparency = 1
-ui.marketStraitLabel.Text = "Strait: Open"
-ui.marketStraitLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-ui.marketStraitLabel.Font = Enum.Font.GothamSemibold
-ui.marketStraitLabel.TextSize = 12
-ui.marketStraitLabel.TextXAlignment = Enum.TextXAlignment.Right
-ui.marketStraitLabel.Parent = headerFrame
-
-ui.marketTimerLabel = Instance.new("TextLabel")
-ui.marketTimerLabel.Size = UDim2.new(1, -24, 0, 16)
-ui.marketTimerLabel.Position = UDim2.fromOffset(12, 30)
-ui.marketTimerLabel.BackgroundTransparency = 1
-ui.marketTimerLabel.Text = "Next price change: --"
-ui.marketTimerLabel.TextColor3 = Color3.fromRGB(140, 140, 140)
-ui.marketTimerLabel.Font = Enum.Font.Gotham
-ui.marketTimerLabel.TextSize = 10
-ui.marketTimerLabel.TextXAlignment = Enum.TextXAlignment.Left
-ui.marketTimerLabel.Parent = headerFrame
-
--- Base oil price section with gradient bar
-local basePriceY = 56
-ui.marketBasePriceLabel = Instance.new("TextLabel")
-ui.marketBasePriceLabel.Size = UDim2.new(1, -16, 0, 22)
-ui.marketBasePriceLabel.Position = UDim2.fromOffset(8, basePriceY)
-ui.marketBasePriceLabel.BackgroundTransparency = 1
-ui.marketBasePriceLabel.Text = "Oil Price: $10/bbl"
-ui.marketBasePriceLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-ui.marketBasePriceLabel.Font = Enum.Font.GothamBlack
-ui.marketBasePriceLabel.TextSize = 18
-ui.marketBasePriceLabel.TextXAlignment = Enum.TextXAlignment.Center
-ui.marketBasePriceLabel.Parent = marketPanel
-
--- Gradient bar for base price
-local barBg = Instance.new("Frame")
-barBg.Name = "BaseBarBg"
-barBg.Size = UDim2.new(1, -32, 0, 14)
-barBg.Position = UDim2.fromOffset(16, basePriceY + 26)
-barBg.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-barBg.Parent = marketPanel
-local barCorner = Instance.new("UICorner")
-barCorner.CornerRadius = UDim.new(0, 5)
-barCorner.Parent = barBg
-
-local gradient = Instance.new("UIGradient")
-gradient.Color = ColorSequence.new({
-	ColorSequenceKeypoint.new(0, Color3.fromRGB(180, 50, 50)),
-	ColorSequenceKeypoint.new(0.5, Color3.fromRGB(200, 180, 50)),
-	ColorSequenceKeypoint.new(1, Color3.fromRGB(50, 180, 50)),
-})
-gradient.Parent = barBg
-
-ui.marketBaseMarker = Instance.new("Frame")
-ui.marketBaseMarker.Name = "Marker"
-ui.marketBaseMarker.Size = UDim2.fromOffset(10, 10)
-ui.marketBaseMarker.AnchorPoint = Vector2.new(0.5, 0.5)
-ui.marketBaseMarker.Position = UDim2.new(0.5, 0, 0.5, 0)
-ui.marketBaseMarker.Rotation = 45
-ui.marketBaseMarker.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-ui.marketBaseMarker.BorderSizePixel = 0
-ui.marketBaseMarker.Parent = barBg
-
-ui.marketBaseMinLabel = Instance.new("TextLabel")
-ui.marketBaseMinLabel.Size = UDim2.new(0.3, 0, 0, 12)
-ui.marketBaseMinLabel.Position = UDim2.fromOffset(16, basePriceY + 42)
-ui.marketBaseMinLabel.BackgroundTransparency = 1
-ui.marketBaseMinLabel.Text = "$8"
-ui.marketBaseMinLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
-ui.marketBaseMinLabel.Font = Enum.Font.Gotham
-ui.marketBaseMinLabel.TextSize = 9
-ui.marketBaseMinLabel.TextXAlignment = Enum.TextXAlignment.Left
-ui.marketBaseMinLabel.Parent = marketPanel
-
-ui.marketBaseMaxLabel = Instance.new("TextLabel")
-ui.marketBaseMaxLabel.Size = UDim2.new(0.3, -16, 0, 12)
-ui.marketBaseMaxLabel.Position = UDim2.new(0.7, 0, 0, basePriceY + 42)
-ui.marketBaseMaxLabel.BackgroundTransparency = 1
-ui.marketBaseMaxLabel.Text = "$80"
-ui.marketBaseMaxLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
-ui.marketBaseMaxLabel.Font = Enum.Font.Gotham
-ui.marketBaseMaxLabel.TextSize = 9
-ui.marketBaseMaxLabel.TextXAlignment = Enum.TextXAlignment.Right
-ui.marketBaseMaxLabel.Parent = marketPanel
-
--- Per-type rows (compact: name, multiplier, price, barrels, sell button)
-local ROW_HEIGHT = 52
-local ROW_START_Y = basePriceY + 60
-
-for i, oilType in ipairs(MARKET_OIL_TYPES) do
-	local yPos = ROW_START_Y + (i - 1) * ROW_HEIGHT
-	local row = Instance.new("Frame")
-	row.Name = "Row_" .. oilType
-	row.Size = UDim2.new(1, -16, 0, ROW_HEIGHT - 4)
-	row.Position = UDim2.fromOffset(8, yPos)
-	row.BackgroundColor3 = MARKET_TIER_COLORS[oilType]
-	row.BackgroundTransparency = 0.7
-	row.Parent = marketPanel
-	local rCorner = Instance.new("UICorner")
-	rCorner.CornerRadius = UDim.new(0, 6)
-	rCorner.Parent = row
-
-	-- Name + multiplier
-	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Size = UDim2.new(0.45, 0, 0, 16)
-	nameLabel.Position = UDim2.fromOffset(8, 4)
-	nameLabel.BackgroundTransparency = 1
-	nameLabel.Text = MARKET_DISPLAY_NAMES[oilType]
-	nameLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
-	nameLabel.Font = Enum.Font.GothamBold
-	nameLabel.TextSize = 12
-	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-	nameLabel.Parent = row
-
-	local mulLabel = Instance.new("TextLabel")
-	mulLabel.Name = "MulLabel"
-	mulLabel.Size = UDim2.new(0.15, 0, 0, 16)
-	mulLabel.Position = UDim2.new(0.45, 0, 0, 4)
-	mulLabel.BackgroundTransparency = 1
-	mulLabel.Text = string.format("x%.1f", MARKET_TYPE_MULS[oilType])
-	mulLabel.TextColor3 = Color3.fromRGB(160, 160, 160)
-	mulLabel.Font = Enum.Font.Gotham
-	mulLabel.TextSize = 10
-	mulLabel.TextXAlignment = Enum.TextXAlignment.Left
-	mulLabel.Parent = row
-
-	-- Price
-	local priceLabel = Instance.new("TextLabel")
-	priceLabel.Name = "PriceLabel"
-	priceLabel.Size = UDim2.new(0.35, -8, 0, 16)
-	priceLabel.Position = UDim2.new(0.65, 0, 0, 4)
-	priceLabel.BackgroundTransparency = 1
-	priceLabel.Text = "$--/bbl"
-	priceLabel.TextColor3 = Color3.fromRGB(255, 220, 100)
-	priceLabel.Font = Enum.Font.GothamBold
-	priceLabel.TextSize = 13
-	priceLabel.TextXAlignment = Enum.TextXAlignment.Right
-	priceLabel.Parent = row
-
-	-- Barrel count + value
-	local infoLabel = Instance.new("TextLabel")
-	infoLabel.Name = "InfoLabel"
-	infoLabel.Size = UDim2.new(0.6, 0, 0, 14)
-	infoLabel.Position = UDim2.fromOffset(8, 24)
-	infoLabel.BackgroundTransparency = 1
-	infoLabel.Text = "0 barrels"
-	infoLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-	infoLabel.Font = Enum.Font.Gotham
-	infoLabel.TextSize = 10
-	infoLabel.TextXAlignment = Enum.TextXAlignment.Left
-	infoLabel.Parent = row
-
-	-- Sell button
-	local sellBtn = Instance.new("TextButton")
-	sellBtn.Name = "SellBtn"
-	sellBtn.Size = UDim2.new(0.32, -8, 0, 22)
-	sellBtn.Position = UDim2.new(0.68, 0, 0, 22)
-	sellBtn.BackgroundColor3 = Color3.fromRGB(50, 100, 70)
-	sellBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	sellBtn.Font = Enum.Font.GothamBold
-	sellBtn.TextSize = 10
-	sellBtn.Text = "SELL"
-	sellBtn.AutoButtonColor = true
-	sellBtn.Parent = row
-	local sbCorner = Instance.new("UICorner")
-	sbCorner.CornerRadius = UDim.new(0, 4)
-	sbCorner.Parent = sellBtn
-
-	sellBtn.MouseButton1Click:Connect(function()
-		if confirmTimers[oilType] then
-			confirmTimers[oilType] = nil
-			sellBtn.Text = "SELL"
-			sellBtn.BackgroundColor3 = Color3.fromRGB(50, 100, 70)
-			requestSellWarehouseType:FireServer({ oilType = oilType })
-		else
-			confirmTimers[oilType] = true
-			sellBtn.Text = "CONFIRM?"
-			sellBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
-			task.delay(3, function()
-				if confirmTimers[oilType] then
-					confirmTimers[oilType] = nil
-					sellBtn.Text = "SELL"
-					sellBtn.BackgroundColor3 = Color3.fromRGB(50, 100, 70)
-				end
-			end)
-		end
-	end)
-
-	marketRows[oilType] = {
-		row = row,
-		priceLabel = priceLabel,
-		infoLabel = infoLabel,
-		sellBtn = sellBtn,
-	}
-end
-
--- Footer: total + sell all
-local footerY = ROW_START_Y + #MARKET_OIL_TYPES * ROW_HEIGHT + 4
-
-ui.marketTotalLabel = Instance.new("TextLabel")
-ui.marketTotalLabel.Size = UDim2.new(0.5, 0, 0, 20)
-ui.marketTotalLabel.Position = UDim2.fromOffset(12, footerY)
-ui.marketTotalLabel.BackgroundTransparency = 1
-ui.marketTotalLabel.Text = "Total: $0"
-ui.marketTotalLabel.TextColor3 = Color3.fromRGB(255, 220, 100)
-ui.marketTotalLabel.Font = Enum.Font.GothamBold
-ui.marketTotalLabel.TextSize = 13
-ui.marketTotalLabel.TextXAlignment = Enum.TextXAlignment.Left
-ui.marketTotalLabel.Parent = marketPanel
-
-local sellAllBtn = Instance.new("TextButton")
-sellAllBtn.Name = "SellAllBtn"
-sellAllBtn.Size = UDim2.new(0.45, -12, 0, 26)
-sellAllBtn.Position = UDim2.new(0.55, 0, 0, footerY - 2)
-sellAllBtn.BackgroundColor3 = Color3.fromRGB(180, 150, 40)
-sellAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-sellAllBtn.Font = Enum.Font.GothamBold
-sellAllBtn.TextSize = 11
-sellAllBtn.Text = "SELL ALL"
-sellAllBtn.AutoButtonColor = true
-sellAllBtn.Parent = marketPanel
-local saCorner = Instance.new("UICorner")
-saCorner.CornerRadius = UDim.new(0, 5)
-saCorner.Parent = sellAllBtn
-
-local sellAllConfirm = false
-sellAllBtn.MouseButton1Click:Connect(function()
-	if sellAllConfirm then
-		sellAllConfirm = false
-		sellAllBtn.Text = "SELL ALL"
-		sellAllBtn.BackgroundColor3 = Color3.fromRGB(180, 150, 40)
-		requestSellAllWarehouse:FireServer()
-	else
-		sellAllConfirm = true
-		sellAllBtn.Text = "CONFIRM?"
-		sellAllBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
-		task.delay(3, function()
-			if sellAllConfirm then
-				sellAllConfirm = false
-				sellAllBtn.Text = "SELL ALL"
-				sellAllBtn.BackgroundColor3 = Color3.fromRGB(180, 150, 40)
-			end
-		end)
-	end
-end)
-
-marketPanel.Size = UDim2.fromOffset(320, footerY + 34)
-
--- Toggle panel
-local function toggleMarketPanel()
-	marketPanelVisible = not marketPanelVisible
-	marketPanel.Visible = marketPanelVisible
-end
-
-marketIndicator.MouseButton1Click:Connect(toggleMarketPanel)
-if ui.marketToggleBtn then
-	ui.marketToggleBtn.MouseButton1Click:Connect(toggleMarketPanel)
-end
-
--- Update market UI
-local function updateMarketUi()
-	local basePrice = marketState.basePrice or 10
-	local gMin = marketState.globalBaseMin or 8
-	local gMax = marketState.globalBaseMax or 80
-	local trend = marketState.trend or "stable"
-
-	-- Compact indicator: show base price + trend
-	local trendIcon = ""
-	if trend == "up" then
-		trendIcon = " ▲"
-		marketIndicator.TextColor3 = Color3.fromRGB(100, 220, 100)
-	elseif trend == "down" then
-		trendIcon = " ▼"
-		marketIndicator.TextColor3 = Color3.fromRGB(220, 100, 100)
-	else
-		trendIcon = ""
-		marketIndicator.TextColor3 = Color3.fromRGB(200, 200, 140)
-	end
-	marketIndicator.Text = string.format("Oil: $%d/bbl%s", basePrice, trendIcon)
-
-	-- Strait label
-	if ui.marketStraitLabel then
-		ui.marketStraitLabel.Text = "Strait: " .. (marketState.straitState or "?")
-	end
-
-	-- Base price display
-	if ui.marketBasePriceLabel then
-		local trendColor = Color3.fromRGB(255, 255, 255)
-		if trend == "up" then trendColor = Color3.fromRGB(100, 220, 100)
-		elseif trend == "down" then trendColor = Color3.fromRGB(220, 100, 100) end
-		ui.marketBasePriceLabel.Text = string.format("Oil Price: $%d/bbl%s", basePrice, trendIcon)
-		ui.marketBasePriceLabel.TextColor3 = trendColor
-	end
-
-	-- Gradient bar marker
-	if ui.marketBaseMarker then
-		local range = math.max(1, gMax - gMin)
-		local frac = math.clamp((basePrice - gMin) / range, 0, 1)
-		ui.marketBaseMarker.Position = UDim2.new(frac, 0, 0.5, 0)
-	end
-
-	-- Range labels
-	if ui.marketBaseMinLabel then ui.marketBaseMinLabel.Text = "$" .. tostring(gMin) end
-	if ui.marketBaseMaxLabel then ui.marketBaseMaxLabel.Text = "$" .. tostring(gMax) end
-
-	-- Update each type row
-	local totalValue = 0
-	for _, oilType in ipairs(MARKET_OIL_TYPES) do
-		local rowUi = marketRows[oilType]
-		if not rowUi then continue end
-
-		local price = marketState.prices[oilType] or 0
-		local barrels = warehouseState and warehouseState.barrels and warehouseState.barrels[oilType] or 0
-		local value = barrels * price
-		totalValue += value
-
-		rowUi.priceLabel.Text = string.format("$%d/bbl", price)
-
-		if barrels > 0 then
-			rowUi.infoLabel.Text = string.format("%d barrels → $%d", barrels, value)
-		else
-			rowUi.infoLabel.Text = "0 barrels"
-		end
-	end
-
-	if ui.marketTotalLabel then
-		ui.marketTotalLabel.Text = string.format("Total: $%d", totalValue)
-	end
-end
-
--- Countdown timer
-RunService.Heartbeat:Connect(function()
-	if not marketPanel.Visible then return end
-	if not ui.marketTimerLabel then return end
-	local remaining = math.max(0, (marketState.nextChangeAt or 0) - workspace:GetServerTimeNow())
-	local mins = math.floor(remaining / 60)
-	local secs = math.floor(remaining % 60)
-	ui.marketTimerLabel.Text = string.format("Next price change: %d:%02d", mins, secs)
-end)
-
--- Market price update listener
 marketPriceUpdate.OnClientEvent:Connect(function(data)
-	if typeof(data) ~= "table" then return end
+	if typeof(data) ~= "table" then
+		return
+	end
 	marketState.basePrice = data.basePrice or marketState.basePrice
 	marketState.prices = data.prices or marketState.prices
 	marketState.trend = data.trend or marketState.trend
@@ -2041,11 +1205,12 @@ marketPriceUpdate.OnClientEvent:Connect(function(data)
 	marketState.nextChangeAt = data.nextChangeAt or marketState.nextChangeAt
 	marketState.globalBaseMin = data.globalBaseMin or marketState.globalBaseMin
 	marketState.globalBaseMax = data.globalBaseMax or marketState.globalBaseMax
-	if data.typeMultipliers then marketState.typeMultipliers = data.typeMultipliers end
+	if data.typeMultipliers then
+		marketState.typeMultipliers = data.typeMultipliers
+	end
 	updateMarketUi()
 end)
 
--- Initial market fetch
 task.spawn(function()
 	local snapshot = requestMarketSnapshot:InvokeServer()
 	if typeof(snapshot) == "table" then
@@ -2056,14 +1221,11 @@ task.spawn(function()
 		marketState.nextChangeAt = snapshot.nextChangeAt or 0
 		marketState.globalBaseMin = snapshot.globalBaseMin or 8
 		marketState.globalBaseMax = snapshot.globalBaseMax or 80
-		if snapshot.typeMultipliers then marketState.typeMultipliers = snapshot.typeMultipliers end
+		if snapshot.typeMultipliers then
+			marketState.typeMultipliers = snapshot.typeMultipliers
+		end
 		updateMarketUi()
 	end
-end)
-
--- Also update market UI when warehouse state changes
-warehouseStateUpdate.OnClientEvent:Connect(function()
-	task.defer(updateMarketUi)
 end)
 
 print("[Client] Chunked plot mode active.")

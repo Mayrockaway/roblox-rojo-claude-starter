@@ -1,0 +1,57 @@
+---
+description: >-
+  All StarterGui (and Rojo src/StarterGui) ScreenGuis use a full-viewport Canvas
+  root plus scale-first layout and UIAspectRatioConstraint on fixed silhouettes—
+  same structural pattern as imported StarterGui.HUD.
+alwaysApply: true
+---
+
+# StarterGui viewport shell (mandatory)
+
+**Source of truth:** Studio / MCP / Rojo `src/StarterGui/`. **Do not** recreate this shell in runtime `LocalScript` builders for persistent player HUD.
+
+## ScreenGui → Canvas (viewport root)
+
+Every **persistent** `ScreenGui` that owns the main layout (HUD, overlays that fill the screen, etc.) must include a **single primary `Frame` child** (commonly named **`Canvas`**) that acts as the **viewport root**:
+
+| Property | Required pattern |
+|----------|------------------|
+| **`Size`** | **`UDim2.fromScale(1, 1)`** — full parent = full viewport |
+| **`AnchorPoint`** | **`Vector2.new(0.5, 0.5)`** |
+| **`Position`** | **`UDim2.fromScale(0.5, 0.5)`** — centered (unless the product spec documents a deliberate edge-hud exception) |
+| **`ClipsDescendants`** | Set intentionally per feature; default is not assumed |
+
+**Do not** rely on this `Canvas` frame alone to define a **whole-ScreenGui aspect ratio** unless the design explicitly adds a **`UIAspectRatioConstraint`** on an **inner** shell (e.g. a letterboxed card). The default HUD pattern is **fill viewport**, not letterbox the entire game.
+
+## Everything else lives under `Canvas`
+
+- **No** alternate full-screen `Frame` siblings competing for layout unless documented (e.g. dimmer behind a modal still follows scale rules).
+- **Outer regions** (top bar, side stacks, bottom strip): prefer **`UDim2` scale** for **`Size`** and **`Position`** so phone and desktop stay **proportionally** the same.
+
+## Fixed aspect and “don’t squash” regions
+
+- Put **`UIAspectRatioConstraint`** on **cards, icon stacks, circular buttons, grid hosts, modals** that must keep shape: **`AspectType = FitWithinMaxSize`**, correct **`AspectRatio`**, intentional **`DominantAxis`**.
+- **Icons / square controls:** constrain like **`StarterGui.HUD`** — aspect ≈ **1**, **`FitWithinMaxSize`**, dominant axis as authored.
+
+## Layouts and text
+
+- **`UIListLayout` / `UIGridLayout` / `UIPadding`:** prefer **scale** for **`CellSize`**, **`CellPadding`**, and important **`UIPadding`** on responsive containers.
+- **Labels in resized regions:** **`TextScaled = true`**; use **`UITextSizeConstraint`** for min/max when needed.
+
+## Do not
+
+- Build **persistent** StarterGui trees with **`Instance.new`** from client/server scripts (see **`ui-architecture.mdc`** if present in the workspace).
+- Use **large offset-only** sizes for **main** shells as a substitute for scale (breaks phone emulation).
+- “Fix” broken layout by **runtime** `Position` / `Size` / `AnchorPoint` patches on authored StarterGui.
+
+## Cross-reference
+
+If the workspace also has **`ui-scaling-responsive.mdc`** / **`docs/UI_SCALING_AUTHORING.md`**, treat them as **aligned** with this rule; this file names the **HUD `Canvas` viewport root** explicitly so imports and new ScreenGuis stay consistent.
+
+## Oil gameplay HUD — keep Studio and repo aligned
+
+- **Canonical structure + intent anchors:** `docs/features/oil-gameplay-hud/CANONICAL_STUDIO_LAYOUT.md`
+- **Dump from Studio (diff / audit):** run `scripts/mcp_dump_startergui_hud.luau` via MCP `execute_luau` (or Command Bar).
+- **Re-apply anchors** if `LeftStack` / `TeleportStack` drift: `scripts/mcp_normalize_startergui_hud.luau`
+
+**Do not** add `StarterGui.HUD` (or any HUD subtree) to **`default.project.json` `$path`** until the **full** hierarchy exists under `src/StarterGui/` — a partial Rojo subtree can **delete** instances in Studio on sync. Until then, **Studio Save** + the **canonical doc** are the source of truth.
