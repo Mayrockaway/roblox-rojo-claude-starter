@@ -19,12 +19,57 @@ export type StraitEventDef = {
 	totalLoss: boolean?,
 	-- Whole barrels lost: ceil(manifestTotal * fraction), removed HeavyCrude → … → PremiumRefined.
 	looseBarrelLossFraction: number?,
+	-- If true, server handles missile flight with hit/smallHit/miss outcomes instead of instant totalLoss.
+	missileEvent: boolean?,
+	-- If true, server handles mine surfacing with hit/miss outcomes.
+	mineEvent: boolean?,
+	-- If true, server handles pirate boarding visual sequence.
+	pirateEvent: boolean?,
 }
 
 local StraitEventConfig = require(script.Parent.Parent:WaitForChild("StraitEventConfig"))
 local EXT = StraitEventConfig.ExtendedWaypointPauseSeconds
 
 local Catalog = {}
+
+-- Missile strike outcome config
+Catalog.MissileConfig = {
+	MissileCount = 4,       -- missiles fired per trigger (3 triggers × 4 = 12 total)
+	HitChance = 0.05,       -- 5% direct hit → total loss
+	SmallHitChance = 0.25,  -- 25% small hit → lose 50% barrels
+	-- remaining 70% = clean miss, nothing happens
+	SmallHitBarrelLossFraction = 0.50, -- 50% barrels lost on small hit
+	FlightSeconds = 2.5,    -- missile flight duration
+	BarrageStagger = 0.3,   -- seconds between each missile launch in the barrage
+	BarragePauseAfter = 2.0,-- extra pause after last missile lands
+	LaunchDistance = 250,    -- how far away missile spawns (behind terrain)
+	LaunchHeight = 80,      -- height above water for launch point
+	MissSpreadRadius = 40,  -- how far misses splash from ship
+}
+
+-- Mine event config
+Catalog.MineConfig = {
+	MineCount = 15,          -- total mines that surface around the boat
+	HitChance = 0.10,        -- 10% chance a mine spawns in the boat's path → boom
+	RiseSeconds = 5.0,       -- SLOW rise to the surface
+	SpawnRadiusMin = 30,     -- minimum distance from ship
+	SpawnRadiusMax = 120,    -- maximum distance — wide spread around the ship
+	SpawnDepth = 40,         -- how far below water they start
+	PauseAfterSurface = 4.0, -- how long ship pauses while navigating through
+	MineScale = 0.4,         -- scale factor on mine model (40% of original size)
+}
+
+-- Pirate raid visual sequence config
+Catalog.PirateRaidConfig = {
+	PirateCount = 4,
+	SequenceDuration = 18,
+	ApproachDistance = 200,
+	PullUpDistance = 15,
+	ApproachSeconds = 4,
+	BoardingSeconds = 3,
+	StealingSeconds = 7,
+	EscapeSeconds = 4,
+}
 
 Catalog.Events = {
 	{
@@ -66,6 +111,7 @@ Catalog.Events = {
 		severity = "Medium",
 		displayName = "Pirate raid",
 		looseBarrelLossFraction = 0.25,
+		pirateEvent = true,
 	} :: StraitEventDef,
 	{
 		id = "ExtendedInspection",
@@ -101,12 +147,15 @@ Catalog.Events = {
 		severity = "High",
 		displayName = "Mine strike",
 		totalLoss = true,
+		mineEvent = true,
 	} :: StraitEventDef,
 	{
 		id = "MissileStrike",
 		severity = "High",
 		displayName = "Missile strike",
 		totalLoss = true,
+		-- Handled specially by OilShipmentService: missile flight animation with hit/smallHit/miss
+		missileEvent = true,
 	} :: StraitEventDef,
 } :: { StraitEventDef }
 

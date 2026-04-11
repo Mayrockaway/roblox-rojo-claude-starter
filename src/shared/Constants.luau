@@ -32,6 +32,9 @@ local Constants = {
 	StraitEventsDebug = {
 		ForceOccurrenceAtWaypoint = false,
 		ForceBracket = nil :: "Open" | "Restricted" | "Closed" | nil,
+		ForceMissileStrike = false, -- if true, every triggered event becomes MissileStrike
+		ForceMineStrike = false, -- if true, every triggered event becomes MineStrike
+		ForcePirateRaid = false, -- if true, every triggered event becomes PirateRaid
 		LogWaypointTriggers = false,
 		VerboseStraitWaypointLogsInStudio = true,
 	},

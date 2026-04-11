@@ -927,6 +927,19 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 
 	local severity = StraitEventConfig.RollSeverity(bracket, rng)
 	local def = StraitEventCatalog.PickRandom(severity, rng)
+
+	-- Debug: force specific event types
+	if dbg.ForceMissileStrike then
+		def = StraitEventCatalog.GetById("MissileStrike")
+		severity = "High"
+	elseif dbg.ForceMineStrike then
+		def = StraitEventCatalog.GetById("MineStrike")
+		severity = "High"
+	elseif dbg.ForcePirateRaid then
+		def = StraitEventCatalog.GetById("PirateRaid")
+		severity = "Medium"
+	end
+
 	if not def then
 		if log then
 			warn(
@@ -957,6 +970,209 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	end
 
 	local particleFxScale = ParticleFxScale.ComputePayloadScale(boat, shipment.boatTypeId)
+
+	-- Special missile event handling: rapid barrage of missiles all around the ship
+	if def.missileEvent then
+		local mc = StraitEventCatalog.MissileConfig
+		local missileCount = mc.MissileCount or 4
+		local stagger = mc.BarrageStagger or 0.3
+		local flightTime = mc.FlightSeconds or 2.5
+
+		-- Pre-roll all missile outcomes
+		local outcomes = {}
+		local hasDirectHit = false
+		local smallHitApplied = false
+		for mi = 1, missileCount do
+			local roll = rng:NextNumber()
+			local outcome
+			if roll < mc.HitChance then
+				outcome = "hit"
+				hasDirectHit = true
+			elseif roll < mc.HitChance + mc.SmallHitChance then
+				outcome = "smallHit"
+			else
+				outcome = "miss"
+			end
+			outcomes[mi] = outcome
+		end
+
+		-- Fire all missiles rapidly (barrage)
+		for mi = 1, missileCount do
+			local side = (mi % 2 == 0) and 1 or -1
+			local angle = (mi / missileCount) * math.pi * 2
+			local launchOffset = Vector3.new(
+				math.cos(angle) * mc.LaunchDistance + rng:NextNumber(-40, 40),
+				mc.LaunchHeight + rng:NextNumber(-15, 15),
+				math.sin(angle) * mc.LaunchDistance + rng:NextNumber(-40, 40)
+			)
+			local launchPos = worldPosition + launchOffset
+
+			local targetPos = worldPosition
+			if outcomes[mi] == "miss" then
+				local spread = mc.MissSpreadRadius or 40
+				targetPos = worldPosition + Vector3.new(
+					rng:NextNumber(-spread, spread),
+					0,
+					rng:NextNumber(-spread, spread)
+				)
+			end
+
+			self:_emitShipmentEvent("MissileStrikeEvent", {
+				ownerUserId = ownerUserId,
+				shipmentId = shipment.shipmentId,
+				eventId = def.id,
+				displayName = def.displayName,
+				severity = severity,
+				outcome = outcomes[mi],
+				missileIndex = mi,
+				missileTotal = missileCount,
+				launchPosition = { x = launchPos.X, y = launchPos.Y, z = launchPos.Z },
+				targetPosition = { x = targetPos.X, y = targetPos.Y, z = targetPos.Z },
+				flightSeconds = flightTime,
+				worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+				particleFxScale = particleFxScale,
+			})
+
+			if log then
+				print(string.format("  [StraitShipment DEBUG] MISSILE %d/%d launched → %s", mi, missileCount, outcomes[mi]))
+			end
+
+			-- Short stagger between launches
+			if mi < missileCount then
+				task.wait(stagger)
+			end
+		end
+
+		-- Wait for missiles to fly + impact + aftermath
+		local totalPause = flightTime + (mc.BarragePauseAfter or 2.0)
+		task.wait(totalPause)
+		voyageClock.startTime += totalPause + (missileCount - 1) * stagger
+
+		-- Apply outcomes: small hits first, then check for direct hit
+		for mi = 1, missileCount do
+			if outcomes[mi] == "smallHit" and not smallHitApplied then
+				local barrelsLost = self:_applyLooseBarrelLoss(shipment, mc.SmallHitBarrelLossFraction)
+				smallHitApplied = true
+				if log then
+					print(string.format("  [StraitShipment DEBUG] BARRAGE small hit applied: lost %d barrels", barrelsLost))
+				end
+			end
+		end
+
+		if hasDirectHit then
+			if log then
+				print("  [StraitShipment DEBUG] BARRAGE: DIRECT HIT — total loss")
+			end
+			return true
+		end
+		return false
+	end
+
+	-- Special mine event handling: mines surface all around the boat
+	if def.mineEvent then
+		local mc = StraitEventCatalog.MineConfig
+		local mineCount = mc.MineCount or 15
+		local hitRoll = rng:NextNumber()
+		local didHit = hitRoll < mc.HitChance
+
+		-- Pre-generate mine positions spread wide around the ship
+		local minePositions = {}
+		local radiusMin = mc.SpawnRadiusMin or 30
+		local radiusMax = mc.SpawnRadiusMax or 120
+		for mi = 1, mineCount do
+			local angle = (mi / mineCount) * math.pi * 2 + rng:NextNumber(-0.4, 0.4)
+			local dist = rng:NextNumber(radiusMin, radiusMax)
+			local offset = Vector3.new(
+				math.cos(angle) * dist,
+				0,
+				math.sin(angle) * dist
+			)
+			table.insert(minePositions, {
+				x = worldPosition.X + offset.X,
+				y = worldPosition.Y,
+				z = worldPosition.Z + offset.Z,
+			})
+		end
+
+		-- If hit, place one mine directly in front of the ship (will collide)
+		if didHit then
+			-- Overwrite a random mine to be at ship position (direct collision)
+			local hitIdx = rng:NextInteger(1, math.min(3, mineCount))
+			minePositions[hitIdx] = {
+				x = worldPosition.X + rng:NextNumber(-3, 3),
+				y = worldPosition.Y,
+				z = worldPosition.Z + rng:NextNumber(-3, 3),
+			}
+		end
+
+		-- Fire mine event to all clients
+		self:_emitShipmentEvent("MineStrikeEvent", {
+			ownerUserId = ownerUserId,
+			shipmentId = shipment.shipmentId,
+			eventId = def.id,
+			displayName = def.displayName,
+			severity = severity,
+			didHit = didHit,
+			minePositions = minePositions,
+			riseSeconds = mc.RiseSeconds,
+			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+			particleFxScale = particleFxScale,
+		})
+
+		if log then
+			print(string.format("  [StraitShipment DEBUG] MINES: %d surfacing, hit=%s (roll=%.3f < %.3f)", mineCount, tostring(didHit), hitRoll, mc.HitChance))
+		end
+
+		-- Wait for mines to slowly rise + ship to navigate through
+		local totalPause = mc.RiseSeconds + mc.PauseAfterSurface + 1
+		task.wait(totalPause)
+		voyageClock.startTime += totalPause
+
+		if didHit then
+			if log then
+				print("  [StraitShipment DEBUG] MINE HIT — total loss")
+			end
+			return true
+		end
+		return false
+	end
+
+	-- Special pirate raid handling: visual boarding + barrel stealing sequence
+	if def.pirateEvent then
+		local pc = StraitEventCatalog.PirateRaidConfig
+
+		-- Apply barrel loss (server-authoritative, same as normal event)
+		local barrelsStolen = 0
+		if def.looseBarrelLossFraction and def.looseBarrelLossFraction > 0 then
+			barrelsStolen = self:_applyLooseBarrelLoss(shipment, def.looseBarrelLossFraction)
+		end
+
+		-- Pick approach side (perpendicular to ship heading)
+		local approachSide = rng:NextNumber() < 0.5 and 1 or -1
+
+		-- Fire pirate raid event to all clients
+		self:_emitShipmentEvent("PirateRaidEvent", {
+			ownerUserId = ownerUserId,
+			shipmentId = shipment.shipmentId,
+			eventId = def.id,
+			displayName = def.displayName,
+			severity = severity,
+			barrelsStolen = barrelsStolen,
+			approachSide = approachSide,
+			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+			particleFxScale = particleFxScale,
+		})
+
+		if log then
+			print(string.format("  [StraitShipment DEBUG] PIRATE RAID: %d barrels stolen, side=%d, pausing %ds",
+				barrelsStolen, approachSide, pc.SequenceDuration))
+		end
+
+		-- Pause ship for the full cinematic sequence
+		task.wait(pc.SequenceDuration)
+		voyageClock.startTime += pc.SequenceDuration
+		return false
+	end
 
 	if def.totalLoss then
 		local animPause = StraitEventConfig.DefaultWaypointPauseSeconds
@@ -1323,6 +1539,166 @@ function OilShipmentService:_sendActionResult(player: Player, ok: boolean, code:
 		message = message,
 		data = data,
 	})
+end
+
+function OilShipmentService:DebugDispatchMissile(player: Player)
+	local userId = player.UserId
+	local plot = self._plotService:GetOwnedPlot(userId)
+	if not plot then
+		warn("[DebugDispatch] Player has no plot")
+		return
+	end
+
+	-- Temporarily force missile strike + occurrence at every waypoint
+	local dbg = Constants.StraitEventsDebug
+	local prevForceOcc = dbg.ForceOccurrenceAtWaypoint
+	local prevForceMissile = dbg.ForceMissileStrike
+	dbg.ForceOccurrenceAtWaypoint = true
+	dbg.ForceMissileStrike = true
+
+	local manifest = { HeavyCrude = 30, StandardCrude = 0, LightSweet = 0, PremiumRefined = 0 }
+	local boatTypeId = "RustSkiff"
+	local boatDef = BoatConfig.Boats[boatTypeId]
+	if not boatDef then
+		-- Pick first available boat
+		for k, v in pairs(BoatConfig.Boats) do
+			boatTypeId = k
+			boatDef = v
+			break
+		end
+	end
+
+	local shipment = {
+		shipmentId = HttpService:GenerateGUID(false),
+		ownerUserId = userId,
+		boatTypeId = boatTypeId,
+		manifest = manifest,
+		totalLoaded = 30,
+		dispatchFee = 0,
+		travelSeconds = boatDef and boatDef.travelSeconds or 60,
+		hullMax = boatDef and boatDef.hullHp or 100,
+		hullCurrent = boatDef and boatDef.hullHp or 100,
+		eventRisk = 0,
+		priceMultiplier = 1,
+	}
+
+	print(string.format("[DebugDispatch] Launching missile test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+
+	task.spawn(function()
+		self:_runShipment(shipment)
+		-- Restore debug flags after voyage completes
+		dbg.ForceOccurrenceAtWaypoint = prevForceOcc
+		dbg.ForceMissileStrike = prevForceMissile
+	end)
+
+	-- Teleport player to ship after a brief delay for it to spawn
+	task.delay(2, function()
+		self:_handleTeleportToShip(player)
+	end)
+end
+
+function OilShipmentService:DebugDispatchMine(player: Player)
+	local userId = player.UserId
+	local plot = self._plotService:GetOwnedPlot(userId)
+	if not plot then
+		warn("[DebugDispatch] Player has no plot")
+		return
+	end
+
+	local dbg = Constants.StraitEventsDebug
+	local prevForceOcc = dbg.ForceOccurrenceAtWaypoint
+	local prevForceMine = dbg.ForceMineStrike
+	dbg.ForceOccurrenceAtWaypoint = true
+	dbg.ForceMineStrike = true
+
+	local manifest = { HeavyCrude = 30, StandardCrude = 0, LightSweet = 0, PremiumRefined = 0 }
+	local boatTypeId = "RustSkiff"
+	local boatDef = BoatConfig.Boats[boatTypeId]
+	if not boatDef then
+		for k, v in pairs(BoatConfig.Boats) do
+			boatTypeId = k
+			boatDef = v
+			break
+		end
+	end
+
+	local shipment = {
+		shipmentId = HttpService:GenerateGUID(false),
+		ownerUserId = userId,
+		boatTypeId = boatTypeId,
+		manifest = manifest,
+		totalLoaded = 30,
+		dispatchFee = 0,
+		travelSeconds = boatDef and boatDef.travelSeconds or 60,
+		hullMax = boatDef and boatDef.hullHp or 100,
+		hullCurrent = boatDef and boatDef.hullHp or 100,
+		eventRisk = 0,
+		priceMultiplier = 1,
+	}
+
+	print(string.format("[DebugDispatch] Launching mine test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+
+	task.spawn(function()
+		self:_runShipment(shipment)
+		dbg.ForceOccurrenceAtWaypoint = prevForceOcc
+		dbg.ForceMineStrike = prevForceMine
+	end)
+
+	task.delay(2, function()
+		self:_handleTeleportToShip(player)
+	end)
+end
+
+function OilShipmentService:DebugDispatchPirate(player: Player)
+	local userId = player.UserId
+	local plot = self._plotService:GetOwnedPlot(userId)
+	if not plot then
+		warn("[DebugDispatch] Player has no plot")
+		return
+	end
+
+	local dbg = Constants.StraitEventsDebug
+	local prevForceOcc = dbg.ForceOccurrenceAtWaypoint
+	local prevForcePirate = dbg.ForcePirateRaid
+	dbg.ForceOccurrenceAtWaypoint = true
+	dbg.ForcePirateRaid = true
+
+	local manifest = { HeavyCrude = 15, StandardCrude = 10, LightSweet = 5, PremiumRefined = 0 }
+	local boatTypeId = "RustSkiff"
+	local boatDef = BoatConfig.Boats[boatTypeId]
+	if not boatDef then
+		for k, v in pairs(BoatConfig.Boats) do
+			boatTypeId = k
+			boatDef = v
+			break
+		end
+	end
+
+	local shipment = {
+		shipmentId = HttpService:GenerateGUID(false),
+		ownerUserId = userId,
+		boatTypeId = boatTypeId,
+		manifest = manifest,
+		totalLoaded = 30,
+		dispatchFee = 0,
+		travelSeconds = boatDef and boatDef.travelSeconds or 60,
+		hullMax = boatDef and boatDef.hullHp or 100,
+		hullCurrent = boatDef and boatDef.hullHp or 100,
+		eventRisk = 0,
+		priceMultiplier = 1,
+	}
+
+	print(string.format("[DebugDispatch] Launching pirate test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+
+	task.spawn(function()
+		self:_runShipment(shipment)
+		dbg.ForceOccurrenceAtWaypoint = prevForceOcc
+		dbg.ForcePirateRaid = prevForcePirate
+	end)
+
+	task.delay(2, function()
+		self:_handleTeleportToShip(player)
+	end)
 end
 
 return OilShipmentService

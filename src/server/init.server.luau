@@ -75,4 +75,20 @@ game:BindToClose(function()
 	RemoteService:Stop()
 end)
 
+-- Debug chat commands (Studio only)
+if game:GetService("RunService"):IsStudio() then
+	game:GetService("Players").PlayerAdded:Connect(function(player)
+		player.Chatted:Connect(function(message)
+			local cmd = message:lower():gsub("^%s+", ""):gsub("%s+$", "")
+			if cmd == "/missile" then
+				OilShipmentService:DebugDispatchMissile(player)
+			elseif cmd == "/mine" then
+				OilShipmentService:DebugDispatchMine(player)
+			elseif cmd == "/pirate" then
+				OilShipmentService:DebugDispatchPirate(player)
+			end
+		end)
+	end)
+end
+
 print("[Server] Oil mining mode active: chunked plot + free-placed drills")

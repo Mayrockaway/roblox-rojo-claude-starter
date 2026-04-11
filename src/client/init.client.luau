@@ -862,6 +862,43 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 		return
 	end
 
+	if kind == "PirateRaidEvent" then
+		StraitWaypointWorldFx.OnPirateRaidPayload(data)
+		local isOwner = data.ownerUserId == player.UserId
+		local stolen = tonumber(data.barrelsStolen) or 0
+		if isOwner then
+			setStatus(string.format("PIRATES BOARDING! Lost %d barrels!", stolen), false)
+		else
+			setStatus("Pirates spotted raiding a vessel nearby!", true)
+		end
+		return
+	end
+
+	if kind == "MineStrikeEvent" then
+		StraitWaypointWorldFx.OnMineStrikePayload(data)
+		local isOwner = data.ownerUserId == player.UserId
+		if data.didHit then
+			setStatus(isOwner and "MINE HIT — Ship destroyed!" or "A vessel struck a mine!", false)
+		else
+			setStatus(isOwner and "Mines spotted! Navigating through..." or "Mines surfaced near a vessel!", true)
+		end
+		return
+	end
+
+	if kind == "MissileStrikeEvent" then
+		StraitWaypointWorldFx.OnMissileStrikePayload(data)
+		local isOwner = data.ownerUserId == player.UserId
+		local outcome = tostring(data.outcome or "?")
+		if outcome == "hit" then
+			setStatus(isOwner and "MISSILE STRIKE — Ship destroyed!" or "A vessel was destroyed by a missile!", false)
+		elseif outcome == "smallHit" then
+			setStatus(isOwner and "MISSILE NEAR HIT — Barrels lost!" or "A missile grazed a vessel nearby!", false)
+		else
+			setStatus(isOwner and "Missile missed!" or "A missile splashed near a vessel.", true)
+		end
+		return
+	end
+
 	if kind == "StraitWaypointEvent" then
 		StraitWaypointWorldFx.OnStraitWaypointPayload(data)
 		local name = tostring(data.displayName or data.eventId or "Strait event")
