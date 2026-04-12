@@ -991,92 +991,72 @@ local function animateMove(obj, fromCF: CFrame, toCF: CFrame, duration: number, 
 end
 
 function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
-	-- Validate payload
 	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
-	local barrelsStolen = tonumber(data.barrelsStolen) or 0
+	local barrelsStolen = math.max(0, tonumber(data.barrelsStolen) or 0)
 	local approachSide = tonumber(data.approachSide) or 1
-	local fallbackPos = vector3FromWorldPosition(data.worldPosition)
 
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
-	if not assets then return end
+	if not assets then
+		return
+	end
 	local pirateShipTemplate = assets:FindFirstChild("PirateShip")
 	local pirateNpcTemplate = assets:FindFirstChild("Pirate")
-	if not pirateShipTemplate then return end
+	if not pirateShipTemplate or not pirateNpcTemplate then
+		return
+	end
 
 	task.spawn(function()
-		-- Resolve player ship
 		local playerBoat = findActiveShipmentBoatByShipmentId(shipmentId)
-		if not playerBoat then return end
+		if not playerBoat then
+			return
+		end
 		local boatRoot = getBoatAttachmentPart(playerBoat)
-		if not boatRoot then return end
+		if not boatRoot then
+			return
+		end
 
-		-- Direction math — computed once, flat (no pitch/roll)
-		local rawFwd = boatRoot.CFrame.LookVector
-		local fwd = Vector3.new(rawFwd.X, 0, rawFwd.Z)
-		if fwd.Magnitude < 0.01 then fwd = Vector3.new(0, 0, -1) end
-		fwd = fwd.Unit
-		local perp = Vector3.new(-fwd.Z, 0, fwd.X) * approachSide
+		local aheadPositions = data.aheadPositions
+		local aheadRaw = if typeof(aheadPositions) == "table" then aheadPositions[1] else nil
+		local ahead1 = vector3FromWorldPosition(aheadRaw)
+		if not ahead1 then
+			return
+		end
 
-		-- Upright lookAt helper (target Y forced to match pos Y)
+		local rootPos = boatRoot.Position
+		local dir = Vector3.new(ahead1.X - rootPos.X, 0, ahead1.Z - rootPos.Z)
+		if dir.Magnitude < 0.001 then
+			return
+		end
+		local fwd = dir.Unit
+		local sideSign = if approachSide >= 0 then 1 else -1
+		local perp = Vector3.new(-fwd.Z, 0, fwd.X) * sideSign
+
 		local function uprightLookAt(pos: Vector3, toward: Vector3): CFrame
-			return CFrame.lookAt(pos, Vector3.new(toward.X, pos.Y, toward.Z))
-		end
-
-		-- Constants
-		local SPAWN_DIST = 250
-		local PIRATE_BOAT_DECK_Y = 4
-		local PLAYER_DECK_Y = 15 -- TOP2/TOP3/TOP4 surfaces are ~12-13 above root + standing room
-		local PIRATE_COUNT = 5
-		local GAP = 20 -- studs gap between hulls
-
-		-- Measure the LIVE player ship — use the LARGEST axis to guarantee clearance
-		local playerHalfWidth = 30
-		if playerBoat:IsA("Model") then
-			local _, bSize = playerBoat:GetBoundingBox()
-			playerHalfWidth = math.max(bSize.X, bSize.Y, bSize.Z) / 2
-		end
-		local PULLUP_DIST = playerHalfWidth + GAP
-
-		-- ====================================================
-		-- CLONE PIRATE MOTORBOAT
-		-- ====================================================
-		local pBoat = pirateShipTemplate:Clone()
-		for _, d in ipairs(pBoat:GetDescendants()) do
-			if d:IsA("BasePart") then
-				d.Anchored = true
-				d.CanCollide = false
-				d.CanQuery = false
-				d.CanTouch = false
+			local flatToward = Vector3.new(toward.X, pos.Y, toward.Z)
+			local flatDelta = Vector3.new(flatToward.X - pos.X, 0, flatToward.Z - pos.Z)
+			if flatDelta.Magnitude < 0.001 then
+				flatToward = pos + fwd
 			end
+			return CFrame.lookAt(pos, flatToward)
 		end
 
-		-- Spawn from the FRONT of the player ship, pull up alongside
-		local rootY = boatRoot.Position.Y
-		local spawnPos = boatRoot.Position + fwd * SPAWN_DIST + perp * PULLUP_DIST
-		spawnPos = Vector3.new(spawnPos.X, rootY, spawnPos.Z)
+		local function getObjectCF(obj: any): CFrame
+			if obj:IsA("Model") then
+				return obj:GetPivot()
+			end
+			return obj.CFrame
+		end
 
-		-- Final alongside position (to the side, same Y)
-		local alongside = boatRoot.Position + perp * PULLUP_DIST
-		alongside = Vector3.new(alongside.X, rootY, alongside.Z)
-
-		pBoat:PivotTo(uprightLookAt(spawnPos, alongside))
-		pBoat.Parent = Workspace
-
-		-- Spawn pirates ON the motorboat before it starts moving
-		local pirates = {}
-		for i = 1, PIRATE_COUNT do
-			local npc
-			if pirateNpcTemplate then
-				npc = pirateNpcTemplate:Clone()
+		local function setObjectCF(obj: any, cf: CFrame)
+			if obj:IsA("Model") then
+				obj:PivotTo(cf)
 			else
-				local p = Instance.new("Part")
-				p.Name = "Pirate"
-				p.Size = Vector3.new(2, 5, 1)
-				p.Material = Enum.Material.SmoothPlastic
-				p.Color = Color3.fromRGB(40, 40, 40)
-				npc = p
+				obj.CFrame = cf
 			end
-			for _, d in ipairs(npc:IsA("Model") and npc:GetDescendants() or { npc }) do
+		end
+
+		local function prepStatic(instance: Instance)
+			for _, d in ipairs(instance:GetDescendants()) do
 				if d:IsA("BasePart") then
 					d.Anchored = true
 					d.CanCollide = false
@@ -1084,162 +1064,229 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 					d.CanTouch = false
 				end
 			end
-
-			local spread = fwd * ((i - 3) * 2)
-			local deckPos = spawnPos + Vector3.new(0, PIRATE_BOAT_DECK_Y, 0) + spread
-			local startCF = uprightLookAt(deckPos, alongside)
-
-			if npc:IsA("Model") then npc:PivotTo(startCF) else npc.CFrame = startCF end
-			npc.Parent = pBoat -- parent to boat so they move with it
-			pirates[i] = { npc = npc, cf = startCF }
 		end
 
-		-- ====================================================
-		-- PHASE 1: APPROACH FROM FRONT (4 seconds)
-		-- ====================================================
-		local t0 = os.clock()
-		while true do
-			local alpha = math.min((os.clock() - t0) / 4, 1)
-			local eased = 1 - (1 - alpha) * (1 - alpha) -- ease-out
-
-			local liveRoot = boatRoot.Position
-			local liveY = liveRoot.Y
-			local liveAlongside = liveRoot + perp * PULLUP_DIST
-			liveAlongside = Vector3.new(liveAlongside.X, liveY, liveAlongside.Z)
-
-			local pos = spawnPos:Lerp(liveAlongside, eased)
-			pos = Vector3.new(pos.X, liveY, pos.Z)
-
-			pBoat:PivotTo(uprightLookAt(pos, liveAlongside))
-			if alpha >= 1 then break end
-			task.wait()
+		local function movePirate(pirate, targetCF: CFrame, duration: number, arcHeight: number?)
+			animateMove(pirate.npc, pirate.cf, targetCF, duration, arcHeight)
+			pirate.cf = targetCF
 		end
 
-		-- Snap to final alongside
-		alongside = boatRoot.Position + perp * PULLUP_DIST
-		alongside = Vector3.new(alongside.X, boatRoot.Position.Y, alongside.Z)
-		pBoat:PivotTo(uprightLookAt(alongside, alongside + fwd))
-
-		-- Unparent pirates from boat so they can move independently on player deck
-		for _, p in ipairs(pirates) do
-			local worldCF
-			if p.npc:IsA("Model") then worldCF = p.npc:GetPivot() else worldCF = p.npc.CFrame end
-			p.npc.Parent = Workspace
-			if p.npc:IsA("Model") then p.npc:PivotTo(worldCF) else p.npc.CFrame = worldCF end
-			p.cf = worldCF
+		local function runTimedParallel(tasks, minDuration: number)
+			local startTime = os.clock()
+			local remaining = #tasks
+			if remaining == 0 then
+				task.wait(minDuration)
+				return
+			end
+			for _, fn in ipairs(tasks) do
+				task.spawn(function()
+					fn()
+					remaining -= 1
+				end)
+			end
+			while remaining > 0 do
+				task.wait()
+			end
+			local elapsed = os.clock() - startTime
+			if elapsed < minDuration then
+				task.wait(minDuration - elapsed)
+			end
 		end
 
-		-- ====================================================
-		-- PHASE 2: ZIPLINE BOARDING (3 seconds)
-		-- ====================================================
+		local PHASE_APPROACH = 4.0
+		local PHASE_BOARD = 3.0
+		local PHASE_STEAL = 7.0
+		local PHASE_ESCAPE = 4.0
+		local PIRATE_COUNT = 5
+		local PIRATE_SPACING = 1.5
+		local TANKER_DECK_Y = 15
+		local PIRATE_BOAT_DECK_Y = 4
+		local GAP = 20
+		local PIRATE_HALF_LEN = 9
+		local SPAWN_AHEAD_DIST = 260
+		local ZIP_SIDE_OFFSET = 5
+		local ZIP_ATTACH_UP = 1.5
+		local LANDING_BACK_OFFSET = 5
+		local BARREL_SIDE_OFFSET = 4.5
+		local BARREL_CARRY_UP = 3
+		local TOSS_ARC_HEIGHT = 22
+		local ESCAPE_DIST = 220
 
-		-- Zipline: HIGH above both ships so the rope goes OVER the hull, never through it
-		local ZIP_HEIGHT = PLAYER_DECK_Y + 20 -- way above the deck
-		local ZIP_PIRATE_END = alongside + Vector3.new(0, ZIP_HEIGHT, 0)
-		local ZIP_PLAYER_END = boatRoot.Position + Vector3.new(0, ZIP_HEIGHT, 0)
+		local _, liveBoatSize = playerBoat:GetBoundingBox()
+		local playerHalf = math.max(liveBoatSize.X, liveBoatSize.Y, liveBoatSize.Z) / 2
+		local parkDist = playerHalf + PIRATE_HALF_LEN + GAP
+		local parkPos = Vector3.new(rootPos.X, rootPos.Y, rootPos.Z) + fwd * parkDist
+		local spawnPos = parkPos + fwd * SPAWN_AHEAD_DIST
 
-		local zipAnchorA = Instance.new("Part")
-		zipAnchorA.Name = "ZipAnchorA"
-		zipAnchorA.Size = Vector3.new(1, 1, 1)
-		zipAnchorA.Anchored = true
-		zipAnchorA.CanCollide = false
-		zipAnchorA.Transparency = 1
-		zipAnchorA.Position = ZIP_PIRATE_END
-		zipAnchorA.Parent = Workspace
+		local pirateBoat = pirateShipTemplate:Clone()
+		prepStatic(pirateBoat)
+		pirateBoat.Parent = Workspace
+		pirateBoat:PivotTo(uprightLookAt(spawnPos, rootPos))
+		Debris:AddItem(pirateBoat, 30)
+
+		local pirates = {}
+		local pirateMid = (PIRATE_COUNT + 1) / 2
+		for i = 1, PIRATE_COUNT do
+			local npc = pirateNpcTemplate:Clone()
+			prepStatic(npc)
+			npc.Parent = pirateBoat
+			local along = fwd * ((i - pirateMid) * PIRATE_SPACING)
+			local spawnNpcPos = spawnPos + Vector3.new(0, PIRATE_BOAT_DECK_Y, 0) + along
+			local spawnNpcCF = uprightLookAt(spawnNpcPos, rootPos)
+			setObjectCF(npc, spawnNpcCF)
+			table.insert(pirates, {
+				npc = npc,
+				cf = spawnNpcCF,
+			})
+			Debris:AddItem(npc, 30)
+		end
+
+		animateMove(pirateBoat, pirateBoat:GetPivot(), uprightLookAt(parkPos, rootPos), PHASE_APPROACH, 0)
+
+		rootPos = boatRoot.Position
+		parkPos = Vector3.new(rootPos.X, rootPos.Y, rootPos.Z) + fwd * parkDist
+		pirateBoat:PivotTo(uprightLookAt(parkPos, rootPos))
+
+		local pirateBoatPos = pirateBoat:GetPivot().Position
+		local zipFromBase = Vector3.new(pirateBoatPos.X, pirateBoatPos.Y + PIRATE_BOAT_DECK_Y, pirateBoatPos.Z) + perp * ZIP_SIDE_OFFSET
+		local zipToBase = Vector3.new(rootPos.X, rootPos.Y + TANKER_DECK_Y, rootPos.Z) + perp * ZIP_SIDE_OFFSET
+		local ropeStart = zipFromBase + Vector3.new(0, ZIP_ATTACH_UP, 0)
+		local ropeEnd = zipToBase + Vector3.new(0, ZIP_ATTACH_UP, 0)
+
+		local zipA = Instance.new("Part")
+		zipA.Name = "PirateZipAnchorA"
+		zipA.Size = Vector3.new(0.4, 2, 0.4)
+		zipA.Anchored = true
+		zipA.CanCollide = false
+		zipA.CanQuery = false
+		zipA.CanTouch = false
+		zipA.Material = Enum.Material.Metal
+		zipA.Color = Color3.fromRGB(70, 60, 50)
+		zipA.CFrame = CFrame.new(zipFromBase)
+		zipA.Parent = Workspace
+		Debris:AddItem(zipA, 25)
+
+		local zipB = Instance.new("Part")
+		zipB.Name = "PirateZipAnchorB"
+		zipB.Size = Vector3.new(0.4, 2, 0.4)
+		zipB.Anchored = true
+		zipB.CanCollide = false
+		zipB.CanQuery = false
+		zipB.CanTouch = false
+		zipB.Material = Enum.Material.Metal
+		zipB.Color = Color3.fromRGB(70, 60, 50)
+		zipB.CFrame = CFrame.new(zipToBase)
+		zipB.Parent = Workspace
+		Debris:AddItem(zipB, 25)
+
 		local attA = Instance.new("Attachment")
-		attA.Parent = zipAnchorA
-
-		local zipAnchorB = Instance.new("Part")
-		zipAnchorB.Name = "ZipAnchorB"
-		zipAnchorB.Size = Vector3.new(1, 1, 1)
-		zipAnchorB.Anchored = true
-		zipAnchorB.CanCollide = false
-		zipAnchorB.Transparency = 1
-		zipAnchorB.Position = ZIP_PLAYER_END
-		zipAnchorB.Parent = Workspace
+		attA.Position = Vector3.new(0, ZIP_ATTACH_UP, 0)
+		attA.Parent = zipA
 		local attB = Instance.new("Attachment")
-		attB.Parent = zipAnchorB
+		attB.Position = Vector3.new(0, ZIP_ATTACH_UP, 0)
+		attB.Parent = zipB
 
 		local rope = Instance.new("Beam")
-		rope.Name = "ZiplineRope"
+		rope.Name = "PirateZipline"
 		rope.Attachment0 = attA
 		rope.Attachment1 = attB
-		rope.Width0 = 0.4
-		rope.Width1 = 0.4
-		rope.Color = ColorSequence.new(Color3.fromRGB(80, 60, 40))
+		rope.Width0 = 0.35
+		rope.Width1 = 0.35
 		rope.FaceCamera = true
-		rope.Parent = zipAnchorA
+		rope.Color = ColorSequence.new(Color3.fromRGB(90, 70, 45))
+		rope.Parent = zipA
 
-		-- Pirates: climb up to zipline on pirate boat side, slide across HIGH, drop down to player deck
-		for i, p in ipairs(pirates) do
-			task.spawn(function()
-				task.wait((i - 1) * 0.4)
+		local landingBase = Vector3.new(zipToBase.X, rootPos.Y + TANKER_DECK_Y, zipToBase.Z) - fwd * LANDING_BACK_OFFSET
+		local landingPositions = {}
+		for i = 1, PIRATE_COUNT do
+			landingPositions[i] = landingBase + perp * ((i - pirateMid) * 1.6)
+		end
 
-				-- Step 1: climb up to zipline height on pirate boat side
-				local climbTopCF = uprightLookAt(ZIP_PIRATE_END, ZIP_PLAYER_END)
-				animateMove(p.npc, p.cf, climbTopCF, 0.2, 0)
+		for _, pirate in ipairs(pirates) do
+			local worldCF = getObjectCF(pirate.npc)
+			pirate.npc.Parent = Workspace
+			setObjectCF(pirate.npc, worldCF)
+			pirate.cf = worldCF
+		end
 
-				-- Step 2: slide across at zipline height (above both ships)
-				local acrossDur = 0.5
-				local st0 = os.clock()
+		local boardTasks = {}
+		local BOARD_STAGGER = 0.25
+		local BOARD_TO_ROPE_DUR = 0.2
+		local BOARD_SLIDE_DUR = 0.6
+		local BOARD_DROP_DUR = 0.2
+		for i, pirate in ipairs(pirates) do
+			local idx = i
+			local pirateData = pirate
+			table.insert(boardTasks, function()
+				task.wait((idx - 1) * BOARD_STAGGER)
+				movePirate(pirateData, uprightLookAt(ropeStart, ropeEnd), BOARD_TO_ROPE_DUR, 0)
+
+				local slideStart = os.clock()
 				while true do
-					local sa = math.min((os.clock() - st0) / acrossDur, 1)
-					local se = sa * sa * (3 - 2 * sa)
-					local slidePos = ZIP_PIRATE_END:Lerp(ZIP_PLAYER_END, se)
-					local sag = -3 * math.sin(se * math.pi)
-					slidePos = slidePos + Vector3.new(0, sag, 0)
-					local slideCF = uprightLookAt(slidePos, ZIP_PLAYER_END)
-					if p.npc:IsA("Model") then p.npc:PivotTo(slideCF) else p.npc.CFrame = slideCF end
-					if sa >= 1 then break end
+					local alpha = math.min((os.clock() - slideStart) / BOARD_SLIDE_DUR, 1)
+					local eased = alpha * alpha * (3 - 2 * alpha)
+					local slidePos = ropeStart:Lerp(ropeEnd, eased)
+					slidePos += Vector3.new(0, -2.5 * math.sin(eased * math.pi), 0)
+					setObjectCF(pirateData.npc, uprightLookAt(slidePos, ropeEnd))
+					if alpha >= 1 then
+						break
+					end
 					task.wait()
 				end
 
-				-- Step 3: drop down from zipline to player deck
-				local spread = fwd * ((i - 3) * 3)
-				local landPos = boatRoot.Position + Vector3.new(0, PLAYER_DECK_Y, 0) + spread
-				local landCF = uprightLookAt(landPos, landPos + perp)
-				animateMove(p.npc, p.cf, landCF, 0.2, 0)
-				p.cf = landCF
+				local landPos = landingPositions[idx]
+				local landCF = uprightLookAt(landPos, ropeEnd)
+				animateMove(pirateData.npc, uprightLookAt(ropeEnd, landPos), landCF, BOARD_DROP_DUR, 0)
+				pirateData.cf = landCF
 			end)
 		end
-		task.wait(3)
+		runTimedParallel(boardTasks, PHASE_BOARD)
 
-		-- ====================================================
-		-- PHASE 3: STEALING (7 seconds, always fills full duration)
-		-- ====================================================
 		local deckBarrels = {}
 		for _, d in ipairs(playerBoat:GetDescendants()) do
 			if d.Name == "DeckBarrel" and d.Parent then
 				table.insert(deckBarrels, d)
 			end
 		end
+		table.sort(deckBarrels, function(a, b)
+			local ay = if a:IsA("Model") then a:GetPivot().Position.Y else a.Position.Y
+			local by = if b:IsA("Model") then b:GetPivot().Position.Y else b.Position.Y
+			return ay > by
+		end)
 
 		local toSteal = math.min(barrelsStolen, #deckBarrels)
-		local cycles = math.max(1, math.ceil(toSteal / PIRATE_COUNT))
-		local cycleDuration = 7 / cycles
-		local barrelIdx = 0
+		if toSteal <= 0 then
+			task.wait(PHASE_STEAL)
+		else
+			local cycles = math.max(1, math.ceil(toSteal / PIRATE_COUNT))
+			local cycleDur = PHASE_STEAL / cycles
+			local barrelIndex = 0
 
-		for cycle = 1, cycles do
-			local cycleTasks = {}
+			for _ = 1, cycles do
+				local cycleTasks = {}
+				for i, pirate in ipairs(pirates) do
+					local idx = i
+					local pirateData = pirate
+					barrelIndex += 1
+					local barrel = if barrelIndex <= toSteal then deckBarrels[barrelIndex] else nil
 
-			for i, p in ipairs(pirates) do
-				barrelIdx += 1
-
-				if barrelIdx <= toSteal and deckBarrels[barrelIdx] and deckBarrels[barrelIdx].Parent then
-					-- This pirate steals a barrel
-					local barrel = deckBarrels[barrelIdx]
 					table.insert(cycleTasks, function()
-						local bPos = barrel:IsA("Model") and barrel:GetPivot().Position or barrel.Position
+						if not barrel or not barrel.Parent then
+							local holdPos = landingPositions[idx]
+							movePirate(pirateData, uprightLookAt(holdPos, ropeEnd), cycleDur * 0.2, 0)
+							return
+						end
 
-						-- Walk to NEXT TO barrel (offset 3 studs so pirate doesn't clip into it)
-						local standPos = bPos + fwd * 3
-						standPos = Vector3.new(standPos.X, boatRoot.Position.Y + PLAYER_DECK_Y, standPos.Z)
-						local atBarrelCF = uprightLookAt(standPos, bPos)
-						animateMove(p.npc, p.cf, atBarrelCF, cycleDuration * 0.25, 0)
-						p.cf = atBarrelCF
+						local barrelPos = if barrel:IsA("Model") then barrel:GetPivot().Position else barrel.Position
+						local standPos = Vector3.new(barrelPos.X, rootPos.Y + TANKER_DECK_Y, barrelPos.Z) + perp * BARREL_SIDE_OFFSET
+						movePirate(pirateData, uprightLookAt(standPos, barrelPos), cycleDur * 0.22, 0)
 
-						-- Grab barrel
+						if not barrel.Parent then
+							movePirate(pirateData, uprightLookAt(landingPositions[idx], ropeEnd), cycleDur * 0.15, 0)
+							return
+						end
 						barrel:Destroy()
+
 						local carry = Instance.new("Part")
 						carry.Name = "CarriedBarrel"
 						carry.Size = Vector3.new(2, 3, 2)
@@ -1248,112 +1295,104 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 						carry.Color = Color3.fromRGB(140, 100, 30)
 						carry.Anchored = true
 						carry.CanCollide = false
-						carry.CFrame = CFrame.new(bPos + Vector3.new(0, 3, 0))
+						carry.CanQuery = false
+						carry.CanTouch = false
+						carry.CFrame = CFrame.new(standPos + Vector3.new(0, BARREL_CARRY_UP, 0))
 						carry.Parent = Workspace
+						Debris:AddItem(carry, 20)
 
-						-- Move to ship edge (toward pirate boat) carrying barrel
-						local edgePos = boatRoot.Position + perp * 6 + Vector3.new(0, PLAYER_DECK_Y, 0) + fwd * ((i - 3) * 3)
-						local edgeCF = uprightLookAt(edgePos, edgePos + perp)
+						local edgeDir = Vector3.new(zipFromBase.X - standPos.X, 0, zipFromBase.Z - standPos.Z)
+						if edgeDir.Magnitude < 0.001 then
+							edgeDir = -fwd
+						else
+							edgeDir = edgeDir.Unit
+						end
+						local edgePos = standPos + edgeDir * 6
+						edgePos = Vector3.new(edgePos.X, rootPos.Y + TANKER_DECK_Y, edgePos.Z)
+						local edgeCF = uprightLookAt(edgePos, zipFromBase)
 
-						local walkDur = cycleDuration * 0.3
-						local wt0 = os.clock()
+						local walkStart = os.clock()
+						local walkDur = cycleDur * 0.25
+						local fromCF = pirateData.cf
 						while true do
-							local wa = math.min((os.clock() - wt0) / walkDur, 1)
-							local we = wa * wa * (3 - 2 * wa)
-							local nPos = atBarrelCF.Position:Lerp(edgeCF.Position, we)
-							if p.npc:IsA("Model") then
-								p.npc:PivotTo(uprightLookAt(nPos, nPos + perp))
-							else
-								p.npc.CFrame = uprightLookAt(nPos, nPos + perp)
+							local alpha = math.min((os.clock() - walkStart) / walkDur, 1)
+							local eased = alpha * alpha * (3 - 2 * alpha)
+							local npcPos = fromCF.Position:Lerp(edgeCF.Position, eased)
+							setObjectCF(pirateData.npc, uprightLookAt(npcPos, zipFromBase))
+							carry.CFrame = CFrame.new(npcPos + Vector3.new(0, BARREL_CARRY_UP, 0))
+							if alpha >= 1 then
+								break
 							end
-							carry.CFrame = CFrame.new(nPos + Vector3.new(0, 3, 0))
-							if wa >= 1 then break end
 							task.wait()
 						end
-						p.cf = edgeCF
+						pirateData.cf = edgeCF
 
-						-- Toss barrel HIGH arc over ship rail to pirate boat
-						local tossTarget = pBoat:GetPivot().Position + Vector3.new(0, 5, 0)
-						animateMove(carry, carry.CFrame, CFrame.new(tossTarget), cycleDuration * 0.3, 25)
-						Debris:AddItem(carry, 6)
-					end)
-				else
-					-- No barrel to steal — do a cover patrol movement
-					table.insert(cycleTasks, function()
-						local patrolOffset = fwd * math.sin(cycle + i) * 4
-						local patrolPos = boatRoot.Position + Vector3.new(0, PLAYER_DECK_Y, 0) + patrolOffset + perp * ((i % 2 == 0) and -2 or 2)
-						local patrolCF = uprightLookAt(patrolPos, patrolPos + perp)
-						animateMove(p.npc, p.cf, patrolCF, cycleDuration * 0.5, 0)
-						p.cf = patrolCF
+						local tossTarget = pirateBoat:GetPivot().Position
+							+ Vector3.new(0, PIRATE_BOAT_DECK_Y + 1, 0)
+							+ fwd * ((idx - pirateMid) * PIRATE_SPACING)
+						animateMove(carry, carry.CFrame, CFrame.new(tossTarget), cycleDur * 0.28, TOSS_ARC_HEIGHT)
+
+						local backPos = landingPositions[idx]
+						movePirate(pirateData, uprightLookAt(backPos, ropeEnd), cycleDur * 0.2, 0)
 					end)
 				end
+				runTimedParallel(cycleTasks, cycleDur)
 			end
-
-			-- Run all pirates in this cycle in parallel
-			for _, fn in ipairs(cycleTasks) do
-				task.spawn(fn)
-			end
-			task.wait(cycleDuration)
 		end
 
-		-- ====================================================
-		-- PHASE 4: ESCAPE (4 seconds)
-		-- ====================================================
+		local returnTasks = {}
+		local RETURN_WINDOW = 1.8
+		local RETURN_STAGGER = 0.2
+		local RETURN_TO_ROPE_DUR = 0.2
+		local RETURN_SLIDE_DUR = 0.55
+		local RETURN_DROP_DUR = 0.2
+		for i, pirate in ipairs(pirates) do
+			local idx = i
+			local pirateData = pirate
+			table.insert(returnTasks, function()
+				task.wait((idx - 1) * RETURN_STAGGER)
+				movePirate(pirateData, uprightLookAt(ropeEnd, ropeStart), RETURN_TO_ROPE_DUR, 0)
 
-		-- Pirates walk to zipline, climb up, slide across HIGH, drop to pirate boat
-		local pBoatPos = pBoat:GetPivot().Position
-		for i, p in ipairs(pirates) do
-			task.spawn(function()
-				task.wait((i - 1) * 0.3)
-
-				-- Step 1: walk to zipline base on player ship
-				local zipBaseCF = uprightLookAt(ZIP_PLAYER_END - Vector3.new(0, ZIP_HEIGHT - PLAYER_DECK_Y, 0), ZIP_PIRATE_END)
-				animateMove(p.npc, p.cf, zipBaseCF, 0.2, 0)
-
-				-- Step 2: climb up to zipline height
-				local zipTopCF = uprightLookAt(ZIP_PLAYER_END, ZIP_PIRATE_END)
-				animateMove(p.npc, zipBaseCF, zipTopCF, 0.15, 0)
-
-				-- Step 3: slide across HIGH above ships
-				local slideDur = 0.5
-				local st0 = os.clock()
+				local slideStart = os.clock()
 				while true do
-					local sa = math.min((os.clock() - st0) / slideDur, 1)
-					local se = sa * sa * (3 - 2 * sa)
-					local slidePos = ZIP_PLAYER_END:Lerp(ZIP_PIRATE_END, se)
-					local sag = -3 * math.sin(se * math.pi)
-					slidePos = slidePos + Vector3.new(0, sag, 0)
-					local slideCF = uprightLookAt(slidePos, ZIP_PIRATE_END)
-					if p.npc:IsA("Model") then p.npc:PivotTo(slideCF) else p.npc.CFrame = slideCF end
-					if sa >= 1 then break end
+					local alpha = math.min((os.clock() - slideStart) / RETURN_SLIDE_DUR, 1)
+					local eased = alpha * alpha * (3 - 2 * alpha)
+					local slidePos = ropeEnd:Lerp(ropeStart, eased)
+					slidePos += Vector3.new(0, -2.5 * math.sin(eased * math.pi), 0)
+					setObjectCF(pirateData.npc, uprightLookAt(slidePos, ropeStart))
+					if alpha >= 1 then
+						break
+					end
 					task.wait()
 				end
 
-				-- Step 4: drop down to pirate boat deck
-				local retPos = pBoatPos + Vector3.new(0, PIRATE_BOAT_DECK_Y, 0) + fwd * ((i - 3) * 2)
-				local retCF = uprightLookAt(retPos, retPos - perp)
-				animateMove(p.npc, uprightLookAt(ZIP_PIRATE_END, retPos), retCF, 0.15, 0)
+				local pbPos = pirateBoat:GetPivot().Position
+				local returnPos = pbPos + Vector3.new(0, PIRATE_BOAT_DECK_Y, 0) + fwd * ((idx - pirateMid) * PIRATE_SPACING)
+				local returnCF = uprightLookAt(returnPos, returnPos + fwd)
+				animateMove(pirateData.npc, uprightLookAt(ropeStart, returnPos), returnCF, RETURN_DROP_DUR, 0)
+				pirateData.cf = returnCF
 			end)
 		end
-		task.wait(1.5)
+		runTimedParallel(returnTasks, RETURN_WINDOW)
 
-		-- Remove zipline
-		Debris:AddItem(zipAnchorA, 0.5)
-		Debris:AddItem(zipAnchorB, 0.5)
+		Debris:AddItem(zipA, 0.1)
+		Debris:AddItem(zipB, 0.1)
 
-		-- Parent pirates to boat so they travel with it
-		for _, p in ipairs(pirates) do
-			if p.npc.Parent then p.npc.Parent = pBoat end
+		for _, pirate in ipairs(pirates) do
+			if pirate.npc.Parent then
+				local worldCF = getObjectCF(pirate.npc)
+				pirate.npc.Parent = pirateBoat
+				setObjectCF(pirate.npc, worldCF)
+				pirate.cf = worldCF
+			end
 		end
 
-		-- Boat accelerates away along arrival axis
-		local escapePos = pBoatPos + perp * SPAWN_DIST
-		escapePos = Vector3.new(escapePos.X, boatRoot.Position.Y, escapePos.Z)
-		local escapeCF = uprightLookAt(escapePos, escapePos + perp)
-		animateMove(pBoat, pBoat:GetPivot(), escapeCF, 3.5, 0)
+		local driveAwayDur = math.max(0.2, PHASE_ESCAPE - RETURN_WINDOW)
+		local escapePos = pirateBoat:GetPivot().Position + fwd * ESCAPE_DIST
+		escapePos = Vector3.new(escapePos.X, rootPos.Y, escapePos.Z)
+		animateMove(pirateBoat, pirateBoat:GetPivot(), uprightLookAt(escapePos, escapePos + fwd), driveAwayDur, 0)
 
-		-- Cleanup
-		Debris:AddItem(pBoat, 1)
+		Debris:AddItem(pirateBoat, 2)
 	end)
 end
 
