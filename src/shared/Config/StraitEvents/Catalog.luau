@@ -12,8 +12,6 @@ export type StraitEventDef = {
 	displayName: string,
 	skipWaypointPause: boolean?,
 	pauseSeconds: number?,
-	-- Fraction of hullMax removed (stackable across events).
-	hullDamageFraction: number?,
 	-- Multiplies shipment.priceMultiplier (e.g. 0.94 = 6% effective payout hit at resolution).
 	priceMultiplierFactor: number?,
 	totalLoss: boolean?,
@@ -76,14 +74,12 @@ Catalog.Events = {
 		id = "RoutinePaperwork",
 		severity = "Low",
 		displayName = "Routine paperwork",
-		hullDamageFraction = 0,
 		priceMultiplierFactor = 0.97,
 	} :: StraitEventDef,
 	{
 		id = "CoastGuardGlance",
 		severity = "Low",
 		displayName = "Coast guard glance",
-		hullDamageFraction = 0.04,
 		priceMultiplierFactor = 1,
 	} :: StraitEventDef,
 	{
@@ -91,7 +87,6 @@ Catalog.Events = {
 		severity = "Low",
 		displayName = "Minor inspection",
 		pauseSeconds = EXT,
-		hullDamageFraction = 0.02,
 		priceMultiplierFactor = 0.95,
 	} :: StraitEventDef,
 	{
@@ -118,14 +113,12 @@ Catalog.Events = {
 		severity = "Medium",
 		displayName = "Extended inspection",
 		pauseSeconds = EXT,
-		hullDamageFraction = 0.08,
 		priceMultiplierFactor = 0.88,
 	} :: StraitEventDef,
 	{
 		id = "FuelSiphoningAttempt",
 		severity = "Medium",
 		displayName = "Fuel siphoning attempt",
-		hullDamageFraction = 0.05,
 		priceMultiplierFactor = 0.82,
 	} :: StraitEventDef,
 	{
@@ -133,7 +126,6 @@ Catalog.Events = {
 		severity = "Medium",
 		displayName = "Engine room smoke",
 		pauseSeconds = EXT,
-		hullDamageFraction = 0.12,
 		priceMultiplierFactor = 0.9,
 	} :: StraitEventDef,
 	{

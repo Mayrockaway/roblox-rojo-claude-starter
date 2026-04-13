@@ -161,7 +161,7 @@ local config = {
 	pipeMaxLength = 60,
 	pipeSnapRadius = 3,
 	chunks = { size = 8, rows = 10, cols = 10, startingCenterSize = 4 },
-	boatCatalog = {},
+	shipSkinCatalog = {},
 }
 
 local ownedPlot: Model? = nil
@@ -1142,9 +1142,10 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 	end
 
 	if kind == "ShipmentStarted" then
-		setStatus(string.format("Shipment out: %s (%d barrels)", tostring(data.boatTypeId), tonumber(data.loaded) or 0), true)
-	elseif kind == "ShipmentEvent" then
-		setStatus(string.format("Shipment hit: -%d hull", tonumber(data.damage) or 0), false)
+		local shipLabel = if typeof(data.shipDisplayName) == "string" and (data :: any).shipDisplayName ~= ""
+			then (data :: any).shipDisplayName
+			else tostring((data :: any).shipSkinId or (data :: any).boatTypeId or "Ship")
+		setStatus(string.format("Shipment out: %s (%d barrels)", shipLabel, tonumber(data.loaded) or 0), true)
 	elseif kind == "ShipmentResolved" then
 		setStatus(
 			string.format(

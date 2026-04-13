@@ -16,8 +16,7 @@ Rows marked `ProposedDefault` in `design_clarifications_template.csv` map to the
 
 - Multiple shipments allowed; max 30 active per player.
 - No shipment cooldown.
-- Partial delivery is HP-proportional:
-  - `delivered = floor(loaded * clamp(hpPercent, 0, 1))`
+- At voyage completion, delivered barrels match the **loaded manifest** (whole units), minus any **strait barrel-loss** events that removed cargo during the trip. There is **no hull / HP delivery gate**.
 - Events are RNG-driven, with no strict per-shipment max cap.
 - Catastrophic events can occur in all states at different probabilities.
 - Delay events can increase additional event opportunities.

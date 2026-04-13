@@ -9,7 +9,7 @@ Authoritative handoff for **oil shipment** strait events: design intent, tuning 
 - During each **oil shipment** voyage, evaluate **up to three** independent strait events at **fixed lane waypoints** (ordinals **3, 6, 9** along the sorted route polyline).
 - Event **chance** and **severity pool** depend on the **current global strait state** at the moment the ship **crosses** each trigger (strait may change mid-voyage).
 - Outcomes are **server-authoritative**; **all clients** receive notifications so other players can see that something happened to a shipment.
-- **Legacy** time-random hull events during the voyage are **removed** in favor of this system.
+- **Legacy** time-random voyage hazard ticks on the shipment timeline are **removed** for oil in favor of this system.
 - **Future:** player upgrades may reduce event chance; boat `eventRisk` in config is reserved for that (not used yet).
 
 ---
@@ -91,10 +91,10 @@ Each of the three waypoints rolls separately:
 
 ### 4.7 Networking
 
-- Server fires `ShipmentVisualEvent` with `type = "StraitWaypointEvent"` and a `data` table (owner, shipment id, event id, severity, lane waypoint index, `totalLoss`, optional hull/multiplier/pause, `worldPosition`).
+- Server fires `ShipmentVisualEvent` with `type = "StraitWaypointEvent"` and a `data` table (owner, shipment id, event id, severity, lane waypoint index, `totalLoss`, optional multiplier/pause/barrel-loss fields, `worldPosition`).
 - **All clients** are fired; client shows **StraitWaypointEvent** even when `ownerUserId` is not the local player (abbreviated copy for non-owners).
 
-Legacy **`ShipmentEvent`** (random hull hits during voyage) is **no longer emitted** by `OilShipmentService`.
+Legacy **`ShipmentEvent`** (random voyage hazard ticks on the non–oil shipment path) is **no longer emitted** by `OilShipmentService`.
 
 ---
 
@@ -108,7 +108,6 @@ Each event may set:
 | `severity` | `Low` \| `Medium` \| `High` |
 | `displayName` | UI / status string |
 | `totalLoss` | If true: shipment ends with **no payout**, boat cleaned up, `ShipmentResolved` with failure reason |
-| `hullDamageFraction` | Fraction of `hullMax` subtracted from `hullCurrent` (affects delivered barrels via existing HP %) |
 | `priceMultiplierFactor` | Multiplies cumulative `shipment.priceMultiplier` (applied at payout resolution) |
 | `skipWaypointPause` | If true: **no** default pause at waypoint (explicit opt-out) |
 | `pauseSeconds` | If pausing: override default pause length (catalog may use `ExtendedWaypointPauseSeconds`) |
@@ -151,7 +150,7 @@ Defined in `StraitEvents/Catalog.luau`. **Design notes, fantasy, and backlog:** 
 
 ### 8.2 Locked plan — world VFX & SFX (cosmetic only)
 
-**Authority:** The server owns all outcomes. Clients **only spawn cosmetics** in response to replicated `ShipmentVisualEvent` packets. **No** client-side changes to economy, hull, manifest, or voyage state.
+**Authority:** The server owns all outcomes. Clients **only spawn cosmetics** in response to replicated `ShipmentVisualEvent` packets. **No** client-side changes to economy, manifest, or voyage state.
 
 **Entry point:** One code path subscribing to `ShipmentVisualEvent`, branching on `packet.type == "StraitWaypointEvent"`. May live in a small **dedicated module** required from `init.client.luau` (preferred as the table grows) or inline for v1.
 
@@ -166,7 +165,7 @@ Defined in `StraitEvents/Catalog.luau`. **Design notes, fantasy, and backlog:** 
 | `pauseSeconds` | Align **effect length** (emit duration, looping cutoff, or “hold” timer) with server hold so VFX does not outrun the frozen ship. |
 | `totalLoss` | If true, use **high-impact preset** (e.g. burst + alarm); same `pauseSeconds` window as server pre-cleanup wait. |
 | `ownerUserId`, `shipmentId`, `laneWaypointIndex` | Debug, future ship lookup, analytics. |
-| `barrelsLost`, `totalLoaded`, `hullCurrent`, `hullMax`, `priceMultiplier` | **HUD only** — not for spawning gameplay objects. |
+| `barrelsLost`, `totalLoaded`, `priceMultiplier` | **HUD only** — not for spawning gameplay objects. |
 
 **`eventId` → presentation row:** Shared or client config table: per `eventId`, optional `ParticleEmitter` template name (ReplicatedStorage/Assets), `Sound` asset id, optional secondary cue (light flash, beam). **Unknown `eventId`:** use **severity-only** generic row (Low / Medium / High) so new catalog events always get *something*.
 
@@ -213,7 +212,7 @@ Defined in `StraitEvents/Catalog.luau`. **Design notes, fantasy, and backlog:** 
 
 ## 9b. How to test (events are data, not Studio instances)
 
-**Events already “exist”** as rows in `src/shared/Config/StraitEvents/Catalog.luau`. There are no separate scripts or models required for the server to pick an event: it chooses a catalog entry by severity and applies `hullDamageFraction`, `priceMultiplierFactor`, `totalLoss`, and pause flags.
+**Events already “exist”** as rows in `src/shared/Config/StraitEvents/Catalog.luau`. There are no separate scripts or models required for the server to pick an event: it chooses a catalog entry by severity and applies `priceMultiplierFactor`, `totalLoss`, `looseBarrelLossFraction`, and pause flags.
 
 **Why you might see nothing in play:**
 

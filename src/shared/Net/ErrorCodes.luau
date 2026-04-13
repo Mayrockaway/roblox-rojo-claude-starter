@@ -11,6 +11,7 @@ local ErrorCodes = {
 	CapacityExceeded = "ERR_CAPACITY_EXCEEDED",
 	NotEnoughTierOil = "ERR_NOT_ENOUGH_TIER_OIL",
 	TooManyShipments = "ERR_TOO_MANY_SHIPMENTS",
+	ShipmentInProgress = "ERR_SHIPMENT_IN_PROGRESS",
 	ShipmentNotFound = "ERR_SHIPMENT_NOT_FOUND",
 	SettlementDuplicate = "ERR_SETTLEMENT_DUPLICATE",
 	StraitNotClosed = "ERR_STRAIT_NOT_CLOSED",

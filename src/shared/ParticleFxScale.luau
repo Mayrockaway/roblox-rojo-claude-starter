@@ -1,7 +1,6 @@
 --!strict
--- Scale ParticleEmitter visuals from a ship footprint + optional per-boat-type multiplier.
+-- Scale ParticleEmitter visuals from ship footprint × optional per-skin multiplier.
 
-local BoatConfig = require(script.Parent.Config.BoatConfig)
 local ShipmentFxConfig = require(script.Parent.Config.ShipmentFxConfig)
 
 local ParticleFxScale = {}
@@ -14,7 +13,7 @@ local function scaleNumberSequence(ns: NumberSequence, factor: number): NumberSe
 	return NumberSequence.new(keypoints)
 end
 
-function ParticleFxScale.ComputePayloadScale(boat: Instance, boatTypeId: string?): number
+function ParticleFxScale.ComputePayloadScale(boat: Instance, fxParticleScaleOverride: number?): number
 	local raw = 1
 	if boat:IsA("Model") then
 		local ext = boat:GetExtentsSize()
@@ -26,12 +25,8 @@ function ParticleFxScale.ComputePayloadScale(boat: Instance, boatTypeId: string?
 	end
 
 	local typeMul = 1
-	if typeof(boatTypeId) == "string" then
-		local def = BoatConfig.Boats[boatTypeId]
-		local m = if def then (def :: any).fxParticleScale else nil
-		if typeof(m) == "number" and m == m and m > 0 then
-			typeMul = m
-		end
+	if typeof(fxParticleScaleOverride) == "number" and fxParticleScaleOverride == fxParticleScaleOverride and fxParticleScaleOverride > 0 then
+		typeMul = fxParticleScaleOverride
 	end
 
 	return math.clamp(

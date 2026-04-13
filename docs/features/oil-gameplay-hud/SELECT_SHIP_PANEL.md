@@ -24,7 +24,7 @@ SelectShipPanelGui [ScreenGui] IgnoreGuiInset true
          │  │     ├─ TitleTopRule (gold hairline)
          │  │     ├─ TitleRow → SelectShipTitle ("SELECT SHIP")
          │  │     ├─ TitleBottomRule
-         │  │     └─ SelectShipSubtitle ("Choose a hull to manage")
+         │  │     └─ SelectShipSubtitle ("Choose a ship to manage")
          │  ├─ ShipGridScroll [ScrollingFrame] — UIFlexItem Fill; **AutomaticCanvasSize Y**
          │  │  └─ ShipGridLayout [UIGridLayout] — **FillDirectionMaxCells = 3**, CellPadding; **CellSize** uses offset for stable card size (tune in Studio)
          │  ├─ OwnedCounterStrip → ShipsOwnedCounterLabel ("3 / 6 ships owned" placeholder)

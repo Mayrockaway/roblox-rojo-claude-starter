@@ -25,12 +25,13 @@ function SelfTest.Run()
 	assert(a.plannedDurationSeconds == b.plannedDurationSeconds, "Deterministic duration mismatch.")
 	assert(#a.events == #b.events, "Deterministic event count mismatch.")
 
-	local deliveredByTier = ShipmentEngine.BuildDeliveredByTier({
+	local deliveredByTier, deliveredTotal = ShipmentEngine.BuildDeliveredByTier({
 		HeavyCrude = 20,
 		PremiumRefined = 10,
-	}, 0.5)
-	assert(deliveredByTier.HeavyCrude == 10, "Delivered tier rounding mismatch.")
-	assert(deliveredByTier.PremiumRefined == 5, "Delivered tier rounding mismatch.")
+	})
+	assert(deliveredByTier.HeavyCrude == 20, "Delivered tier should match loaded when not destroyed.")
+	assert(deliveredByTier.PremiumRefined == 10, "Delivered tier should match loaded when not destroyed.")
+	assert(deliveredTotal == 30, "Delivered total should equal loaded total.")
 end
 
 return SelfTest

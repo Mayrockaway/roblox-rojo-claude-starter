@@ -236,13 +236,13 @@ local function playRoutinePaperworkFx(worldPos: Vector3, holdSeconds: number, da
 
 	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
 	local boat = if shipmentId ~= "" then findActiveShipmentBoatByShipmentId(shipmentId) else nil
-	local hull = if boat then getBoatAttachmentPart(boat) else nil
+	local attachPart = if boat then getBoatAttachmentPart(boat) else nil
 
-	if hull and boat then
+	if attachPart and boat then
 		anchor.Parent = boat
-		anchor.CFrame = hull.CFrame * ROUTINE_PAPERWORK_DECK_OFFSET
+		anchor.CFrame = attachPart.CFrame * ROUTINE_PAPERWORK_DECK_OFFSET
 		local weld = Instance.new("WeldConstraint")
-		weld.Part0 = hull
+		weld.Part0 = attachPart
 		weld.Part1 = anchor
 		weld.Parent = anchor
 	else

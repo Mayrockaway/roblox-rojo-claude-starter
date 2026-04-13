@@ -6,8 +6,8 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
-local BoatConfig = require(Shared:WaitForChild("Config"):WaitForChild("BoatConfig"))
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
+local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
@@ -58,6 +58,11 @@ local refineryOilByTier: { [string]: number } = {
 	PremiumRefined = 0,
 }
 
+local latestResolved: {
+	capacity: number,
+	dispatchFee: number,
+}? = nil
+
 local function perBarrelOilUnits(): number
 	local barrelsCfg = OilConfig.Barrels
 	local n = (barrelsCfg and barrelsCfg.PerBarrelOil) or 1
@@ -81,27 +86,16 @@ local function remotesFolder(): Folder
 	return Shared:WaitForChild("Remotes") :: Folder
 end
 
-local function sortedBoats(): { { boatTypeId: string, capacity: number, dispatchFee: number } }
-	local list: { { boatTypeId: string, capacity: number, dispatchFee: number } } = {}
-	for boatTypeId, def in pairs(BoatConfig.Boats) do
-		table.insert(list, {
-			boatTypeId = boatTypeId,
-			capacity = def.capacity,
-			dispatchFee = def.dispatchFee,
-		})
+local function resolvedStats(): { capacity: number, dispatchFee: number }
+	if latestResolved then
+		return latestResolved
 	end
-	table.sort(list, function(a, b)
-		return a.capacity < b.capacity
-	end)
-	return list
+	local r = ShipStats.Resolve(1, 1)
+	return { capacity = r.capacity, dispatchFee = r.dispatchFee }
 end
 
-local function maxBoatCapacity(): number
-	local m = 0
-	for _, def in pairs(BoatConfig.Boats) do
-		m = math.max(m, def.capacity)
-	end
-	return m
+local function maxShipCapacityOilUnits(): number
+	return resolvedStats().capacity
 end
 
 local function sumSelectedBarrels(): number
@@ -123,20 +117,6 @@ end
 
 local function maxBarrelsInRefineryForTier(tier: string): number
 	return math.floor((refineryOilByTier[tier] or 0) / perBarrelOilUnits())
-end
-
--- `BoatConfig` capacity is in oil units (same as manifest / `OilStateService:CanConsumeManifest`).
-local function pickBoatForLoad(oilUnits: number): { boatTypeId: string, capacity: number, dispatchFee: number }?
-	if oilUnits <= 0 then
-		return nil
-	end
-	local boats = sortedBoats()
-	for _, b in ipairs(boats) do
-		if b.capacity >= oilUnits then
-			return b
-		end
-	end
-	return boats[#boats]
 end
 
 local function clampSelectionsToInventory()
@@ -179,6 +159,18 @@ local function mergeOilByTierFromSnapshot(snap: any): boolean
 	return true
 end
 
+local function mergeResolvedFromSnapshot(snap: any)
+	if typeof(snap) ~= "table" or typeof((snap :: any).resolvedShip) ~= "table" then
+		return
+	end
+	local rs = (snap :: any).resolvedShip
+	local cap = tonumber(rs.capacity)
+	local fee = tonumber(rs.dispatchFee)
+	if cap and cap > 0 and fee and fee >= 0 then
+		latestResolved = { capacity = math.floor(cap), dispatchFee = math.floor(fee) }
+	end
+end
+
 local function applyCargoRowTitles(row: Instance)
 	local title = ROW_FRAME_TITLE[row.Name]
 	if not title then
@@ -211,13 +203,9 @@ end
 local function refreshFooter()
 	local totalBarrels = sumSelectedBarrels()
 	local oilLoad = sumSelectedOilUnits()
-	local boat = pickBoatForLoad(oilLoad)
+	local rs = resolvedStats()
 	if shipmentCostLabel then
-		if boat then
-			shipmentCostLabel.Text = string.format("Shipment Cost: $%d", boat.dispatchFee)
-		else
-			shipmentCostLabel.Text = "Shipment Cost: —"
-		end
+		shipmentCostLabel.Text = string.format("Shipment Cost: $%d", rs.dispatchFee)
 	end
 	if totalBarrelsLabel then
 		totalBarrelsLabel.Text = string.format("Total barrels: %d", totalBarrels)
@@ -230,8 +218,9 @@ local function refreshFooter()
 		end
 	end
 	if dispatchButton then
-		local fee = boat and boat.dispatchFee or 0
-		local can = oilLoad > 0 and boat ~= nil and latestCash >= fee and oilLoad <= maxBoatCapacity()
+		local fee = rs.dispatchFee
+		local cap = rs.capacity
+		local can = oilLoad > 0 and latestCash >= fee and oilLoad <= cap
 		dispatchButton.Active = can
 		dispatchButton.AutoButtonColor = can
 	end
@@ -246,7 +235,7 @@ local function bumpTier(tier: string, delta: number)
 		return
 	end
 	if delta > 0 then
-		if sumSelectedOilUnits() + per > maxBoatCapacity() then
+		if sumSelectedOilUnits() + per > maxShipCapacityOilUnits() then
 			return
 		end
 	end
@@ -262,14 +251,11 @@ local function tryDispatch()
 	end
 	lastDispatchFire = now
 	local oilLoad = sumSelectedOilUnits()
-	local boat = pickBoatForLoad(oilLoad)
-	if not boat or oilLoad <= 0 then
+	local rs = resolvedStats()
+	if oilLoad <= 0 or oilLoad > rs.capacity then
 		return
 	end
-	if oilLoad > boat.capacity then
-		return
-	end
-	if latestCash < boat.dispatchFee then
+	if latestCash < rs.dispatchFee then
 		return
 	end
 	local per = perBarrelOilUnits()
@@ -280,7 +266,6 @@ local function tryDispatch()
 	local ev = requestDispatchShipmentEvent
 	if ev then
 		ev:FireServer({
-			boatTypeId = boat.boatTypeId,
 			manifest = manifest,
 		})
 	end
@@ -298,6 +283,7 @@ local function disconnectAll()
 	dispatchButton = nil
 	requestDispatchShipmentEvent = nil
 	wiredScreen = nil
+	latestResolved = nil
 end
 
 local function wireShipOil(screen: ScreenGui)
@@ -391,6 +377,7 @@ local function wireShipOil(screen: ScreenGui)
 		if typeof(snap.cash) == "number" then
 			latestCash = snap.cash
 		end
+		mergeResolvedFromSnapshot(snap)
 		if mergeOilByTierFromSnapshot(snap) then
 			clampSelectionsToInventory()
 			refreshRowUi()
@@ -424,6 +411,7 @@ local function wireShipOil(screen: ScreenGui)
 				if typeof(st.cash) == "number" then
 					latestCash = st.cash
 				end
+				mergeResolvedFromSnapshot(st)
 				if mergeOilByTierFromSnapshot(st) then
 					clampSelectionsToInventory()
 				end

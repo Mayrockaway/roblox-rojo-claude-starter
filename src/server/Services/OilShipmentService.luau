@@ -10,6 +10,8 @@ local TweenService = game:GetService("TweenService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local BoatConfig = require(Shared:WaitForChild("Config"):WaitForChild("BoatConfig"))
+local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
+local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
 local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
 local StraitEventCatalog = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("Catalog"))
 local StraitEventConfig = require(Shared:WaitForChild("Config"):WaitForChild("StraitEventConfig"))
@@ -259,22 +261,8 @@ function OilShipmentService:Stop()
 	self._connections = {}
 end
 
-function OilShipmentService:GetBoatCatalogForClient()
-	local list = {}
-	for boatTypeId, def in pairs(BoatConfig.Boats) do
-		table.insert(list, {
-			boatTypeId = boatTypeId,
-			displayName = def.displayName,
-			dispatchFee = def.dispatchFee,
-			capacity = def.capacity,
-			hullHp = def.hullHp,
-			travelSeconds = def.travelSeconds,
-		})
-	end
-	table.sort(list, function(a, b)
-		return a.capacity < b.capacity
-	end)
-	return list
+function OilShipmentService:GetShipSkinCatalogForClient()
+	return ShipSkinCatalog.ListForClient()
 end
 
 function OilShipmentService:_handleDispatch(player: Player, payload)
@@ -283,20 +271,9 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		return
 	end
 
-	local boatTypeId = payload.boatTypeId
 	local manifest = payload.manifest
-	if typeof(boatTypeId) ~= "string" then
-		self:_sendActionResult(player, false, "ERR_BAD_PAYLOAD", "Missing boatTypeId.")
-		return
-	end
 	if typeof(manifest) ~= "table" then
 		self:_sendActionResult(player, false, "ERR_BAD_PAYLOAD", "Missing manifest.")
-		return
-	end
-
-	local boatDef = BoatConfig.Boats[boatTypeId]
-	if not boatDef then
-		self:_sendActionResult(player, false, "ERR_BAD_BOAT", "Unknown boat type.")
 		return
 	end
 
@@ -306,18 +283,25 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		return
 	end
 
-	if (state.activeShipmentCount or 0) >= BoatConfig.MaxConcurrentShipmentsPerPlayer then
-		self:_sendActionResult(player, false, "ERR_TOO_MANY_SHIPMENTS", "Too many active shipments.")
+	-- One oil shipment at a time until it returns (count decremented on resolve / abandon).
+	if (state.activeShipmentCount or 0) > 0 then
+		self:_sendActionResult(player, false, "ERR_SHIPMENT_IN_PROGRESS", "Your ship is still out. Wait for it to return before dispatching again.")
 		return
 	end
+
+	local skinId = (typeof(state.shipSkinId) == "string" and ShipSkinCatalog.Skins[state.shipSkinId] and state.shipSkinId)
+		or "DefaultTanker"
+	local speedL = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, 10)
+	local capL = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, 25)
+	local stats = ShipStats.Resolve(speedL, capL)
 
 	local okManifest, codeManifest, messageManifest, totalRequested = self._oilStateService:CanConsumeManifest(player.UserId, manifest)
 	if not okManifest then
 		self:_sendActionResult(player, false, codeManifest, messageManifest)
 		return
 	end
-	if totalRequested > boatDef.capacity then
-		self:_sendActionResult(player, false, "ERR_BOAT_CAPACITY", "Boat capacity exceeded.")
+	if totalRequested > stats.capacity then
+		self:_sendActionResult(player, false, "ERR_BOAT_CAPACITY", "Ship capacity exceeded.")
 		return
 	end
 
@@ -331,7 +315,7 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		normalizedManifest[tier] = floorPositive(tonumber(manifest[tier]) or 0)
 	end
 
-	if not self._oilStateService:TrySpendCash(player.UserId, boatDef.dispatchFee) then
+	if not self._oilStateService:TrySpendCash(player.UserId, stats.dispatchFee) then
 		self:_sendActionResult(player, false, "ERR_NOT_ENOUGH_CASH", "Not enough cash for dispatch fee.")
 		return
 	end
@@ -347,20 +331,20 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 	local shipment = {
 		shipmentId = HttpService:GenerateGUID(false),
 		ownerUserId = player.UserId,
-		boatTypeId = boatTypeId,
+		shipSkinId = skinId,
+		shipSpeedLevel = speedL,
+		shipCapacityLevel = capL,
 		manifest = normalizedManifest,
 		totalLoaded = totalRequested,
-		dispatchFee = boatDef.dispatchFee,
-		travelSeconds = boatDef.travelSeconds,
-		hullMax = boatDef.hullHp,
-		hullCurrent = boatDef.hullHp,
-		eventRisk = boatDef.eventRisk, -- reserved for future upgrade-based mitigation
+		dispatchFee = stats.dispatchFee,
+		travelSeconds = stats.travelSeconds,
+		eventRisk = stats.eventRisk,
 		priceMultiplier = BoatConfig.DefaultPriceMultiplier,
 	}
 
 	self:_sendActionResult(player, true, "OK", "Shipment dispatched.", {
 		shipmentId = shipment.shipmentId,
-		boatTypeId = boatTypeId,
+		shipSkinId = skinId,
 		totalLoaded = totalRequested,
 	})
 
@@ -377,7 +361,7 @@ function OilShipmentService:_runShipment(shipment)
 		return
 	end
 
-	local boat = self:_spawnBoat(plot)
+	local boat = self:_spawnBoat(plot, shipment)
 	local loadPoint = plot:FindFirstChild("ShipLoadPoint")
 	local stackRoot = plot:FindFirstChild("BarrelStackRoot")
 
@@ -420,10 +404,13 @@ function OilShipmentService:_runShipment(shipment)
 
 	local dockHoldBeforeVoyage = 1.2
 	local tNow = workspace:GetServerTimeNow()
+	local shipLabel = ShipSkinCatalog.GetSkin(shipment.shipSkinId).displayName
 	self:_emitShipmentEvent("ShipmentStarted", {
 		ownerUserId = ownerUserId,
 		shipmentId = shipment.shipmentId,
-		boatTypeId = shipment.boatTypeId,
+		shipSkinId = shipment.shipSkinId,
+		shipDisplayName = shipLabel,
+		boatTypeId = shipLabel,
 		loaded = shipment.totalLoaded,
 		dispatchFee = shipment.dispatchFee,
 		voyageStartTime = tNow + dockHoldBeforeVoyage,
@@ -551,18 +538,22 @@ function OilShipmentService:_runShipment(shipment)
 		end
 
 		if alpha >= 1 then
+			-- Clients keep clock-based fill until this moment (path + pauses), then snap full for finish zone.
+			self:_emitShipmentEvent("ShipmentVoyageComplete", {
+				ownerUserId = ownerUserId,
+				shipmentId = shipment.shipmentId,
+			})
 			break
 		end
 		task.wait() -- run every frame (~30fps) for smooth movement
 	end
 
-	local hpPercent = clamp01(shipment.hullCurrent / shipment.hullMax)
 	local deliveredManifest = {}
 	local totalDelivered = 0
 
 	for _, tier in ipairs(TIER_ORDER) do
 		local loadedTier = shipment.manifest[tier] or 0
-		local deliveredTier = floorPositive(loadedTier * hpPercent)
+		local deliveredTier = floorPositive(loadedTier)
 		deliveredManifest[tier] = deliveredTier
 		totalDelivered += deliveredTier
 	end
@@ -575,11 +566,13 @@ function OilShipmentService:_runShipment(shipment)
 	self._oilStateService:DecrementShipmentCount(ownerUserId)
 	self._oilStateService:PushState(ownerUserId)
 
+	local shipLabelR = ShipSkinCatalog.GetSkin(shipment.shipSkinId).displayName
 	self:_emitShipmentEvent("ShipmentResolved", {
 		ownerUserId = ownerUserId,
 		shipmentId = shipment.shipmentId,
-		boatTypeId = shipment.boatTypeId,
-		hpPercent = hpPercent,
+		shipSkinId = shipment.shipSkinId,
+		shipDisplayName = shipLabelR,
+		boatTypeId = shipLabelR,
 		loaded = shipment.totalLoaded,
 		delivered = totalDelivered,
 		lost = shipment.totalLoaded - totalDelivered,
@@ -803,11 +796,13 @@ end
 function OilShipmentService:_finishShipmentWithoutPayout(shipment, reason: string)
 	self._oilStateService:DecrementShipmentCount(shipment.ownerUserId)
 	self._oilStateService:PushState(shipment.ownerUserId)
+	local shipLabelF = ShipSkinCatalog.GetSkin(shipment.shipSkinId).displayName
 	self:_emitShipmentEvent("ShipmentResolved", {
 		ownerUserId = shipment.ownerUserId,
 		shipmentId = shipment.shipmentId,
-		boatTypeId = shipment.boatTypeId,
-		hpPercent = 0,
+		shipSkinId = shipment.shipSkinId,
+		shipDisplayName = shipLabelF,
+		boatTypeId = shipLabelF,
 		loaded = shipment.totalLoaded,
 		delivered = 0,
 		lost = shipment.totalLoaded,
@@ -974,12 +969,11 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	if log then
 		print(
 			string.format(
-				"  [StraitShipment DEBUG] ROLLED severity=%s → catalog pick: id=%s  displayName=%q  totalLoss=%s  hullFrac=%s  priceMult×=%s  barrelLossFrac=%s  skipPause=%s",
+				"  [StraitShipment DEBUG] ROLLED severity=%s → catalog pick: id=%s  displayName=%q  totalLoss=%s  priceMult×=%s  barrelLossFrac=%s  skipPause=%s",
 				severity,
 				def.id,
 				def.displayName,
 				tostring(def.totalLoss),
-				def.hullDamageFraction and string.format("%.3f", def.hullDamageFraction) or "—",
 				def.priceMultiplierFactor and string.format("%.3f", def.priceMultiplierFactor) or "—",
 				def.looseBarrelLossFraction and string.format("%.3f", def.looseBarrelLossFraction) or "—",
 				tostring(def.skipWaypointPause == true)
@@ -987,7 +981,8 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		)
 	end
 
-	local particleFxScale = ParticleFxScale.ComputePayloadScale(boat, shipment.boatTypeId)
+	local skinFx = ShipSkinCatalog.GetSkin(shipment.shipSkinId).fxParticleScale
+	local particleFxScale = ParticleFxScale.ComputePayloadScale(boat, skinFx)
 
 	-- Special missile event handling: rapid barrage of missiles all around the ship
 	if def.missileEvent then
@@ -1221,11 +1216,6 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		return true
 	end
 
-	if def.hullDamageFraction and def.hullDamageFraction > 0 then
-		local damage = floorPositive(shipment.hullMax * def.hullDamageFraction)
-		shipment.hullCurrent = math.max(0, shipment.hullCurrent - damage)
-	end
-
 	if def.priceMultiplierFactor and def.priceMultiplierFactor > 0 then
 		shipment.priceMultiplier *= def.priceMultiplierFactor
 	end
@@ -1249,8 +1239,6 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		severity = severity,
 		laneWaypointIndex = laneWaypointIndex,
 		totalLoss = false,
-		hullCurrent = shipment.hullCurrent,
-		hullMax = shipment.hullMax,
 		priceMultiplier = shipment.priceMultiplier,
 		pauseSeconds = pauseSeconds,
 		worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
@@ -1269,11 +1257,9 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	if log then
 		print(
 			string.format(
-				"  [StraitShipment DEBUG] OUTCOME: event applied (engine=%s bracket=%s)  hull=%d/%d  priceMultiplier=%.4f  barrelsLost=%d  totalLoaded=%d  pause=%.1fs  fired StraitWaypointEvent to clients",
+				"  [StraitShipment DEBUG] OUTCOME: event applied (engine=%s bracket=%s)  priceMultiplier=%.4f  barrelsLost=%d  totalLoaded=%d  pause=%.1fs  fired StraitWaypointEvent to clients",
 				engineState,
 				bracket,
-				shipment.hullCurrent,
-				shipment.hullMax,
 				shipment.priceMultiplier,
 				barrelsLost,
 				shipment.totalLoaded,
@@ -1284,7 +1270,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	return false
 end
 
-function OilShipmentService:_spawnBoat(plot: Model): Instance
+function OilShipmentService:_spawnBoat(plot: Model, shipment): Instance
 	local container = plot:FindFirstChild("OilVisuals")
 	if not (container and container:IsA("Folder")) then
 		container = Instance.new("Folder")
@@ -1292,7 +1278,24 @@ function OilShipmentService:_spawnBoat(plot: Model): Instance
 		container.Parent = plot
 	end
 
-	local boat = if self._boatTemplate then self._boatTemplate:Clone() else self:_createFallbackBoat()
+	local skin = ShipSkinCatalog.GetSkin(shipment.shipSkinId)
+	local templateName = skin.templateName
+	local assetsFolder = ReplicatedStorage:FindFirstChild("Assets")
+	local template = assetsFolder and assetsFolder:FindFirstChild(templateName)
+	if not (template and (template:IsA("Model") or template:IsA("BasePart"))) then
+		if RunService:IsStudio() then
+			warn(
+				string.format(
+					"[OilShipmentService] Ship template %q missing for skin %q; using Tanker fallback.",
+					templateName,
+					tostring(shipment.shipSkinId)
+				)
+			)
+		end
+		template = self._boatTemplate
+	end
+
+	local boat = if template then (template :: Instance):Clone() else self:_createFallbackBoat()
 	boat.Name = "ActiveShipmentBoat"
 	boat.Parent = container
 	return boat
@@ -1477,14 +1480,14 @@ function OilShipmentService:_createFallbackBoat(): Model
 	local model = Instance.new("Model")
 	model.Name = "FallbackTanker"
 
-	local hull = Instance.new("Part")
-	hull.Name = "Hull"
-	hull.Size = Vector3.new(14, 3, 30)
-	hull.Material = Enum.Material.Metal
-	hull.Color = Color3.fromRGB(58, 72, 88)
-	hull.Anchored = true
-	hull.CanCollide = false
-	hull.Parent = model
+	local body = Instance.new("Part")
+	body.Name = "FallbackShipBody"
+	body.Size = Vector3.new(14, 3, 30)
+	body.Material = Enum.Material.Metal
+	body.Color = Color3.fromRGB(58, 72, 88)
+	body.Anchored = true
+	body.CanCollide = false
+	body.Parent = model
 
 	local deck = Instance.new("Part")
 	deck.Name = "Deck"
@@ -1493,10 +1496,10 @@ function OilShipmentService:_createFallbackBoat(): Model
 	deck.Color = Color3.fromRGB(90, 96, 106)
 	deck.Anchored = true
 	deck.CanCollide = false
-	deck.CFrame = hull.CFrame * CFrame.new(0, 2.0, 0)
+	deck.CFrame = body.CFrame * CFrame.new(0, 2.0, 0)
 	deck.Parent = model
 
-	model.PrimaryPart = hull
+	model.PrimaryPart = body
 	return model
 end
 
@@ -1575,27 +1578,22 @@ function OilShipmentService:DebugDispatchMissile(player: Player)
 	dbg.ForceMissileStrike = true
 
 	local manifest = { HeavyCrude = 30, StandardCrude = 0, LightSweet = 0, PremiumRefined = 0 }
-	local boatTypeId = "RustSkiff"
-	local boatDef = BoatConfig.Boats[boatTypeId]
-	if not boatDef then
-		-- Pick first available boat
-		for k, v in pairs(BoatConfig.Boats) do
-			boatTypeId = k
-			boatDef = v
-			break
-		end
-	end
+	local st = self._oilStateService:GetState(userId)
+	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
+	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
+	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
+	local stats = ShipStats.Resolve(speedL, capL)
 
 	local shipment = {
 		shipmentId = HttpService:GenerateGUID(false),
 		ownerUserId = userId,
-		boatTypeId = boatTypeId,
+		shipSkinId = skinId,
+		shipSpeedLevel = speedL,
+		shipCapacityLevel = capL,
 		manifest = manifest,
 		totalLoaded = 30,
 		dispatchFee = 0,
-		travelSeconds = boatDef and boatDef.travelSeconds or 60,
-		hullMax = boatDef and boatDef.hullHp or 100,
-		hullCurrent = boatDef and boatDef.hullHp or 100,
+		travelSeconds = stats.travelSeconds,
 		eventRisk = 0,
 		priceMultiplier = 1,
 	}
@@ -1630,26 +1628,22 @@ function OilShipmentService:DebugDispatchMine(player: Player)
 	dbg.ForceMineStrike = true
 
 	local manifest = { HeavyCrude = 30, StandardCrude = 0, LightSweet = 0, PremiumRefined = 0 }
-	local boatTypeId = "RustSkiff"
-	local boatDef = BoatConfig.Boats[boatTypeId]
-	if not boatDef then
-		for k, v in pairs(BoatConfig.Boats) do
-			boatTypeId = k
-			boatDef = v
-			break
-		end
-	end
+	local st = self._oilStateService:GetState(userId)
+	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
+	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
+	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
+	local stats = ShipStats.Resolve(speedL, capL)
 
 	local shipment = {
 		shipmentId = HttpService:GenerateGUID(false),
 		ownerUserId = userId,
-		boatTypeId = boatTypeId,
+		shipSkinId = skinId,
+		shipSpeedLevel = speedL,
+		shipCapacityLevel = capL,
 		manifest = manifest,
 		totalLoaded = 30,
 		dispatchFee = 0,
-		travelSeconds = boatDef and boatDef.travelSeconds or 60,
-		hullMax = boatDef and boatDef.hullHp or 100,
-		hullCurrent = boatDef and boatDef.hullHp or 100,
+		travelSeconds = stats.travelSeconds,
 		eventRisk = 0,
 		priceMultiplier = 1,
 	}
@@ -1682,26 +1676,22 @@ function OilShipmentService:DebugDispatchPirate(player: Player)
 	dbg.ForcePirateRaid = true
 
 	local manifest = { HeavyCrude = 15, StandardCrude = 10, LightSweet = 5, PremiumRefined = 0 }
-	local boatTypeId = "RustSkiff"
-	local boatDef = BoatConfig.Boats[boatTypeId]
-	if not boatDef then
-		for k, v in pairs(BoatConfig.Boats) do
-			boatTypeId = k
-			boatDef = v
-			break
-		end
-	end
+	local st = self._oilStateService:GetState(userId)
+	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
+	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
+	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
+	local stats = ShipStats.Resolve(speedL, capL)
 
 	local shipment = {
 		shipmentId = HttpService:GenerateGUID(false),
 		ownerUserId = userId,
-		boatTypeId = boatTypeId,
+		shipSkinId = skinId,
+		shipSpeedLevel = speedL,
+		shipCapacityLevel = capL,
 		manifest = manifest,
 		totalLoaded = 30,
 		dispatchFee = 0,
-		travelSeconds = boatDef and boatDef.travelSeconds or 60,
-		hullMax = boatDef and boatDef.hullHp or 100,
-		hullCurrent = boatDef and boatDef.hullHp or 100,
+		travelSeconds = stats.travelSeconds,
 		eventRisk = 0,
 		priceMultiplier = 1,
 	}

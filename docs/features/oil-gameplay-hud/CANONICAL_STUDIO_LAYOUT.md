@@ -29,6 +29,9 @@ This document is the **repo source of truth** for structure and **author-intent*
 HUD [ScreenGui]
 └─ Canvas [Frame]
    ├─ UIPadding
+   ├─ ShipmentProgressPanel *(may be a direct child of `Canvas` instead of under `TopRow` — `ShipmentProgressHud` finds it by **name** anywhere under `Canvas` or `HUD`.)*
+   │  ├─ ProgressTrack → ProgressFill (Studio: rounded trough + fill bevel — `UICorner`, `UIStroke` on track + fill, `UIGradient` on fill for depth; `ClipsDescendants` on track if **Hint** is **not** inside the track. Runtime animates **fill X scale** and may tint fill / gradient; may add **`UIScale` `HintFxScale`** under **Hint** for pulse / celebration only.)
+   │  └─ **Hint** — **`TextLabel`** or **`TextButton`** (or a **Frame** named `Hint` containing one) as a **sibling** of `ProgressTrack` **or nested under `ProgressTrack`**. **Author this in Studio**; `ShipmentProgressHud` only updates **Text** / **TextColor3** / **RichText**. See **§ ShipmentProgressPanel (Studio)** below.
    ├─ TopRow [Frame]
    │  ├─ UIListLayout (Horizontal)
    │  ├─ OilPricePanel  (click: **`OilPriceButton`** opens read-only **`OilPriceInfoPanelGui`** — see `OIL_PRICE_INFO_PANEL_MOCKUP.md`)
@@ -36,9 +39,6 @@ HUD [ScreenGui]
    │  │     ├─ UIListLayout (Horizontal)
    │  │     ├─ PriceIndicator  (Frame, aspect 1, corner)
    │  │     └─ OilPriceButton (`TextButton`) → PriceText (TextLabel, TextScaled)
-   │  ├─ ShipmentProgressPanel
-   │  │  ├─ ProgressTrack → ProgressFill (Studio: rounded trough + fill bevel — `UICorner`, `UIStroke` on track + fill, `UIGradient` on fill for depth; `ClipsDescendants` on track if Hint is **not** inside track. Runtime: `ShipmentProgressHud` / `ShipmentProgressBootstrap` only animates fill **X scale** + Hint **Text**.)
-   │  │  └─ Hint (`TextLabel`): Studio — `TextScaled`, `UITextSizeConstraint` (e.g. min 12 max 36), `Size` uses **Y scale** ~0.38 for legibility; optional `TextWrapped`
    │  └─ StraitStatusPanel
    │     └─ StraitStatusButton (`TextButton`) → StraitText (plus strait indicator widget if present in Studio); opens **`StraitInfoPanelGui`**
    ├─ LeftStack [Frame]
@@ -54,6 +54,28 @@ HUD [ScreenGui]
       └─ TeleportWarehouseButton
 ```
 
+## ShipmentProgressPanel (Studio)
+
+Author this block **in Studio** (not via `ShipmentProgressHud` creating instances). Names are what the client binds to.
+
+**Where it runs:** Anything under **`StarterGui`** clones into **`PlayerGui`** when the player loads — that is normal and preferred. You do **not** need a purely runtime-built ScreenGui for this feature; `ShipmentProgressHud` resolves **`HUD`** / **`ShipmentProgressPanel`** under **`PlayerGui`** (including nested ScreenGuis if your place uses them).
+
+1. Under **`HUD` → `Canvas`**, keep **`ShipmentProgressPanel`** (a `Frame`). It may sit beside **`TopRow`** or elsewhere under `Canvas`; the script finds it by name anywhere under **`PlayerGui`** / **`HUD`** / **`Canvas`**.
+2. **Children of `ShipmentProgressPanel`** (recommended order if you use **`UIListLayout` (Vertical)** on the panel):
+   - **`ProgressTrack`** (`Frame`): holds **`ProgressFill`** (`Frame` or `ImageLabel`). `ProgressFill` uses **scale-based width** on the X axis; the script sets `Size.X.Scale` for progress.
+   - **`Hint`**: either
+     - a **`TextLabel`** named **`Hint`**, or  
+     - a **`Frame`** (or `Folder`) named **`Hint`** whose first deep **`TextLabel`** is the line to drive.
+3. **`Hint`** may be a **sibling** of **`ProgressTrack`** or a **`TextLabel` nested under `ProgressTrack`** (subtitle-under-bar layouts); the client binds the named **`Hint`** first, then the first suitable **`TextLabel`**. If you have **several** panels named `ShipmentProgressPanel`, remove duplicates so only the live HUD instance remains.
+4. **Hint (`TextLabel`) properties** (starting point — tune in Studio):
+   - **Text:** leave empty or `…`; `ShipmentProgressHud` sets copy on shipment events.
+   - **RichText:** `true` (success / partial-loss messages use markup).
+   - **TextScaled:** `true`; add **`UITextSizeConstraint`** (e.g. min **10**, max **22**).
+   - **TextWrapped:** `true`; **TextXAlignment:** Center; **BackgroundTransparency:** 1.
+   - **Active:** `false` (script also forces this) so the strip does not eat clicks.
+   - Optional: **`UIStroke`** on the label for legibility over water.
+5. Remove any old placeholder **`TextLabel`** that is **not** the canonical **`Hint`** (e.g. duplicate route text), so only one status line updates.
+
 ## Author-intent geometry (re-apply if Studio drifts)
 
 | Instance | Role | Canonical settings |
@@ -67,6 +89,7 @@ HUD [ScreenGui]
 
 ## Placeholder copy (scripts will replace later)
 
+- `ShipmentProgressPanel.Hint` (`TextLabel`): leave blank or `…` — **`ShipmentProgressHud`** drives text when shipments run (see **ShipmentProgressPanel (Studio)** above).
 - `OilPriceButton.PriceText`: `Oil: $--/bbl`
 - `StraitText`: `Strait: Closed` (or split pill/indicator per final art)
 - `CashText`: `Cash: $0`

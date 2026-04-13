@@ -5,6 +5,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local ShipProfileMigration = require(Shared:WaitForChild("Config"):WaitForChild("ShipProfileMigration"))
 
 local PlotResourceService = {}
 
@@ -57,12 +58,72 @@ function PlotResourceService:Start()
 		self:_handlePickupBarrelRequest(player, payload)
 	end))
 
+	local function resolveSkinIdFromPayload(payload: any): string?
+		if typeof(payload) ~= "table" then
+			return nil
+		end
+		if typeof(payload.skinId) == "string" then
+			return payload.skinId
+		end
+		if typeof(payload.boatTypeId) == "string" then
+			local mapped = ShipProfileMigration.SkinIdForLegacyBoatTypeId(payload.boatTypeId)
+			if mapped then
+				return mapped
+			end
+			return payload.boatTypeId
+		end
+		return nil
+	end
+
 	local setBoatEvent = self._remoteService:GetEvent(RemoteNames.RequestSetSelectedBoat)
 	table.insert(self._connections, setBoatEvent.OnServerEvent:Connect(function(player, payload)
-		if typeof(payload) ~= "table" or typeof(payload.boatTypeId) ~= "string" then
+		local skinId = resolveSkinIdFromPayload(payload)
+		if not skinId then
 			return
 		end
-		local ok, _err = self._oilStateService:SetSelectedBoatTypeId(player.UserId, payload.boatTypeId)
+		local ok, _err = self._oilStateService:SetShipSkinId(player.UserId, skinId)
+		if ok then
+			self._oilStateService:PushState(player.UserId)
+		end
+	end))
+
+	local setSkinEvent = self._remoteService:GetEvent(RemoteNames.RequestSetShipSkin)
+	table.insert(self._connections, setSkinEvent.OnServerEvent:Connect(function(player, payload)
+		local skinId = resolveSkinIdFromPayload(payload)
+		if not skinId then
+			self:_sendResult(player, false, "ERR_BAD_PAYLOAD", "Missing skinId.")
+			return
+		end
+		local ok, err = self._oilStateService:SetShipSkinId(player.UserId, skinId)
+		if ok then
+			self._oilStateService:PushState(player.UserId)
+			self:_sendResult(player, true, "OK", "Ship skin updated.", { skinId = skinId })
+		else
+			self:_sendResult(player, false, err, "Could not update ship skin.")
+		end
+	end))
+
+	local upSpeed = self._remoteService:GetEvent(RemoteNames.RequestUpgradeShipSpeed)
+	table.insert(self._connections, upSpeed.OnServerEvent:Connect(function(player)
+		if not self:_allow(player.UserId, "upgradeShipSpeed", 25, 10) then
+			self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many upgrade requests.")
+			return
+		end
+		local ok, code, msg = self._oilStateService:TryUpgradeShipSpeed(player.UserId)
+		self:_sendResult(player, ok, code, msg)
+		if ok then
+			self._oilStateService:PushState(player.UserId)
+		end
+	end))
+
+	local upCap = self._remoteService:GetEvent(RemoteNames.RequestUpgradeShipCapacity)
+	table.insert(self._connections, upCap.OnServerEvent:Connect(function(player)
+		if not self:_allow(player.UserId, "upgradeShipCapacity", 25, 10) then
+			self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many upgrade requests.")
+			return
+		end
+		local ok, code, msg = self._oilStateService:TryUpgradeShipCapacity(player.UserId)
+		self:_sendResult(player, ok, code, msg)
 		if ok then
 			self._oilStateService:PushState(player.UserId)
 		end
@@ -88,7 +149,7 @@ function PlotResourceService:Start()
 					cols = OilConfig.Chunks.GridCols,
 					startingCenterSize = OilConfig.Chunks.StartingCenterSize,
 				},
-				boatCatalog = self._oilShipmentService and self._oilShipmentService:GetBoatCatalogForClient() or {},
+				shipSkinCatalog = self._oilShipmentService and self._oilShipmentService:GetShipSkinCatalogForClient() or {},
 			},
 		}
 	end

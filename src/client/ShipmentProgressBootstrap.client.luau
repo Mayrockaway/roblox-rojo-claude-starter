@@ -3,6 +3,7 @@
 -- or block startup behind the long remotes chain in `init`.
 
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
@@ -62,16 +63,29 @@ if not okE or not (shipmentVisualEvent and shipmentVisualEvent:IsA("RemoteEvent"
 end
 local shipmentVisualEventTyped = shipmentVisualEvent :: RemoteEvent
 
+if RunService:IsStudio() then
+	print("[ShipmentProgressBootstrap] ShipmentVisualEvent listener active (oil uses { type, data }; legacy may be flat).")
+end
+
 shipmentVisualEventTyped.OnClientEvent:Connect(function(packet: any)
 	if typeof(packet) ~= "table" then
 		return
 	end
 	local kind = packet.type
-	local data = packet.data
-	if typeof(kind) ~= "string" or typeof(data) ~= "table" then
+	if typeof(kind) ~= "string" then
 		return
 	end
-	if typeof(data.ownerUserId) ~= "number" or data.ownerUserId ~= player.UserId then
+	local data = packet.data
+	if typeof(data) ~= "table" then
+		-- Legacy tanker path: flat payload `{ type = "...", playerUserId = ..., ... }`
+		if typeof(packet.playerUserId) == "number" or typeof(packet.ownerUserId) == "number" then
+			data = packet
+		else
+			return
+		end
+	end
+	local uid = data.ownerUserId or data.playerUserId
+	if typeof(uid) ~= "number" or uid ~= player.UserId then
 		return
 	end
 	mod.onVisualPacket(kind, data, player)

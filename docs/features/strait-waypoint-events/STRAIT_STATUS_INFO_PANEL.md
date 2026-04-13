@@ -46,7 +46,7 @@ StraitInfoPanelGui [ScreenGui] IgnoreGuiInset true, ResetOnSpawn false
 | --- | --- | --- |
 | **OpenSection** | OPEN | Only a few dark clouds. Big ships and small ones pass without much trouble. |
 | **RestrictedSection** | RESTRICTED | Must keep eyes sharp. Some escorts riding close—but cargo can still move. |
-| **ClosedSection** | CLOSED | Wrecks, shoals, and angry hulls ahead. Rough chop and sparks on the water. Many crews stay in port till it cools. |
+| **ClosedSection** | CLOSED | Wrecks, shoals, and heavy traffic ahead. Rough chop and sparks on the water. Many crews stay in port till it cools. |
 
 **Footer:** The sea changes fast. Take this as tavern talk, not a king's word.
 

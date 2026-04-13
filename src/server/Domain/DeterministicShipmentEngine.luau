@@ -14,7 +14,8 @@ end
 function Engine.BuildPlan(params)
 	local rng = Random.new(params.seed)
 	local baseSuccessChance = math.clamp(params.baseSuccessChance + params.escortBonus + params.durabilityBonus - params.sizePenalty, 0, 1)
-	local hp = 1.0
+	-- Voyage hazard model: integrity hits 0 → total loss. Cargo delivery is **not** scaled by remaining integrity.
+	local integrity = 1.0
 	local events = {}
 	local elapsed = 0
 
@@ -23,7 +24,7 @@ function Engine.BuildPlan(params)
 	local shouldContinue = rng:NextNumber() <= chanceToStart
 	local eventCount = 0
 
-	while shouldContinue and eventCount < ShipmentConfig.HardSafetyMaxEvents and hp > 0 do
+	while shouldContinue and eventCount < ShipmentConfig.HardSafetyMaxEvents and integrity > 0 do
 		local eventId, eventData = Engine._rollEvent(rng)
 		local travelGap = rng:NextNumber(ShipmentConfig.MinEventSpacingSeconds, ShipmentConfig.MaxEventSpacingSeconds)
 		elapsed += travelGap
@@ -31,7 +32,7 @@ function Engine.BuildPlan(params)
 
 		local damage = rng:NextNumber(eventData.damageMin, eventData.damageMax)
 		local delay = rng:NextInteger(eventData.delayMin, eventData.delayMax)
-		hp = math.max(0, hp - damage)
+		integrity = math.max(0, integrity - damage)
 
 		table.insert(events, {
 			index = eventCount,
@@ -39,7 +40,7 @@ function Engine.BuildPlan(params)
 			atOffsetSeconds = elapsed,
 			damage = damage,
 			delaySeconds = delay,
-			hpAfter = hp,
+			integrityAfter = integrity,
 		})
 
 		baseDuration += delay
@@ -51,21 +52,19 @@ function Engine.BuildPlan(params)
 		baseSuccessChance = baseSuccessChance,
 		plannedDurationSeconds = math.max(1, baseDuration),
 		events = events,
-		hpAfterEvents = hp,
-		destroyedByEvents = hp <= 0,
+		integrityAfterEvents = integrity,
+		destroyedByEvents = integrity <= 0,
 	}
 end
 
-function Engine.BuildDeliveredByTier(loadedByTier, hpPercent)
+function Engine.BuildDeliveredByTier(loadedByTier)
 	local deliveredByTier = {}
 	local deliveredTotal = 0
 	local loadedTotal = 0
-	local ratio = math.clamp(hpPercent, 0, 1)
 	for tier, loaded in pairs(loadedByTier) do
 		local loadedInt = floorPositive(loaded)
-		local delivered = floorPositive(loadedInt * ratio)
-		deliveredByTier[tier] = delivered
-		deliveredTotal += delivered
+		deliveredByTier[tier] = loadedInt
+		deliveredTotal += loadedInt
 		loadedTotal += loadedInt
 	end
 

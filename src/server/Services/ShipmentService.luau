@@ -268,7 +268,7 @@ function ShipmentService:_runShipmentLifecycle(shipment)
 			eventId = eventRecord.eventId,
 			damage = eventRecord.damage,
 			delaySeconds = eventRecord.delaySeconds,
-			hp = eventRecord.hpAfter,
+			integrityAfter = eventRecord.integrityAfter or eventRecord.hpAfter,
 		})
 	end
 
@@ -295,13 +295,11 @@ function ShipmentService:_resolveShipment(shipment)
 		shipment.enteredClosedState = true
 	end
 
-	local hp = shipment.plan.hpAfterEvents
 	local destroyed = shipment.plan.destroyedByEvents
 	if not destroyed and shipment.enteredClosedState then
 		local closeRng = Random.new(shipment.seed + 1337)
 		if closeRng:NextNumber() <= ShipmentConfig.ClosedStateExtraDestructionFloor then
 			destroyed = true
-			hp = 0
 		end
 	end
 
@@ -311,10 +309,7 @@ function ShipmentService:_resolveShipment(shipment)
 	if destroyed then
 		outcome = "Destroyed"
 	else
-		deliveredByTier, deliveredTotal = ShipmentEngine.BuildDeliveredByTier(shipment.loadedByTier, hp)
-		if deliveredTotal < shipment.totalLoaded then
-			outcome = "Partial"
-		end
+		deliveredByTier, deliveredTotal = ShipmentEngine.BuildDeliveredByTier(shipment.loadedByTier)
 	end
 
 	local payout = self:_calculatePayout(deliveredByTier, shipment.dispatchSnapshot.priceMultiplier)

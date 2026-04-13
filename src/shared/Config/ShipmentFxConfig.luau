@@ -1,6 +1,6 @@
 --!strict
 -- Tuning for strait / shipment world FX (particles, etc.) vs ship footprint.
--- Calibrate `ReferenceShipHorizontalExtentStuds` once your "medium" hull is final:
+-- Calibrate `ReferenceShipHorizontalExtentStuds` once your reference ship footprint is final:
 -- in Studio, select the boat Model → note the larger of X / Z from Bounding Box / Extents.
 
 local ShipmentFxConfig = {

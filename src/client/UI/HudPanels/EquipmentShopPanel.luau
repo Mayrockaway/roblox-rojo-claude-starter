@@ -1,10 +1,10 @@
 --!strict
--- Equipment shop modal (`StarterGui.EquipmentShopPanelGui` → `PlayerGui`).
+-- Equipment shop modal (`StarterGui.ShopPanelGui` → `PlayerGui`).
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
 
-local SCREEN_NAME = "EquipmentShopPanelGui"
+local SCREEN_NAME = "ShopPanelGui"
 
 local EquipmentShopPanel = {}
 

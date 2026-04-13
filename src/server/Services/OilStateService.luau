@@ -8,7 +8,10 @@ local RunService = game:GetService("RunService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local BiomeConfig = require(Shared:WaitForChild("Config"):WaitForChild("BiomeConfig"))
-local BoatConfig = require(Shared:WaitForChild("Config"):WaitForChild("BoatConfig"))
+local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
+local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
+local ShipUpgradeConfig = require(Shared:WaitForChild("Config"):WaitForChild("ShipUpgradeConfig"))
+local ShipProfileMigration = require(Shared:WaitForChild("Config"):WaitForChild("ShipProfileMigration"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local OilStateService = {}
@@ -55,7 +58,7 @@ end
 
 local function buildDefaultPersisted()
 	return {
-		version = 3,
+		version = 4,
 		cash = OilConfig.StartingCash,
 		storageCapacity = OilConfig.StartingStorageCapacity,
 		oilByTier = {
@@ -72,7 +75,9 @@ local function buildDefaultPersisted()
 		nextPipeId = 1,
 		nextDrumId = 1,
 		nextAttachmentId = 1,
-		selectedBoatTypeId = "RustSkiff",
+		shipSpeedLevel = 1,
+		shipCapacityLevel = 1,
+		shipSkinId = "DefaultTanker",
 	}
 end
 
@@ -405,7 +410,26 @@ function OilStateService:GetStateForClient(userId: number)
 		stalledDrillCount = stalledCount,
 		maxActiveDrills = maxActiveDrillsFor(state),
 		activeShipmentCount = state.activeShipmentCount,
-		selectedBoatTypeId = state.selectedBoatTypeId or "RustSkiff",
+		shipSpeedLevel = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel),
+		shipCapacityLevel = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel),
+		shipSkinId = (typeof(state.shipSkinId) == "string" and state.shipSkinId) or "DefaultTanker",
+		resolvedShip = (function()
+			local spd = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
+			local capL = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
+			local rs = ShipStats.Resolve(spd, capL)
+			return {
+				capacity = rs.capacity,
+				dispatchFee = rs.dispatchFee,
+				travelSeconds = rs.travelSeconds,
+				eventRisk = rs.eventRisk,
+			}
+		end)(),
+		upgradeShipSpeedCost = ShipUpgradeConfig.GetSpeedUpgradeCost(
+			math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
+		),
+		upgradeShipCapacityCost = ShipUpgradeConfig.GetCapacityUpgradeCost(
+			math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
+		),
 		chunks = chunks,
 		drills = drills,
 		pipes = pipes,
@@ -1185,7 +1209,9 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 			PremiumRefined = 0,
 		},
 		activeShipmentCount = 0,
-		selectedBoatTypeId = "RustSkiff",
+		shipSpeedLevel = 1,
+		shipCapacityLevel = 1,
+		shipSkinId = "DefaultTanker",
 		chunksById = chunksById,
 		drillsById = {},
 		pipesByCellKey = {},
@@ -1325,8 +1351,22 @@ function OilStateService:_applyPersistedIntoState(state, persisted)
 		end
 	end
 
-	if typeof(persisted.selectedBoatTypeId) == "string" and BoatConfig.Boats[persisted.selectedBoatTypeId] then
-		state.selectedBoatTypeId = persisted.selectedBoatTypeId
+	-- Player ship (v4): migrate from legacy `selectedBoatTypeId` when profile version < 4.
+	local pVer = tonumber(persisted.version) or 1
+	if pVer >= 4 then
+		if typeof(persisted.shipSkinId) == "string" and ShipSkinCatalog.Skins[persisted.shipSkinId] then
+			state.shipSkinId = persisted.shipSkinId
+		else
+			state.shipSkinId = "DefaultTanker"
+		end
+		state.shipSpeedLevel = math.clamp(math.floor(tonumber(persisted.shipSpeedLevel) or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
+		state.shipCapacityLevel = math.clamp(math.floor(tonumber(persisted.shipCapacityLevel) or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
+	else
+		local legacyId = if typeof(persisted.selectedBoatTypeId) == "string" then persisted.selectedBoatTypeId else nil
+		local migrated = ShipProfileMigration.FromLegacyBoatTypeId(legacyId)
+		state.shipSkinId = migrated.skinId
+		state.shipSpeedLevel = math.clamp(migrated.speedLevel, 1, ShipUpgradeConfig.MaxSpeedLevel)
+		state.shipCapacityLevel = math.clamp(migrated.capacityLevel, 1, ShipUpgradeConfig.MaxCapacityLevel)
 	end
 
 	if typeof(persisted.unlockedChunkIds) == "table" then
@@ -1595,22 +1635,67 @@ function OilStateService:_serializeState(state)
 	persisted.nextDrillId = state.nextDrillId
 	persisted.nextPipeId = state.nextPipeId
 	persisted.nextDrumId = state.nextDrumId
-	persisted.selectedBoatTypeId = state.selectedBoatTypeId or "RustSkiff"
+	persisted.version = 4
+	persisted.shipSpeedLevel = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
+	persisted.shipCapacityLevel = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
+	persisted.shipSkinId = (typeof(state.shipSkinId) == "string" and state.shipSkinId) or "DefaultTanker"
 
 	return persisted
 end
 
-function OilStateService:SetSelectedBoatTypeId(userId: number, boatTypeId: string): (boolean, string)
+function OilStateService:SetShipSkinId(userId: number, skinId: string): (boolean, string)
 	local state = self._statesByUserId[userId]
 	if not state then
 		return false, "ERR_NO_STATE"
 	end
-	if typeof(boatTypeId) ~= "string" or not BoatConfig.Boats[boatTypeId] then
-		return false, "ERR_BAD_BOAT"
+	if typeof(skinId) ~= "string" or not ShipSkinCatalog.Skins[skinId] then
+		return false, "ERR_BAD_SKIN"
 	end
-	state.selectedBoatTypeId = boatTypeId
+	state.shipSkinId = skinId
 	self:_markDirty(userId)
 	return true, "OK"
+end
+
+function OilStateService:TryUpgradeShipSpeed(userId: number): (boolean, string, string)
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false, "ERR_NO_STATE", "State unavailable."
+	end
+	local level = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
+	if level >= ShipUpgradeConfig.MaxSpeedLevel then
+		return false, "ERR_MAX_SPEED", "Ship speed is already maxed."
+	end
+	local cost = ShipUpgradeConfig.GetSpeedUpgradeCost(level)
+	if not cost then
+		return false, "ERR_MAX_SPEED", "Ship speed is already maxed."
+	end
+	if not self:TrySpendCash(userId, cost) then
+		return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to upgrade speed.", cost)
+	end
+	state.shipSpeedLevel = level + 1
+	self:_markDirty(userId)
+	return true, "OK", "Speed upgraded."
+end
+
+function OilStateService:TryUpgradeShipCapacity(userId: number): (boolean, string, string)
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false, "ERR_NO_STATE", "State unavailable."
+	end
+	local level = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
+	if level >= ShipUpgradeConfig.MaxCapacityLevel then
+		return false, "ERR_MAX_CAPACITY", "Ship capacity is already maxed."
+	end
+	local cost = ShipUpgradeConfig.GetCapacityUpgradeCost(level)
+	if not cost then
+		return false, "ERR_MAX_CAPACITY", "Ship capacity is already maxed."
+	end
+	if not self:TrySpendCash(userId, cost) then
+		return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to upgrade capacity.", cost)
+	end
+	state.shipCapacityLevel = level + 1
+	self:_markDirty(userId)
+	return true, "OK", "Capacity upgraded."
 end
 
 return OilStateService

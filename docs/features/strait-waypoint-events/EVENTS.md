@@ -18,7 +18,7 @@ Use this file to **list and design** each event before (or while) you add it to 
 | **displayName** | Short player-facing line |
 | **Fantasy** | What happened in the strait (1–3 sentences) |
 | **Player feels** | Delayed? Robbed? Lucky escape? |
-| **Mechanics** | Map to: hull %, price mult, pause, skipPause, totalLoss, `looseBarrelLossFraction` (spill whole barrels) |
+| **Mechanics** | Map to: price mult, pause, skipPause, totalLoss, `looseBarrelLossFraction` (spill whole barrels) |
 | **Catalog row** | Paste the Luau table row when implemented |
 | **Status** | Draft \| Ready \| In catalog \| Cut |
 ```
@@ -27,7 +27,6 @@ Use this file to **list and design** each event before (or while) you add it to 
 
 | Knob | Effect |
 |------|--------|
-| `hullDamageFraction` | `0..1` of `hullMax`; reduces **delivered barrels** via existing HP % at voyage end |
 | `priceMultiplierFactor` | Multiplies running `shipment.priceMultiplier` (stacks across events) |
 | `skipWaypointPause` | If true: no wait at waypoint (rare); if false/omit: `pauseSeconds` or **`DefaultWaypointPauseSeconds` (5s)** |
 | `pauseSeconds` | Override pause duration when pausing |
@@ -44,8 +43,8 @@ Use this file to **list and design** each event before (or while) you add it to 
 
 | Severity | Typical fantasy | Success impact |
 |----------|-----------------|----------------|
-| **Low** | Annoyance, paperwork, light scrutiny | Small time sink and/or small payout trim; hull light tap optional |
-| **Medium** | Real trouble: inspections, sabotage, damage | Meaningful pause + payout hit and/or hull; player still finishes run |
+| **Low** | Annoyance, paperwork, light scrutiny | Small time sink and/or small payout trim |
+| **Medium** | Real trouble: inspections, sabotage, cargo loss | Meaningful pause + payout hit and/or barrel loss; player still finishes run |
 | **High** | Catastrophic | **Total loss** today, or (if you add more highs later) near-loss variants |
 
 ---
@@ -54,15 +53,15 @@ Use this file to **list and design** each event before (or while) you add it to 
 
 | Severity | `id` | displayName | Fantasy | Impacts (gameplay) |
 |----------|------|-------------|---------|-------------------|
-| **Low** | `RoutinePaperwork` | Routine paperwork | Minor paperwork snag; convoy idles in channel traffic while clerks sort it. | **~5s** pause; **−3%** payout mult (`×0.97`); no hull. |
-| **Low** | `CoastGuardGlance` | Coast guard glance | Patrol shadows you; crew runs a rough “safety” drill—paint and cargo take a knock. | **~5s** pause; **4%** max hull damage; payout mult unchanged. |
-| **Low** | `MinorInspection` | Minor inspection | Quick document/manifest hold; small fee and readiness ding. | **~10s** pause; **2%** hull; **−5%** payout mult (`×0.95`). |
-| **Low** | `HighWinds` | High winds | Heavy gusts; master heaves to until it eases. | **~10s** pause only (no hull / price / barrels). |
+| **Low** | `RoutinePaperwork` | Routine paperwork | Minor paperwork snag; convoy idles in channel traffic while clerks sort it. | **~5s** pause; **−3%** payout mult (`×0.97`). |
+| **Low** | `CoastGuardGlance` | Coast guard glance | Patrol shadows you; crew runs a rough “safety” drill—cargo rattles but nothing is lost. | **~5s** pause; payout mult unchanged. |
+| **Low** | `MinorInspection` | Minor inspection | Quick document/manifest hold; small fee and readiness ding. | **~10s** pause; **−5%** payout mult (`×0.95`). |
+| **Low** | `HighWinds` | High winds | Heavy gusts; master heaves to until it eases. | **~10s** pause only (no price / barrel changes). |
 | **Medium** | `TurbulentSeas` | Turbulent seas | **Turbulent seas**—the boat **powers through**, but **loses some barrels** as swells work lashings loose and cargo goes over the rail. | **`ceil(10% × on-ship barrels)`** whole barrels removed (Heavy→…→Premium tier order); **~5s** pause; manifest + `totalLoaded` updated for payout. |
 | **Medium** | `PirateRaid` | Pirate raid | Pirates board and grab cargo; your **crew fights them off in time**—but not before they **make off with some barrels**. | **`ceil(25% × on-ship barrels)`** whole barrels removed (same tier order as Turbulent Seas); **~5s** pause; manifest + `totalLoaded` updated. |
-| **Medium** | `ExtendedInspection` | Extended inspection | Full stop for search and paperwork; time burns; penalties stack. | **~10s** pause; **8%** hull; **−12%** payout mult (`×0.88`). |
-| **Medium** | `FuelSiphoningAttempt` | Fuel siphoning attempt | Skiffs at night; crew drives them off—fuel and money lost; brief stop to assess. | **~5s** pause; **5%** hull; **−18%** payout mult (`×0.82`). |
-| **Medium** | `EngineRoomSmoke` | Engine room smoke | Smoke in engineering; crew secures; slowdown and cargo stress. | **~10s** pause; **12%** hull; **−10%** payout mult (`×0.9`). |
+| **Medium** | `ExtendedInspection` | Extended inspection | Full stop for search and paperwork; time burns; penalties stack. | **~10s** pause; **−12%** payout mult (`×0.88`). |
+| **Medium** | `FuelSiphoningAttempt` | Fuel siphoning attempt | Skiffs at night; crew drives them off—fuel and money lost; brief stop to assess. | **~5s** pause; **−18%** payout mult (`×0.82`). |
+| **Medium** | `EngineRoomSmoke` | Engine room smoke | Smoke in engineering; crew secures; slowdown and cargo stress. | **~10s** pause; **−10%** payout mult (`×0.9`). |
 | **High** | `BoardingAndSeizure` | Boarding and seizure | Armed boarding; cargo seized; voyage ends. | **Total loss** (no payout); **~5s** hold for VFX then cleanup. |
 | **High** | `MineStrike` | Mine strike | Drifting hazard / ordnance; catastrophic hit. | **Total loss**; **~5s** hold then cleanup. |
 | **High** | `MissileStrike` | Missile strike | Missiles demolish the shipment. | **Total loss**; **~5s** hold then cleanup. |
@@ -83,8 +82,8 @@ Numbers below are **exactly** what the repo uses; change the catalog first, then
 | **displayName** | Routine paperwork |
 | **Fantasy** | Authorities flag a minor documentation mismatch; clerks process it while the convoy idles in channel traffic. |
 | **Player feels** | Small administrative tax on the run. |
-| **Mechanics** | No hull hit; **3%** effective payout trim (`priceMultiplier × 0.97`); **default pause (~5s)**. |
-| **Catalog** | `hullDamageFraction = 0`, `priceMultiplierFactor = 0.97` |
+| **Mechanics** | **3%** effective payout trim (`priceMultiplier × 0.97`); **default pause (~5s)**. |
+| **Catalog** | `priceMultiplierFactor = 0.97` |
 | **Status** | In catalog |
 
 ---
@@ -95,10 +94,10 @@ Numbers below are **exactly** what the repo uses; change the catalog first, then
 |-------|--------|
 | **Severity** | Low |
 | **displayName** | Coast guard glance |
-| **Fantasy** | A patrol boat shadows you briefly; no full stop, but the crew runs a sloppy “safety” drill that dings the hull paint and rattles cargo. |
-| **Player feels** | Nervous moment; tiny cargo damage, no fee story. |
-| **Mechanics** | **4%** max hull as damage; no price mult change; **default pause (~5s)**. |
-| **Catalog** | `hullDamageFraction = 0.04`, `priceMultiplierFactor = 1` |
+| **Fantasy** | A patrol boat shadows you briefly; no full stop, but the crew runs a sloppy “safety” drill that rattles cargo. |
+| **Player feels** | Nervous moment; no lasting cargo loss. |
+| **Mechanics** | No price mult change; **default pause (~5s)**. |
+| **Catalog** | `priceMultiplierFactor = 1` |
 | **Status** | In catalog |
 
 ---
@@ -111,8 +110,8 @@ Numbers below are **exactly** what the repo uses; change the catalog first, then
 | **displayName** | Minor inspection |
 | **Fantasy** | Quick hold for a document and manifest check; small “processing fee” and a ding to readiness. |
 | **Player feels** | Longer hold + light double penalty. |
-| **Mechanics** | **Extended pause (~10s)**; **2%** hull; **5%** payout trim (`× 0.95`). |
-| **Catalog** | `pauseSeconds = ExtendedWaypointPauseSeconds`, `hullDamageFraction = 0.02`, `priceMultiplierFactor = 0.95` |
+| **Mechanics** | **Extended pause (~10s)**; **5%** payout trim (`× 0.95`). |
+| **Catalog** | `pauseSeconds = ExtendedWaypointPauseSeconds`, `priceMultiplierFactor = 0.95` |
 | **Status** | In catalog |
 
 ---
@@ -125,7 +124,7 @@ Numbers below are **exactly** what the repo uses; change the catalog first, then
 | **displayName** | High winds |
 | **Fantasy** | Heavy gusts or a nasty blow; the master heaves to and holds station until it eases. |
 | **Player feels** | Shipment **held ~10s** at the waypoint; tune `ExtendedWaypointPauseSeconds` later. |
-| **Mechanics** | **`ExtendedWaypointPauseSeconds` (~10s)** only—no hull damage, no payout multiplier change, no barrel loss (pure delay). |
+| **Mechanics** | **`ExtendedWaypointPauseSeconds` (~10s)** only—no payout multiplier change, no barrel loss (pure delay). |
 | **Catalog** | `pauseSeconds = EXT` (`ExtendedWaypointPauseSeconds`) |
 | **Status** | In catalog |
 
@@ -167,8 +166,8 @@ Numbers below are **exactly** what the repo uses; change the catalog first, then
 | **displayName** | Extended inspection |
 | **Fantasy** | Full stop for search and paperwork; time burns and inspectors “find” reasons to assess penalties. |
 | **Player feels** | This run is getting expensive. |
-| **Mechanics** | **Extended pause (~10s)**; **8%** hull; **12%** payout trim (`× 0.88`). |
-| **Catalog** | `pauseSeconds = EXT`, `hullDamageFraction = 0.08`, `priceMultiplierFactor = 0.88` |
+| **Mechanics** | **Extended pause (~10s)**; **12%** payout trim (`× 0.88`). |
+| **Catalog** | `pauseSeconds = EXT`, `priceMultiplierFactor = 0.88` |
 | **Status** | In catalog |
 
 ---
@@ -180,8 +179,8 @@ Numbers below are **exactly** what the repo uses; change the catalog first, then
 | **Severity** | Medium |
 | **displayName** | Fuel siphoning attempt |
 | **Fantasy** | Skiffs try to rob stores at night; crew drives them off but fuel and time are lost; brief full stop while damage is assessed. |
-| **Player feels** | Hit to economics and hull; **~5s** hold for VFX. |
-| **Mechanics** | **Default pause (~5s)**; **5%** hull; **18%** payout trim (`× 0.82`). |
+| **Player feels** | Hit to economics; **~5s** hold for VFX. |
+| **Mechanics** | **Default pause (~5s)**; **18%** payout trim (`× 0.82`). |
 | **Catalog** | No `pauseSeconds` / no `skipWaypointPause` → uses default **5s** |
 | **Status** | In catalog |
 
@@ -194,9 +193,9 @@ Numbers below are **exactly** what the repo uses; change the catalog first, then
 | **Severity** | Medium |
 | **displayName** | Engine room smoke |
 | **Fantasy** | Electrical/smoke alarm; crew secures engineering; slowdown and cargo stress. |
-| **Player feels** | Longer hold + noticeable damage + payout slip. |
-| **Mechanics** | **Extended pause (~10s)**; **12%** hull; **10%** payout trim (`× 0.9`). |
-| **Catalog** | `pauseSeconds = EXT`, `hullDamageFraction = 0.12`, `priceMultiplierFactor = 0.9` |
+| **Player feels** | Longer hold + payout slip. |
+| **Mechanics** | **Extended pause (~10s)**; **10%** payout trim (`× 0.9`). |
+| **Catalog** | `pauseSeconds = EXT`, `priceMultiplierFactor = 0.9` |
 | **Status** | In catalog |
 
 ---
@@ -245,17 +244,17 @@ Numbers below are **exactly** what the repo uses; change the catalog first, then
 
 ## Quick numeric summary (v1)
 
-| id | Sev | Hull frac | Price × | Pause | skipPause | totalLoss |
-|----|-----|-----------|---------|-------|-----------|-----------|
-| RoutinePaperwork | Low | 0 | 0.97 | **~5s** default | no | no |
-| CoastGuardGlance | Low | 0.04 | 1 | **~5s** default | no | no |
-| MinorInspection | Low | 0.02 | 0.95 | **~10s** EXT | no | no |
-| HighWinds | Low | — | — | **~10s** EXT | no | no |
-| TurbulentSeas | Med | — | — | **~5s** default | no | no |
-| PirateRaid | Med | — | — | **~5s** default | no | no |
-| ExtendedInspection | Med | 0.08 | 0.88 | **~10s** EXT | no | no |
-| FuelSiphoningAttempt | Med | 0.05 | 0.82 | **~5s** default | no | no |
-| EngineRoomSmoke | Med | 0.12 | 0.9 | **~10s** EXT | no | no |
+| id | Sev | Price × | Pause | skipPause | totalLoss |
+|----|-----|---------|-------|-----------|-----------|
+| RoutinePaperwork | Low | 0.97 | **~5s** default | no | no |
+| CoastGuardGlance | Low | 1 | **~5s** default | no | no |
+| MinorInspection | Low | 0.95 | **~10s** EXT | no | no |
+| HighWinds | Low | — | **~10s** EXT | no | no |
+| TurbulentSeas | Med | — | **~5s** default | no | no |
+| PirateRaid | Med | — | **~5s** default | no | no |
+| ExtendedInspection | Med | 0.88 | **~10s** EXT | no | no |
+| FuelSiphoningAttempt | Med | 0.82 | **~5s** default | no | no |
+| EngineRoomSmoke | Med | 0.9 | **~10s** EXT | no | no |
 | BoardingAndSeizure | High | — | — | **~5s** (then loss) | — | **yes** |
 | MineStrike | High | — | — | **~5s** (then loss) | — | **yes** |
 | MissileStrike | High | — | — | **~5s** (then loss) | — | **yes** |
@@ -295,3 +294,4 @@ Add rows as ideas; promote to a full template + `Catalog` entry when ready.
 | 2026-04-10 | Global pause policy: **5s** default, **10s** `ExtendedWaypointPauseSeconds` for former long-pause events; **5s** hold before total-loss cleanup; **FuelSiphoningAttempt** no longer skips pause. |
 | 2026-04-10 | Added **Summary table** (all events); **TurbulentSeas** fantasy: powers through + loses barrels. |
 | 2026-04-10 | Added **PirateRaid** (Medium, 25% barrel loss, crew wards off pirates). |
+| 2026-04-10 | Removed **hull / HP delivery gate**: no `hullDamageFraction`; voyage delivery uses manifest minus barrel-loss events only. Docs + catalog aligned. |

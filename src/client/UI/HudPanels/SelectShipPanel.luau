@@ -1,20 +1,26 @@
 --!strict
 -- Select ship modal (`StarterGui.SelectShipPanelGui` → `PlayerGui`).
--- Populated from `BoatConfig`; selection persisted server-side (`OilStateService.selectedBoatTypeId`).
+-- Grid + clone flow mirrors `InventoryAuraGridController` + `InventoryAuraPopulate`:
+-- resolve `ScrollingFrame` + template, destroy prior catalog clones by attribute, clone → parent → Apply.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
-local BoatConfig = require(Shared:WaitForChild("Config"):WaitForChild("BoatConfig"))
+local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
+local SelectShipPopulate = require(script.Parent.SelectShipPopulate)
 
 local SCREEN_NAME = "SelectShipPanelGui"
+local TEMPLATE_NAME = "ShipSelectCardTemplate"
+local CATALOG_ATTR = "ShipSelectCatalogCard"
 
 local GOLD_STROKE = Color3.fromRGB(212, 178, 122)
 local DEFAULT_STROKE = Color3.fromRGB(55, 95, 110)
+
+local SCROLLER_NAMES = { "ShipGridScroll", "ShipScroller", "ShipGrid", "ShipSelectScroll" }
 
 local SelectShipPanel = {}
 
@@ -22,7 +28,7 @@ local wiredScreen: ScreenGui? = nil
 local selectController: HudPanelTypes.HudPanelController? = nil
 local connections: { RBXScriptConnection } = {}
 local cardSelectButtons: { GuiButton } = {}
-local selectedBoatTypeId = "RustSkiff"
+local selectedShipSkinId = "DefaultTanker"
 local requestSetSelectedBoat: RemoteEvent? = nil
 local lastSelectFire = 0.0
 
@@ -30,65 +36,93 @@ local function remotesFolder(): Folder
 	return Shared:WaitForChild("Remotes") :: Folder
 end
 
-local function sortedBoatList(): { { boatTypeId: string, displayName: string, capacity: number } }
-	local list: { { boatTypeId: string, displayName: string, capacity: number } } = {}
-	for boatTypeId, def in pairs(BoatConfig.Boats) do
+local function sortedSkinList(): { SelectShipPopulate.SkinEntry }
+	local list: { SelectShipPopulate.SkinEntry } = {}
+	for skinId, def in pairs(ShipSkinCatalog.Skins) do
 		table.insert(list, {
-			boatTypeId = boatTypeId,
+			skinId = skinId,
 			displayName = def.displayName,
-			capacity = def.capacity,
+			templateName = def.templateName,
+			rarityDisplay = def.rarityDisplay,
 		})
 	end
 	table.sort(list, function(a, b)
-		return a.capacity < b.capacity
+		return a.displayName < b.displayName
 	end)
 	return list
 end
 
-local function boatTemplateModel(boatTypeId: string): Model?
-	local assets = ReplicatedStorage:FindFirstChild("Assets")
-	if not assets then
+local function findTemplatesFolder(screen: ScreenGui): Instance?
+	local direct = screen:FindFirstChild("Templates")
+	if direct then
+		return direct
+	end
+	return screen:FindFirstChild("Templates", true)
+end
+
+local function resolveTemplateRoot(templatesFolder: Instance?): GuiObject?
+	if not templatesFolder then
 		return nil
 	end
-	local byId = assets:FindFirstChild(boatTypeId)
-	if byId and byId:IsA("Model") then
-		return byId
-	end
-	local tanker = assets:FindFirstChild("Tanker")
-	if tanker and tanker:IsA("Model") then
-		return tanker
+	local tpl = templatesFolder:FindFirstChild(TEMPLATE_NAME) or templatesFolder:FindFirstChild(TEMPLATE_NAME, true)
+	if tpl and tpl:IsA("GuiObject") then
+		return tpl
 	end
 	return nil
 end
 
-local function tryFillViewport(vp: ViewportFrame, boatTypeId: string)
-	for _, c in ipairs(vp:GetChildren()) do
-		if c:IsA("Model") or c:IsA("BasePart") then
-			c:Destroy()
+local function findShipScroller(screen: ScreenGui, templatesFolder: Instance?): ScrollingFrame?
+	local function eligible(s: Instance?): boolean
+		if not s or not s:IsA("ScrollingFrame") then
+			return false
+		end
+		if templatesFolder and s:IsDescendantOf(templatesFolder) then
+			return false
+		end
+		return true
+	end
+
+	for _, name in ipairs(SCROLLER_NAMES) do
+		local s = screen:FindFirstChild(name, true)
+		if eligible(s) then
+			return s :: ScrollingFrame
 		end
 	end
-	local template = boatTemplateModel(boatTypeId)
-	if not template then
+	for _, d in screen:GetDescendants() do
+		if eligible(d) then
+			for _, name in ipairs(SCROLLER_NAMES) do
+				if d.Name == name then
+					return d :: ScrollingFrame
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function restoreLegacyShipGridHost(scroll: ScrollingFrame)
+	local legacyHost = scroll:FindFirstChild("ShipGridContent")
+	if not (legacyHost and legacyHost:IsA("Frame")) then
 		return
 	end
-	local clone = template:Clone()
-	clone.Parent = vp
-	if clone:IsA("Model") and not clone.PrimaryPart then
-		local pp = clone:FindFirstChildWhichIsA("BasePart", true)
-		if pp and pp:IsA("BasePart") then
-			clone.PrimaryPart = pp
+	local lay = legacyHost:FindFirstChild("ShipGridLayout")
+	if lay and lay:IsA("UIGridLayout") then
+		lay.Parent = scroll
+	end
+	legacyHost:Destroy()
+end
+
+local function destroyGridCards(scroller: ScrollingFrame)
+	for _, ch in ipairs(scroller:GetChildren()) do
+		if ch:GetAttribute(CATALOG_ATTR) == true then
+			ch:Destroy()
+		elseif ch:IsA("Frame") and string.sub(ch.Name, 1, #"ShipCard_") == "ShipCard_" then
+			ch:Destroy()
 		end
 	end
-	if clone:IsA("Model") and clone.PrimaryPart then
-		clone:SetPrimaryPartCFrame(CFrame.new(0, 0, 0))
-	end
-	local cam = vp:FindFirstChildOfClass("Camera")
-	if cam and clone:IsA("Model") and clone.PrimaryPart then
-		local cf, size = clone:GetBoundingBox()
-		local ext = size / 2
-		local radius = math.max(ext.X, ext.Y, ext.Z, 1)
-		local dist = radius * 2.8
-		cam.CFrame = CFrame.lookAt(cf.Position + Vector3.new(dist, radius * 0.6, dist * 0.6), cf.Position)
+	local row = scroller:FindFirstChild("ShipSelectCardRow")
+	if row then
+		row:Destroy()
 	end
 end
 
@@ -106,16 +140,22 @@ end
 
 local function setCardSelectedVisual(card: Frame, selected: boolean)
 	local stroke = card:FindFirstChild("CardStroke", true)
-	if stroke and stroke:IsA("UIStroke") then
-		stroke.Color = if selected then GOLD_STROKE else DEFAULT_STROKE
+	if not (stroke and stroke:IsA("UIStroke")) then
+		return
 	end
+	if card:GetAttribute("_CardStrokeDefaultT") == nil then
+		card:SetAttribute("_CardStrokeDefaultT", stroke.Thickness)
+	end
+	local baseThickness = tonumber(card:GetAttribute("_CardStrokeDefaultT")) or 2
+	stroke.Color = if selected then GOLD_STROKE else DEFAULT_STROKE
+	stroke.Thickness = if selected then math.max(baseThickness + 3.5, 5) else baseThickness
 end
 
 local function refreshAllCardSelection(cards: { Frame })
 	for _, card in ipairs(cards) do
-		local id = card:GetAttribute("BoatTypeId")
+		local id = card:GetAttribute("SkinId")
 		if typeof(id) == "string" then
-			setCardSelectedVisual(card, id == selectedBoatTypeId)
+			setCardSelectedVisual(card, id == selectedShipSkinId)
 		end
 	end
 end
@@ -136,56 +176,53 @@ local function wireSelectShip(_playerGui: PlayerGui, screen: ScreenGui, ctrl: Hu
 	wiredScreen = screen
 	selectController = ctrl
 
-	local templatesFolder = screen:FindFirstChild("Templates", true)
-	local template = templatesFolder and templatesFolder:FindFirstChild("ShipSelectCardTemplate")
-	local scroll = screen:FindFirstChild("ShipGridScroll", true)
-	if not (template and template:IsA("GuiObject") and scroll and scroll:IsA("ScrollingFrame")) then
+	local templatesFolder = findTemplatesFolder(screen)
+	local template = resolveTemplateRoot(templatesFolder)
+	local scroller = findShipScroller(screen, templatesFolder)
+	if not (template and scroller) then
 		return
 	end
 
-	for _, ch in ipairs(scroll:GetChildren()) do
-		if ch:IsA("Frame") and string.sub(ch.Name, 1, #"ShipCard_") == "ShipCard_" then
-			ch:Destroy()
-		end
+	restoreLegacyShipGridHost(scroller)
+	destroyGridCards(scroller)
+
+	-- `ShipSelectCardTemplate` lives under `ShipTemplatesHost` (same slot as this scroller) so its
+	-- `Size` scale resolves against the same rect as grid cells; keep `UIGridLayout.CellSize` in sync.
+	local grid = scroller:FindFirstChildOfClass("UIGridLayout")
+	if grid and template and template:IsA("GuiObject") then
+		grid.CellSize = template.Size
 	end
 
+	local skins = sortedSkinList()
 	local cards: { Frame } = {}
-	local boats = sortedBoatList()
-	for _, entry in ipairs(boats) do
-		local card = template:Clone()
-		card.Name = "ShipCard_" .. entry.boatTypeId
-		card.Visible = true
-		card:SetAttribute("BoatTypeId", entry.boatTypeId)
-		card.Parent = scroll
 
-		local nameLabel = card:FindFirstChild("ShipCardName", true)
-		if nameLabel and nameLabel:IsA("TextLabel") then
-			nameLabel.Text = entry.displayName
+	for i, entry in ipairs(skins) do
+		if not SelectShipPopulate.ValidateSkin(entry) then
+			continue
 		end
-		local rarity = card:FindFirstChild("ShipCardRarity", true)
-		if rarity and rarity:IsA("TextLabel") then
-			rarity.Text = string.format("Capacity %d", entry.capacity)
+		local clone = template:Clone()
+		clone.Name = "ShipCard_" .. entry.skinId
+		clone.Visible = true
+		clone:SetAttribute(CATALOG_ATTR, true)
+		clone:SetAttribute("SkinId", entry.skinId)
+		clone.LayoutOrder = i
+		clone.Parent = scroller
+		local okApply, errApply = pcall(function()
+			SelectShipPopulate.Apply(clone, entry)
+		end)
+		if not okApply then
+			warn("[SelectShipPanel] Skipped ship card (populate error):", entry.skinId, errApply)
+			clone:Destroy()
+			continue
 		end
-
-		local locked = card:FindFirstChild("LockedPill", true)
-		if locked and locked:IsA("GuiObject") then
-			locked.Visible = false
+		if clone:IsA("Frame") then
+			table.insert(cards, clone)
 		end
-		local owned = card:FindFirstChild("OwnedPill", true)
-		if owned and owned:IsA("GuiObject") then
-			owned.Visible = true
-		end
-
-		local vp = card:FindFirstChild("ShipCardViewport", true)
-		if vp and vp:IsA("ViewportFrame") then
-			tryFillViewport(vp, entry.boatTypeId)
-		end
-
-		local selBtn = findSelectButton(card)
+		local selBtn = findSelectButton(clone)
 		if selBtn then
 			selBtn.Visible = true
 			table.insert(cardSelectButtons, selBtn)
-			local boatTypeId = entry.boatTypeId
+			local skinId = entry.skinId
 			table.insert(connections, selBtn.Activated:Connect(function()
 				local now = os.clock()
 				if now - lastSelectFire < 0.35 then
@@ -194,19 +231,15 @@ local function wireSelectShip(_playerGui: PlayerGui, screen: ScreenGui, ctrl: Hu
 				lastSelectFire = now
 				local ev = requestSetSelectedBoat
 				if ev then
-					ev:FireServer({ boatTypeId = boatTypeId })
+					ev:FireServer({ skinId = skinId })
 				end
 			end))
-		end
-
-		if card:IsA("Frame") then
-			table.insert(cards, card)
 		end
 	end
 
 	local counter = screen:FindFirstChild("ShipsOwnedCounterLabel", true)
 	if counter and counter:IsA("TextLabel") then
-		counter.Text = string.format("%d / %d ships owned", #boats, #boats)
+		counter.Text = string.format("%d / %d skins", #skins, #skins)
 	end
 
 	local rf = remotesFolder()
@@ -219,8 +252,8 @@ local function wireSelectShip(_playerGui: PlayerGui, screen: ScreenGui, ctrl: Hu
 		end)
 		if okSnap and typeof(pack) == "table" then
 			local st = (pack :: any).state
-			if typeof(st) == "table" and typeof(st.selectedBoatTypeId) == "string" and BoatConfig.Boats[st.selectedBoatTypeId] then
-				selectedBoatTypeId = st.selectedBoatTypeId
+			if typeof(st) == "table" and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then
+				selectedShipSkinId = st.shipSkinId
 			end
 		end
 	end
@@ -230,9 +263,9 @@ local function wireSelectShip(_playerGui: PlayerGui, screen: ScreenGui, ctrl: Hu
 		if typeof(snap) ~= "table" then
 			return
 		end
-		local id = (snap :: any).selectedBoatTypeId
-		if typeof(id) == "string" and BoatConfig.Boats[id] then
-			selectedBoatTypeId = id
+		local id = (snap :: any).shipSkinId
+		if typeof(id) == "string" and ShipSkinCatalog.Skins[id] then
+			selectedShipSkinId = id
 			refreshAllCardSelection(cards)
 		end
 	end))
