@@ -1,6 +1,7 @@
 --!strict
 
 local ServerScriptService = game:GetService("ServerScriptService")
+local RunService = game:GetService("RunService")
 
 local legacyPlotScript = ServerScriptService:FindFirstChild("PlotService")
 if legacyPlotScript and legacyPlotScript:IsA("Script") then
@@ -12,6 +13,7 @@ for _, child in ipairs(ServerScriptService:GetChildren()) do
 		warn(string.format("[Server] Extra Script in ServerScriptService: %s (can conflict with Rojo services)", child.Name))
 	end
 end
+
 
 local serviceFolder = script:WaitForChild("Services")
 
@@ -76,7 +78,7 @@ game:BindToClose(function()
 end)
 
 -- Debug chat commands (Studio only)
-if game:GetService("RunService"):IsStudio() then
+if RunService:IsStudio() then
 	game:GetService("Players").PlayerAdded:Connect(function(player)
 		player.Chatted:Connect(function(message)
 			local cmd = message:lower():gsub("^%s+", ""):gsub("%s+$", "")
@@ -86,6 +88,10 @@ if game:GetService("RunService"):IsStudio() then
 				OilShipmentService:DebugDispatchMine(player)
 			elseif cmd == "/pirate" then
 				OilShipmentService:DebugDispatchPirate(player)
+			elseif cmd == "/storm" then
+				OilShipmentService:DebugDispatchStorm(player)
+			elseif cmd == "/tornado" then
+				OilShipmentService:DebugDispatchTornado(player)
 			end
 		end)
 	end)

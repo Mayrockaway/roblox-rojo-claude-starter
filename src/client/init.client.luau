@@ -13,13 +13,27 @@ local mouse = player:GetMouse()
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
-local function straitWaypointFxStub(): { OnStraitWaypointPayload: (data: { [string]: any }) -> () }
+type StraitWaypointFxModule = {
+	OnStraitWaypointPayload: (data: { [string]: any }) -> (),
+	OnMissileStrikePayload: (data: { [string]: any }) -> (),
+	OnMineStrikePayload: (data: { [string]: any }) -> (),
+	OnPirateRaidPayload: (data: { [string]: any }) -> (),
+	OnStormPayload: (data: { [string]: any }) -> (),
+	OnTornadoPayload: (data: { [string]: any }) -> (),
+}
+
+local function straitWaypointFxStub(): StraitWaypointFxModule
 	return {
 		OnStraitWaypointPayload = function() end,
+		OnMissileStrikePayload = function() end,
+		OnMineStrikePayload = function() end,
+		OnPirateRaidPayload = function() end,
+		OnStormPayload = function() end,
+		OnTornadoPayload = function() end,
 	}
 end
 
-local function requireStraitWaypointWorldFx(): { OnStraitWaypointPayload: (data: { [string]: any }) -> () }
+local function requireStraitWaypointWorldFx(): StraitWaypointFxModule
 	local modScript: ModuleScript? = nil
 
 	-- Rojo: init and StraitWaypointWorldFx are siblings under StarterPlayerScripts.Client
@@ -1085,6 +1099,50 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 			setStatus(string.format("PIRATES BOARDING! Lost %d barrels!", stolen), false)
 		else
 			setStatus("Pirates spotted raiding a vessel nearby!", true)
+		end
+		return
+	end
+
+	if kind == "StormEvent" then
+		StraitWaypointWorldFx.OnStormPayload(data)
+		local isOwner = data.ownerUserId == player.UserId
+		local didDelay = data.didDelay == true and (tonumber(data.delaySeconds) or 0) > 0
+		local lost = math.max(0, tonumber(data.barrelsLost) or 0)
+		local didLoss = data.didBarrelLoss == true and lost > 0
+		if isOwner then
+			if didDelay and didLoss then
+				setStatus(string.format("STORM: delayed %.1fs and lost %d barrels.", tonumber(data.delaySeconds) or 0, lost), false)
+			elseif didDelay then
+				setStatus(string.format("STORM: heavy weather delay (%.1fs).", tonumber(data.delaySeconds) or 0), false)
+			elseif didLoss then
+				setStatus(string.format("STORM: cargo washed overboard (-%d barrels).", lost), false)
+			else
+				setStatus("STORM: rough weather, no major loss.", true)
+			end
+		else
+			setStatus("A thunderstorm hit a nearby vessel.", true)
+		end
+		return
+	end
+
+	if kind == "TornadoEvent" then
+		StraitWaypointWorldFx.OnTornadoPayload(data)
+		local isOwner = data.ownerUserId == player.UserId
+		local didDelay = data.didDelay == true and (tonumber(data.delaySeconds) or 0) > 0
+		local lost = math.max(0, tonumber(data.barrelsLost) or 0)
+		local didLoss = data.didBarrelLoss == true and lost > 0
+		if isOwner then
+			if didDelay and didLoss then
+				setStatus(string.format("TORNADO: delayed %.1fs and lost %d barrels.", tonumber(data.delaySeconds) or 0, lost), false)
+			elseif didDelay then
+				setStatus(string.format("TORNADO: route disruption delay (%.1fs).", tonumber(data.delaySeconds) or 0), false)
+			elseif didLoss then
+				setStatus(string.format("TORNADO: barrels torn loose (-%d).", lost), false)
+			else
+				setStatus("TORNADO: near miss, shipment survived.", true)
+			end
+		else
+			setStatus("A tornado is tearing through a nearby shipment lane.", false)
 		end
 		return
 	end

@@ -37,6 +37,8 @@ local Constants = {
 		ForceMissileStrike = false, -- if true, every triggered event becomes MissileStrike
 		ForceMineStrike = false, -- if true, every triggered event becomes MineStrike
 		ForcePirateRaid = false, -- if true, every triggered event becomes PirateRaid
+		ForceStorm = false, -- if true, every triggered event becomes Storm
+		ForceTornado = false, -- if true, every triggered event becomes Tornado
 		LogWaypointTriggers = false,
 		VerboseStraitWaypointLogsInStudio = true,
 	},

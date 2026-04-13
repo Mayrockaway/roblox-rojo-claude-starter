@@ -951,6 +951,12 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	elseif dbg.ForcePirateRaid then
 		def = StraitEventCatalog.GetById("PirateRaid")
 		severity = "Medium"
+	elseif dbg.ForceStorm then
+		def = StraitEventCatalog.GetById("Storm")
+		severity = "Medium"
+	elseif dbg.ForceTornado then
+		def = StraitEventCatalog.GetById("Tornado")
+		severity = "High"
 	end
 
 	if not def then
@@ -1184,6 +1190,136 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		-- Pause ship for the full cinematic sequence
 		task.wait(pc.SequenceDuration)
 		voyageClock.startTime += pc.SequenceDuration
+		return false
+	end
+
+	if def.stormEvent then
+		local sc = StraitEventCatalog.StormConfig
+		local baseSequenceSeconds = math.max(0, tonumber(sc.BaseSequenceSeconds) or 0)
+
+		local didDelay = rng:NextNumber() < clamp01(tonumber(sc.DelayChance) or 0)
+		local delaySeconds = 0
+		if didDelay then
+			local delayMin = math.max(0, tonumber(sc.DelaySecondsMin) or 0)
+			local delayMax = math.max(delayMin, tonumber(sc.DelaySecondsMax) or delayMin)
+			delaySeconds = rng:NextNumber(delayMin, delayMax)
+		end
+
+		local didBarrelLoss = rng:NextNumber() < clamp01(tonumber(sc.BarrelLossChance) or 0)
+		local barrelLossFraction = 0
+		local barrelsLost = 0
+		if didBarrelLoss then
+			local lossMin = clamp01(tonumber(sc.BarrelLossFractionMin) or 0)
+			local lossMax = math.max(lossMin, clamp01(tonumber(sc.BarrelLossFractionMax) or lossMin))
+			barrelLossFraction = clamp01(rng:NextNumber(lossMin, lossMax))
+			barrelsLost = self:_applyLooseBarrelLoss(shipment, barrelLossFraction)
+			didBarrelLoss = barrelsLost > 0
+		end
+
+		local sequenceSeconds = baseSequenceSeconds + delaySeconds
+		self:_emitShipmentEvent("StormEvent", {
+			ownerUserId = ownerUserId,
+			shipmentId = shipment.shipmentId,
+			eventId = def.id,
+			displayName = def.displayName,
+			severity = severity,
+			laneWaypointIndex = laneWaypointIndex,
+			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+			didDelay = didDelay,
+			delaySeconds = delaySeconds,
+			didBarrelLoss = didBarrelLoss,
+			barrelsLost = barrelsLost,
+			barrelLossFraction = barrelLossFraction,
+			sequenceSeconds = sequenceSeconds,
+			particleFxScale = particleFxScale,
+		})
+
+		if log then
+			print(string.format(
+				"  [StraitShipment DEBUG] STORM: delay=%s(%.2fs) barrelLoss=%s(lost=%d frac=%.3f) seq=%.2fs",
+				tostring(didDelay),
+				delaySeconds,
+				tostring(didBarrelLoss),
+				barrelsLost,
+				barrelLossFraction,
+				sequenceSeconds
+			))
+		end
+
+		if sequenceSeconds > 0 then
+			task.wait(sequenceSeconds)
+			voyageClock.startTime += sequenceSeconds
+		end
+		return false
+	end
+
+	if def.tornadoEvent then
+		local tc = StraitEventCatalog.TornadoConfig
+		local baseSequenceSeconds = math.max(0, tonumber(tc.BaseSequenceSeconds) or 0)
+
+		local didDelay = rng:NextNumber() < clamp01(tonumber(tc.DelayChance) or 0)
+		local delaySeconds = 0
+		if didDelay then
+			local delayMin = math.max(0, tonumber(tc.DelaySecondsMin) or 0)
+			local delayMax = math.max(delayMin, tonumber(tc.DelaySecondsMax) or delayMin)
+			delaySeconds = rng:NextNumber(delayMin, delayMax)
+		end
+
+		local didBarrelLoss = rng:NextNumber() < clamp01(tonumber(tc.BarrelLossChance) or 0)
+		local barrelLossFraction = 0
+		local barrelsLost = 0
+		if didBarrelLoss then
+			local lossMin = clamp01(tonumber(tc.BarrelLossFractionMin) or 0)
+			local lossMax = math.max(lossMin, clamp01(tonumber(tc.BarrelLossFractionMax) or lossMin))
+			barrelLossFraction = clamp01(rng:NextNumber(lossMin, lossMax))
+			barrelsLost = self:_applyLooseBarrelLoss(shipment, barrelLossFraction)
+			didBarrelLoss = barrelsLost > 0
+		end
+
+		local sequenceSeconds = baseSequenceSeconds + delaySeconds
+		local shipPivotPos: Vector3? = nil
+		local shipBoundsSize: Vector3? = nil
+		if boat then
+			local bbCf, bbSize = boat:GetBoundingBox()
+			shipPivotPos = bbCf.Position
+			shipBoundsSize = bbSize
+		end
+		self:_emitShipmentEvent("TornadoEvent", {
+			ownerUserId = ownerUserId,
+			shipmentId = shipment.shipmentId,
+			eventId = def.id,
+			displayName = def.displayName,
+			severity = severity,
+			laneWaypointIndex = laneWaypointIndex,
+			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+			didDelay = didDelay,
+			delaySeconds = delaySeconds,
+			didBarrelLoss = didBarrelLoss,
+			barrelsLost = barrelsLost,
+			barrelLossFraction = barrelLossFraction,
+			sequenceSeconds = sequenceSeconds,
+			maxVisualBarrels = tonumber(tc.MaxVisualBarrels) or 10,
+			particleFxScale = particleFxScale,
+			shipPivotPosition = if shipPivotPos then { x = shipPivotPos.X, y = shipPivotPos.Y, z = shipPivotPos.Z } else nil,
+			shipBoundsSize = if shipBoundsSize then { x = shipBoundsSize.X, y = shipBoundsSize.Y, z = shipBoundsSize.Z } else nil,
+		})
+
+		if log then
+			print(string.format(
+				"  [StraitShipment DEBUG] TORNADO: delay=%s(%.2fs) barrelLoss=%s(lost=%d frac=%.3f) seq=%.2fs",
+				tostring(didDelay),
+				delaySeconds,
+				tostring(didBarrelLoss),
+				barrelsLost,
+				barrelLossFraction,
+				sequenceSeconds
+			))
+		end
+
+		if sequenceSeconds > 0 then
+			task.wait(sequenceSeconds)
+			voyageClock.startTime += sequenceSeconds
+		end
 		return false
 	end
 
@@ -1717,6 +1853,110 @@ function OilShipmentService:DebugDispatchPirate(player: Player)
 				end
 			end
 		end
+	end)
+end
+
+function OilShipmentService:DebugDispatchStorm(player: Player)
+	local userId = player.UserId
+	local plot = self._plotService:GetOwnedPlot(userId)
+	if not plot then
+		warn("[DebugDispatch] Player has no plot")
+		return
+	end
+
+	local dbg = Constants.StraitEventsDebug
+	local prevForceOcc = dbg.ForceOccurrenceAtWaypoint
+	local prevForceStorm = dbg.ForceStorm
+	dbg.ForceOccurrenceAtWaypoint = true
+	dbg.ForceStorm = true
+
+	local manifest = { HeavyCrude = 18, StandardCrude = 10, LightSweet = 6, PremiumRefined = 2 }
+	local boatTypeId = "RustSkiff"
+	local boatDef = BoatConfig.Boats[boatTypeId]
+	if not boatDef then
+		for k, v in pairs(BoatConfig.Boats) do
+			boatTypeId = k
+			boatDef = v
+			break
+		end
+	end
+
+	local shipment = {
+		shipmentId = HttpService:GenerateGUID(false),
+		ownerUserId = userId,
+		boatTypeId = boatTypeId,
+		manifest = manifest,
+		totalLoaded = 36,
+		dispatchFee = 0,
+		travelSeconds = boatDef and boatDef.travelSeconds or 60,
+		hullMax = boatDef and boatDef.hullHp or 100,
+		hullCurrent = boatDef and boatDef.hullHp or 100,
+		eventRisk = 0,
+		priceMultiplier = 1,
+	}
+
+	print(string.format("[DebugDispatch] Launching storm test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+
+	task.spawn(function()
+		self:_runShipment(shipment)
+		dbg.ForceOccurrenceAtWaypoint = prevForceOcc
+		dbg.ForceStorm = prevForceStorm
+	end)
+
+	task.delay(2, function()
+		self:_handleTeleportToShip(player)
+	end)
+end
+
+function OilShipmentService:DebugDispatchTornado(player: Player)
+	local userId = player.UserId
+	local plot = self._plotService:GetOwnedPlot(userId)
+	if not plot then
+		warn("[DebugDispatch] Player has no plot")
+		return
+	end
+
+	local dbg = Constants.StraitEventsDebug
+	local prevForceOcc = dbg.ForceOccurrenceAtWaypoint
+	local prevForceTornado = dbg.ForceTornado
+	dbg.ForceOccurrenceAtWaypoint = true
+	dbg.ForceTornado = true
+
+	local manifest = { HeavyCrude = 20, StandardCrude = 12, LightSweet = 8, PremiumRefined = 4 }
+	local boatTypeId = "RustSkiff"
+	local boatDef = BoatConfig.Boats[boatTypeId]
+	if not boatDef then
+		for k, v in pairs(BoatConfig.Boats) do
+			boatTypeId = k
+			boatDef = v
+			break
+		end
+	end
+
+	local shipment = {
+		shipmentId = HttpService:GenerateGUID(false),
+		ownerUserId = userId,
+		boatTypeId = boatTypeId,
+		manifest = manifest,
+		totalLoaded = 44,
+		dispatchFee = 0,
+		travelSeconds = boatDef and boatDef.travelSeconds or 60,
+		hullMax = boatDef and boatDef.hullHp or 100,
+		hullCurrent = boatDef and boatDef.hullHp or 100,
+		eventRisk = 0,
+		priceMultiplier = 1,
+	}
+
+	print(string.format("[DebugDispatch] Launching tornado test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+
+	task.spawn(function()
+		self:_runShipment(shipment)
+		dbg.ForceOccurrenceAtWaypoint = prevForceOcc
+		dbg.ForceTornado = prevForceTornado
+	end)
+
+	task.delay(2, function()
+		self:_handleTeleportToShip(player)
 	end)
 end
 

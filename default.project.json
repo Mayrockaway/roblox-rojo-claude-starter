@@ -17,6 +17,14 @@
           "RoutinePaperwork": {
             "$className": "Folder",
             "$ignoreUnknownInstances": true
+          },
+          "Storm": {
+            "$className": "Folder",
+            "$ignoreUnknownInstances": true
+          },
+          "Tornado": {
+            "$className": "Folder",
+            "$ignoreUnknownInstances": true
           }
         }
       }

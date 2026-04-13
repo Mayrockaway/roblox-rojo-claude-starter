@@ -23,6 +23,10 @@ export type StraitEventDef = {
 	mineEvent: boolean?,
 	-- If true, server handles pirate boarding visual sequence.
 	pirateEvent: boolean?,
+	-- If true, server handles thunder/rain storm sequence with independent delay + barrel loss rolls.
+	stormEvent: boolean?,
+	-- If true, server handles tornado sequence with independent delay + barrel loss rolls.
+	tornadoEvent: boolean?,
 }
 
 local StraitEventConfig = require(script.Parent.Parent:WaitForChild("StraitEventConfig"))
@@ -67,6 +71,29 @@ Catalog.PirateRaidConfig = {
 	BoardingSeconds = 3,
 	StealingSeconds = 7,
 	EscapeSeconds = 4,
+}
+
+-- Storm visual + gameplay config (delay and barrel-loss outcomes are rolled independently).
+Catalog.StormConfig = {
+	BaseSequenceSeconds = 10.0,
+	DelayChance = 0.55,
+	DelaySecondsMin = 3.5,
+	DelaySecondsMax = 8.0,
+	BarrelLossChance = 0.45,
+	BarrelLossFractionMin = 0.05,
+	BarrelLossFractionMax = 0.16,
+}
+
+-- Tornado visual + gameplay config (delay and barrel-loss outcomes are rolled independently).
+Catalog.TornadoConfig = {
+	BaseSequenceSeconds = 11.5,
+	DelayChance = 0.5,
+	DelaySecondsMin = 4.0,
+	DelaySecondsMax = 9.0,
+	BarrelLossChance = 0.6,
+	BarrelLossFractionMin = 0.12,
+	BarrelLossFractionMax = 0.3,
+	MaxVisualBarrels = 10,
 }
 
 Catalog.Events = {
@@ -129,10 +156,22 @@ Catalog.Events = {
 		priceMultiplierFactor = 0.9,
 	} :: StraitEventDef,
 	{
+		id = "Storm",
+		severity = "Medium",
+		displayName = "Thunderstorm",
+		stormEvent = true,
+	} :: StraitEventDef,
+	{
 		id = "BoardingAndSeizure",
 		severity = "High",
 		displayName = "Boarding and seizure",
 		totalLoss = true,
+	} :: StraitEventDef,
+	{
+		id = "Tornado",
+		severity = "High",
+		displayName = "Strait tornado",
+		tornadoEvent = true,
 	} :: StraitEventDef,
 	{
 		id = "MineStrike",
