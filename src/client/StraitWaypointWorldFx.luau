@@ -7,6 +7,7 @@
 
 local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 -- Bounded waits: avoid infinite yield if ReplicatedStorage is slow or Shared is missing in a test place.
@@ -18,6 +19,7 @@ local ParticleFxScale: {
 	ApplyToDescendants = function() end,
 }
 local sharedFolder = ReplicatedStorage:WaitForChild("Shared", 45)
+local StraitAssetManifest = nil
 if sharedFolder then
 	local pfsMod = sharedFolder:FindFirstChild("ParticleFxScale") or sharedFolder:WaitForChild("ParticleFxScale", 30)
 	if pfsMod and pfsMod:IsA("ModuleScript") then
@@ -26,10 +28,85 @@ if sharedFolder then
 			ParticleFxScale = loaded :: any
 		end
 	end
+	local configFolder = sharedFolder:FindFirstChild("Config")
+	local straitEventsFolder = configFolder and configFolder:FindFirstChild("StraitEvents")
+	local manifestMod = straitEventsFolder and straitEventsFolder:FindFirstChild("AssetManifest")
+	if manifestMod and manifestMod:IsA("ModuleScript") then
+		local okManifest, loadedManifest = pcall(require, manifestMod)
+		if okManifest and typeof(loadedManifest) == "table" then
+			StraitAssetManifest = loadedManifest
+		end
+	end
 end
 
 -- ReplicatedStorage.Assets.StraitWaypointsFx.<CatalogEventId>/ — Models or Parts as direct children; Sounds play when cloned.
 local STRAIT_FX_ASSETS_FOLDER = "StraitWaypointsFx"
+
+local function getStraitFxRoot(): Instance?
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	return assets and assets:FindFirstChild(STRAIT_FX_ASSETS_FOLDER)
+end
+
+local function getEventFxFolder(eventId: string): Instance?
+	local root = getStraitFxRoot()
+	return if root then root:FindFirstChild(eventId) else nil
+end
+
+local function cloneNamedDescendant(folder: Instance?, name: string): Instance?
+	if not folder then
+		return nil
+	end
+	local found = folder:FindFirstChild(name, true)
+	if not found then
+		return nil
+	end
+	return found:Clone()
+end
+
+local function validateStraitEventAssets()
+	if not RunService:IsStudio() then
+		return
+	end
+	if typeof(StraitAssetManifest) ~= "table" or typeof((StraitAssetManifest :: any).Events) ~= "table" then
+		return
+	end
+
+	local events = (StraitAssetManifest :: any).Events
+	local fxRoot = getStraitFxRoot()
+	if not fxRoot then
+		warn("[StraitWaypointWorldFx] Missing ReplicatedStorage.Assets.StraitWaypointsFx")
+		return
+	end
+
+	for eventId, spec in pairs(events) do
+		if typeof(spec) ~= "table" then
+			continue
+		end
+		local folderName = if typeof(spec.folderName) == "string" and spec.folderName ~= "" then spec.folderName else eventId
+		local folder = fxRoot:FindFirstChild(folderName)
+		if not folder then
+			warn(string.format("[StraitWaypointWorldFx] Missing asset folder for %s: %s", tostring(eventId), folderName))
+			continue
+		end
+
+		local expected = spec.expectedInstances
+		if typeof(expected) == "table" then
+			for _, expectedName in ipairs(expected) do
+				if typeof(expectedName) == "string" and expectedName ~= "" then
+					local exists = folder:FindFirstChild(expectedName, true)
+					if not exists then
+						warn(string.format(
+							"[StraitWaypointWorldFx] Missing expected asset '%s' under %s (%s).",
+							expectedName,
+							folderName,
+							tostring(eventId)
+						))
+					end
+				end
+			end
+		end
+	end
+end
 
 local function particleFxScaleFromPayload(data: { [string]: any }): number
 	local s = tonumber(data.particleFxScale)
@@ -66,6 +143,14 @@ local function setAllParticleEmittersEnabled(root: Instance, enabled: boolean)
 	end
 end
 
+local function setParticleEmittersOnlyEnabled(root: Instance, enabled: boolean)
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("ParticleEmitter") then
+			d.Enabled = enabled
+		end
+	end
+end
+
 local function playClonedSounds(root: Instance)
 	for _, d in ipairs(root:GetDescendants()) do
 		if d:IsA("Sound") then
@@ -86,9 +171,7 @@ end
 
 --- Clone everything under Assets.StraitWaypointsFx.<eventId> to `worldPos`. Returns true if a template was used.
 local function tryPlayStraitFxFromAssets(eventId: string, worldPos: Vector3, holdSeconds: number, shipParticleFxScale: number): boolean
-	local assets = ReplicatedStorage:FindFirstChild("Assets")
-	local fxRoot = assets and assets:FindFirstChild(STRAIT_FX_ASSETS_FOLDER)
-	local eventFolder = fxRoot and fxRoot:FindFirstChild(eventId)
+	local eventFolder = getEventFxFolder(eventId)
 	if not (eventFolder and (eventFolder:IsA("Folder") or eventFolder:IsA("Model"))) then
 		return false
 	end
@@ -187,11 +270,696 @@ local function getBoatAttachmentPart(boat: Model): BasePart?
 	return best
 end
 
+local function getInstanceWorldCFrame(inst: Instance): CFrame?
+	if inst:IsA("Model") then
+		return inst:GetPivot()
+	end
+	if inst:IsA("BasePart") then
+		return inst.CFrame
+	end
+	return nil
+end
+
+local function getInstanceWorldPosition(inst: Instance): Vector3?
+	local cf = getInstanceWorldCFrame(inst)
+	return if cf then cf.Position else nil
+end
+
+local function setInstanceWorldCFrame(inst: Instance, cf: CFrame)
+	if inst:IsA("Model") then
+		inst:PivotTo(cf)
+	elseif inst:IsA("BasePart") then
+		inst.CFrame = cf
+	end
+end
+
+local function getInstanceHalfHeight(inst: Instance): number
+	if inst:IsA("BasePart") then
+		return math.max(0.5, inst.Size.Y * 0.5)
+	end
+	if inst:IsA("Model") then
+		local _, size = inst:GetBoundingBox()
+		return math.max(0.5, size.Y * 0.5)
+	end
+
+	local minY = math.huge
+	local maxY = -math.huge
+	for _, d in ipairs(inst:GetDescendants()) do
+		if d:IsA("BasePart") then
+			local p = d.Position
+			local h = d.Size.Y * 0.5
+			minY = math.min(minY, p.Y - h)
+			maxY = math.max(maxY, p.Y + h)
+		end
+	end
+	if minY < maxY then
+		return math.max(0.5, (maxY - minY) * 0.5)
+	end
+	return 12
+end
+
+local function getInstanceHorizontalRadius(inst: Instance): number
+	if inst:IsA("BasePart") then
+		return math.max(6, math.max(inst.Size.X, inst.Size.Z) * 0.5)
+	end
+	if inst:IsA("Model") then
+		local _, size = inst:GetBoundingBox()
+		return math.max(6, math.max(size.X, size.Z) * 0.5)
+	end
+
+	local minX, maxX = math.huge, -math.huge
+	local minZ, maxZ = math.huge, -math.huge
+	for _, d in ipairs(inst:GetDescendants()) do
+		if d:IsA("BasePart") then
+			local p = d.Position
+			local hX = d.Size.X * 0.5
+			local hZ = d.Size.Z * 0.5
+			minX = math.min(minX, p.X - hX)
+			maxX = math.max(maxX, p.X + hX)
+			minZ = math.min(minZ, p.Z - hZ)
+			maxZ = math.max(maxZ, p.Z + hZ)
+		end
+	end
+	if minX < maxX and minZ < maxZ then
+		return math.max(6, math.max(maxX - minX, maxZ - minZ) * 0.5)
+	end
+	return 60
+end
+
+local function getInstanceBaseOffset(inst: Instance): number
+	if inst:IsA("BasePart") then
+		return math.max(0.5, inst.Size.Y * 0.5)
+	end
+	if inst:IsA("Model") then
+		local pivot = inst:GetPivot().Position
+		local minY = math.huge
+		for _, d in ipairs(inst:GetDescendants()) do
+			if d:IsA("BasePart") then
+				local y = d.Position.Y - d.Size.Y * 0.5
+				minY = math.min(minY, y)
+			end
+		end
+		if minY < math.huge then
+			return math.max(0.5, pivot.Y - minY)
+		end
+	end
+	return getInstanceHalfHeight(inst)
+end
+
+local function getTornadoVerticalMeshLift(inst: Instance, halfHeight: number): number
+	-- Do not apply static mesh lift; tornado base is corrected dynamically per-frame against water/boat surface.
+	local _ = inst
+	local _h = halfHeight
+	return 0
+end
+
+local function scaleTornadoRoot(root: Instance, scaleFactor: number)
+	if scaleFactor <= 0 or math.abs(scaleFactor - 1) < 0.001 then
+		return
+	end
+	if root:IsA("Model") then
+		pcall(function()
+			(root :: Model):ScaleTo(scaleFactor)
+		end)
+	elseif root:IsA("BasePart") then
+		root.Size *= scaleFactor
+		for _, d in ipairs(root:GetDescendants()) do
+			if d:IsA("SpecialMesh") then
+				d.Scale *= scaleFactor
+			end
+		end
+	end
+end
+
+local function moveRootToWorldPosition(root: Instance, worldPos: Vector3)
+	if root:IsA("Model") then
+		root:PivotTo(CFrame.new(worldPos))
+		return
+	end
+	if root:IsA("BasePart") then
+		root.CFrame = CFrame.new(worldPos)
+		return
+	end
+
+	local parts = {}
+	local centroid = Vector3.zero
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("BasePart") then
+			table.insert(parts, d)
+			centroid += d.Position
+		end
+	end
+	if #parts == 0 then
+		return
+	end
+	centroid /= #parts
+	local delta = worldPos - centroid
+	for _, p in ipairs(parts) do
+		p.CFrame = p.CFrame + delta
+	end
+end
+
+local function prepareKinematicFx(root: Instance)
+	stripRuntimeScripts(root)
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Anchored = true
+			d.CanCollide = false
+			d.CanQuery = false
+			d.CanTouch = false
+			d.Massless = true
+		end
+	end
+end
+
+local function cloneEventAsset(eventId: string, assetName: string): Instance?
+	local folder = getEventFxFolder(eventId)
+	return cloneNamedDescendant(folder, assetName)
+end
+
+local function cloneStormCloudTemplate(): Instance?
+	local cloud = cloneEventAsset("Storm", "CloudRig")
+	if not cloud then
+		return nil
+	end
+	if cloud:IsA("Model") or cloud:IsA("BasePart") then
+		return cloud
+	end
+	cloud:Destroy()
+	return nil
+end
+
+local function cloneRenderableEventRoot(eventId: string, assetName: string): Instance?
+	local root = cloneEventAsset(eventId, assetName)
+	if not root then
+		return nil
+	end
+	if root:IsA("Model") or root:IsA("BasePart") then
+		return root
+	end
+	root:Destroy()
+	return nil
+end
+
+local function cloneParticleEmitterTemplate(eventId: string, assetName: string): Instance?
+	local function coerceTemplate(inst: Instance): Instance?
+		if inst:IsA("ParticleEmitter") or inst:IsA("Attachment") or inst:IsA("BasePart") then
+			return inst
+		end
+
+		local emitter = inst:FindFirstChildWhichIsA("ParticleEmitter", true)
+		if emitter then
+			local out = emitter:Clone()
+			inst:Destroy()
+			return out
+		end
+
+		local attachment = inst:FindFirstChildWhichIsA("Attachment", true)
+		if attachment then
+			local out = attachment:Clone()
+			inst:Destroy()
+			return out
+		end
+
+		local basePart = inst:FindFirstChildWhichIsA("BasePart", true)
+		if basePart then
+			local out = basePart:Clone()
+			inst:Destroy()
+			return out
+		end
+
+		inst:Destroy()
+		return nil
+	end
+
+	local named = cloneEventAsset(eventId, assetName)
+	if named then
+		local coerced = coerceTemplate(named)
+		if coerced then
+			return coerced
+		end
+	end
+	return nil
+end
+
+local function playSoundTemplateOn(root: Instance, eventId: string, assetName: string, volumeScale: number?)
+	local template = cloneEventAsset(eventId, assetName)
+	if not template or not template:IsA("Sound") then
+		if template then
+			template:Destroy()
+		end
+		return
+	end
+	local s = template
+	s.Parent = root
+	s.Volume = s.Volume * (volumeScale or 1)
+	s.RollOffMaxDistance = math.max(s.RollOffMaxDistance, 220)
+	s.Ended:Connect(function()
+		s:Destroy()
+	end)
+	s:Play()
+end
+
+local function shakeCameraIfNear(center: Vector3, radius: number, intensity: number, duration: number)
+	local cam = Workspace.CurrentCamera
+	if not cam then
+		return
+	end
+	local dist = (cam.CFrame.Position - center).Magnitude
+	if dist > radius then
+		return
+	end
+	local distFactor = 1 - math.clamp(dist / math.max(radius, 1), 0, 1)
+	local amp = intensity * distFactor
+	if amp <= 0 then
+		return
+	end
+	task.spawn(function()
+		local rng = Random.new()
+		local elapsed = 0
+		while elapsed < duration do
+			local dt = task.wait()
+			elapsed += dt
+			local fade = 1 - math.clamp(elapsed / duration, 0, 1)
+			cam.CFrame *= CFrame.new(
+				rng:NextNumber(-amp, amp) * fade,
+				rng:NextNumber(-amp, amp) * fade,
+				0
+			)
+		end
+	end)
+end
+
+local function buildFallbackCloudLayer(parent: Instance, center: Vector3)
+	local rng = Random.new()
+	for i = 1, 6 do
+		local p = Instance.new("Part")
+		p.Name = "StormCloudFallback"
+		p.Shape = Enum.PartType.Ball
+		p.Size = Vector3.new(rng:NextNumber(45, 70), rng:NextNumber(20, 28), rng:NextNumber(45, 70))
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanQuery = false
+		p.CanTouch = false
+		p.Material = Enum.Material.SmoothPlastic
+		p.Color = Color3.fromRGB(36, 39, 47)
+		p.Transparency = rng:NextNumber(0.2, 0.4)
+		p.CFrame = CFrame.new(
+			center + Vector3.new(rng:NextNumber(-45, 45), rng:NextNumber(48, 62), rng:NextNumber(-45, 45))
+		)
+		p.Parent = parent
+	end
+end
+
+-- Texture IDs sourced from the CloudRig RainHandler asset (rbxassetid).
+local RAIN_DROPS_TEXTURE = "rbxassetid://241868005"
+local RAIN_SPLASH_TEXTURE = "rbxassetid://241576804"
+
+local STORM_CLOUD_HEIGHT_OFFSET = 82
+local STORM_RAIN_HEIGHT_OFFSET = 56
+
+-- Mirrors the CloudRig RainHandler.Drops emitter pattern:
+-- negative speed + EmissionDirection=Top = straight downfall.
+-- Area coverage comes from the large host Part size, not from SpreadAngle.
+local function addStormDropsEmitter(host: BasePart)
+	local e = Instance.new("ParticleEmitter")
+	e.Name = "StormRainDrops"
+	e.Rate = 2000000
+	e.Lifetime = NumberRange.new(6, 8)
+	e.Speed = NumberRange.new(-110, -80)
+	e.EmissionDirection = Enum.NormalId.Top
+	e.SpreadAngle = Vector2.new(0, 0)
+	e.VelocitySpread = 0
+	e.Acceleration = Vector3.new(8, 0, 0)
+	e.LightInfluence = 0
+	e.LightEmission = 1
+	e.Texture = RAIN_DROPS_TEXTURE
+	e.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 2.0),
+		NumberSequenceKeypoint.new(0.9, 2.0),
+		NumberSequenceKeypoint.new(1, 0.0),
+	})
+	e.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.35),
+		NumberSequenceKeypoint.new(0.85, 0.35),
+		NumberSequenceKeypoint.new(1, 1.0),
+	})
+	e.Color = ColorSequence.new(Color3.fromRGB(180, 195, 215))
+	e.Parent = host
+end
+
+-- Fallback splash emitter when RS RainHandler has no usable emitters.
+local function addFallbackSplashEmitter(host: BasePart)
+	local e = Instance.new("ParticleEmitter")
+	e.Name = "StormRainSplash"
+	e.Rate = 5000000
+	e.Lifetime = NumberRange.new(0.5, 0.5)
+	e.Speed = NumberRange.new(3, 3)
+	e.EmissionDirection = Enum.NormalId.Top
+	e.SpreadAngle = Vector2.new(0, 0)
+	e.VelocitySpread = 0
+	e.LightInfluence = 0
+	e.LightEmission = 1
+	e.Texture = RAIN_SPLASH_TEXTURE
+	e.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.0),
+		NumberSequenceKeypoint.new(0.2, 0.4),
+		NumberSequenceKeypoint.new(1, 0.0),
+	})
+	e.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.5),
+		NumberSequenceKeypoint.new(1, 1.0),
+	})
+	e.Color = ColorSequence.new(Color3.fromRGB(180, 200, 220))
+	e.Parent = host
+end
+
+-- Creates two large transparent parts:
+--   DropsPart  — at cloud height; emitters rain straight down across the full footprint.
+--   SplashesPart — flat at water level; RS RainHandler splash emitters fire upward here.
+-- This matches the CloudRig RainHandler structure (Drops + Splashes, area-based, no spread angle).
+local function buildStormRainLayers(
+	container: Instance,
+	centerPos: Vector3,
+	cloudRadius: number,
+	fxScale: number
+): (BasePart, BasePart)
+	local areaSize = math.min(cloudRadius * 2 + 24, 340)
+	local emitterCount = math.clamp(math.floor(fxScale * 4 + 0.5), 3, 6)
+
+	-- Drops: large part at cloud/rain height, N emitters for density scaling.
+	local dropsPart = Instance.new("Part")
+	dropsPart.Name = "StormRainDropsPart"
+	dropsPart.Size = Vector3.new(areaSize, 20, areaSize)
+	dropsPart.CFrame = CFrame.new(centerPos + Vector3.new(0, STORM_RAIN_HEIGHT_OFFSET, 0))
+	dropsPart.Anchored = true
+	dropsPart.CanCollide = false
+	dropsPart.CanQuery = false
+	dropsPart.CanTouch = false
+	dropsPart.Transparency = 1
+	dropsPart.Parent = container
+	for _ = 1, emitterCount do
+		addStormDropsEmitter(dropsPart)
+	end
+
+	-- Splashes: flat part just above water/deck level.
+	local splashesPart = Instance.new("Part")
+	splashesPart.Name = "StormRainSplashesPart"
+	splashesPart.Size = Vector3.new(areaSize, 0.05, areaSize)
+	splashesPart.CFrame = CFrame.new(centerPos + Vector3.new(0, 2, 0))
+	splashesPart.Anchored = true
+	splashesPart.CanCollide = false
+	splashesPart.CanQuery = false
+	splashesPart.CanTouch = false
+	splashesPart.Transparency = 1
+	splashesPart.Parent = container
+
+	-- Use RS RainHandler splash emitters (they're designed for impact-at-surface use).
+	local stormFolder = getEventFxFolder("Storm")
+	local rsRainHandler = stormFolder and stormFolder:FindFirstChild("RainHandler", true)
+	local splashCount = 0
+	local MAX_RS_SPLASH_EMITTERS = 5
+	if rsRainHandler then
+		for _, d in ipairs(rsRainHandler:GetDescendants()) do
+			if d:IsA("ParticleEmitter") and splashCount < MAX_RS_SPLASH_EMITTERS then
+				local clone = d:Clone()
+				clone.Enabled = true
+				clone.Parent = splashesPart
+				splashCount += 1
+			end
+		end
+	end
+	if splashCount == 0 then
+		addFallbackSplashEmitter(splashesPart)
+	end
+
+	return dropsPart, splashesPart
+end
+
+local function createLightningStrikeVisual(parent: Instance, top: Vector3, bottom: Vector3)
+	local rng = Random.new()
+	local bolt = Instance.new("Model")
+	bolt.Name = "StormLightningBolt"
+	bolt.Parent = parent
+
+	local steps = rng:NextInteger(5, 8)
+	local prev = top
+	for i = 1, steps do
+		local alpha = i / steps
+		local target = top:Lerp(bottom, alpha)
+		local jitterScale = (1 - alpha) * 9
+		local jitter = if i == steps
+			then Vector3.zero
+			else Vector3.new(rng:NextNumber(-jitterScale, jitterScale), rng:NextNumber(-2, 2), rng:NextNumber(-jitterScale, jitterScale))
+		local nextPos = target + jitter
+		local delta = nextPos - prev
+		local length = delta.Magnitude
+		if length > 0.2 then
+			local segment = Instance.new("Part")
+			segment.Name = "StormLightningSegment"
+			segment.Anchored = true
+			segment.CanCollide = false
+			segment.CanQuery = false
+			segment.CanTouch = false
+			segment.Material = Enum.Material.Neon
+			segment.Color = Color3.fromRGB(235, 245, 255)
+			segment.Transparency = 0.03
+			segment.Size = Vector3.new(rng:NextNumber(0.75, 1.45), length, rng:NextNumber(0.75, 1.45))
+			segment.CFrame = CFrame.lookAt((prev + nextPos) * 0.5, nextPos) * CFrame.Angles(math.pi / 2, 0, 0)
+			segment.Parent = bolt
+		end
+		prev = nextPos
+	end
+
+	local glow = Instance.new("PointLight")
+	glow.Color = Color3.fromRGB(230, 240, 255)
+	glow.Brightness = 16
+	glow.Range = 190
+	glow.Parent = bolt
+
+	local flashes = { 0.03, 0.16, 0.05, 0.11 }
+	local totalFlashDuration = 0
+	for _, t in ipairs(flashes) do
+		totalFlashDuration += t + 0.02
+	end
+
+	task.spawn(function()
+		for _, t in ipairs(flashes) do
+			for _, d in ipairs(bolt:GetDescendants()) do
+				if d:IsA("BasePart") then
+					d.Transparency = 0.03
+				end
+			end
+			task.wait(t)
+			for _, d in ipairs(bolt:GetDescendants()) do
+				if d:IsA("BasePart") then
+					d.Transparency = 0.92
+				end
+			end
+			task.wait(0.02)
+		end
+	end)
+
+	Debris:AddItem(bolt, totalFlashDuration + 0.22)
+end
+
+local function collectDeckBarrelInstances(boat: Model): { Instance }
+	local barrels = {}
+	for _, d in ipairs(boat:GetDescendants()) do
+		if d.Name == "DeckBarrel" and (d:IsA("Model") or d:IsA("BasePart")) and d.Parent then
+			table.insert(barrels, d)
+		end
+	end
+	table.sort(barrels, function(a, b)
+		local ap = getInstanceWorldPosition(a) or Vector3.zero
+		local bp = getInstanceWorldPosition(b) or Vector3.zero
+		return ap.Y > bp.Y
+	end)
+	return barrels
+end
+
+local function createFallbackBarrelVisual(startPos: Vector3): BasePart
+	local p = Instance.new("Part")
+	p.Name = "TornadoBarrelFallback"
+	p.Shape = Enum.PartType.Cylinder
+	p.Size = Vector3.new(2, 3, 2)
+	p.Material = Enum.Material.Metal
+	p.Color = Color3.fromRGB(148, 103, 43)
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.CFrame = CFrame.new(startPos) * CFrame.Angles(0, 0, math.rad(90))
+	return p
+end
+
+local function horizontalDistanceXZ(a: Vector3, b: Vector3): number
+	local dx = a.X - b.X
+	local dz = a.Z - b.Z
+	return math.sqrt(dx * dx + dz * dz)
+end
+
+local function resolveShipmentBoatWithTimeout(shipmentId: string, timeoutSeconds: number): Model?
+	if shipmentId == "" then
+		return nil
+	end
+	local deadline = os.clock() + math.max(0, timeoutSeconds)
+	repeat
+		local boat = findActiveShipmentBoatByShipmentId(shipmentId)
+		if boat then
+			return boat
+		end
+		task.wait(0.05)
+	until os.clock() >= deadline
+	return nil
+end
+
+local function getTornadoBoatFrame(
+	boat: Model?,
+	fallbackPivot: Vector3,
+	fallbackBounds: Vector3
+): (Vector3, Vector3, CFrame?)
+	if boat and boat.Parent then
+		local ok, cf, size = pcall(function()
+			local bbCf, bbSize = boat:GetBoundingBox()
+			return bbCf, bbSize
+		end)
+		if ok and cf and size then
+			return (cf :: CFrame).Position, (size :: Vector3), (cf :: CFrame)
+		end
+	end
+	return fallbackPivot, fallbackBounds, nil
+end
+
+local function estimateTornadoWaterY(pivotPos: Vector3, boundsSize: Vector3, fallbackY: number): number
+	local waterOffset = math.clamp(boundsSize.Y * 0.38, 2, 12)
+	return math.min(fallbackY, pivotPos.Y - waterOffset)
+end
+
+local function isPointInsideBoatFootprint(point: Vector3, center: Vector3, bounds: Vector3, frame: CFrame?): boolean
+	local halfX = math.max(4, bounds.X * 0.55)
+	local halfZ = math.max(4, bounds.Z * 0.55)
+	if frame then
+		local localPos = frame:PointToObjectSpace(point)
+		return math.abs(localPos.X) <= halfX and math.abs(localPos.Z) <= halfZ
+	end
+	return math.abs(point.X - center.X) <= halfX and math.abs(point.Z - center.Z) <= halfZ
+end
+
+local function getInstanceMinY(inst: Instance): number
+	if inst:IsA("BasePart") then
+		return inst.Position.Y - inst.Size.Y * 0.5
+	end
+	if inst:IsA("Model") then
+		local minY = math.huge
+		for _, d in ipairs(inst:GetDescendants()) do
+			if d:IsA("BasePart") then
+				minY = math.min(minY, d.Position.Y - d.Size.Y * 0.5)
+			end
+		end
+		if minY < math.huge then
+			return minY
+		end
+	end
+	return -math.huge
+end
+
+local function sampleBoatSurfaceY(
+	boat: Model,
+	shipCenter: Vector3,
+	point: Vector3,
+	searchRadius: number,
+	rayTopY: number,
+	maxSurfaceY: number
+): (number?, boolean)
+	local _shipCenter = shipCenter
+	local _searchRadius = searchRadius
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Include
+	rayParams.FilterDescendantsInstances = { boat }
+	rayParams.IgnoreWater = true
+	local rayOrigin = Vector3.new(point.X, rayTopY, point.Z)
+	local rayDir = Vector3.new(0, -math.max(160, rayTopY + 80), 0)
+	local hit = Workspace:Raycast(rayOrigin, rayDir, rayParams)
+	if not hit then
+		return nil, false
+	end
+	local rayY = math.min(maxSurfaceY, hit.Position.Y)
+	return rayY, true
+end
+
+local function spawnTornadoBarrelChaos(
+	container: Instance,
+	boat: Model,
+	chaosCenter: Vector3,
+	barrelsLost: number,
+	maxVisualBarrels: number
+)
+	local rng = Random.new()
+	local deckBarrels = collectDeckBarrelInstances(boat)
+	local toThrow = math.min(barrelsLost, #deckBarrels, maxVisualBarrels)
+	for i = 1, toThrow do
+		local source = deckBarrels[i]
+		local sourcePos = getInstanceWorldPosition(source)
+		if not sourcePos then
+			continue
+		end
+		local sourceStart = sourcePos
+
+		task.spawn(function()
+			task.wait((i - 1) * 0.07)
+
+			local visual: Instance
+			if source:IsA("Model") or source:IsA("BasePart") then
+				visual = source:Clone()
+				prepareKinematicFx(visual)
+				setInstanceWorldCFrame(visual, CFrame.new(sourceStart))
+			else
+				visual = createFallbackBarrelVisual(sourceStart)
+			end
+			visual.Parent = container
+
+			local pullTarget = chaosCenter + Vector3.new(
+				rng:NextNumber(-10, 10),
+				rng:NextNumber(18, 30),
+				rng:NextNumber(-10, 10)
+			)
+			local throwTarget = chaosCenter + Vector3.new(
+				rng:NextNumber(85, 150) * (if rng:NextNumber() < 0.5 then -1 else 1),
+				rng:NextNumber(8, 24),
+				rng:NextNumber(85, 150) * (if rng:NextNumber() < 0.5 then -1 else 1)
+			)
+
+			local pullDur = rng:NextNumber(0.32, 0.55)
+			local t0 = os.clock()
+			while visual.Parent and (os.clock() - t0) < pullDur do
+				local a = math.clamp((os.clock() - t0) / pullDur, 0, 1)
+				local eased = a * a * (3 - 2 * a)
+				local p = sourceStart:Lerp(pullTarget, eased) + Vector3.new(0, math.sin(eased * math.pi) * 8, 0)
+				setInstanceWorldCFrame(visual, CFrame.new(p) * CFrame.Angles(a * 8, a * 9, a * 6))
+				task.wait()
+			end
+
+			local throwDur = rng:NextNumber(0.5, 0.88)
+			local t1 = os.clock()
+			while visual.Parent and (os.clock() - t1) < throwDur do
+				local a = math.clamp((os.clock() - t1) / throwDur, 0, 1)
+				local eased = a * a * (3 - 2 * a)
+				local p = pullTarget:Lerp(throwTarget, eased) + Vector3.new(0, math.sin((1 - eased) * math.pi) * 10, 0)
+				setInstanceWorldCFrame(visual, CFrame.new(p) * CFrame.Angles(a * 14, a * 12, a * 15))
+				task.wait()
+			end
+
+			if visual.Parent then
+				visual:Destroy()
+			end
+		end)
+	end
+end
+
 --- Template lives in RS only: clone, then scale + parent/weld. Tune ParticleEmitter/Sound on the template in Studio (not in Luau).
 local function getRoutinePaperworkAnchorTemplate(): BasePart?
-	local assets = ReplicatedStorage:FindFirstChild("Assets")
-	local fxRoot = assets and assets:FindFirstChild(STRAIT_FX_ASSETS_FOLDER)
-	local folder = fxRoot and fxRoot:FindFirstChild(ROUTINE_PAPERWORK_ID)
+	local folder = getEventFxFolder(ROUTINE_PAPERWORK_ID)
 	local tmpl = folder and folder:FindFirstChild("RoutinePaperworkAnchor")
 	if tmpl and tmpl:IsA("BasePart") then
 		return tmpl
@@ -315,6 +1083,7 @@ local EVENT_FX: { [string]: EventFxFn } = {
 local TweenService = game:GetService("TweenService")
 
 local StraitWaypointWorldFx = {}
+validateStraitEventAssets()
 
 function StraitWaypointWorldFx.OnStraitWaypointPayload(data: { [string]: any })
 	local pos = vector3FromWorldPosition(data.worldPosition)
@@ -666,6 +1435,436 @@ function StraitWaypointWorldFx.OnMissileStrikePayload(data: { [string]: any })
 
 		-- Clean up missile model
 		Debris:AddItem(missile, 2)
+	end)
+end
+
+local function buildFallbackTornadoRig(parent: Instance): Model
+	local rig = Instance.new("Model")
+	rig.Name = "TornadoFallbackRig"
+	rig.Parent = parent
+	for i = 1, 8 do
+		local p = Instance.new("Part")
+		p.Name = "TornadoLayer"
+		p.Shape = Enum.PartType.Cylinder
+		local t = (i - 1) / 7
+		local radius = 5 + t * 22
+		local height = 5
+		p.Size = Vector3.new(radius, height, radius)
+		p.Material = Enum.Material.SmoothPlastic
+		p.Color = Color3.fromRGB(130, 136, 146)
+		p.Transparency = 0.45 + t * 0.25
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanQuery = false
+		p.CanTouch = false
+		p.CFrame = CFrame.new(0, i * 4, 0) * CFrame.Angles(0, 0, math.rad(90))
+		p.Parent = rig
+	end
+	return rig
+end
+
+local function attachEmitterFromTemplate(host: BasePart, template: Instance, fallbackBuilder: (BasePart, number?) -> (), fxScale: number)
+	if template:IsA("ParticleEmitter") then
+		local emitter = template:Clone()
+		emitter.Parent = host
+	elseif template:IsA("Attachment") then
+		local att = template:Clone()
+		att.Parent = host
+	elseif template:IsA("BasePart") then
+		local partClone = template:Clone()
+		prepareKinematicFx(partClone)
+		partClone.CFrame = host.CFrame
+		partClone.Parent = host.Parent
+	else
+		fallbackBuilder(host, fxScale)
+		return
+	end
+	ParticleFxScale.ApplyToDescendants(host, fxScale)
+end
+
+local function addFallbackTornadoDebris(host: BasePart, fxScale: number?)
+	local scale = if fxScale then fxScale else 1
+	local e = Instance.new("ParticleEmitter")
+	e.Name = "TornadoDebrisFallback"
+	e.Rate = math.floor(220 * scale)
+	e.Lifetime = NumberRange.new(1.2, 2.1)
+	e.Speed = NumberRange.new(40, 70)
+	e.SpreadAngle = Vector2.new(360, 360)
+	e.Acceleration = Vector3.new(0, 42, 0)
+	e.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.6),
+		NumberSequenceKeypoint.new(1, 0.15),
+	})
+	e.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.15),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	e.Color = ColorSequence.new(Color3.fromRGB(120, 120, 120), Color3.fromRGB(80, 68, 52))
+	e.Parent = host
+end
+
+
+function StraitWaypointWorldFx.OnStormPayload(data: { [string]: any })
+	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
+	local boat = if shipmentId ~= "" then findActiveShipmentBoatByShipmentId(shipmentId) else nil
+	local hull = if boat then getBoatAttachmentPart(boat) else nil
+
+	local center = vector3FromWorldPosition(data.worldPosition)
+	if not center and hull then
+		center = hull.Position
+	end
+	if not center then
+		return
+	end
+	local centerPos = center
+
+	local fxScale = particleFxScaleFromPayload(data)
+	local sequenceSeconds = math.clamp(tonumber(data.sequenceSeconds) or 9.5, 1.5, 30)
+	local barrelsLost = math.max(0, tonumber(data.barrelsLost) or 0)
+	local didBarrelLoss = data.didBarrelLoss == true and barrelsLost > 0
+
+	task.spawn(function()
+		local rng = Random.new()
+		local container = Instance.new("Model")
+		container.Name = "StormEventFx"
+		container.Parent = Workspace
+
+		local cloudRig = cloneStormCloudTemplate()
+		local canopyRadius = 80
+		if cloudRig then
+			prepareKinematicFx(cloudRig)
+			cloudRig.Parent = container
+			moveRootToWorldPosition(cloudRig, centerPos + Vector3.new(0, STORM_CLOUD_HEIGHT_OFFSET, 0))
+			canopyRadius = math.max(70, getInstanceHorizontalRadius(cloudRig) * 0.9)
+		else
+			buildFallbackCloudLayer(container, centerPos)
+			canopyRadius = 90
+		end
+
+		local rainDropsPart, _ = buildStormRainLayers(container, centerPos, canopyRadius, fxScale)
+		local rainHost = rainDropsPart
+		setParticleEmittersOnlyEnabled(container, true)
+		playSoundTemplateOn(rainHost, "Storm", "RainLoopSfx", 0.95)
+
+		-- Pre-collect barrel source instances (no position snapshot — positions are read live).
+		local barrelSources: { Instance } = {}
+		local barrelSideDir = Vector3.new(1, 0, 0)
+		if didBarrelLoss and boat then
+			local deckBarrels = collectDeckBarrelInstances(boat)
+			local toWash = math.min(barrelsLost, #deckBarrels, 8)
+			if toWash > 0 then
+				local right = if hull
+					then Vector3.new(hull.CFrame.RightVector.X, 0, hull.CFrame.RightVector.Z)
+					else Vector3.new(1, 0, 0)
+				if right.Magnitude < 0.01 then
+					right = Vector3.new(1, 0, 0)
+				else
+					right = right.Unit
+				end
+				barrelSideDir = right * (if rng:NextNumber() < 0.5 then -1 else 1)
+				for i = 1, toWash do
+					table.insert(barrelSources, deckBarrels[i])
+				end
+			end
+		end
+
+		-- Barrel wash animation: reads the barrel's LIVE position when called,
+		-- so the animation starts exactly where the barrel currently is on the deck.
+		local function runBarrelWashVisual(source: Instance)
+			local startPos = getInstanceWorldPosition(source)
+			if not startPos then
+				return
+			end
+			local visual: Instance
+			if source:IsA("Model") or source:IsA("BasePart") then
+				visual = source:Clone()
+				prepareKinematicFx(visual)
+				setInstanceWorldCFrame(visual, CFrame.new(startPos))
+			else
+				visual = createFallbackBarrelVisual(startPos)
+			end
+			visual.Parent = container
+			local edgePos = startPos + barrelSideDir * rng:NextNumber(14, 22) + Vector3.new(rng:NextNumber(-4, 4), -1, rng:NextNumber(-4, 4))
+			local splashPos = edgePos + barrelSideDir * rng:NextNumber(24, 44) + Vector3.new(rng:NextNumber(-8, 8), -7, rng:NextNumber(-8, 8))
+			local slideDur = rng:NextNumber(0.35, 0.55)
+			local t0 = os.clock()
+			while visual.Parent and (os.clock() - t0) < slideDur do
+				local a = math.clamp((os.clock() - t0) / slideDur, 0, 1)
+				local eased = a * a * (3 - 2 * a)
+				local p = startPos:Lerp(edgePos, eased) + Vector3.new(0, math.sin(eased * math.pi) * 3, 0)
+				setInstanceWorldCFrame(visual, CFrame.new(p) * CFrame.Angles(a * 4, a * 7, a * 5))
+				task.wait()
+			end
+			local fallDur = rng:NextNumber(0.45, 0.7)
+			local t1 = os.clock()
+			while visual.Parent and (os.clock() - t1) < fallDur do
+				local a = math.clamp((os.clock() - t1) / fallDur, 0, 1)
+				local eased = a * a * (3 - 2 * a)
+				local p = edgePos:Lerp(splashPos, eased) + Vector3.new(0, math.sin((1 - eased) * math.pi) * 5, 0)
+				setInstanceWorldCFrame(visual, CFrame.new(p) * CFrame.Angles(a * 12, a * 10, a * 9))
+				task.wait()
+			end
+			if visual.Parent then
+				visual:Destroy()
+			end
+		end
+
+		-- Last 1–2 strikes aim at barrel positions (read live at fire time); rest are atmospheric.
+		local strikeCount = math.clamp(math.floor(sequenceSeconds * 0.36), 3, 7)
+		local barrelTargetCount = math.min(#barrelSources, math.min(2, strikeCount))
+		local atmosphericCount = strikeCount - barrelTargetCount
+		local strikeWindow = math.max(1, sequenceSeconds - 0.2)
+		local timeBudget = strikeWindow
+		for i = 1, strikeCount do
+			local remaining = strikeCount - i + 1
+			local maxSlice = math.max(0.35, timeBudget / remaining)
+			local waitFor = rng:NextNumber(0.35, math.max(0.65, maxSlice))
+			waitFor = math.min(waitFor, timeBudget)
+			if waitFor > 0 then
+				task.wait(waitFor)
+			end
+			timeBudget -= waitFor
+
+			local strikeBase: Vector3
+			local barrelIdx = i - atmosphericCount
+			if barrelIdx >= 1 and barrelIdx <= #barrelSources then
+				-- Read the live position right now — boat may have moved since event fired.
+				local livePos = getInstanceWorldPosition(barrelSources[barrelIdx])
+				if livePos then
+					strikeBase = livePos
+					local src = barrelSources[barrelIdx]
+					task.delay(0.25, function()
+						task.spawn(runBarrelWashVisual, src)
+					end)
+				else
+					strikeBase = centerPos + Vector3.new(rng:NextNumber(-85, 85), 0, rng:NextNumber(-85, 85))
+				end
+			else
+				strikeBase = centerPos + Vector3.new(rng:NextNumber(-85, 85), 0, rng:NextNumber(-85, 85))
+			end
+
+			local top = strikeBase + Vector3.new(0, rng:NextNumber(72, 98), 0)
+			local bottom = strikeBase + Vector3.new(0, rng:NextNumber(4, 12), 0)
+			createLightningStrikeVisual(container, top, bottom)
+			playSoundTemplateOn(rainHost, "Storm", "LightningSfx", 1)
+
+			local cam = Workspace.CurrentCamera
+			local thunderDelay = rng:NextNumber(0.2, 1.0)
+			if cam then
+				local dist = (cam.CFrame.Position - strikeBase).Magnitude
+				thunderDelay = math.clamp(dist / 360, 0.15, 1.6)
+			end
+			task.delay(thunderDelay, function()
+				if container.Parent then
+					playSoundTemplateOn(rainHost, "Storm", "ThunderSfx", 1)
+				end
+			end)
+			shakeCameraIfNear(strikeBase, 260, 1.5, 0.18)
+		end
+
+		-- Barrels beyond the targeted count wash off after the loop with staggered timing.
+		for i = barrelTargetCount + 1, #barrelSources do
+			local src = barrelSources[i]
+			local stagger = (i - barrelTargetCount - 1) * 0.08
+			task.delay(stagger, function()
+				task.spawn(runBarrelWashVisual, src)
+			end)
+		end
+
+		task.delay(sequenceSeconds, function()
+			if container.Parent then
+				setParticleEmittersOnlyEnabled(container, false)
+			end
+		end)
+		Debris:AddItem(container, sequenceSeconds + 3.5)
+	end)
+end
+
+function StraitWaypointWorldFx.OnTornadoPayload(data: { [string]: any })
+	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
+	local center = vector3FromWorldPosition(data.worldPosition)
+	local payloadPivot = vector3FromWorldPosition(data.shipPivotPosition)
+	local payloadBounds = vector3FromWorldPosition(data.shipBoundsSize)
+	if not center then
+		center = payloadPivot
+	end
+	if not center then
+		return
+	end
+	local centerPos = center
+	local fallbackPivot = payloadPivot or centerPos
+	local fallbackBounds = payloadBounds or Vector3.new(30, 18, 30)
+
+	local fxScale = particleFxScaleFromPayload(data)
+	local sequenceSeconds = math.clamp(tonumber(data.sequenceSeconds) or 11, 1.5, 35)
+	local didBarrelLoss = data.didBarrelLoss == true and (tonumber(data.barrelsLost) or 0) > 0
+	local barrelsLost = math.max(0, tonumber(data.barrelsLost) or 0)
+	local maxVisualBarrels = math.max(0, math.floor(tonumber(data.maxVisualBarrels) or 8))
+
+	task.spawn(function()
+		local rng = Random.new()
+		local boat = resolveShipmentBoatWithTimeout(shipmentId, 1.5)
+		local hull = if boat then getBoatAttachmentPart(boat) else nil
+
+		local container = Instance.new("Model")
+		container.Name = "TornadoEventFx"
+		container.Parent = Workspace
+
+		local funnel = cloneRenderableEventRoot("Tornado", "FunnelRig")
+		if not funnel then
+			if RunService:IsStudio() then
+				warn("[StraitWaypointWorldFx] Tornado.FunnelRig missing/unusable; using fallback funnel.")
+			end
+			funnel = buildFallbackTornadoRig(container)
+		else
+			prepareKinematicFx(funnel)
+			funnel.Parent = container
+		end
+
+		local initialPivotPos, initialBounds, initialFrame = getTornadoBoatFrame(boat, fallbackPivot, fallbackBounds)
+		local shipSpan = math.max(initialBounds.X, initialBounds.Z)
+		local tornadoScale = math.clamp(shipSpan / 32, 1.3, 2.4)
+		scaleTornadoRoot(funnel, tornadoScale)
+		local funnelHalfHeight = getInstanceHalfHeight(funnel)
+		local funnelBaseOffset = getInstanceBaseOffset(funnel)
+		local funnelVisualLift = getTornadoVerticalMeshLift(funnel, funnelHalfHeight)
+		local debrisYOffset = math.max(9, math.max(funnelHalfHeight, funnelBaseOffset) * 0.52)
+		local waterClearance = math.max(0.15, math.min(1.2, funnelHalfHeight * 0.016))
+		local deckClearance = math.max(0.4, math.min(2.0, funnelHalfHeight * 0.034))
+
+		local debrisHost = Instance.new("Part")
+		debrisHost.Name = "TornadoDebrisHost"
+		debrisHost.Size = Vector3.new(1, 1, 1)
+		debrisHost.Anchored = true
+		debrisHost.CanCollide = false
+		debrisHost.CanQuery = false
+		debrisHost.CanTouch = false
+		debrisHost.Transparency = 1
+		debrisHost.Parent = container
+
+		local debrisTemplate = cloneParticleEmitterTemplate("Tornado", "DebrisEmitter")
+		if debrisTemplate then
+			attachEmitterFromTemplate(debrisHost, debrisTemplate, addFallbackTornadoDebris, fxScale)
+			debrisTemplate:Destroy()
+		else
+			addFallbackTornadoDebris(debrisHost, fxScale)
+		end
+
+		playSoundTemplateOn(debrisHost, "Tornado", "WindLoopSfx", 0.9)
+		ParticleFxScale.ApplyToDescendants(container, fxScale)
+		setAllParticleEmittersEnabled(container, true)
+
+		local frameForDirection = if hull then hull.CFrame else (if initialFrame then initialFrame else CFrame.new(initialPivotPos))
+		local forward = Vector3.new(frameForDirection.LookVector.X, 0, frameForDirection.LookVector.Z)
+		if forward.Magnitude <= 0.01 then
+			forward = Vector3.new(1, 0, 0)
+		else
+			forward = forward.Unit
+		end
+		if rng:NextNumber() < 0.5 then
+			forward = Vector3.new(-1, 0, 0)
+		end
+		local cross = Vector3.new(-forward.Z, 0, forward.X)
+
+		local laneRadius = math.max(28, shipSpan * 0.7)
+		local attackStart = initialPivotPos + cross * laneRadius
+		local attackEnd = initialPivotPos - cross * laneRadius
+		if not didBarrelLoss then
+			local missSign = if rng:NextNumber() < 0.5 then -1 else 1
+			local missOffset = cross * rng:NextNumber(26, 52) * missSign
+			attackStart += missOffset
+			attackEnd += missOffset
+		end
+		local entryStart = attackStart + cross * rng:NextNumber(68, 102) - forward * rng:NextNumber(24, 48)
+		local exitPos = attackEnd - cross * rng:NextNumber(76, 118) + forward * rng:NextNumber(24, 52)
+
+		local motionSeconds = math.max(2.4, sequenceSeconds)
+		local entryFrac = 0.2
+		local attackFrac = 0.6
+		local attackEndFrac = entryFrac + attackFrac
+		local motionStart = os.clock()
+		local chaosTriggered = false
+		while container.Parent and (os.clock() - motionStart) < motionSeconds do
+			local alpha = math.clamp((os.clock() - motionStart) / motionSeconds, 0, 1)
+
+			local basePathPos = attackStart
+			if alpha < entryFrac then
+				local phaseAlpha = math.clamp(alpha / math.max(entryFrac, 0.001), 0, 1)
+				local eased = phaseAlpha * phaseAlpha * (3 - 2 * phaseAlpha)
+				basePathPos = entryStart:Lerp(attackStart, eased)
+			elseif alpha < attackEndFrac then
+				local phaseAlpha = math.clamp((alpha - entryFrac) / math.max(attackFrac, 0.001), 0, 1)
+				local eased = phaseAlpha * phaseAlpha * (3 - 2 * phaseAlpha)
+				basePathPos = attackStart:Lerp(attackEnd, eased)
+			else
+				local exitFrac = math.max(1 - attackEndFrac, 0.001)
+				local phaseAlpha = math.clamp((alpha - attackEndFrac) / exitFrac, 0, 1)
+				local eased = phaseAlpha * phaseAlpha * (3 - 2 * phaseAlpha)
+				basePathPos = attackEnd:Lerp(exitPos, eased)
+			end
+
+			local livePivotPos, liveBounds, liveFrame = getTornadoBoatFrame(boat, fallbackPivot, fallbackBounds)
+			local shipDelta = livePivotPos - initialPivotPos
+
+			local pathPos = basePathPos + shipDelta
+			local lateralWobble = math.sin(alpha * math.pi * 5.8) * math.max(1.5, math.max(liveBounds.X, liveBounds.Z) * 0.03)
+			pathPos += forward * lateralWobble
+
+			local waterY = estimateTornadoWaterY(livePivotPos, liveBounds, centerPos.Y)
+			local rayTopY = livePivotPos.Y + math.max(liveBounds.Y, 24) + 80
+			local maxBoatSurfaceY = livePivotPos.Y + math.max(4, math.min(liveBounds.Y * 0.35, 10))
+
+			local sampledSurfaceY: number? = nil
+			local hitBoat = false
+			if boat then
+				local sampleY, didHit = sampleBoatSurfaceY(
+					boat,
+					livePivotPos,
+					pathPos,
+					math.max(10, math.max(liveBounds.X, liveBounds.Z) * 0.24),
+					rayTopY,
+					maxBoatSurfaceY
+				)
+				sampledSurfaceY = sampleY
+				hitBoat = didHit
+			end
+
+			local insideFootprint = isPointInsideBoatFootprint(pathPos, livePivotPos, liveBounds, if hull then hull.CFrame else liveFrame)
+			local onDeck = hitBoat and sampledSurfaceY ~= nil
+			local contactY = waterY
+			if onDeck and sampledSurfaceY then
+				contactY = math.min(maxBoatSurfaceY, sampledSurfaceY)
+			elseif insideFootprint then
+				contactY = waterY
+			end
+
+			local baseY = contactY + (if onDeck then deckClearance else waterClearance)
+			baseY = math.max(waterY + waterClearance, baseY)
+
+			local funnelCenterY = baseY + funnelBaseOffset + funnelVisualLift
+			local yaw = os.clock() * 8.4
+			setInstanceWorldCFrame(funnel, CFrame.new(pathPos.X, funnelCenterY, pathPos.Z) * CFrame.Angles(0, yaw, 0))
+			debrisHost.CFrame = CFrame.new(pathPos.X, baseY + debrisYOffset, pathPos.Z)
+
+			if math.floor(alpha * 18) % 4 == 0 then
+				shakeCameraIfNear(pathPos, 220, 0.85, 0.08)
+			end
+
+			local inAttackPhase = alpha >= entryFrac and alpha <= attackEndFrac
+			local touchingDeck = inAttackPhase and onDeck and sampledSurfaceY ~= nil and sampledSurfaceY >= (waterY + 0.9)
+			if didBarrelLoss and not chaosTriggered and touchingDeck and boat then
+				chaosTriggered = true
+				local chaosCenter = Vector3.new(pathPos.X, baseY + 1.8, pathPos.Z)
+				spawnTornadoBarrelChaos(container, boat, chaosCenter, barrelsLost, maxVisualBarrels)
+				shakeCameraIfNear(pathPos, 260, 1.3, 0.22)
+			end
+			task.wait()
+		end
+
+		if container.Parent then
+			setAllParticleEmittersEnabled(container, false)
+		end
+		Debris:AddItem(container, 1.2)
 	end)
 end
 
