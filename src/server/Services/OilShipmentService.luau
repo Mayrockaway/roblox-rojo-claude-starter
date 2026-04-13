@@ -418,12 +418,16 @@ function OilShipmentService:_runShipment(shipment)
 	-- Add player flag to the ship
 	self:_addPlayerFlag(boat, ownerUserId)
 
+	local dockHoldBeforeVoyage = 1.2
+	local tNow = workspace:GetServerTimeNow()
 	self:_emitShipmentEvent("ShipmentStarted", {
 		ownerUserId = ownerUserId,
 		shipmentId = shipment.shipmentId,
 		boatTypeId = shipment.boatTypeId,
 		loaded = shipment.totalLoaded,
 		dispatchFee = shipment.dispatchFee,
+		voyageStartTime = tNow + dockHoldBeforeVoyage,
+		voyageEndTime = tNow + dockHoldBeforeVoyage + shipment.travelSeconds,
 	})
 
 	-- Load animation at the dock
@@ -435,7 +439,7 @@ function OilShipmentService:_runShipment(shipment)
 	-- Enable boarding: player can teleport to the deck seat
 	local boardConnection = self:_enableBoarding(boat, ownerUserId)
 
-	task.wait(1.2)
+	task.wait(dockHoldBeforeVoyage)
 
 	-- Voyage: follow the polyline path over travelSeconds
 	local voyageTime = shipment.travelSeconds

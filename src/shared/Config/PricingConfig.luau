@@ -33,11 +33,9 @@ local PricingConfig = {
 	-- baseOilPrice = floor(BasePrice * lerp(minMul, maxMul, randomFactor))
 	-- then per-type price = floor(baseOilPrice * TypeMultipliers[type])
 	Bands = {
-		Open =      { minMul = 0.80, maxMul = 1.20 },   -- base $8-$12
-		Tense =     { minMul = 1.20, maxMul = 1.80 },   -- base $12-$18
-		Dangerous = { minMul = 2.00, maxMul = 3.20 },   -- base $20-$32
-		Crisis =    { minMul = 3.50, maxMul = 5.50 },   -- base $35-$55
-		Closed =    { minMul = 5.00, maxMul = 8.00 },   -- base $50-$80
+		Open = { minMul = 0.80, maxMul = 1.20 }, -- base $8-$12
+		Restricted = { minMul = 2.00, maxMul = 3.20 }, -- base $20-$32 (mid strait pressure)
+		Closed = { minMul = 5.00, maxMul = 8.00 }, -- base $50-$80
 	},
 }
 

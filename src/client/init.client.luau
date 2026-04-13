@@ -85,6 +85,7 @@ local requestUpgradeWarehouse = remotesFolder:WaitForChild(RemoteNames.RequestUp
 local requestSellAllWarehouse = remotesFolder:WaitForChild(RemoteNames.RequestSellAllWarehouse) :: RemoteEvent
 local requestTeleportToWarehouse = remotesFolder:WaitForChild(RemoteNames.RequestTeleportToWarehouse) :: RemoteEvent
 local warehouseStateUpdate = remotesFolder:WaitForChild(RemoteNames.WarehouseStateUpdate) :: RemoteEvent
+local requestWarehouseSnapshot = remotesFolder:WaitForChild(RemoteNames.RequestWarehouseSnapshot) :: RemoteFunction
 local requestClearObstacle = remotesFolder:WaitForChild(RemoteNames.RequestClearObstacle) :: RemoteEvent
 local biomeRevealEvent = remotesFolder:WaitForChild(RemoteNames.BiomeRevealEvent) :: RemoteEvent
 local requestDispatchShipment = remotesFolder:WaitForChild(RemoteNames.RequestDispatchShipment) :: RemoteEvent
@@ -93,6 +94,53 @@ local oilActionResult = remotesFolder:WaitForChild(RemoteNames.OilActionResult) 
 local shipmentVisualEvent = remotesFolder:WaitForChild(RemoteNames.ShipmentVisualEvent) :: RemoteEvent
 local requestDevSetStraitBracket = remotesFolder:WaitForChild(RemoteNames.RequestDevSetStraitBracket) :: RemoteEvent
 local globalStateUpdate = remotesFolder:WaitForChild(RemoteNames.GlobalStateUpdate) :: RemoteEvent
+
+local function requireStraitDevPanel(): { mount: (PlayerGui, RemoteEvent, RemoteEvent) -> (), shouldShow: () -> boolean }?
+	local modScript: ModuleScript? = nil
+	-- Rojo: LocalScript under PlayerScripts.Client, UI sibling
+	local siblingUi = script.Parent and script.Parent:FindFirstChild("UI")
+	if siblingUi then
+		local m = siblingUi:FindFirstChild("StraitDevPanel")
+		if m and m:IsA("ModuleScript") then
+			modScript = m
+		end
+	end
+	-- Script under PlayerScripts (flat); module under PlayerScripts.Client.UI
+	if not modScript then
+		local ps = player:FindFirstChild("PlayerScripts") or player:WaitForChild("PlayerScripts", 30)
+		local clientFolder = ps:FindFirstChild("Client")
+		if clientFolder then
+			local ui = clientFolder:FindFirstChild("UI")
+			local m = ui and ui:FindFirstChild("StraitDevPanel")
+			if m and m:IsA("ModuleScript") then
+				modScript = m
+			end
+		end
+		if not modScript then
+			clientFolder = ps:WaitForChild("Client", 25)
+			local ui = clientFolder:WaitForChild("UI", 25)
+			local m = ui:WaitForChild("StraitDevPanel", 25)
+			if m:IsA("ModuleScript") then
+				modScript = m
+			end
+		end
+	end
+	if not modScript then
+		warn("[Client] StraitDevPanel not found — ensure Rojo syncs `src/client/UI/StraitDevPanel.luau` under PlayerScripts.Client.UI")
+		return nil
+	end
+	local ok, result = pcall(require, modScript)
+	if ok and typeof(result) == "table" then
+		return result :: any
+	end
+	warn("[Client] StraitDevPanel require failed:", result)
+	return nil
+end
+
+local straitDevPanel = requireStraitDevPanel()
+if straitDevPanel then
+	straitDevPanel.mount(playerGui, requestDevSetStraitBracket, globalStateUpdate)
+end
 local marketPriceUpdate = remotesFolder:WaitForChild(RemoteNames.MarketPriceUpdate) :: RemoteEvent
 local requestSellWarehouseType = remotesFolder:WaitForChild(RemoteNames.RequestSellWarehouseType) :: RemoteEvent
 local requestMarketSnapshot = remotesFolder:WaitForChild(RemoteNames.RequestMarketSnapshot) :: RemoteFunction
@@ -101,6 +149,8 @@ local TOOL_DRILL = "Drill"
 local TOOL_PIPE = "Pipe"
 
 local state = nil
+local cashTextLabel: TextLabel? = nil
+
 local config = {
 	drillPlacementCost = 200,
 	drillMinSpacing = 6,
@@ -669,9 +719,125 @@ local function updateFocusUi()
 	focusBillboard.Enabled = true
 end
 
+local function formatCashWithCommas(amount: number): string
+	local n = math.floor(math.max(0, amount))
+	local s = tostring(n)
+	local segments = {}
+	local i = #s
+	while i > 0 do
+		local startIdx = math.max(1, i - 2)
+		table.insert(segments, 1, string.sub(s, startIdx, i))
+		i = startIdx - 1
+	end
+	return table.concat(segments, ",")
+end
+
+local function resolveCashTextLabel(pg: PlayerGui): TextLabel?
+	local hud = pg:FindFirstChild("HUD")
+	local canvas = hud and hud:FindFirstChild("Canvas")
+	local left = canvas and canvas:FindFirstChild("LeftStack")
+	local strip = left and left:FindFirstChild("CashStrip")
+	local lbl = strip and strip:FindFirstChild("CashText")
+	if lbl and lbl:IsA("TextLabel") then
+		return lbl
+	end
+	return nil
+end
+
+local function updateCashHud()
+	local cash = 0
+	if typeof(state) == "table" then
+		local st = state :: { [string]: any }
+		if typeof(st.cash) == "number" then
+			cash = math.floor(math.max(0, st.cash))
+		end
+	end
+	if not (cashTextLabel and cashTextLabel.Parent) then
+		cashTextLabel = resolveCashTextLabel(playerGui)
+	end
+	if not cashTextLabel then
+		return
+	end
+	cashTextLabel.Text = "$" .. formatCashWithCommas(cash)
+end
+
 local function updateUi()
 	-- Oil HUD is StarterGui `HUD` (cloned to PlayerGui). Rebind labels/buttons here when ready.
+	updateCashHud()
 end
+
+local function getHudUiFolder(): Instance?
+	-- Play: LocalScripts usually live under `PlayerScripts.Client`; Rojo `src/client/UI` mirrors there.
+	local psInst = player:FindFirstChild("PlayerScripts")
+	if not (psInst and psInst:IsA("PlayerScripts")) then
+		psInst = player:WaitForChild("PlayerScripts", 30)
+	end
+	if not (psInst and psInst:IsA("PlayerScripts")) then
+		return nil
+	end
+	local ps = psInst :: PlayerScripts
+	local clientFolder = ps:FindFirstChild("Client")
+	if clientFolder then
+		local ui = clientFolder:FindFirstChild("UI")
+		if ui then
+			return ui
+		end
+	end
+	local uiRoot = ps:FindFirstChild("UI")
+	if uiRoot then
+		return uiRoot
+	end
+	local sp = script.Parent
+	if sp then
+		local ui = sp:FindFirstChild("UI")
+		if ui then
+			return ui
+		end
+	end
+	return nil
+end
+
+local function startHudModalWiring()
+	local ok, err = pcall(function()
+		local uiFolder = getHudUiFolder()
+		if not uiFolder then
+			for _ = 1, 120 do
+				uiFolder = getHudUiFolder()
+				if uiFolder then
+					break
+				end
+				task.wait(0.25)
+			end
+		end
+		if not uiFolder then
+			warn(
+				"[Client] HUD wiring: could not find `UI` under PlayerScripts.Client (or script.Parent). Sync Rojo `src/client/UI`."
+			)
+			return
+		end
+		local routerMod = uiFolder:WaitForChild("HudPanelRouter", 30)
+		if not (routerMod and routerMod:IsA("ModuleScript")) then
+			warn("[Client] HUD wiring: HudPanelRouter ModuleScript missing under UI folder.")
+			return
+		end
+		local HudPanelRouter = require(routerMod) :: { start: (PlayerGui) -> () }
+		HudPanelRouter.start(playerGui)
+
+		local tpMod = uiFolder:WaitForChild("HudTeleportRouter", 30)
+		if tpMod and tpMod:IsA("ModuleScript") then
+			local HudTeleportRouter = require(tpMod) :: { start: (PlayerGui) -> () }
+			HudTeleportRouter.start(playerGui)
+		else
+			warn("[Client] HUD wiring: HudTeleportRouter ModuleScript missing under UI folder.")
+		end
+	end)
+	if not ok then
+		warn("[Client] HUD wiring bootstrap failed: ", err)
+	end
+end
+
+-- Deferred below after `updateMarketUi` exists: `InvokeServer()` yields mid-script, so an early
+-- `task.defer(startHudModalWiring)` could run this bootstrap before `updateMarketUi` is defined (nil call).
 
 local function getTargetedDrillId(): number?
 	local target = mouse.Target
@@ -746,6 +912,13 @@ updateUi()
 player:GetAttributeChangedSignal("PlotId"):Connect(function()
 	bindOwnedPlot()
 	updateUi()
+end)
+
+playerGui.ChildAdded:Connect(function(child)
+	if child.Name == "HUD" then
+		cashTextLabel = nil
+		updateCashHud()
+	end
 end)
 
 mouse.Button1Down:Connect(function()
@@ -827,11 +1000,39 @@ local marketState = {
 	typeMultipliers = MARKET_TYPE_MULS,
 }
 
+local straitStatusHudModule: { refresh: (PlayerGui, string) -> () }? = nil
+local function getStraitStatusHud(): { refresh: (PlayerGui, string) -> () }?
+	if straitStatusHudModule then
+		return straitStatusHudModule
+	end
+	-- Match `getHudUiFolder` / StraitDevPanel: LocalScript may sit under `PlayerScripts` while `UI` lives under `Client`.
+	local ui = getHudUiFolder()
+	if not ui then
+		return nil
+	end
+	local m = ui:FindFirstChild("StraitStatusHud")
+	if m and m:IsA("ModuleScript") then
+		straitStatusHudModule = require(m) :: { refresh: (PlayerGui, string) -> () }
+	end
+	return straitStatusHudModule
+end
+
 local function updateMarketUi()
-	-- Rebind to StarterGui `HUD` oil price / market UI when wired.
-	_ = marketState
+	local h = getStraitStatusHud()
+	if h then
+		h.refresh(playerGui, tostring(marketState.straitState or "Open"))
+	end
 	_ = warehouseState
 end
+
+-- Run after market HUD helpers exist; `requestOilSnapshot:InvokeServer()` above can yield before here.
+task.defer(startHudModalWiring)
+-- Strait pill refresh must NOT live inside `startHudModalWiring` (closure created when that fn runs);
+-- register this defer here so the closure is built after `updateMarketUi` exists.
+task.defer(function()
+	task.wait(0.5)
+	updateMarketUi()
+end)
 
 local function updateWarehouseUi()
 	-- Rebind to StarterGui `HUD` warehouse labels/buttons when wired.
@@ -844,12 +1045,26 @@ warehouseStateUpdate.OnClientEvent:Connect(function(data)
 	updateMarketUi()
 end)
 
+-- `WarehouseStateUpdate` may fire before this script connects; re-fetch authoritative counts once.
+task.defer(function()
+	local ok, data = pcall(function()
+		return requestWarehouseSnapshot:InvokeServer()
+	end)
+	if ok and typeof(data) == "table" and typeof(data.barrels) == "table" then
+		warehouseState = data
+		updateWarehouseUi()
+		updateMarketUi()
+	end
+end)
+
 globalStateUpdate.OnClientEvent:Connect(function(snapshot)
 	if typeof(snapshot) ~= "table" then
 		return
 	end
-	-- Rebind strait / global HUD (was Strait dev panel engine label).
-	_ = snapshot
+	if typeof(snapshot.state) == "string" then
+		marketState.straitState = snapshot.state
+		updateMarketUi()
+	end
 end)
 
 shipmentVisualEvent.OnClientEvent:Connect(function(packet)

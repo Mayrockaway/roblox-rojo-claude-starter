@@ -15,6 +15,14 @@ This document is the **repo source of truth** for structure and **author-intent*
 
 **Sell Oil modal:** `StarterGui.SellOilPanelGui` — see `SELL_OIL_PANEL.md` for hierarchy and wiring names.
 
+**Ship Oil modal:** `StarterGui.ShipOilPanelGui` — see `SHIP_OIL_PANEL.md` (cargo + **Run Upgrades** placeholder cards + **Insurance** row + dispatch footer; tanker on Ship Management).
+
+**Ship Management modal:** `StarterGui.ShipManagementPanelGui` — see `SHIP_MANAGEMENT_PANEL.md` (60/40 hero viewport + stats / upgrades placards + cosmetics row).
+
+**Select Ship modal:** `StarterGui.SelectShipPanelGui` — see `SELECT_SHIP_PANEL.md` (grid of **`ShipSelectCardTemplate`** clones, owned counter, close; opened from **Change Ship**).
+
+**Strait passage info:** `StarterGui.StraitInfoPanelGui` — see `docs/features/strait-waypoint-events/STRAIT_STATUS_INFO_PANEL.md` (read-only explainer; anchor top-right near HUD Strait control).
+
 ## Hierarchy (names must stay stable for future wiring)
 
 ```
@@ -23,16 +31,16 @@ HUD [ScreenGui]
    ├─ UIPadding
    ├─ TopRow [Frame]
    │  ├─ UIListLayout (Horizontal)
-   │  ├─ OilPricePanel
+   │  ├─ OilPricePanel  (click: **`OilPriceButton`** opens read-only **`OilPriceInfoPanelGui`** — see `OIL_PRICE_INFO_PANEL_MOCKUP.md`)
    │  │  └─ Row
    │  │     ├─ UIListLayout (Horizontal)
    │  │     ├─ PriceIndicator  (Frame, aspect 1, corner)
-   │  │     └─ OilPricePill → PriceText (TextLabel, TextScaled)
+   │  │     └─ OilPriceButton (`TextButton`) → PriceText (TextLabel, TextScaled)
    │  ├─ ShipmentProgressPanel
-   │  │  ├─ ProgressTrack → ProgressFill
-   │  │  └─ Hint (TextLabel)
+   │  │  ├─ ProgressTrack → ProgressFill (Studio: rounded trough + fill bevel — `UICorner`, `UIStroke` on track + fill, `UIGradient` on fill for depth; `ClipsDescendants` on track if Hint is **not** inside track. Runtime: `ShipmentProgressHud` / `ShipmentProgressBootstrap` only animates fill **X scale** + Hint **Text**.)
+   │  │  └─ Hint (`TextLabel`): Studio — `TextScaled`, `UITextSizeConstraint` (e.g. min 12 max 36), `Size` uses **Y scale** ~0.38 for legibility; optional `TextWrapped`
    │  └─ StraitStatusPanel
-   │     └─ StraitPill → StraitText (plus strait indicator widget if present in Studio)
+   │     └─ StraitStatusButton (`TextButton`) → StraitText (plus strait indicator widget if present in Studio); opens **`StraitInfoPanelGui`**
    ├─ LeftStack [Frame]
    │  ├─ UIListLayout (Vertical)
    │  ├─ CashStrip → CashIcon, CashText
@@ -59,7 +67,7 @@ HUD [ScreenGui]
 
 ## Placeholder copy (scripts will replace later)
 
-- `OilPricePill.PriceText`: `Oil: $--/bbl`
+- `OilPriceButton.PriceText`: `Oil: $--/bbl`
 - `StraitText`: `Strait: Closed` (or split pill/indicator per final art)
 - `CashText`: `Cash: $0`
 - Buttons: `Shop`, `Ship Oil`, `Sell Oil`, teleport strings as named.

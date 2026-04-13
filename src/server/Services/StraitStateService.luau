@@ -44,11 +44,36 @@ function StraitStateService:Init(remoteService, telemetryService)
 	end
 end
 
+function StraitStateService:_forceStraitOpenAtLaunch()
+	self._forcedClosedUntil = nil
+	self._state = "Open"
+	local maxVer = self._version
+	if self._stateMap ~= nil then
+		local ok, snap = pcall(function()
+			return self._stateMap:GetAsync(Constants.StraitStateKey)
+		end)
+		if ok and typeof(snap) == "table" and typeof(snap.version) == "number" then
+			maxVer = math.max(maxVer, snap.version)
+		end
+	end
+	self._version = maxVer + 1
+	self._nextRollAt = workspace:GetServerTimeNow() + self:_sampleRollDelaySeconds()
+	self:_publishState()
+	self:_broadcast()
+end
+
 function StraitStateService:Start()
 	if self._running then
 		return
 	end
 	self._running = true
+
+	if Constants.StraitForceOpenAtLaunch then
+		self:_forceStraitOpenAtLaunch()
+	else
+		self:_broadcast()
+	end
+
 	self:_subscribeMessaging()
 
 	task.spawn(function()
@@ -65,7 +90,6 @@ function StraitStateService:Start()
 		end
 	end)
 
-	self:_broadcast()
 	self:_wireDevStraitUi()
 end
 
@@ -228,7 +252,16 @@ function StraitStateService:_applySnapshot(snapshot)
 	end
 
 	local state = snapshot.state
-	if typeof(state) ~= "string" or StraitConfig.States[state] == nil then
+	if typeof(state) ~= "string" then
+		return
+	end
+	-- Migrate legacy engine keys from MemoryStore / MessagingService replays
+	if state == "Tense" or state == "Dangerous" then
+		state = "Restricted"
+	elseif state == "Crisis" then
+		state = "Closed"
+	end
+	if StraitConfig.States[state] == nil then
 		return
 	end
 
@@ -261,7 +294,7 @@ function StraitStateService:_broadcast()
 	end
 end
 
--- UI "Open" / "Restricted" / "Closed" → engine state (Restricted → Dangerous as the mid-tier representative).
+-- Dev UI "Open" / "Restricted" / "Closed" → engine state (1:1 with public brackets).
 function StraitStateService:_bracketLabelToEngineState(bracket: string): string?
 	local b = string.lower(string.gsub(bracket, "%s+", ""))
 	if b == "open" then
@@ -269,7 +302,7 @@ function StraitStateService:_bracketLabelToEngineState(bracket: string): string?
 	elseif b == "closed" then
 		return "Closed"
 	elseif b == "restricted" then
-		return "Dangerous"
+		return "Restricted"
 	end
 	return nil
 end

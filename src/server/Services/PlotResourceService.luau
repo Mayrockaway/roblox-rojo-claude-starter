@@ -57,6 +57,17 @@ function PlotResourceService:Start()
 		self:_handlePickupBarrelRequest(player, payload)
 	end))
 
+	local setBoatEvent = self._remoteService:GetEvent(RemoteNames.RequestSetSelectedBoat)
+	table.insert(self._connections, setBoatEvent.OnServerEvent:Connect(function(player, payload)
+		if typeof(payload) ~= "table" or typeof(payload.boatTypeId) ~= "string" then
+			return
+		end
+		local ok, _err = self._oilStateService:SetSelectedBoatTypeId(player.UserId, payload.boatTypeId)
+		if ok then
+			self._oilStateService:PushState(player.UserId)
+		end
+	end))
+
 	snapshotFn.OnServerInvoke = function(player)
 		return {
 			state = self._oilStateService:GetStateForClient(player.UserId),

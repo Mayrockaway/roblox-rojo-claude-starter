@@ -95,6 +95,22 @@ function WarehouseService:Start()
 		self:_teleportToWarehouse(player)
 	end))
 
+	local warehouseSnapshotFn = self._remoteService:GetFunction(RemoteNames.RequestWarehouseSnapshot)
+	warehouseSnapshotFn.OnServerInvoke = function(player: Player)
+		local data = self:GetWarehouseForClient(player.UserId)
+		if data then
+			return data
+		end
+		return {
+			tier = 1,
+			barrels = emptyBarrelMap(),
+			capacity = WarehouseConfig.GetCapacity(1),
+			totalBarrels = 0,
+			slotId = nil,
+			upgradeCost = WarehouseConfig.GetUpgradeCost(1),
+		}
+	end
+
 	-- Autosave
 	task.spawn(function()
 		while true do
@@ -335,6 +351,32 @@ function WarehouseService:GetAllBarrels(userId: number)
 		LightSweet = state.barrels.LightSweet or 0,
 		PremiumRefined = state.barrels.PremiumRefined or 0,
 	}
+end
+
+-- Remove up to `removals[tier]` whole barrels per tier (market partial sell).
+function WarehouseService:TryRemoveBarrelsByCounts(userId: number, removals: { [string]: number }): boolean
+	local state = self._stateByUserId[userId]
+	if not state then
+		return false
+	end
+	local need = emptyBarrelMap()
+	for _, tier in ipairs(TIER_ORDER) do
+		need[tier] = math.max(0, math.floor(removals[tier] or 0))
+	end
+	for _, tier in ipairs(TIER_ORDER) do
+		local have = state.barrels[tier] or 0
+		if have < need[tier] then
+			return false
+		end
+	end
+	for _, tier in ipairs(TIER_ORDER) do
+		state.barrels[tier] = math.max(0, (state.barrels[tier] or 0) - need[tier])
+	end
+	self._dirtyByUserId[userId] = true
+	self:_syncBarrelVisuals(userId)
+	self:_updateSign(userId)
+	self:PushState(userId)
+	return true
 end
 
 function WarehouseService:RemoveBarrelsByType(userId: number, oilType: string): number

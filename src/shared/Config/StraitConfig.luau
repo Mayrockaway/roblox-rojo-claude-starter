@@ -1,12 +1,12 @@
 --!strict
 
-export type StraitState = "Open" | "Tense" | "Dangerous" | "Crisis" | "Closed"
+export type StraitState = "Open" | "Restricted" | "Closed"
 
 local StraitConfig = {
 	InitialState = "Open" :: StraitState,
 	RollIntervalSeconds = 180,
 	RollJitterSeconds = 45,
-	StateOrder = { "Open", "Tense", "Dangerous", "Crisis", "Closed" } :: { StraitState },
+	StateOrder = { "Open", "Restricted", "Closed" } :: { StraitState },
 	States = {
 		Open = {
 			riskLabel = "low",
@@ -15,26 +15,12 @@ local StraitConfig = {
 			initialEventChance = 0.10,
 			eventContinuationChance = 0.12,
 		},
-		Tense = {
-			riskLabel = "medium",
-			priceMultiplier = 1.5,
-			baseSuccessChance = 0.75,
-			initialEventChance = 0.25,
-			eventContinuationChance = 0.22,
-		},
-		Dangerous = {
-			riskLabel = "high",
+		Restricted = {
+			riskLabel = "elevated",
 			priceMultiplier = 2.5,
 			baseSuccessChance = 0.45,
 			initialEventChance = 0.45,
 			eventContinuationChance = 0.35,
-		},
-		Crisis = {
-			riskLabel = "extreme",
-			priceMultiplier = 4.0,
-			baseSuccessChance = 0.25,
-			initialEventChance = 0.65,
-			eventContinuationChance = 0.48,
 		},
 		Closed = {
 			riskLabel = "blocked",

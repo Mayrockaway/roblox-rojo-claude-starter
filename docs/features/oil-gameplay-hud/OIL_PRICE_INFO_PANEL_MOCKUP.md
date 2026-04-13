@@ -6,7 +6,7 @@
 2. **Light sweet**
 3. **Premium refined**
 
-Opens when the player **clicks `HUD.Canvas.TopRow.OilPricePanel`**. **No scrolling** for v1.
+Opens when the player **clicks `HUD.Canvas.TopRow.OilPricePanel.Row.OilPriceButton`**. **No scrolling** for v1.
 
 **Visual mockup (image):** `assets/oil-price-info-panel-mockup.png`.
 
@@ -53,5 +53,5 @@ Example **`ColorSequence`** (tune in Studio):
 ## Wiring (checklist)
 
 - [ ] **`StarterGui.OilPriceInfoPanelGui`** shell like strait panel.
-- [ ] **`OilPricePanel`** click → toggle **`Enabled`**; **`CloseButton`** + **`Dimmer`** close.
+- [x] **`OilPriceButton`** → toggle **`OilPriceInfoPanelGui.Enabled`** (exclusive with other HUD modals); **`CloseButton`** closes (dimmer does not close).
 - [ ] Runtime: **marker X** + **`PriceValue.Text`** only (disclose in PR).

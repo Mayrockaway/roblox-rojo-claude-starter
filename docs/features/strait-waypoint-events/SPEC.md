@@ -18,7 +18,7 @@ Authoritative handoff for **oil shipment** strait events: design intent, tuning 
 
 - **Implementation** of world VFX/SFX/HUD (covered by **locked plan §8.2–8.5**; assign to gameplay / UI implementers).
 - Per-player mitigation upgrades (design hook reserved).
-- Changing `StraitConfig` from five engine states to three literal states (see §4 — we **map** engine states to three **event brackets**).
+- Adding engine states beyond **Open / Restricted / Closed** (the model is fixed at three).
 
 ---
 
@@ -30,7 +30,7 @@ Authoritative handoff for **oil shipment** strait events: design intent, tuning 
 | Per-event design writeups + backlog | [EVENTS.md](./EVENTS.md) |
 | Occurrence/severeity tuning, lane trigger ordinals, default pause | `src/shared/Config/StraitEventConfig.luau` |
 | Voyage loop, crossing detection, apply event, pause clock | `src/server/Services/OilShipmentService.luau` |
-| Global strait state (Open, Tense, …, Closed) | `src/shared/Config/StraitConfig.luau` |
+| Global strait state (Open, Restricted, Closed) | `src/shared/Config/StraitConfig.luau` |
 | Strait state replication / rolls | `src/server/Services/StraitStateService.luau` |
 | Server bootstrap (Telemetry + Strait + OilShipment wiring) | `src/server/init.server.luau` |
 | Client broadcast handling for strait events | `src/client/init.client.luau` |
@@ -56,17 +56,11 @@ Authoritative handoff for **oil shipment** strait events: design intent, tuning 
 
 - **Crossing time:** `OilShipmentService:_handleStraitWaypointTrigger` reads `StraitStateService:GetCurrentState()` **when the crossing is processed**, not at dispatch. If the strait escalates mid-trip, later waypoints use harder odds.
 
-### 4.3 Engine states → event brackets (three logical modes)
+### 4.3 Engine states and event brackets
 
-The live game uses **five** values from `StraitConfig` / `StraitStateService`. **Event math** uses **three brackets**:
+The live game uses **three** values from `StraitConfig` / `StraitStateService`: **`Open`**, **`Restricted`**, **`Closed`**. **Event math** uses the **same three names** as brackets (no separate “engine vs public” tier list).
 
-| Engine state (`GetCurrentState()`) | Event bracket |
-|-----------------------------------|---------------|
-| `Open` | **Open** |
-| `Closed` | **Closed** |
-| `Tense`, `Dangerous`, `Crisis` | **Restricted** |
-
-Implementation: `StraitEventConfig.PublicBracketFromEngineState`.
+Implementation: `StraitEventConfig.PublicBracketFromEngineState` (identity for the three states). **Legacy** persisted strings `Tense` / `Dangerous` / `Crisis` from older saves are mapped to **Restricted** / **Restricted** / **Closed** when read from MemoryStore or MessagingService.
 
 ### 4.4 Occurrence probability (per trigger, independent rolls)
 
@@ -238,7 +232,7 @@ Defined in `StraitEvents/Catalog.luau`. **Design notes, fantasy, and backlog:** 
 
 **Do not** ship with `ForceOccurrenceAtWaypoint` enabled in production. Turn flags off before release.
 
-**Strait dev UI (3 buttons):** Top-right panel **in Roblox Studio only** by default (`RunService:IsStudio()`), or enable anywhere with `Constants.StraitDevUiEnabled = true` (server must allow the remote — same check). Buttons fire `RequestDevSetStraitBracket` with `{ bracket = "Open" \| "Restricted" \| "Closed" }`. Server maps **Restricted → engine state `Dangerous`** (same event bracket as Tense/Crisis). After a dev set, automatic strait rolls are delayed by `StraitDevStateHoldSeconds` (default 24h) so the selection sticks while testing. The panel listens to `GlobalStateUpdate` to show the current **engine** state string.
+**Strait dev UI (3 buttons):** Top-right panel **in Roblox Studio only** by default (`RunService:IsStudio()`), or enable anywhere with `Constants.StraitDevUiEnabled = true` (server must allow the remote — same check). Buttons fire `RequestDevSetStraitBracket` with `{ bracket = "Open" \| "Restricted" \| "Closed" }`. Server sets the **engine** state to the same string (**1:1** with the HUD / event brackets). After a dev set, automatic strait rolls are delayed by `StraitDevStateHoldSeconds` (default 24h) so the selection sticks while testing. The panel listens to `GlobalStateUpdate` to show the current **engine** state string.
 
 **Optional:** Client status line still updates on `StraitWaypointEvent` for the local player / others.
 

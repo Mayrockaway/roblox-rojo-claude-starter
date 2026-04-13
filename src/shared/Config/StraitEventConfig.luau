@@ -1,7 +1,6 @@
 --!strict
 
--- Tuning for waypoint strait events (Open / Restricted / Closed buckets).
--- Engine states Tense, Dangerous, Crisis map to Restricted; see PublicBracketFromEngineState.
+-- Tuning for waypoint strait events (Open / Restricted / Closed — same as engine `StraitConfig` states).
 
 export type PublicStraitBracket = "Open" | "Restricted" | "Closed"
 
@@ -33,8 +32,17 @@ function StraitEventConfig.PublicBracketFromEngineState(engineState: string): Pu
 		return "Open"
 	elseif engineState == "Closed" then
 		return "Closed"
+	elseif engineState == "Restricted" then
+		return "Restricted"
 	end
-	return "Restricted"
+	-- Legacy persisted / debug strings (pre–3-state model)
+	if engineState == "Tense" or engineState == "Dangerous" then
+		return "Restricted"
+	end
+	if engineState == "Crisis" then
+		return "Closed"
+	end
+	return "Open"
 end
 
 function StraitEventConfig.GetOccurrenceChance(bracket: PublicStraitBracket): number

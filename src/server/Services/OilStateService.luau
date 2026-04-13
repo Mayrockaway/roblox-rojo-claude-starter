@@ -8,6 +8,7 @@ local RunService = game:GetService("RunService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local BiomeConfig = require(Shared:WaitForChild("Config"):WaitForChild("BiomeConfig"))
+local BoatConfig = require(Shared:WaitForChild("Config"):WaitForChild("BoatConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local OilStateService = {}
@@ -71,6 +72,7 @@ local function buildDefaultPersisted()
 		nextPipeId = 1,
 		nextDrumId = 1,
 		nextAttachmentId = 1,
+		selectedBoatTypeId = "RustSkiff",
 	}
 end
 
@@ -403,6 +405,7 @@ function OilStateService:GetStateForClient(userId: number)
 		stalledDrillCount = stalledCount,
 		maxActiveDrills = maxActiveDrillsFor(state),
 		activeShipmentCount = state.activeShipmentCount,
+		selectedBoatTypeId = state.selectedBoatTypeId or "RustSkiff",
 		chunks = chunks,
 		drills = drills,
 		pipes = pipes,
@@ -1182,6 +1185,7 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 			PremiumRefined = 0,
 		},
 		activeShipmentCount = 0,
+		selectedBoatTypeId = "RustSkiff",
 		chunksById = chunksById,
 		drillsById = {},
 		pipesByCellKey = {},
@@ -1319,6 +1323,10 @@ function OilStateService:_applyPersistedIntoState(state, persisted)
 				state.oilByTier[tier] = floorPositive(value)
 			end
 		end
+	end
+
+	if typeof(persisted.selectedBoatTypeId) == "string" and BoatConfig.Boats[persisted.selectedBoatTypeId] then
+		state.selectedBoatTypeId = persisted.selectedBoatTypeId
 	end
 
 	if typeof(persisted.unlockedChunkIds) == "table" then
@@ -1587,8 +1595,22 @@ function OilStateService:_serializeState(state)
 	persisted.nextDrillId = state.nextDrillId
 	persisted.nextPipeId = state.nextPipeId
 	persisted.nextDrumId = state.nextDrumId
+	persisted.selectedBoatTypeId = state.selectedBoatTypeId or "RustSkiff"
 
 	return persisted
+end
+
+function OilStateService:SetSelectedBoatTypeId(userId: number, boatTypeId: string): (boolean, string)
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false, "ERR_NO_STATE"
+	end
+	if typeof(boatTypeId) ~= "string" or not BoatConfig.Boats[boatTypeId] then
+		return false, "ERR_BAD_BOAT"
+	end
+	state.selectedBoatTypeId = boatTypeId
+	self:_markDirty(userId)
+	return true, "OK"
 end
 
 return OilStateService

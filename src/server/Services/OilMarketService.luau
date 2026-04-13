@@ -75,6 +75,13 @@ function OilMarketService:Start()
 		self:HandleSellAll(player.UserId)
 	end)
 
+	local sellBarrelsEvent = self._remoteService:GetEvent(RemoteNames.RequestSellWarehouseBarrels)
+	sellBarrelsEvent.OnServerEvent:Connect(function(player, data)
+		if not self._running then return end
+		if typeof(data) ~= "table" then return end
+		self:HandleSellWarehouseBarrels(player.UserId, data)
+	end)
+
 	-- Market snapshot request (RemoteFunction for initial client load)
 	local snapshotFn = self._remoteService:GetFunction(RemoteNames.RequestMarketSnapshot)
 	snapshotFn.OnServerInvoke = function(_player)
@@ -198,6 +205,61 @@ function OilMarketService:HandleSellType(userId: number, oilType: string)
 	resultEvent:FireClient(player, {
 		ok = true,
 		message = string.format("Sold %d %s for $%s!", barrelCount, displayName, tostring(payout)),
+	})
+end
+
+function OilMarketService:HandleSellWarehouseBarrels(userId: number, payload: any)
+	local resultEvent = self._remoteService:GetEvent(RemoteNames.OilActionResult)
+	local player = Players:GetPlayerByUserId(userId)
+	if not player then return end
+
+	local removals: { [string]: number } = {}
+	local totalSell = 0
+	for _, oilType in ipairs(OIL_TYPES) do
+		local n = math.max(0, math.floor(tonumber(payload[oilType]) or 0))
+		removals[oilType] = n
+		totalSell += n
+	end
+
+	if totalSell <= 0 then
+		resultEvent:FireClient(player, { ok = false, message = "Select barrels to sell." })
+		return
+	end
+
+	local allBarrels = self._warehouseService:GetAllBarrels(userId)
+	for _, oilType in ipairs(OIL_TYPES) do
+		local want = removals[oilType] or 0
+		local have = allBarrels[oilType] or 0
+		if want > have then
+			resultEvent:FireClient(player, { ok = false, message = "Not enough barrels in warehouse." })
+			return
+		end
+	end
+
+	local totalPayout = 0
+	for _, oilType in ipairs(OIL_TYPES) do
+		local n = removals[oilType] or 0
+		if n > 0 then
+			local price = self._currentPrices[oilType] or 0
+			if price <= 0 then
+				resultEvent:FireClient(player, { ok = false, message = "Market not ready" })
+				return
+			end
+			totalPayout += n * price
+		end
+	end
+
+	if not self._warehouseService:TryRemoveBarrelsByCounts(userId, removals) then
+		resultEvent:FireClient(player, { ok = false, message = "Could not update warehouse." })
+		return
+	end
+
+	self._oilStateService:AddCash(userId, totalPayout)
+	self._oilStateService:PushState(userId)
+
+	resultEvent:FireClient(player, {
+		ok = true,
+		message = string.format("Sold %d barrels for $%d!", totalSell, totalPayout),
 	})
 end
 
