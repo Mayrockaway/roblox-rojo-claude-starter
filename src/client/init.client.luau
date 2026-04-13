@@ -18,6 +18,7 @@ type StraitWaypointFxModule = {
 	OnMissileStrikePayload: (data: { [string]: any }) -> (),
 	OnMineStrikePayload: (data: { [string]: any }) -> (),
 	OnPirateRaidPayload: (data: { [string]: any }) -> (),
+	OnCoastGuardInspectionPayload: (data: { [string]: any }) -> (),
 	OnStormPayload: (data: { [string]: any }) -> (),
 	OnTornadoPayload: (data: { [string]: any }) -> (),
 }
@@ -28,6 +29,7 @@ local function straitWaypointFxStub(): StraitWaypointFxModule
 		OnMissileStrikePayload = function() end,
 		OnMineStrikePayload = function() end,
 		OnPirateRaidPayload = function() end,
+		OnCoastGuardInspectionPayload = function() end,
 		OnStormPayload = function() end,
 		OnTornadoPayload = function() end,
 	}
@@ -1099,6 +1101,17 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 			setStatus(string.format("PIRATES BOARDING! Lost %d barrels!", stolen), false)
 		else
 			setStatus("Pirates spotted raiding a vessel nearby!", true)
+		end
+		return
+	end
+
+	if kind == "CoastGuardInspectionEvent" then
+		StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data)
+		local isOwner = data.ownerUserId == player.UserId
+		if isOwner then
+			setStatus("Coast guard boarding. Inspection in progress.", false)
+		else
+			setStatus("Coast guard vessel spotted inspecting a nearby ship.", true)
 		end
 		return
 	end

@@ -2595,4 +2595,328 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 	end)
 end
 
+function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: any })
+	local shipmentId   = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
+	local approachSide = tonumber(data.approachSide) or 1
+
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	if not assets then return end
+	local cgShipTemplate = assets:FindFirstChild("CoastGuardShip")
+	local cgNpcTemplate  = assets:FindFirstChild("CoastGuard")
+	if not cgShipTemplate or not cgNpcTemplate then
+		warn("[StraitWaypointWorldFx] Missing CoastGuardShip or CoastGuard in ReplicatedStorage.Assets")
+		return
+	end
+
+	task.spawn(function()
+		local playerBoat = findActiveShipmentBoatByShipmentId(shipmentId)
+		if not playerBoat then return end
+		local boatRoot = getBoatAttachmentPart(playerBoat)
+		if not boatRoot then return end
+
+		-- Use bounding box center for XZ position (individual parts can be way off)
+		local bbCF0, _ = playerBoat:GetBoundingBox()
+		local rootPos   = bbCF0.Position
+
+		-- Travel direction from FRONT_MARKER if present, else velocity sample
+		local frontMarker = playerBoat:FindFirstChild("FRONT_MARKER", true)
+		local fwd: Vector3
+		if frontMarker and frontMarker:IsA("BasePart") then
+			local dir = Vector3.new(frontMarker.Position.X - rootPos.X, 0, frontMarker.Position.Z - rootPos.Z)
+			fwd = if dir.Magnitude > 0.5 then dir.Unit else Vector3.new(0, 0, -1)
+		else
+			-- Velocity sample fallback
+			task.wait(0.15)
+			local bbCF1, _ = playerBoat:GetBoundingBox()
+			local delta = Vector3.new(bbCF1.Position.X - rootPos.X, 0, bbCF1.Position.Z - rootPos.Z)
+			rootPos = bbCF1.Position
+			fwd = if delta.Magnitude > 0.005 then delta.Unit else Vector3.new(0, 0, -1)
+		end
+		local right = Vector3.new(-fwd.Z, 0, fwd.X)
+		local perp  = right * (if approachSide >= 0 then 1 else -1)
+
+		-- Deck Y: same formula as PirateRaid — boatRoot (Union hull) sits at sea surface, +15 = deck
+		local TANKER_DECK_Y   = 15
+		local bbCF, bbSize    = playerBoat:GetBoundingBox()
+		local deckY           = boatRoot.Position.Y + TANKER_DECK_Y
+		local waterY          = boatRoot.Position.Y  -- CG boat placed at hull Y = sea surface
+		local boatLenHalf     = math.max(bbSize.X, bbSize.Z) / 2 * 0.72
+		local boatWidthHalf   = math.min(bbSize.X, bbSize.Z) / 2 * 0.45
+		local playerHalfWidth = math.max(bbSize.X, bbSize.Z) / 2
+		local deckCtr         = Vector3.new(rootPos.X, deckY, rootPos.Z)
+
+		local function flatLookAt(pos: Vector3, toward: Vector3): CFrame
+			local dx, dz = toward.X - pos.X, toward.Z - pos.Z
+			if math.abs(dx) + math.abs(dz) < 0.001 then
+				return CFrame.lookAt(pos, pos + fwd)
+			end
+			return CFrame.lookAt(pos, Vector3.new(toward.X, pos.Y, toward.Z))
+		end
+
+		local function setObjCF(obj: any, cf: CFrame)
+			if obj:IsA("Model") then obj:PivotTo(cf) else obj.CFrame = cf end
+		end
+
+		local function prepStatic(inst: Instance)
+			for _, d in ipairs(inst:GetDescendants()) do
+				if d:IsA("BasePart") then
+					d.Anchored = true; d.CanCollide = false; d.CanQuery = false; d.CanTouch = false
+				end
+			end
+		end
+
+		-- Walking animation: constant speed + vertical bob = looks like actual footsteps
+		local WALK_SPEED   = 9   -- studs/sec on deck
+		local RETURN_SPEED = 14  -- studs/sec when jogging back
+
+		local function walkNpc(officer, targetCF: CFrame, speed: number?)
+			local spd     = speed or WALK_SPEED
+			local fromPos = officer.cf.Position
+			local toPos   = targetCF.Position
+			local dist    = (toPos - fromPos).Magnitude
+			if dist < 0.3 then
+				officer.cf = targetCF
+				setObjCF(officer.npc, targetCF)
+				return
+			end
+			local dur   = dist / spd
+			local t0    = os.clock()
+			local flat  = Vector3.new(toPos.X - fromPos.X, 0, toPos.Z - fromPos.Z)
+			local lookD = if flat.Magnitude > 0.001 then flat.Unit else fwd
+			while true do
+				local alpha = math.min((os.clock() - t0) / dur, 1)
+				local pos   = fromPos:Lerp(toPos, alpha)
+				local bob   = math.abs(math.sin(os.clock() * math.pi * 2.4)) * 0.32
+				setObjCF(officer.npc, CFrame.new(pos + Vector3.new(0, bob, 0), pos + lookD + Vector3.new(0, bob, 0)))
+				if alpha >= 1 then break end
+				task.wait()
+			end
+			officer.cf = targetCF
+			setObjCF(officer.npc, targetCF)
+		end
+
+		local function runPar(tasks: { () -> () }, minDur: number)
+			local done = 0
+			if #tasks == 0 then task.wait(minDur); return end
+			for _, fn in ipairs(tasks) do
+				task.spawn(function() fn(); done += 1 end)
+			end
+			local t0 = os.clock()
+			while done < #tasks do task.wait() end
+			local left = minDur - (os.clock() - t0)
+			if left > 0 then task.wait(left) end
+		end
+
+		-- Constants
+		local PHASE_APPROACH   = 3.0
+		local PHASE_BOARD_INSP = 8.5   -- board + inspect combined per officer
+		local PHASE_RETURN     = 2.5
+		local OFFICER_COUNT    = 6
+		local OFFICER_SPACING  = 1.8
+		local CG_BOAT_DECK_Y   = 5    -- calibrated: deck height above CG boat pivot
+		local CG_HALF_WIDTH    = 11   -- used for zipFromPos offset on CG boat side
+		local PARK_LATERAL     = 100  -- calibrated: CG boat parks 100 studs from tanker pivot
+		local LAND_LATERAL     = -1   -- calibrated: lateral offset from deck center
+		local LAND_FWD         = 35   -- calibrated: forward offset from deck center to zipline landing
+		local SPAWN_LATERAL    = 240
+		local SLIDE_DUR        = 0.6
+		local BOARD_STAGGER    = 0.35
+		local officerMid       = (OFFICER_COUNT + 1) / 2
+
+		-- CG boat positions (Y = waterY so boat sits at sea level, not tanker center height)
+		local parkLateral  = PARK_LATERAL
+		local cgBase       = Vector3.new(rootPos.X, waterY, rootPos.Z)
+		local parkPos      = cgBase + perp * parkLateral
+		local spawnPos     = cgBase + perp * (parkLateral + SPAWN_LATERAL)
+
+		-- Clone CG boat and animate approach (officers spawn AFTER park so they don't float)
+		local cgBoat = cgShipTemplate:Clone()
+		prepStatic(cgBoat)
+		cgBoat.Parent = Workspace
+		cgBoat:PivotTo(flatLookAt(spawnPos, spawnPos - perp))
+		Debris:AddItem(cgBoat, 42)
+
+		-- Siren lights + sound start immediately during approach
+		local stopSiren: () -> ()
+		do
+			local bp = cgBoat:FindFirstChildWhichIsA("BasePart", true)
+			local rL = Instance.new("PointLight"); rL.Color = Color3.fromRGB(255,50,50); rL.Brightness = 10; rL.Range = 50; rL.Parent = if bp then bp else cgBoat
+			local bL = Instance.new("PointLight"); bL.Color = Color3.fromRGB(50,120,255); bL.Brightness = 10; bL.Range = 50; bL.Enabled = false; bL.Parent = if bp then bp else cgBoat
+			local snd = Instance.new("Sound"); snd.SoundId = "rbxassetid://4590662766"; snd.Volume = 0.55; snd.Looped = true; snd.RollOffMaxDistance = 320; snd.Parent = cgBoat; snd:Play()
+			local active = true
+			stopSiren = function() active = false end
+			task.spawn(function()
+				while active do
+					rL.Enabled = true; bL.Enabled = false; task.wait(0.38)
+					if not active then break end
+					rL.Enabled = false; bL.Enabled = true; task.wait(0.38)
+				end
+				rL.Enabled = false; bL.Enabled = false; snd:Stop()
+			end)
+		end
+
+		-- Phase 1: CG boat drives laterally to park alongside tanker
+		animateMove(cgBoat, cgBoat:GetPivot(), flatLookAt(parkPos, parkPos - perp), PHASE_APPROACH, 0)
+
+		-- Snap to live boat position after approach (tanker may have sailed forward during the 3s drive)
+		local snapBbCF, _ = playerBoat:GetBoundingBox()
+		rootPos = snapBbCF.Position
+		right   = Vector3.new(-fwd.Z, 0, fwd.X)
+		perp    = right * (if approachSide >= 0 then 1 else -1)
+		deckCtr = Vector3.new(rootPos.X, boatRoot.Position.Y + TANKER_DECK_Y, rootPos.Z)
+
+		local snappedPark = Vector3.new(rootPos.X, boatRoot.Position.Y, rootPos.Z) + perp * parkLateral
+		cgBoat:PivotTo(flatLookAt(snappedPark, snappedPark - perp))
+
+		-- NOW spawn officers on the PARKED CG boat (visible standing in a row)
+		local cgParkedPos = cgBoat:GetPivot().Position
+		local officers = {}
+		for i = 1, OFFICER_COUNT do
+			local npc    = cgNpcTemplate:Clone()
+			prepStatic(npc)
+			local along  = fwd * ((i - officerMid) * OFFICER_SPACING)
+			local npcPos = cgParkedPos + Vector3.new(0, CG_BOAT_DECK_Y, 0) + along
+			local npcCF  = flatLookAt(npcPos, rootPos)
+			setObjCF(npc, npcCF)
+			npc.Parent = Workspace  -- world-space from the start, no re-parenting needed
+			table.insert(officers, { npc = npc, cf = npcCF })
+			Debris:AddItem(npc, 42)
+		end
+
+		-- Brief pause so player sees officers standing on deck
+		task.wait(0.5)
+
+		-- Zipline anchor points — spawn visible studs so you can drag them in playtest when calibrating
+		local zipFromPos = cgParkedPos + Vector3.new(0, CG_BOAT_DECK_Y, 0) - perp * (CG_HALF_WIDTH * 0.7) + fwd * 2
+		local zipToPos   = deckCtr + perp * LAND_LATERAL + fwd * LAND_FWD
+
+		local sharedMod = ReplicatedStorage:FindFirstChild("Shared")
+		local constMod  = sharedMod and sharedMod:FindFirstChild("Constants")
+		local constData = constMod and require(constMod :: ModuleScript) :: any
+		local doCalib   = constData and constData.StraitEventsDebug and constData.StraitEventsDebug.CoastGuardCalibrateAnchors
+
+		-- Red stud = CG boat boarding anchor (zipFromPos)
+		local anchorFrom = Instance.new("Part"); anchorFrom.Name = "CG_AnchorFrom"
+		anchorFrom.Size = Vector3.new(2,2,2); anchorFrom.Anchored = true; anchorFrom.CanCollide = false
+		anchorFrom.CanQuery = false; anchorFrom.CanTouch = false; anchorFrom.Material = Enum.Material.Neon
+		anchorFrom.Color = Color3.fromRGB(255,60,60); anchorFrom.CFrame = CFrame.new(zipFromPos)
+		anchorFrom.Parent = Workspace; Debris:AddItem(anchorFrom, 60)
+
+		-- Green stud = tanker deck landing anchor (zipToPos)
+		local anchorTo = Instance.new("Part"); anchorTo.Name = "CG_AnchorTo"
+		anchorTo.Size = Vector3.new(2,2,2); anchorTo.Anchored = true; anchorTo.CanCollide = false
+		anchorTo.CanQuery = false; anchorTo.CanTouch = false; anchorTo.Material = Enum.Material.Neon
+		anchorTo.Color = Color3.fromRGB(60,255,60); anchorTo.CFrame = CFrame.new(zipToPos)
+		anchorTo.Parent = Workspace; Debris:AddItem(anchorTo, 60)
+
+		if doCalib then
+			-- Pause here — drag the red and green studs in the viewport, then they'll be read below
+			print("[CG Calibrate] Drag CG_AnchorFrom (RED) and CG_AnchorTo (GREEN) now. Resuming in 15s...")
+			task.wait(15)
+			zipFromPos = anchorFrom.Position
+			zipToPos   = anchorTo.Position
+			print(string.format("[CG Calibrate] zipFromPos = Vector3.new(%.2f, %.2f, %.2f)", zipFromPos.X, zipFromPos.Y, zipFromPos.Z))
+			print(string.format("[CG Calibrate] zipToPos   = Vector3.new(%.2f, %.2f, %.2f)", zipToPos.X, zipToPos.Y, zipToPos.Z))
+		end
+
+		local zipA = Instance.new("Part"); zipA.Name = "CGZipA"; zipA.Size = Vector3.new(0.4,2,0.4); zipA.Anchored = true; zipA.CanCollide = false; zipA.CanQuery = false; zipA.CanTouch = false; zipA.Material = Enum.Material.Metal; zipA.Color = Color3.fromRGB(60,80,120); zipA.CFrame = CFrame.new(zipFromPos); zipA.Parent = Workspace; Debris:AddItem(zipA, 30)
+		local zipB = Instance.new("Part"); zipB.Name = "CGZipB"; zipB.Size = Vector3.new(0.4,2,0.4); zipB.Anchored = true; zipB.CanCollide = false; zipB.CanQuery = false; zipB.CanTouch = false; zipB.Material = Enum.Material.Metal; zipB.Color = Color3.fromRGB(60,80,120); zipB.CFrame = CFrame.new(zipToPos); zipB.Parent = Workspace; Debris:AddItem(zipB, 30)
+		local attA = Instance.new("Attachment"); attA.Position = Vector3.new(0,1,0); attA.Parent = zipA
+		local attB = Instance.new("Attachment"); attB.Position = Vector3.new(0,1,0); attB.Parent = zipB
+		local rope = Instance.new("Beam"); rope.Attachment0 = attA; rope.Attachment1 = attB; rope.Width0 = 0.35; rope.Width1 = 0.35; rope.FaceCamera = true; rope.Color = ColorSequence.new(Color3.fromRGB(60,100,160)); rope.Parent = zipA
+
+		-- 6 inspection zones computed from actual boat footprint
+		local zones = {
+			deckCtr + fwd * boatLenHalf * 0.80,                          -- bow
+			deckCtr - fwd * boatLenHalf * 0.80,                          -- stern
+			deckCtr + fwd * boatLenHalf * 0.35 + right * boatWidthHalf,  -- fwd starboard
+			deckCtr + fwd * boatLenHalf * 0.35 - right * boatWidthHalf,  -- fwd port
+			deckCtr - fwd * boatLenHalf * 0.35 + right * boatWidthHalf,  -- aft starboard
+			deckCtr - fwd * boatLenHalf * 0.35 - right * boatWidthHalf,  -- aft port
+		}
+		local altZones = {
+			deckCtr + fwd * boatLenHalf * 0.55,
+			deckCtr - fwd * boatLenHalf * 0.55,
+			deckCtr,
+			deckCtr + right * boatWidthHalf * 0.6,
+			deckCtr - right * boatWidthHalf * 0.6,
+			deckCtr + fwd * boatLenHalf * 0.6 + right * boatWidthHalf * 0.5,
+		}
+
+		-- Phase 2: Board + Inspect — each officer independently
+		-- Officer walks to zipline, slides across, then immediately walks to their zones
+		local rng = Random.new()
+		local boardInspTasks: { () -> () } = {}
+		for i, off in ipairs(officers) do
+			local idx = i
+			table.insert(boardInspTasks, function()
+				-- Stagger boarding
+				task.wait((idx - 1) * BOARD_STAGGER)
+
+				-- Walk to zipline anchor on CG boat side
+				walkNpc(off, flatLookAt(zipFromPos, zipToPos), WALK_SPEED)
+
+				-- Slide across zipline
+				local t0 = os.clock()
+				while true do
+					local a = math.min((os.clock() - t0) / SLIDE_DUR, 1)
+					local e = a * a * (3 - 2 * a)
+					local p = zipFromPos:Lerp(zipToPos, e) + Vector3.new(0, -2.5 * math.sin(e * math.pi), 0)
+					setObjCF(off.npc, flatLookAt(p, zipToPos))
+					if a >= 1 then break end
+					task.wait()
+				end
+				off.cf = flatLookAt(zipToPos, zipToPos - perp)
+
+				-- Immediately walk to primary inspection zone
+				local z1 = zones[idx]
+				local z2 = altZones[((idx) % #altZones) + 1]
+				walkNpc(off, flatLookAt(z1, z1 + fwd * (if idx % 2 == 0 then 1 else -1)), WALK_SPEED)
+				task.wait(rng:NextNumber(0.7, 1.1))
+
+				-- Walk to secondary zone
+				walkNpc(off, flatLookAt(z2, z2 + fwd * (if idx % 2 == 0 then -1 else 1)), WALK_SPEED)
+				task.wait(rng:NextNumber(0.5, 0.9))
+			end)
+		end
+		runPar(boardInspTasks, PHASE_BOARD_INSP)
+
+		-- Phase 3: All officers jog back to zipline and slide back simultaneously
+		local returnTasks: { () -> () } = {}
+		for i, off in ipairs(officers) do
+			local idx = i
+			table.insert(returnTasks, function()
+				-- Jog back to zipline tanker-side anchor
+				walkNpc(off, flatLookAt(zipToPos, zipFromPos), RETURN_SPEED)
+
+				-- Slide back across zipline
+				local t0 = os.clock()
+				while true do
+					local a = math.min((os.clock() - t0) / SLIDE_DUR, 1)
+					local e = a * a * (3 - 2 * a)
+					local p = zipToPos:Lerp(zipFromPos, e) + Vector3.new(0, -2.5 * math.sin(e * math.pi), 0)
+					setObjCF(off.npc, flatLookAt(p, zipFromPos))
+					if a >= 1 then break end
+					task.wait()
+				end
+
+				-- Walk back to row on CG boat
+				local deckPos = cgParkedPos + Vector3.new(0, CG_BOAT_DECK_Y, 0) + fwd * ((idx - officerMid) * OFFICER_SPACING)
+				walkNpc(off, flatLookAt(deckPos, deckPos - perp), WALK_SPEED)
+			end)
+		end
+		runPar(returnTasks, PHASE_RETURN)
+
+		-- Cleanup
+		Debris:AddItem(zipA, 0.05)
+		Debris:AddItem(zipB, 0.05)
+		stopSiren()
+
+		-- Depart
+		local escapeTarget = cgBoat:GetPivot().Position + perp * 200
+		animateMove(cgBoat, cgBoat:GetPivot(), flatLookAt(escapeTarget, escapeTarget - perp), 1.5, 0)
+		Debris:AddItem(cgBoat, 2)
+	end)
+end
+
 return StraitWaypointWorldFx

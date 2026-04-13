@@ -951,6 +951,9 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	elseif dbg.ForcePirateRaid then
 		def = StraitEventCatalog.GetById("PirateRaid")
 		severity = "Medium"
+	elseif dbg.ForceCoastGuardInspection then
+		def = StraitEventCatalog.GetById("CoastGuardInspection")
+		severity = "Low"
 	elseif dbg.ForceStorm then
 		def = StraitEventCatalog.GetById("Storm")
 		severity = "Medium"
@@ -1153,6 +1156,29 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			end
 			return true
 		end
+		return false
+	end
+
+	-- Coast guard inspection: boarding visual sequence, no barrel loss
+	if def.coastGuardEvent then
+		local cfg = StraitEventCatalog.CoastGuardInspectionConfig
+		local approachSide = rng:NextNumber() < 0.5 and 1 or -1
+		self:_emitShipmentEvent("CoastGuardInspectionEvent", {
+			ownerUserId = ownerUserId,
+			shipmentId = shipment.shipmentId,
+			eventId = def.id,
+			displayName = def.displayName,
+			severity = severity,
+			approachSide = approachSide,
+			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+			particleFxScale = particleFxScale,
+		})
+		if log then
+			print(string.format("  [StraitShipment DEBUG] COAST GUARD INSPECTION: side=%d, pausing %ds",
+				approachSide, cfg.SequenceDuration))
+		end
+		task.wait(cfg.SequenceDuration)
+		voyageClock.startTime += cfg.SequenceDuration
 		return false
 	end
 
@@ -1870,27 +1896,22 @@ function OilShipmentService:DebugDispatchStorm(player: Player)
 	dbg.ForceOccurrenceAtWaypoint = true
 	dbg.ForceStorm = true
 
-	local manifest = { HeavyCrude = 18, StandardCrude = 10, LightSweet = 6, PremiumRefined = 2 }
-	local boatTypeId = "RustSkiff"
-	local boatDef = BoatConfig.Boats[boatTypeId]
-	if not boatDef then
-		for k, v in pairs(BoatConfig.Boats) do
-			boatTypeId = k
-			boatDef = v
-			break
-		end
-	end
+	local st = self._oilStateService:GetState(userId)
+	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
+	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
+	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
+	local stats = ShipStats.Resolve(speedL, capL)
 
 	local shipment = {
 		shipmentId = HttpService:GenerateGUID(false),
 		ownerUserId = userId,
-		boatTypeId = boatTypeId,
-		manifest = manifest,
+		shipSkinId = skinId,
+		shipSpeedLevel = speedL,
+		shipCapacityLevel = capL,
+		manifest = { HeavyCrude = 18, StandardCrude = 10, LightSweet = 6, PremiumRefined = 2 },
 		totalLoaded = 36,
 		dispatchFee = 0,
-		travelSeconds = boatDef and boatDef.travelSeconds or 60,
-		hullMax = boatDef and boatDef.hullHp or 100,
-		hullCurrent = boatDef and boatDef.hullHp or 100,
+		travelSeconds = stats.travelSeconds,
 		eventRisk = 0,
 		priceMultiplier = 1,
 	}
@@ -1903,8 +1924,18 @@ function OilShipmentService:DebugDispatchStorm(player: Player)
 		dbg.ForceStorm = prevForceStorm
 	end)
 
-	task.delay(2, function()
-		self:_handleTeleportToShip(player)
+	task.spawn(function()
+		for _ = 1, 20 do
+			task.wait(0.5)
+			self:_handleTeleportToShip(player)
+			local char = player.Character
+			if char then
+				local hum = char:FindFirstChildOfClass("Humanoid")
+				if hum and hum.SeatPart then
+					return
+				end
+			end
+		end
 	end)
 end
 
@@ -1922,27 +1953,22 @@ function OilShipmentService:DebugDispatchTornado(player: Player)
 	dbg.ForceOccurrenceAtWaypoint = true
 	dbg.ForceTornado = true
 
-	local manifest = { HeavyCrude = 20, StandardCrude = 12, LightSweet = 8, PremiumRefined = 4 }
-	local boatTypeId = "RustSkiff"
-	local boatDef = BoatConfig.Boats[boatTypeId]
-	if not boatDef then
-		for k, v in pairs(BoatConfig.Boats) do
-			boatTypeId = k
-			boatDef = v
-			break
-		end
-	end
+	local st = self._oilStateService:GetState(userId)
+	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
+	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
+	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
+	local stats = ShipStats.Resolve(speedL, capL)
 
 	local shipment = {
 		shipmentId = HttpService:GenerateGUID(false),
 		ownerUserId = userId,
-		boatTypeId = boatTypeId,
-		manifest = manifest,
+		shipSkinId = skinId,
+		shipSpeedLevel = speedL,
+		shipCapacityLevel = capL,
+		manifest = { HeavyCrude = 20, StandardCrude = 12, LightSweet = 8, PremiumRefined = 4 },
 		totalLoaded = 44,
 		dispatchFee = 0,
-		travelSeconds = boatDef and boatDef.travelSeconds or 60,
-		hullMax = boatDef and boatDef.hullHp or 100,
-		hullCurrent = boatDef and boatDef.hullHp or 100,
+		travelSeconds = stats.travelSeconds,
 		eventRisk = 0,
 		priceMultiplier = 1,
 	}
@@ -1955,8 +1981,75 @@ function OilShipmentService:DebugDispatchTornado(player: Player)
 		dbg.ForceTornado = prevForceTornado
 	end)
 
-	task.delay(2, function()
-		self:_handleTeleportToShip(player)
+	task.spawn(function()
+		for _ = 1, 20 do
+			task.wait(0.5)
+			self:_handleTeleportToShip(player)
+			local char = player.Character
+			if char then
+				local hum = char:FindFirstChildOfClass("Humanoid")
+				if hum and hum.SeatPart then
+					return
+				end
+			end
+		end
+	end)
+end
+
+function OilShipmentService:DebugDispatchCoastGuard(player: Player)
+	local userId = player.UserId
+	local plot = self._plotService:GetOwnedPlot(userId)
+	if not plot then
+		warn("[DebugDispatch] Player has no plot")
+		return
+	end
+
+	local dbg = Constants.StraitEventsDebug
+	local prevForceOcc = dbg.ForceOccurrenceAtWaypoint
+	local prevForceCoastGuard = dbg.ForceCoastGuardInspection
+	dbg.ForceOccurrenceAtWaypoint = true
+	dbg.ForceCoastGuardInspection = true
+
+	local st = self._oilStateService:GetState(userId)
+	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
+	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
+	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
+	local stats = ShipStats.Resolve(speedL, capL)
+
+	local shipment = {
+		shipmentId = HttpService:GenerateGUID(false),
+		ownerUserId = userId,
+		shipSkinId = skinId,
+		shipSpeedLevel = speedL,
+		shipCapacityLevel = capL,
+		manifest = { HeavyCrude = 15, StandardCrude = 10, LightSweet = 5, PremiumRefined = 0 },
+		totalLoaded = 30,
+		dispatchFee = 0,
+		travelSeconds = stats.travelSeconds,
+		eventRisk = 0,
+		priceMultiplier = 1,
+	}
+
+	print(string.format("[DebugDispatch] Launching coast guard inspection test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+
+	task.spawn(function()
+		self:_runShipment(shipment)
+		dbg.ForceOccurrenceAtWaypoint = prevForceOcc
+		dbg.ForceCoastGuardInspection = prevForceCoastGuard
+	end)
+
+	task.spawn(function()
+		for _ = 1, 20 do
+			task.wait(0.5)
+			self:_handleTeleportToShip(player)
+			local char = player.Character
+			if char then
+				local hum = char:FindFirstChildOfClass("Humanoid")
+				if hum and hum.SeatPart then
+					return
+				end
+			end
+		end
 	end)
 end
 

@@ -27,6 +27,8 @@ export type StraitEventDef = {
 	stormEvent: boolean?,
 	-- If true, server handles tornado sequence with independent delay + barrel loss rolls.
 	tornadoEvent: boolean?,
+	-- If true, server handles coast guard inspection boarding sequence.
+	coastGuardEvent: boolean?,
 }
 
 local StraitEventConfig = require(script.Parent.Parent:WaitForChild("StraitEventConfig"))
@@ -59,6 +61,16 @@ Catalog.MineConfig = {
 	SpawnDepth = 40,         -- how far below water they start
 	PauseAfterSurface = 4.0, -- how long ship pauses while navigating through
 	MineScale = 0.4,         -- scale factor on mine model (40% of original size)
+}
+
+-- Coast guard inspection visual sequence config
+Catalog.CoastGuardInspectionConfig = {
+	OfficerCount = 6,
+	SequenceDuration = 22,
+	ApproachSeconds = 3,
+	BoardingSeconds = 2.5,
+	InspectSeconds = 5.5,
+	ReturnSeconds = 2,
 }
 
 -- Pirate raid visual sequence config
@@ -108,6 +120,12 @@ Catalog.Events = {
 		severity = "Low",
 		displayName = "Coast guard glance",
 		priceMultiplierFactor = 1,
+	} :: StraitEventDef,
+	{
+		id = "CoastGuardInspection",
+		severity = "Low",
+		displayName = "Coast guard inspection",
+		coastGuardEvent = true,
 	} :: StraitEventDef,
 	{
 		id = "MinorInspection",

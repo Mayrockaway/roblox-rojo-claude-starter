@@ -92,6 +92,8 @@ if RunService:IsStudio() then
 				OilShipmentService:DebugDispatchStorm(player)
 			elseif cmd == "/tornado" then
 				OilShipmentService:DebugDispatchTornado(player)
+			elseif cmd == "/coastguard" then
+				OilShipmentService:DebugDispatchCoastGuard(player)
 			end
 		end)
 	end)
