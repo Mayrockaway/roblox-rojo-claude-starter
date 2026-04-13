@@ -19,6 +19,7 @@ type StraitWaypointFxModule = {
 	OnMineStrikePayload: (data: { [string]: any }) -> (),
 	OnPirateRaidPayload: (data: { [string]: any }) -> (),
 	OnCoastGuardInspectionPayload: (data: { [string]: any }) -> (),
+	OnUSShipSlapPayload: (data: { [string]: any }) -> (),
 	OnStormPayload: (data: { [string]: any }) -> (),
 	OnTornadoPayload: (data: { [string]: any }) -> (),
 }
@@ -30,6 +31,7 @@ local function straitWaypointFxStub(): StraitWaypointFxModule
 		OnMineStrikePayload = function() end,
 		OnPirateRaidPayload = function() end,
 		OnCoastGuardInspectionPayload = function() end,
+		OnUSShipSlapPayload = function() end,
 		OnStormPayload = function() end,
 		OnTornadoPayload = function() end,
 	}
@@ -1112,6 +1114,17 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 			setStatus("Coast guard boarding. Inspection in progress.", false)
 		else
 			setStatus("Coast guard vessel spotted inspecting a nearby ship.", true)
+		end
+		return
+	end
+
+	if kind == "USShipSlapEvent" then
+		StraitWaypointWorldFx.OnUSShipSlapPayload(data)
+		local isOwner = data.ownerUserId == player.UserId
+		if isOwner then
+			setStatus("GOVERNMENT SEIZURE! Your tanker has been confiscated!", false)
+		else
+			setStatus("A US Navy vessel just seized a nearby ship!", true)
 		end
 		return
 	end

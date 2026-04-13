@@ -38,6 +38,7 @@ local Constants = {
 		ForceMineStrike = false, -- if true, every triggered event becomes MineStrike
 		ForcePirateRaid = false, -- if true, every triggered event becomes PirateRaid
 		ForceCoastGuardInspection = false, -- if true, every triggered event becomes CoastGuardInspection
+		ForceUSShipSlap = false, -- if true, every triggered event becomes USShipSlap
 		CoastGuardCalibrateAnchors = false, -- if true, spawn red/green anchor studs and pause 15s so you can drag them to the right spots
 		ForceStorm = false, -- if true, every triggered event becomes Storm
 		ForceTornado = false, -- if true, every triggered event becomes Tornado

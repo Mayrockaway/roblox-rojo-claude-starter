@@ -29,6 +29,8 @@ export type StraitEventDef = {
 	tornadoEvent: boolean?,
 	-- If true, server handles coast guard inspection boarding sequence.
 	coastGuardEvent: boolean?,
+	-- If true, server handles US Navy ship slap sequence (total loss).
+	usShipSlapEvent: boolean?,
 }
 
 local StraitEventConfig = require(script.Parent.Parent:WaitForChild("StraitEventConfig"))
@@ -61,6 +63,16 @@ Catalog.MineConfig = {
 	SpawnDepth = 40,         -- how far below water they start
 	PauseAfterSurface = 4.0, -- how long ship pauses while navigating through
 	MineScale = 0.4,         -- scale factor on mine model (40% of original size)
+}
+
+-- US Navy ship slap sequence config
+Catalog.USShipSlapConfig = {
+	SequenceDuration = 8,   -- server waits this long before cancelling shipment
+	ApproachSeconds = 3,
+	HandGrowSeconds = 1.5,
+	WindupSeconds = 0.5,
+	SlapSeconds = 0.3,
+	FlySeconds = 2,
 }
 
 -- Coast guard inspection visual sequence config
@@ -184,6 +196,13 @@ Catalog.Events = {
 		severity = "High",
 		displayName = "Boarding and seizure",
 		totalLoss = true,
+	} :: StraitEventDef,
+	{
+		id = "USShipSlap",
+		severity = "High",
+		displayName = "Government seizure",
+		totalLoss = true,
+		usShipSlapEvent = true,
 	} :: StraitEventDef,
 	{
 		id = "Tornado",

@@ -2919,4 +2919,186 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 	end)
 end
 
+function StraitWaypointWorldFx.OnUSShipSlapPayload(data: { [string]: any })
+	local shipmentId   = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
+	local approachSide = tonumber(data.approachSide) or 1
+
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	if not assets then return end
+	local usShipTemplate = assets:FindFirstChild("USShip")
+	if not usShipTemplate then
+		warn("[StraitWaypointWorldFx] Missing USShip in ReplicatedStorage.Assets")
+		return
+	end
+	local armTemplate = assets:FindFirstChild("GiantArm")
+	if not armTemplate then
+		warn("[StraitWaypointWorldFx] Missing GiantArm in ReplicatedStorage.Assets")
+		return
+	end
+
+	task.spawn(function()
+		local playerBoat = findActiveShipmentBoatByShipmentId(shipmentId)
+		if not playerBoat then return end
+		local boatRoot = getBoatAttachmentPart(playerBoat)
+		if not boatRoot then return end
+
+		local bbCF, _ = playerBoat:GetBoundingBox()
+		local rootPos   = bbCF.Position
+		local TANKER_DECK_Y = 15
+
+		local frontMarker = playerBoat:FindFirstChild("FRONT_MARKER", true)
+		local fwd: Vector3
+		if frontMarker and frontMarker:IsA("BasePart") then
+			local dir = Vector3.new(frontMarker.Position.X - rootPos.X, 0, frontMarker.Position.Z - rootPos.Z)
+			fwd = if dir.Magnitude > 0.5 then dir.Unit else Vector3.new(0, 0, -1)
+		else
+			task.wait(0.15)
+			local bbCF1, _ = playerBoat:GetBoundingBox()
+			local delta = Vector3.new(bbCF1.Position.X - rootPos.X, 0, bbCF1.Position.Z - rootPos.Z)
+			rootPos = bbCF1.Position
+			fwd = if delta.Magnitude > 0.005 then delta.Unit else Vector3.new(0, 0, -1)
+		end
+		local right = Vector3.new(-fwd.Z, 0, fwd.X)
+		local perp  = right * (if approachSide >= 0 then 1 else -1)
+
+		local waterY = boatRoot.Position.Y
+		local deckY  = boatRoot.Position.Y + TANKER_DECK_Y
+
+		local function flatLookAt(pos: Vector3, toward: Vector3): CFrame
+			local dx, dz = toward.X - pos.X, toward.Z - pos.Z
+			if math.abs(dx) + math.abs(dz) < 0.001 then
+				return CFrame.lookAt(pos, pos + fwd)
+			end
+			return CFrame.lookAt(pos, Vector3.new(toward.X, pos.Y, toward.Z))
+		end
+
+		local function prepStatic(inst: Instance)
+			for _, d in ipairs(inst:GetDescendants()) do
+				if d:IsA("BasePart") then
+					d.Anchored = true; d.CanCollide = false; d.CanQuery = false; d.CanTouch = false
+				end
+			end
+		end
+
+		local PARK_LATERAL  = 120
+		local SPAWN_LATERAL = 300
+
+		-- USShip: pivot is at mesh center, raise by half-height so bottom sits at waterY
+		local usShip = usShipTemplate:Clone()
+		prepStatic(usShip)
+		usShip.Parent = Workspace
+		local _, usBbSz = usShip:GetBoundingBox()
+		local shipY = waterY + usBbSz.Y / 2
+
+		local spawnPosFixed = Vector3.new(rootPos.X, shipY, rootPos.Z) + perp * (PARK_LATERAL + SPAWN_LATERAL)
+		local parkPosFixed  = Vector3.new(rootPos.X, shipY, rootPos.Z) + perp * PARK_LATERAL
+		usShip:PivotTo(flatLookAt(spawnPosFixed, spawnPosFixed - perp))
+		Debris:AddItem(usShip, 25)
+
+		animateMove(usShip, usShip:GetPivot(), flatLookAt(parkPosFixed, parkPosFixed - perp), 3, 0)
+
+		-- Snap to tanker's current position after approach
+		local snapCF, _ = playerBoat:GetBoundingBox()
+		rootPos = snapCF.Position
+		local snappedPark = Vector3.new(rootPos.X, shipY, rootPos.Z) + perp * PARK_LATERAL
+		usShip:PivotTo(flatLookAt(snappedPark, snappedPark - perp))
+		local usShipPos = usShip:GetPivot().Position
+		local deckCtr   = Vector3.new(rootPos.X, deckY, rootPos.Z)
+
+		-- Clone GiantArm and rise it from USShip deck
+		local arm = armTemplate:Clone()
+		prepStatic(arm)
+		arm.Parent = Workspace
+		Debris:AddItem(arm, 20)
+
+		local _, armBbSz = arm:GetBoundingBox()
+		local ARM_H = armBbSz.Y  -- ~63 studs tall
+
+		-- XZ: slight offset from USShip toward tanker; orient so palm faces tanker
+		local armXZ = usShipPos + (-perp) * 5
+		-- Pivot rises from arm-fully-hidden-below-deck to arm-fully-above-deck
+		local armBotY    = deckY - ARM_H / 2 - 1   -- top of arm just below deck at start
+		local armRaisedY = deckY + ARM_H / 2 + 2   -- bottom of arm just above deck at end
+
+		local armStartCF = CFrame.lookAt(
+			Vector3.new(armXZ.X, armBotY, armXZ.Z),
+			Vector3.new(armXZ.X + perp.X, armBotY, armXZ.Z + perp.Z)
+		)
+		local armRaisedCF = CFrame.lookAt(
+			Vector3.new(armXZ.X, armRaisedY, armXZ.Z),
+			Vector3.new(armXZ.X + perp.X, armRaisedY, armXZ.Z + perp.Z)
+		)
+		arm:PivotTo(armStartCF)
+		animateMove(arm, armStartCF, armRaisedCF, 1.5, 0)
+
+		-- Windup: pull arm back toward USShip (0.5s)
+		local armRaisedPos = arm:GetPivot().Position
+		local windupPos    = armRaisedPos + perp * 15
+		local windupCF     = CFrame.lookAt(windupPos, windupPos + perp)
+		animateMove(arm, arm:GetPivot(), windupCF, 0.5, 0)
+
+		-- SLAP: arm sweeps fast through and past the tanker (0.3s)
+		local slapXZ    = deckCtr - perp * (PARK_LATERAL - 10)
+		local slapEndCF = CFrame.lookAt(
+			Vector3.new(slapXZ.X, arm:GetPivot().Position.Y, slapXZ.Z),
+			Vector3.new(slapXZ.X + perp.X, arm:GetPivot().Position.Y, slapXZ.Z + perp.Z)
+		)
+		animateMove(arm, arm:GetPivot(), slapEndCF, 0.3, 0)
+
+		-- Check if local player's character is on the tanker — if so, fly with it
+		local Players    = game:GetService("Players")
+		local localChar  = Players.LocalPlayer and Players.LocalPlayer.Character
+		local hrp        = localChar and localChar:FindFirstChild("HumanoidRootPart") :: BasePart?
+		local charRelCF: CFrame? = nil
+		local charHumanoid = localChar and localChar:FindFirstChildOfClass("Humanoid")
+		if hrp then
+			local distToBoat = (hrp.Position - playerBoat:GetPivot().Position).Magnitude
+			if distToBoat < 80 then
+				charRelCF = playerBoat:GetPivot():Inverse() * localChar:GetPivot()
+				if charHumanoid then charHumanoid.PlatformStand = true end
+			end
+		end
+
+		-- Tanker (+ character) flies off in a huge arc
+		local tankerStart = playerBoat:GetPivot()
+		local flyDir      = (-perp + fwd * 0.3).Unit
+		local offMapPos   = tankerStart.Position + flyDir * 1500
+		local tankerEndCF = CFrame.new(Vector3.new(offMapPos.X, tankerStart.Position.Y, offMapPos.Z))
+			* (tankerStart - tankerStart.Position)
+
+		if charRelCF and localChar then
+			local FLY_DUR = 2
+			local ARC_H   = 180
+			local flyT0   = os.clock()
+			task.spawn(function()
+				while true do
+					local alpha = math.min((os.clock() - flyT0) / FLY_DUR, 1)
+					local e     = alpha * alpha * (3 - 2 * alpha)
+					local pos   = tankerStart.Position:Lerp(tankerEndCF.Position, e)
+					pos = pos + Vector3.new(0, ARC_H * math.sin(e * math.pi), 0)
+					local cf = CFrame.new(pos) * (tankerStart - tankerStart.Position):Lerp(tankerEndCF - tankerEndCF.Position, e)
+					playerBoat:PivotTo(cf)
+					if localChar.Parent then
+						localChar:PivotTo(cf * charRelCF)
+					end
+					if alpha >= 1 then break end
+					task.wait()
+				end
+				if charHumanoid then charHumanoid.PlatformStand = false end
+			end)
+			task.wait(FLY_DUR + 0.1)
+		else
+			animateMove(playerBoat, tankerStart, tankerEndCF, 2, 180)
+		end
+
+		task.wait(0.3)
+		Debris:AddItem(arm, 0.05)
+
+		-- USShip departs
+		local escapePos = snappedPark + perp * 400
+		animateMove(usShip, usShip:GetPivot(), flatLookAt(escapePos, escapePos - perp), 1.5, 0)
+		Debris:AddItem(usShip, 1)
+	end)
+end
+
 return StraitWaypointWorldFx
