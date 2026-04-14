@@ -55,6 +55,9 @@ local RemoteNames = {
 	RequestPurchaseEquipment = "RequestPurchaseEquipment",
 	RequestEquipmentShopCatalog = "RequestEquipmentShopCatalog",
 
+	-- Per-plot oil tanks: three tubes (HeavyCrude/LightSweet/PremiumRefined) upgradable 1..10.
+	RequestUpgradeOilTank = "RequestUpgradeOilTank",
+
 	-- Dev-only: server-side diagnostic line shipped to all client consoles.
 	DevLog = "DevLog",
 }

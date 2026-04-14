@@ -6,6 +6,7 @@ local TweenService = game:GetService("TweenService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local OilTankConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilTankConfig"))
 
 local OilVisualService = {}
 
@@ -336,6 +337,7 @@ function OilVisualService:_syncUserVisuals(userId: number, snapshot)
 	self:_syncPipes(plot, pipesFolder, snapshot.pipes or {}, snapshot.drills or {}, snapshot.drums or {}, userId)
 	self:_syncDrums(plot, drumsFolder, snapshot.drums or {}, userId)
 	self:_syncBarrels(plot, barrelsFolder, snapshot)
+	self:_syncOilTanks(plot, snapshot)
 end
 
 function OilVisualService:_ensureVisualRoot(plot: Model): Folder
@@ -536,9 +538,27 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 	end
 	local activeCellKeys = {}
 	for _, a in ipairs(snapshot.activeDrills or {}) do
-		-- We'll key active drills by chunkId:tileKey (same as sprays below).
 		if a.chunkId and a.tileKey then
 			activeCellKeys[a.chunkId .. ":" .. a.tileKey] = true
+		end
+	end
+	-- Pipes: map each pipe to "chunkId:tileKey" so we can hide sprays the pipe covers.
+	-- Pipe carries global (row, col). A chunk with (chunk.row, chunk.col) owns tiles
+	-- localR=1..5, localC=1..5 relative to its top-left cell.
+	local SUB_TILES_PER_SIDE = 5
+	local pipeTileSigs = {}
+	for _, pipe in ipairs(snapshot.pipes or {}) do
+		if typeof(pipe.row) == "number" and typeof(pipe.col) == "number" then
+			local sectionId = pipe.sectionId
+			if typeof(sectionId) == "string" then
+				local chunkRow = math.floor((pipe.row - 1) / SUB_TILES_PER_SIDE) + 1
+				local chunkCol = math.floor((pipe.col - 1) / SUB_TILES_PER_SIDE) + 1
+				local localR = pipe.row - (chunkRow - 1) * SUB_TILES_PER_SIDE
+				local localC = pipe.col - (chunkCol - 1) * SUB_TILES_PER_SIDE
+				if localR >= 1 and localR <= SUB_TILES_PER_SIDE and localC >= 1 and localC <= SUB_TILES_PER_SIDE then
+					pipeTileSigs[sectionId .. ":T" .. localR .. localC] = true
+				end
+			end
 		end
 	end
 
@@ -546,20 +566,17 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 	for _, chunk in ipairs(snapshot.chunks or {}) do
 		if chunk.tiles and chunk.unlocked then
 			for tileKey, tile in pairs(chunk.tiles) do
-				-- Dry holes (hasOil == false) never spawn a spray
 				if tile and tile.drilled and tile.hasOil ~= false then
 					local spraySig = chunk.chunkId .. ":" .. tileKey
-					-- If a pump exists on this cell, suppress the spray. We have to map tileKey -> cellKey.
-					-- For now rely on the broadcast "pumpPlaced" event + state push; the server snapshot
-					-- has enough data because the newly placed pump will clear drilled visibility below
-					-- via cellKey match heuristic. Simpler: check if any pump has matching tileKey.
 					local hasPump = false
 					for _, d in ipairs(snapshot.drills or {}) do
 						if d.tileKey == tileKey and d.chunkId == chunk.chunkId then
-							hasPump = true; break
+							hasPump = true
+							break
 						end
 					end
-					if not hasPump and not activeCellKeys[spraySig] then
+					local coveredByPipe = pipeTileSigs[chunk.chunkId .. ":" .. tileKey] == true
+					if not hasPump and not activeCellKeys[spraySig] and not coveredByPipe then
 						wanted[spraySig] = { chunk = chunk, tileKey = tileKey, tile = tile }
 					end
 				end
@@ -1241,21 +1258,39 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 
 					if not barrel.Parent then return end
 
+					-- Barrel reached ConveyorEnd; animate it into the matching OilTank tube
+					-- and destroy on arrival. No more on-dock pile; capacity is expressed by
+					-- the tank's liquid fill level (see OilTankFx client FX).
 					barrel:SetAttribute("OnConveyor", false)
 					for _, d in ipairs(barrel:GetDescendants()) do
 						if d:IsA("ProximityPrompt") then d.Enabled = false end
 					end
 
-					local pileRoot = staging:FindFirstChild("PileRoot_" .. tier)
-					if pileRoot then
-						local pileIdx = 0
-						for _, ch in ipairs(barrelsFolder:GetChildren()) do
-							if ch:GetAttribute("Tier") == tier and not ch:GetAttribute("OnConveyor") and ch ~= barrel then
-								pileIdx += 1
+					local tankCenter = endPos
+					local oilTanks = plot:FindFirstChild("OilTanks")
+					if oilTanks then
+						for _, tube in ipairs(oilTanks:GetChildren()) do
+							if tube:GetAttribute("OilType") == tier then
+								local testTube = tube:FindFirstChild("test tube")
+								local union = testTube and testTube:FindFirstChild("Union")
+								if union and union:IsA("BasePart") then
+									tankCenter = union.Position
+								end
+								break
 							end
 						end
-						local stackPos = pileRoot.Position + Vector3.new(0, pileIdx * barrelHeight, 0)
-						moveBarrel(stackPos)
+					end
+
+					local flyTime = 0.35
+					local flyElapsed = 0
+					while flyElapsed < flyTime and barrel.Parent do
+						local dt = task.wait()
+						flyElapsed += dt
+						local alpha = math.min(1, flyElapsed / flyTime)
+						moveBarrel(endPos:Lerp(tankCenter, alpha))
+					end
+					if barrel.Parent then
+						barrel:Destroy()
 					end
 				end)
 			end
@@ -1322,6 +1357,124 @@ function OilVisualService:_createBarrelForTier(tier: string, templateName: strin
 	part.Color = colors[tier] or Color3.fromRGB(165, 118, 46)
 	part.Orientation = Vector3.new(0, 0, 90)
 	return part
+end
+
+-- Returns which local axis ("x"|"y"|"z") of the part points most along world +Y or -Y,
+-- plus its world-Y extent (the distance from center to top/bottom face in world-Y).
+local function verticalAxis(part: BasePart): (string, number)
+	local cf = part.CFrame
+	local xY = math.abs(cf.RightVector.Y)
+	local yY = math.abs(cf.UpVector.Y)
+	local zY = math.abs(cf.LookVector.Y)
+	if xY >= yY and xY >= zY then return "x", xY end
+	if yY >= zY then return "y", yY end
+	return "z", zY
+end
+
+-- Scale `part` so its extent along world-Y equals `newWorldYSize`, bottom anchored at `bottomWorldY`.
+-- Other dimensions preserved.
+local function setVerticalSize(part: BasePart, newWorldYSize: number, bottomWorldY: number)
+	local axis, axisY = verticalAxis(part)
+	-- Convert desired world-Y size to required local-axis size, accounting for how
+	-- aligned that local axis is with world-Y (axisY is 1.0 for a perfectly-axis-aligned part).
+	local requiredLocal = axisY > 1e-4 and newWorldYSize / axisY or newWorldYSize
+	local s = part.Size
+	if axis == "x" then
+		part.Size = Vector3.new(requiredLocal, s.Y, s.Z)
+	elseif axis == "y" then
+		part.Size = Vector3.new(s.X, requiredLocal, s.Z)
+	else
+		part.Size = Vector3.new(s.X, s.Y, requiredLocal)
+	end
+	part.Position = Vector3.new(part.Position.X, bottomWorldY + newWorldYSize / 2, part.Position.Z)
+end
+
+local function currentWorldYExtent(part: BasePart): number
+	local axis, axisY = verticalAxis(part)
+	local s = part.Size
+	local localSize = (axis == "x") and s.X or ((axis == "y") and s.Y or s.Z)
+	return localSize * axisY
+end
+
+-- Per-plot OilTanks rig: each tube has a `liquid` Part whose world-vertical extent represents fill %.
+-- Shell (Union) world-vertical extent scales linearly with tank tier. Server-authoritative so every
+-- client sees consistent fill without needing per-player state replication.
+function OilVisualService:_syncOilTanks(plot: Model, snapshot)
+	local tanks = plot:FindFirstChild("OilTanks")
+	if not tanks then return end
+
+	local oilByTier = snapshot.oilByTier or {}
+	local tankTiers = snapshot.tankTiers or {}
+	local tankCapacities = snapshot.tankCapacities or {}
+	local tankUpgradeCosts = snapshot.tankUpgradeCosts or {}
+
+	for _, tube in ipairs(tanks:GetChildren()) do
+		local oilType = tube:GetAttribute("OilType")
+		if typeof(oilType) ~= "string" then continue end
+
+		local testTube = tube:FindFirstChild("test tube")
+		local union = testTube and testTube:FindFirstChild("Union")
+		local liquid = testTube and testTube:FindFirstChild("liquid")
+		if not (union and union:IsA("BasePart") and liquid and liquid:IsA("BasePart")) then
+			continue
+		end
+
+		local tier = OilTankConfig.ClampTier(tankTiers[oilType] or 1)
+		local capacity = tankCapacities[oilType] or OilTankConfig.GetCapacity(tier)
+		local amount = oilByTier[oilType] or 0
+		local pct = capacity > 0 and math.clamp(amount / capacity, 0, 1) or 0
+
+		-- Resolve the shell's bottom Y in world: prefer authored attribute, else compute once from current state.
+		local bottomY = tube:GetAttribute("UnionBottomY")
+		if typeof(bottomY) ~= "number" then
+			bottomY = union.Position.Y - currentWorldYExtent(union) / 2
+		end
+
+		-- Tier-scaled shell height in world-Y units.
+		local targetShellY = OilTankConfig.GetShellHeight(tier)
+		if math.abs(targetShellY - currentWorldYExtent(union)) > 0.05 then
+			setVerticalSize(union, targetShellY, bottomY)
+		end
+
+		-- Fill: liquid world-vertical extent = shell's * pct, bottom at shell bottom.
+		local liquidY = targetShellY * pct
+		if liquidY < 0.01 then liquidY = 0.01 end -- tiny sliver so Part stays visible
+		setVerticalSize(liquid, liquidY, bottomY)
+
+		local col = OilTankConfig.OilColors[oilType]
+		if col and liquid.Color ~= col then
+			liquid.Color = col
+		end
+
+		-- Update BillboardGui sign (authored in OilTanksTemplate).
+		local sign = union:FindFirstChild("TankSign")
+		local bg = sign and sign:FindFirstChild("Bg")
+		if bg then
+			local titleLabel = bg:FindFirstChild("Title")
+			local capLabel = bg:FindFirstChild("Capacity")
+			local costLabel = bg:FindFirstChild("Cost")
+			if titleLabel then titleLabel.Text = oilType end
+			if capLabel then
+				capLabel.Text = string.format("Tier %d | %d / %d", tier, math.floor(amount), math.floor(capacity))
+			end
+			if costLabel then
+				local cost = tankUpgradeCosts[oilType]
+				if tier >= OilTankConfig.MaxTier or cost == nil then
+					costLabel.Text = "MAXED"
+					costLabel.TextColor3 = Color3.fromRGB(255, 180, 80)
+				else
+					costLabel.Text = string.format("E: Upgrade $%d", cost)
+					costLabel.TextColor3 = Color3.fromRGB(120, 220, 140)
+				end
+			end
+		end
+
+		-- Hide/show the prompt at max tier.
+		local prompt = union:FindFirstChild("TankUpgradePrompt")
+		if prompt and prompt:IsA("ProximityPrompt") then
+			prompt.Enabled = tier < OilTankConfig.MaxTier
+		end
+	end
 end
 
 return OilVisualService

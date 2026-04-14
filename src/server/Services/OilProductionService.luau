@@ -76,6 +76,14 @@ function OilProductionService:_runTick(deltaSeconds: number)
 				end
 			end
 
+			-- Per-tier tank-full gating: if tank N is full, stop producing tier N this tick.
+			-- Other tiers keep flowing. Matches OilStateService:ApplyProduction's per-tier clamp.
+			for _, tier in ipairs(TIERS) do
+				if self._oilStateService:TankIsFull(userId, tier) then
+					perDrillAdditions[tier] = 0
+				end
+			end
+
 			if drill.connected then
 				-- Drain any buffered oil first
 				local drained = self._oilStateService:DrainDrillBuffer(userId, drill.drillId)

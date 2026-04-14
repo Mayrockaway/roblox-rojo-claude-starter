@@ -123,6 +123,11 @@ local cargoSubtotalLabel: TextLabel? = nil
 local dispatchButton: GuiButton? = nil
 local lastDispatchFire = 0.0
 local requestDispatchShipmentEvent: RemoteEvent? = nil
+-- Boat cooldown state: populated from snapshot (OilState.boatState/boatCooldownEndsAt) and
+-- from OilActionResult("ERR_BOAT_COOLDOWN") payloads. os.clock()-based timestamps.
+local latestBoatState: string? = nil
+local latestBoatCooldownEndsAt: number? = nil
+local defaultDispatchText: string? = nil
 
 local function remotesFolder(): Folder
 	return Shared:WaitForChild("Remotes") :: Folder
@@ -220,6 +225,26 @@ local function mergeResolvedFromSnapshot(snap: any)
 	end
 end
 
+local function mergeBoatFromSnapshot(snap: any)
+	if typeof(snap) ~= "table" then return end
+	local s = snap :: any
+	latestBoatState = typeof(s.boatState) == "string" and s.boatState or nil
+	latestBoatCooldownEndsAt = typeof(s.boatCooldownEndsAt) == "number" and s.boatCooldownEndsAt or nil
+end
+
+--- True while the boat is destroyed/swapping and the HUD should block dispatch with a countdown.
+local function boatCooldownRemaining(): number
+	local endsAt = latestBoatCooldownEndsAt
+	if not endsAt then return 0 end
+	local remaining = endsAt - os.clock()
+	if remaining <= 0 then
+		-- Cooldown expired locally; clear so we don't show "in 0s" forever while waiting on a snapshot.
+		latestBoatCooldownEndsAt = nil
+		return 0
+	end
+	return remaining
+end
+
 local function applyCargoRowTitles(row: Instance, tier: string)
 	local title = QualityConfig.hudShortLabel(tier)
 	local crude = row:FindFirstChild("CrudeTitle", true)
@@ -267,9 +292,26 @@ local function refreshFooter()
 	if dispatchButton then
 		local fee = rs.dispatchFee
 		local cap = rs.capacity
-		local can = oilLoad > 0 and latestCash >= fee and oilLoad <= cap
+		local remaining = boatCooldownRemaining()
+		local inCooldown = remaining > 0
+			or latestBoatState == "cooldown"
+			or latestBoatState == "swapping"
+			or latestBoatState == "sailing"
+		local can = oilLoad > 0 and latestCash >= fee and oilLoad <= cap and not inCooldown
 		dispatchButton.Active = can
 		dispatchButton.AutoButtonColor = can
+		if defaultDispatchText == nil and dispatchButton:IsA("TextButton") then
+			defaultDispatchText = dispatchButton.Text
+		end
+		if dispatchButton:IsA("TextButton") then
+			if remaining > 0 then
+				dispatchButton.Text = string.format("Ship in %ds", math.ceil(remaining))
+			elseif latestBoatState == "sailing" then
+				dispatchButton.Text = "Ship out"
+			elseif defaultDispatchText then
+				dispatchButton.Text = defaultDispatchText
+			end
+		end
 	end
 end
 
@@ -303,6 +345,13 @@ local function tryDispatch()
 		return
 	end
 	if latestCash < rs.dispatchFee then
+		return
+	end
+	if boatCooldownRemaining() > 0
+		or latestBoatState == "cooldown"
+		or latestBoatState == "swapping"
+		or latestBoatState == "sailing"
+	then
 		return
 	end
 	local per = perBarrelOilUnits()
@@ -431,6 +480,7 @@ local function wireShipOil(screen: ScreenGui)
 			latestCash = snap.cash
 		end
 		mergeResolvedFromSnapshot(snap)
+		mergeBoatFromSnapshot(snap)
 		if mergeOilByTierFromSnapshot(snap) then
 			clampSelectionsToInventory()
 			refreshRowUi()
@@ -450,8 +500,29 @@ local function wireShipOil(screen: ScreenGui)
 			end
 			refreshRowUi()
 			refreshFooter()
+		elseif payload.ok == false and payload.code == "ERR_BOAT_COOLDOWN" then
+			if typeof(data) == "table" then
+				if typeof(data.cooldownEndsAt) == "number" then
+					latestBoatCooldownEndsAt = data.cooldownEndsAt
+				end
+				if typeof(data.boatState) == "string" then
+					latestBoatState = data.boatState
+				end
+			end
+			refreshFooter()
 		end
 	end))
+
+	-- Periodic countdown tick while the panel is wired.
+	task.spawn(function()
+		local myScreen = wiredScreen
+		while wiredScreen == myScreen and myScreen ~= nil do
+			if latestBoatCooldownEndsAt or latestBoatState == "sailing" then
+				refreshFooter()
+			end
+			task.wait(0.25)
+		end
+	end)
 
 	local snapFn = rf:FindFirstChild(RemoteNames.RequestOilSnapshot)
 	if snapFn and snapFn:IsA("RemoteFunction") then
@@ -465,6 +536,7 @@ local function wireShipOil(screen: ScreenGui)
 					latestCash = st.cash
 				end
 				mergeResolvedFromSnapshot(st)
+				mergeBoatFromSnapshot(st)
 				if mergeOilByTierFromSnapshot(st) then
 					clampSelectionsToInventory()
 				end

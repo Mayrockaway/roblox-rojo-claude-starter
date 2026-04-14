@@ -176,12 +176,13 @@ local function worldPosOverMapAabbFootprint(
 	return true
 end
 
-function OilShipmentService:Init(remoteService, oilStateService, plotService, warehouseService, straitStateService)
+function OilShipmentService:Init(remoteService, oilStateService, plotService, warehouseService, straitStateService, boatDockService)
 	self._remoteService = remoteService
 	self._oilStateService = oilStateService
 	self._plotService = plotService
 	self._warehouseService = warehouseService
 	self._straitStateService = straitStateService
+	self._boatDockService = boatDockService
 	self._connections = {}
 	self._lanes = {}
 
@@ -299,42 +300,18 @@ function OilShipmentService:Start()
 end
 
 function OilShipmentService:_handleTeleportToShip(player: Player)
-	local character = player.Character
-	if not character then
+	if not player.Character then
 		warn("[TeleportToShip] No character")
 		return
 	end
-
-	local plot = self._plotService:GetOwnedPlot(player.UserId)
-	if not plot then
-		warn("[TeleportToShip] No plot for " .. player.Name)
+	if not self._boatDockService then
+		warn("[TeleportToShip] BoatDockService unavailable")
 		return
 	end
-	local visuals = plot:FindFirstChild("OilVisuals")
-	if not visuals then
-		warn("[TeleportToShip] No OilVisuals folder in plot")
-		return
+	local ok, err = self._boatDockService:TeleportOwnerToSeat(player)
+	if not ok then
+		self:_sendActionResult(player, false, "ERR_BOAT_UNAVAILABLE", "Your ship is not available right now.", { reason = err })
 	end
-
-	local boatCount = 0
-	for _, child in ipairs(visuals:GetChildren()) do
-		if child.Name == "ActiveShipmentBoat" then
-			boatCount += 1
-			local seat = child:FindFirstChild("DeckSeat", true)
-			if seat and seat:IsA("Seat") then
-				character:PivotTo(seat.CFrame + Vector3.new(0, 3, 0))
-				local humanoid = character:FindFirstChildOfClass("Humanoid")
-				if humanoid then
-					seat:Sit(humanoid)
-				end
-				print("[TeleportToShip] SUCCESS — teleported to boat")
-				return
-			else
-				warn("[TeleportToShip] Boat found but no DeckSeat inside it")
-			end
-		end
-	end
-	warn("[TeleportToShip] Found " .. boatCount .. " boats in OilVisuals, none had DeckSeat")
 end
 
 function OilShipmentService:_handleTeleportHome(player: Player)
@@ -396,6 +373,16 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 	-- One oil shipment at a time until it returns (count decremented on resolve / abandon).
 	if (state.activeShipmentCount or 0) > 0 then
 		self:_sendActionResult(player, false, "ERR_SHIPMENT_IN_PROGRESS", "Your ship is still out. Wait for it to return before dispatching again.")
+		return
+	end
+
+	-- Boat must be idle in its dock slot before dispatch.
+	if self._boatDockService and not self._boatDockService:IsIdle(player.UserId) then
+		local cooldownEndsAt = self._boatDockService:GetCooldownEndsAt(player.UserId)
+		self:_sendActionResult(player, false, "ERR_BOAT_COOLDOWN", "Your ship is not in the dock yet.", {
+			cooldownEndsAt = cooldownEndsAt,
+			boatState = self._boatDockService:GetState(player.UserId),
+		})
 		return
 	end
 
@@ -477,25 +464,30 @@ function OilShipmentService:_runShipment(shipment)
 		return
 	end
 
-	local boat = self:_spawnBoat(plot, shipment)
+	if not self._boatDockService then
+		self:_finishShipmentWithoutPayout(shipment, "Dock service unavailable.")
+		return
+	end
+	local boat, checkoutErr = self._boatDockService:CheckoutBoat(ownerUserId, shipment.shipmentId)
+	if not boat then
+		self:_finishShipmentWithoutPayout(shipment, "Boat unavailable: " .. tostring(checkoutErr))
+		return
+	end
 	local loadPoint = plot:FindFirstChild("ShipLoadPoint")
 	local stackRoot = plot:FindFirstChild("BarrelStackRoot")
 
-	-- Pick a lane and build the full path: dock → lane waypoints
+	-- Pick a lane and build the full path: dock (boat's current slot) → lane waypoints
 	local seed = math.floor(workspace:GetServerTimeNow() * 1000) + ownerUserId
 	local lane = self:_pickLane(seed)
 	if not lane then
 		warn("[OilShipmentService] No lanes available, falling back to straight line.")
-		local spawnPart = plot:FindFirstChild("BoatSpawn")
-		local exitPart = plot:FindFirstChild("BoatExit")
-		local startPos = spawnPart and spawnPart.Position or Vector3.new(0, 5, 0)
-		local endPos = exitPart and exitPart.Position or (startPos + Vector3.new(0, 0, -140))
+		local startPos = boat:GetPivot().Position
+		local endPos = startPos + Vector3.new(0, 0, -140)
 		lane = { name = "Fallback", positions = { startPos, endPos } }
 	end
 
-	-- Dock spawn position
-	local dockSpawnPart = plot:FindFirstChild("BoatSpawn")
-	local dockSpawnPos = dockSpawnPart and dockSpawnPart.Position or Vector3.new(0, 5, 0)
+	-- Dock spawn position = boat's current pivot (sits at its dock slot).
+	local dockSpawnPos = boat:GetPivot().Position
 
 	local path = self:_buildPath(dockSpawnPos, lane)
 	local totalPathLen = self:_computePathLength(path)
@@ -542,8 +534,14 @@ function OilShipmentService:_runShipment(shipment)
 	-- Stack loaded barrels visually on the ship deck
 	self:_loadBarrelsOnDeck(boat, shipment.manifest)
 
-	-- Enable boarding: player can teleport to the deck seat
-	local boardConnection = self:_enableBoarding(boat, ownerUserId)
+	-- Auto-teleport owner onto the DeckSeat (Ship Oil click is a one-click dispatch).
+	local ownerPlayer = Players:GetPlayerByUserId(ownerUserId)
+	if ownerPlayer then
+		pcall(function()
+			self._boatDockService:TeleportOwnerToSeat(ownerPlayer)
+		end)
+	end
+	local boardConnection: RBXScriptConnection? = nil
 
 	task.wait(dockHoldBeforeVoyage)
 
@@ -654,7 +652,8 @@ function OilShipmentService:_runShipment(shipment)
 				boardConnection:Disconnect()
 			end
 			self:_unseatPlayersFromBoat(boat)
-			self:_cleanupShip(shipment.shipmentId, boat)
+			self:_teardownShip(shipment.shipmentId)
+			self._boatDockService:CheckinBoat(ownerUserId, { destroyed = true })
 			self:_finishShipmentWithoutPayout(shipment, "Strait event: total loss")
 			return
 		end
@@ -706,34 +705,8 @@ function OilShipmentService:_runShipment(shipment)
 		boardConnection:Disconnect()
 	end
 	self:_handleOwnerAfterSuccessfulShipmentFinish(boat, ownerUserId)
-	self:_cleanupShip(shipment.shipmentId, boat)
-end
-
-function OilShipmentService:_enableBoarding(boat: Instance, ownerUserId: number)
-	local seat = boat:FindFirstChild("DeckSeat", true)
-	if not (seat and seat:IsA("Seat")) then
-		return nil
-	end
-
-	local prompt = seat:FindFirstChild("BoardPrompt")
-	if not prompt or not prompt:IsA("ProximityPrompt") then
-		return nil
-	end
-
-	prompt.Enabled = true
-	local connection = prompt.Triggered:Connect(function(player: Player)
-		if player.UserId ~= ownerUserId then return end
-		local character = player.Character
-		if not character then return end
-		local hrp = character:FindFirstChild("HumanoidRootPart")
-		if not hrp then return end
-
-		-- Teleport player to the seat
-		character:PivotTo(seat.CFrame + Vector3.new(0, 3, 0))
-		seat:Sit(character:FindFirstChildOfClass("Humanoid"))
-	end)
-
-	return connection
+	self:_teardownShip(shipment.shipmentId)
+	self._boatDockService:CheckinBoat(ownerUserId, { destroyed = false })
 end
 
 --- Successful voyage: sample **HumanoidRootPart** before unseat. Warehouse if over **`Map.Ocean`** footprint (not over **`StartBeach`** / **`FinishBeach`** anywhere under **`Map`**). Seated-on-ship fallback: **ClaimPad** if warehouse unavailable.
@@ -1756,37 +1729,6 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	return false
 end
 
-function OilShipmentService:_spawnBoat(plot: Model, shipment): Instance
-	local container = plot:FindFirstChild("OilVisuals")
-	if not (container and container:IsA("Folder")) then
-		container = Instance.new("Folder")
-		container.Name = "OilVisuals"
-		container.Parent = plot
-	end
-
-	local skin = ShipSkinCatalog.GetSkin(shipment.shipSkinId)
-	local templateName = skin.templateName
-	local assetsFolder = ReplicatedStorage:FindFirstChild("Assets")
-	local template = assetsFolder and assetsFolder:FindFirstChild(templateName)
-	if not (template and (template:IsA("Model") or template:IsA("BasePart"))) then
-		if RunService:IsStudio() then
-			warn(
-				string.format(
-					"[OilShipmentService] Ship template %q missing for skin %q; using Tanker fallback.",
-					templateName,
-					tostring(shipment.shipSkinId)
-				)
-			)
-		end
-		template = self._boatTemplate
-	end
-
-	local boat = if template then (template :: Instance):Clone() else self:_createFallbackBoat()
-	boat.Name = "ActiveShipmentBoat"
-	boat.Parent = container
-	return boat
-end
-
 -- =================== SHIP LIFECYCLE (Physics-Driven) ===================
 
 function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, startPosition: Vector3, lookDirection: Vector3)
@@ -1935,31 +1877,15 @@ function OilShipmentService:_updateShipPosition(shipmentId: string, boatModel: M
 	state.alignOri.CFrame = CFrame.Angles(0, yawDelta, 0) * state.baseRotation
 end
 
-function OilShipmentService:_cleanupShip(shipmentId: string, boatModel: Model)
+-- Drops this shipment's voyage state (constraint refs, connections). Does NOT destroy the
+-- boat model — BoatDockService:CheckinBoat is responsible for the model + cooldown lifecycle.
+function OilShipmentService:_teardownShip(shipmentId: string)
 	local state = self._activeShips[shipmentId]
-	if state then
-		-- Disconnect any tracked connections
-		for _, conn in ipairs(state.connections) do
-			pcall(function() conn:Disconnect() end)
-		end
-		self._activeShips[shipmentId] = nil
+	if not state then return end
+	for _, conn in ipairs(state.connections) do
+		pcall(function() conn:Disconnect() end)
 	end
-
-	-- Unseat any players on the ship
-	for _, d in ipairs(boatModel:GetDescendants()) do
-		if d:IsA("Seat") and d.Occupant then
-			pcall(function()
-				d:Sit(nil)
-			end)
-		end
-	end
-
-	-- Teleport any player standing on/in the ship back to their plot
-	task.delay(0.1, function()
-		if boatModel and boatModel.Parent then
-			boatModel:Destroy()
-		end
-	end)
+	self._activeShips[shipmentId] = nil
 end
 
 function OilShipmentService:_createFallbackBoat(): Model
