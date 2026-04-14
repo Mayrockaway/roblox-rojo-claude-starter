@@ -61,7 +61,6 @@ local OilConfig = {
 		TierTemplates = {
 			PremiumRefined = "Barrel_PremiumRefined",
 			LightSweet = "Barrel_LightSweet",
-			StandardCrude = "Barrel_StandardCrude",
 			HeavyCrude = "Barrel_HeavyCrude",
 		},
 	},
@@ -72,8 +71,7 @@ local OilConfig = {
 		Desert = {
 			flowMul = 1.0,
 			tierMix = {
-				HeavyCrude = 20,
-				StandardCrude = 50,
+				HeavyCrude = 70,
 				LightSweet = 25,
 				PremiumRefined = 5,
 			},
@@ -81,8 +79,7 @@ local OilConfig = {
 		Rocky = {
 			flowMul = 0.9,
 			tierMix = {
-				HeavyCrude = 50,
-				StandardCrude = 35,
+				HeavyCrude = 85,
 				LightSweet = 13,
 				PremiumRefined = 2,
 			},
@@ -90,8 +87,7 @@ local OilConfig = {
 		Wetland = {
 			flowMul = 1.1,
 			tierMix = {
-				HeavyCrude = 35,
-				StandardCrude = 40,
+				HeavyCrude = 75,
 				LightSweet = 20,
 				PremiumRefined = 5,
 			},
@@ -99,8 +95,7 @@ local OilConfig = {
 		Forest = {
 			flowMul = 1.05,
 			tierMix = {
-				HeavyCrude = 15,
-				StandardCrude = 40,
+				HeavyCrude = 55,
 				LightSweet = 35,
 				PremiumRefined = 10,
 			},

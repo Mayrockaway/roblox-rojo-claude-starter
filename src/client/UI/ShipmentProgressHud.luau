@@ -4,6 +4,7 @@
 -- **Studio:** author a `TextLabel` named `Hint` under `ShipmentProgressPanel` (see `docs/features/oil-gameplay-hud/CANONICAL_STUDIO_LAYOUT.md`). If track + fill exist but no bindable status line is found, a single `TextLabel` named `Hint` is created under that panel once (fallback only).
 -- Wired from `ShipmentProgressBootstrap.client.luau` (expects `{ type, data }` packets with owner id).
 
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -38,8 +39,28 @@ local voyageProgressThread: thread? = nil
 local voyageProgressSession = 0
 
 local progressFill: GuiObject? = nil
+local progressTrack: GuiObject? = nil
 local statusLine: StatusText? = nil
 local hintFxScale: UIScale? = nil
+
+local MAX_CROWD_MARKERS = 8
+local CROWD_MARKER_HOST_NAME = "CrowdShipmentMarkersHost"
+
+type CrowdStateRow = {
+	shipmentId: string?,
+	voyageStart: number,
+	voyageEnd: number,
+	voyageComplete: boolean,
+	displayName: string,
+	--- Same idea as owner `haltProgressFreezeUntil` / `haltFrozenFillAlpha`: hold marker during strait/cinematic pauses.
+	haltFreezeUntil: number?,
+	haltFrozenAlpha: number?,
+}
+
+local crowdState: { [number]: CrowdStateRow } = {}
+local crowdMarkers: { [number]: Frame } = {}
+local crowdHeartbeatConn: RBXScriptConnection? = nil
+local crowdPlayerRemovingConn: RBXScriptConnection? = nil
 
 local voyageStartTime: number? = nil
 local voyageEndTime: number? = nil
@@ -78,6 +99,29 @@ local function ownerIdFromData(data: Packet): number?
 		return o
 	end
 	return nil
+end
+
+local function shipmentIdFromData(data: Packet): string?
+	local sid = data.shipmentId
+	if typeof(sid) == "string" then
+		return sid
+	end
+	if typeof(sid) == "number" then
+		return tostring(sid)
+	end
+	return nil
+end
+
+local function mineHaltSeconds(data: Packet): number
+	local mc = StraitEventCatalog.MineConfig
+	local rise = tonumber(data.riseSeconds) or mc.RiseSeconds
+	return rise + mc.PauseAfterSurface + 1
+end
+
+local function missileBarrageHintSeconds(): number
+	local m = StraitEventCatalog.MissileConfig
+	local n = math.max(1, m.MissileCount)
+	return (n - 1) * m.BarrageStagger + m.FlightSeconds + (m.BarragePauseAfter or 2)
 end
 
 --- `HUD` is usually a direct child of `PlayerGui`, but some places nest ScreenGuis; search recursively.
@@ -169,6 +213,27 @@ local function getDisplayText(inst: Instance): string
 	return ""
 end
 
+--- Static header/title labels (not driven by shipment events) — skip when picking a fallback status line.
+local function isLikelyShipmentPanelTitle(inst: Instance): boolean
+	if not isStatusText(inst) then
+		return false
+	end
+	local n = string.lower(inst.Name)
+	if n == "title" or n == "header" or n == "shipmentstatustitle" then
+		return true
+	end
+	if string.find(n, "title", 1, true) and n ~= "subtitle" and string.find(n, "hint", 1, true) == nil then
+		return true
+	end
+	local raw = getDisplayText(inst)
+	local trimmed = string.match(raw, "^%s*(.-)%s*$") or raw
+	local t = string.lower(trimmed)
+	if t == "shipment status" then
+		return true
+	end
+	return false
+end
+
 --- Binds to Studio UI: **`Hint`** = `TextLabel` / `TextButton`, or container `Hint` holding one; else first line under panel / placeholder search.
 local function findHintLine(panel: Instance, track: Instance?, playerGui: PlayerGui): StatusText?
 	local function resolveHintInstance(inst: Instance?): StatusText?
@@ -200,12 +265,12 @@ local function findHintLine(panel: Instance, track: Instance?, playerGui: Player
 		end
 	end
 	for _, d in ipairs(panel:GetDescendants()) do
-		if isStatusText(d) and (not track or not d:IsDescendantOf(track)) then
+		if isStatusText(d) and (not track or not d:IsDescendantOf(track)) and not isLikelyShipmentPanelTitle(d) then
 			return d :: StatusText
 		end
 	end
 	for _, d in ipairs(panel:GetDescendants()) do
-		if isStatusText(d) then
+		if isStatusText(d) and not isLikelyShipmentPanelTitle(d) then
 			return d :: StatusText
 		end
 	end
@@ -318,10 +383,14 @@ local function applyDisplayOnlyInput(panel: Instance)
 end
 
 local function findControls(root: PlayerGui): (GuiObject?, StatusText?)
+	progressTrack = nil
 	local hud = findHudScreen(root)
 	local canvas = hud and hud:FindFirstChild("Canvas", true)
 	local panel = findShipmentProgressPanel(root, hud, canvas)
 	local track = panel and panel:FindFirstChild("ProgressTrack", true)
+	if track and track:IsA("GuiObject") then
+		progressTrack = track
+	end
 	local fill = if panel then findProgressFill(panel, track) else nil
 	if panel and panel ~= lastPanelForInputLock then
 		applyDisplayOnlyInput(panel)
@@ -347,6 +416,375 @@ local function findControls(root: PlayerGui): (GuiObject?, StatusText?)
 		warnShipmentPanelLayout(panel)
 	end
 	return fillGo, h
+end
+
+local function crowdRemoveUser(uid: number)
+	crowdState[uid] = nil
+	local fr = crowdMarkers[uid]
+	if fr then
+		fr:Destroy()
+		crowdMarkers[uid] = nil
+	end
+end
+
+local function crowdFirstUserId(): number?
+	for k, _ in pairs(crowdState) do
+		return k
+	end
+	return nil
+end
+
+local function crowdCountUsers(): number
+	local n = 0
+	for _ in pairs(crowdState) do
+		n += 1
+	end
+	return n
+end
+
+local function crowdEnsureHost(track: GuiObject): Frame
+	local h = track:FindFirstChild(CROWD_MARKER_HOST_NAME)
+	if h and h:IsA("Frame") then
+		return h
+	end
+	local host = Instance.new("Frame")
+	host.Name = CROWD_MARKER_HOST_NAME
+	host.BackgroundTransparency = 1
+	host.BorderSizePixel = 0
+	host.Size = UDim2.new(1, 0, 1, 0)
+	host.Position = UDim2.new(0, 0, 0, 0)
+	host.ClipsDescendants = false
+	host.ZIndex = 12
+	host.Parent = track
+	return host
+end
+
+local function crowdLinearAlphaAtNow(row: CrowdStateRow, now: number): number
+	if row.voyageComplete then
+		return 1
+	end
+	local vs, ve = row.voyageStart, row.voyageEnd
+	if now <= vs then
+		return 0
+	elseif now >= ve then
+		return 1
+	end
+	local span = ve - vs
+	if span <= 0 then
+		return 1
+	end
+	return (now - vs) / span
+end
+
+local function crowdAlphaForRow(row: CrowdStateRow): number
+	local now = workspace:GetServerTimeNow()
+	if row.haltFreezeUntil then
+		if now < row.haltFreezeUntil then
+			local frozen = row.haltFrozenAlpha
+			if typeof(frozen) == "number" then
+				return math.clamp(frozen :: number, 0, 1)
+			end
+			return math.clamp(crowdLinearAlphaAtNow(row, now), 0, 1)
+		end
+		row.haltFreezeUntil = nil
+		row.haltFrozenAlpha = nil
+	end
+	if row.voyageComplete then
+		return 1
+	end
+	return math.clamp(crowdLinearAlphaAtNow(row, now), 0, 1)
+end
+
+local function crowdBuildMarker(userId: number, displayName: string): Frame
+	local root = Instance.new("Frame")
+	root.Name = "CrowdMarker_" .. tostring(userId)
+	root.BackgroundTransparency = 1
+	root.BorderSizePixel = 0
+	root.AnchorPoint = Vector2.new(0.5, 0)
+	root.Size = UDim2.fromOffset(76, 54)
+	root.ZIndex = 13
+
+	local list = Instance.new("UIListLayout")
+	list.FillDirection = Enum.FillDirection.Vertical
+	list.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	list.VerticalAlignment = Enum.VerticalAlignment.Top
+	list.SortOrder = Enum.SortOrder.LayoutOrder
+	list.Padding = UDim.new(0, 2)
+	list.Parent = root
+
+	local icon = Instance.new("ImageLabel")
+	icon.Name = "Avatar"
+	icon.BackgroundTransparency = 1
+	icon.Size = UDim2.fromOffset(28, 28)
+	icon.LayoutOrder = 1
+	icon.ScaleType = Enum.ScaleType.Fit
+	icon.Parent = root
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "DisplayName"
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Size = UDim2.new(1, 0, 0, 18)
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.TextSize = 11
+	nameLabel.TextColor3 = Color3.fromRGB(228, 236, 248)
+	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	nameLabel.Text = displayName
+	nameLabel.LayoutOrder = 2
+	nameLabel.Parent = root
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 1
+	stroke.Color = Color3.fromRGB(0, 0, 0)
+	stroke.Transparency = 0.35
+	stroke.Parent = nameLabel
+
+	task.spawn(function()
+		local ok, url = pcall(function()
+			return Players:GetUserThumbnailAsync(
+				userId,
+				Enum.ThumbnailType.HeadShot,
+				Enum.ThumbnailSize.Size48x48
+			)
+		end)
+		if ok and typeof(url) == "string" and icon.Parent then
+			icon.Image = url
+		end
+	end)
+
+	return root
+end
+
+local function crowdStep()
+	local track = progressTrack
+	if not (track and track.Parent) then
+		return
+	end
+	local host = crowdEnsureHost(track)
+	for userId, row in pairs(crowdState) do
+		local alpha = math.clamp(crowdAlphaForRow(row), 0, 1)
+		local fr = crowdMarkers[userId]
+		if not fr or not fr.Parent then
+			fr = crowdBuildMarker(userId, row.displayName)
+			crowdMarkers[userId] = fr
+		end
+		fr.Parent = host
+		fr.Position = UDim2.new(alpha, 0, 0, 2)
+	end
+end
+
+local function crowdStopHeartbeatIfIdle()
+	if not crowdHeartbeatConn then
+		return
+	end
+	if next(crowdState) == nil then
+		crowdHeartbeatConn:Disconnect()
+		crowdHeartbeatConn = nil
+	end
+end
+
+local function crowdEnsureHeartbeat()
+	if crowdHeartbeatConn then
+		return
+	end
+	if next(crowdState) == nil then
+		return
+	end
+	crowdHeartbeatConn = RunService.Heartbeat:Connect(function()
+		if next(crowdState) == nil then
+			if crowdHeartbeatConn then
+				crowdHeartbeatConn:Disconnect()
+				crowdHeartbeatConn = nil
+			end
+			return
+		end
+		crowdStep()
+	end)
+end
+
+local function crowdDisplayName(uid: number, data: Packet): string
+	local pl = Players:GetPlayerByUserId(uid)
+	if pl then
+		return pl.DisplayName
+	end
+	local s = data.shipDisplayName
+	if typeof(s) == "string" and s ~= "" then
+		return s
+	end
+	return "Player"
+end
+
+local function crowdOnVisualPacket(kind: string, data: Packet, localPlayer: Player)
+	if kind == "ManifestHudSnapshot" then
+		return
+	end
+	local uid = ownerIdFromData(data)
+	if typeof(uid) ~= "number" then
+		return
+	end
+
+	if kind == "ShipmentStarted" then
+		if uid == localPlayer.UserId then
+			return
+		end
+		local vs = tonumber(data.voyageStartTime)
+		local ve = tonumber(data.voyageEndTime)
+		if typeof(vs) ~= "number" or typeof(ve) ~= "number" then
+			return
+		end
+		if crowdCountUsers() >= MAX_CROWD_MARKERS and not crowdState[uid] then
+			local victim = crowdFirstUserId()
+			if victim then
+				crowdRemoveUser(victim)
+			end
+		end
+		local sid = shipmentIdFromData(data)
+		crowdState[uid] = {
+			shipmentId = sid,
+			voyageStart = vs,
+			voyageEnd = ve,
+			voyageComplete = false,
+			displayName = crowdDisplayName(uid, data),
+			haltFreezeUntil = nil,
+			haltFrozenAlpha = nil,
+		}
+		local old = crowdMarkers[uid]
+		if old then
+			old:Destroy()
+			crowdMarkers[uid] = nil
+		end
+		crowdEnsureHeartbeat()
+		crowdStep()
+		return
+	end
+
+	if kind == "ShipmentVoyageComplete" then
+		if uid == localPlayer.UserId then
+			return
+		end
+		local st = crowdState[uid]
+		if not st then
+			return
+		end
+		local sid = shipmentIdFromData(data)
+		if st.shipmentId and sid and sid ~= st.shipmentId then
+			return
+		end
+		st.voyageComplete = true
+		crowdStep()
+		return
+	end
+
+	if kind == "ShipmentResolved" then
+		if uid == localPlayer.UserId then
+			return
+		end
+		local st = crowdState[uid]
+		local sid = shipmentIdFromData(data)
+		if st and st.shipmentId and sid and sid ~= st.shipmentId then
+			return
+		end
+		crowdRemoveUser(uid)
+		crowdStopHeartbeatIfIdle()
+		return
+	end
+
+	-- Other players: mirror owner's progress bar — freeze marker for strait pauses and cinematic sequences.
+	if uid == localPlayer.UserId then
+		return
+	end
+	local stOther = crowdState[uid]
+	if not stOther then
+		return
+	end
+	local sidOther = shipmentIdFromData(data)
+	if stOther.shipmentId and sidOther and sidOther ~= stOther.shipmentId then
+		return
+	end
+
+	local nowOther = workspace:GetServerTimeNow()
+	local function startCrowdHalt(holdSeconds: number)
+		local hold = math.clamp(holdSeconds, 0.35, 120)
+		stOther.haltFrozenAlpha = crowdLinearAlphaAtNow(stOther, nowOther)
+		stOther.haltFreezeUntil = nowOther + hold
+		crowdStep()
+	end
+
+	if kind == "StraitWaypointEvent" then
+		local totalLoss = data.totalLoss == true
+		local pauseSec = tonumber(data.pauseSeconds) or 0
+		if totalLoss then
+			local hold = math.clamp(if pauseSec > 0 then pauseSec else 5, 0.35, 60)
+			stOther.haltFrozenAlpha = crowdLinearAlphaAtNow(stOther, nowOther)
+			stOther.haltFreezeUntil = nowOther + hold
+			crowdStep()
+		else
+			local hold = if pauseSec > 0 then pauseSec else 0.85
+			startCrowdHalt(hold)
+		end
+		return
+	end
+
+	if kind == "PirateRaidEvent" then
+		startCrowdHalt(StraitEventCatalog.PirateRaidConfig.SequenceDuration)
+		return
+	end
+
+	if kind == "MineStrikeEvent" then
+		startCrowdHalt(mineHaltSeconds(data))
+		return
+	end
+
+	if kind == "MissileStrikeEvent" then
+		local idx = tonumber(data.missileIndex) or 1
+		if idx ~= 1 then
+			return
+		end
+		startCrowdHalt(missileBarrageHintSeconds())
+		return
+	end
+
+	if kind == "StormEvent" then
+		local hold = tonumber(data.sequenceSeconds) or StraitEventCatalog.StormConfig.BaseSequenceSeconds
+		startCrowdHalt(hold)
+		return
+	end
+
+	if kind == "TornadoEvent" then
+		local hold = tonumber(data.sequenceSeconds) or StraitEventCatalog.TornadoConfig.BaseSequenceSeconds
+		startCrowdHalt(hold)
+		return
+	end
+
+	if kind == "CoastGuardInspectionEvent" then
+		startCrowdHalt(StraitEventCatalog.CoastGuardInspectionConfig.SequenceDuration)
+		return
+	end
+
+	if kind == "USShipSlapEvent" then
+		startCrowdHalt(StraitEventCatalog.USShipSlapConfig.SequenceDuration)
+		return
+	end
+end
+
+local function crowdRebindMarkersToTrack()
+	local track = progressTrack
+	if not (track and track.Parent) then
+		for id, fr in pairs(crowdMarkers) do
+			fr:Destroy()
+			crowdMarkers[id] = nil
+		end
+		return
+	end
+	local host = crowdEnsureHost(track)
+	for id, fr in pairs(crowdMarkers) do
+		if crowdState[id] then
+			fr.Parent = host
+		else
+			fr:Destroy()
+			crowdMarkers[id] = nil
+		end
+	end
+	task.defer(crowdStep)
 end
 
 local function ensureHintFxScale(line: StatusText): UIScale
@@ -408,6 +846,7 @@ local function tryResolve()
 	local fill, line = findControls(pg)
 	progressFill = fill
 	statusLine = line
+	crowdRebindMarkersToTrack()
 	if line then
 		hintFxScale = ensureHintFxScale(line)
 		shakeBasePos = line.Position
@@ -415,11 +854,13 @@ local function tryResolve()
 		baselineRichText = line.RichText
 		if not activeShipmentId then
 			local t = line.Text
-			local lower = string.lower(t)
+			local trimmed = string.match(t, "^%s*(.-)%s*$") or t
+			local lower = string.lower(trimmed)
 			if
-				t == ""
+				trimmed == ""
 				or string.find(lower, "placeholder", 1, true)
 				or string.find(lower, "shipment route", 1, true)
+				or lower == "shipment status"
 			then
 				line.Text = IDLE_STATUS_TEXT
 			end
@@ -652,18 +1093,6 @@ local function showTotalLossDuringPause(holdSeconds: number)
 	-- Shake/pulse continue until ShipmentResolved or next cancel; do not return to cruise (voyage ends).
 end
 
-local function mineHaltSeconds(data: Packet): number
-	local mc = StraitEventCatalog.MineConfig
-	local rise = tonumber(data.riseSeconds) or mc.RiseSeconds
-	return rise + mc.PauseAfterSurface + 1
-end
-
-local function missileBarrageHintSeconds(): number
-	local m = StraitEventCatalog.MissileConfig
-	local n = math.max(1, m.MissileCount)
-	return (n - 1) * m.BarrageStagger + m.FlightSeconds + (m.BarragePauseAfter or 2)
-end
-
 local function stopVoyageTick()
 	if voyageProgressThread then
 		task.cancel(voyageProgressThread)
@@ -723,17 +1152,6 @@ local function stopClearTask()
 	end
 end
 
-local function shipmentIdFromData(data: Packet): string?
-	local sid = data.shipmentId
-	if typeof(sid) == "string" then
-		return sid
-	end
-	if typeof(sid) == "number" then
-		return tostring(sid)
-	end
-	return nil
-end
-
 local function matchesActiveShipment(data: Packet): boolean
 	local sid = shipmentIdFromData(data)
 	if not activeShipmentId then
@@ -746,6 +1164,12 @@ local ShipmentProgressHud = {}
 
 function ShipmentProgressHud.init(playerGui: PlayerGui)
 	playerGuiRef = playerGui
+	if not crowdPlayerRemovingConn then
+		crowdPlayerRemovingConn = Players.PlayerRemoving:Connect(function(left)
+			crowdRemoveUser(left.UserId)
+			crowdStopHeartbeatIfIdle()
+		end)
+	end
 	tryResolve()
 	setFillScaleX(0)
 	if not hudChildConn then
@@ -775,8 +1199,15 @@ function ShipmentProgressHud.onVisualPacket(kind: string, data: Packet, localPla
 		tryResolve()
 	end
 
+	crowdOnVisualPacket(kind, data, localPlayer)
+
 	local uid = ownerIdFromData(data)
 	if typeof(uid) ~= "number" or uid ~= localPlayer.UserId then
+		return
+	end
+
+	-- Manifest HUD listens separately; do not treat as shipment progress.
+	if kind == "ManifestHudSnapshot" then
 		return
 	end
 
@@ -942,6 +1373,31 @@ function ShipmentProgressHud.onVisualPacket(kind: string, data: Packet, localPla
 		local outcome = tostring(data.outcome or "miss")
 		local sev = if outcome == "hit" then "High" elseif outcome == "smallHit" then "Medium" else "Low"
 		showHalted(sev, missileBarrageHintSeconds())
+		return
+	end
+
+	-- Server emits these cinematic / weather events (not only `StraitWaypointEvent`); must cancel cruise dots.
+	if kind == "StormEvent" then
+		local hold = tonumber(data.sequenceSeconds) or StraitEventCatalog.StormConfig.BaseSequenceSeconds
+		showHalted(tostring(data.severity or "Medium"), hold)
+		return
+	end
+
+	if kind == "TornadoEvent" then
+		local hold = tonumber(data.sequenceSeconds) or StraitEventCatalog.TornadoConfig.BaseSequenceSeconds
+		showHalted(tostring(data.severity or "High"), hold)
+		return
+	end
+
+	if kind == "CoastGuardInspectionEvent" then
+		local dur = StraitEventCatalog.CoastGuardInspectionConfig.SequenceDuration
+		showHalted("Low", dur)
+		return
+	end
+
+	if kind == "USShipSlapEvent" then
+		local dur = StraitEventCatalog.USShipSlapConfig.SequenceDuration
+		showHalted("High", dur)
 		return
 	end
 end

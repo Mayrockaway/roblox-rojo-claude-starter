@@ -9,7 +9,6 @@ local OilProductionService = {}
 
 local TIERS = {
 	"HeavyCrude",
-	"StandardCrude",
 	"LightSweet",
 	"PremiumRefined",
 }
@@ -17,7 +16,6 @@ local TIERS = {
 local function emptyTierFloats()
 	return {
 		HeavyCrude = 0,
-		StandardCrude = 0,
 		LightSweet = 0,
 		PremiumRefined = 0,
 	}

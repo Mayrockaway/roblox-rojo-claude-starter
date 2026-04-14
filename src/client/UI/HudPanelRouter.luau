@@ -2,6 +2,7 @@
 -- Wires `HUD.Canvas.LeftStack` + `TopRow` buttons to modal `ScreenGuis` (exclusive group + toggle).
 -- Retries until every mapped button is wired or attempts exhaust — StarterGui clones can arrive late.
 
+local ActiveManifestController = require(script.Parent.ActiveManifestController)
 local EquipmentShopPanel = require(script.Parent.HudPanels.EquipmentShopPanel)
 local OilPriceInfoPanel = require(script.Parent.HudPanels.OilPriceInfoPanel)
 local SellOilPanel = require(script.Parent.HudPanels.SellOilPanel)
@@ -75,6 +76,8 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 				task.wait(0.5)
 				continue
 			end
+
+			ActiveManifestController.start(playerGui)
 
 			local byScreen: { [string]: HudPanelTypes.HudPanelController } = {}
 			local controllers: { HudPanelTypes.HudPanelController } = {}

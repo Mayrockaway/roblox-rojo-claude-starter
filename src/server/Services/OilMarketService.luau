@@ -8,7 +8,7 @@ local PricingConfig = require(Shared:WaitForChild("Config"):WaitForChild("Pricin
 local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
-local OIL_TYPES = { "HeavyCrude", "StandardCrude", "LightSweet", "PremiumRefined" }
+local OIL_TYPES = { "HeavyCrude", "LightSweet", "PremiumRefined" }
 
 local OilMarketService = {}
 
@@ -22,7 +22,7 @@ function OilMarketService:Init(remoteService, straitStateService, warehouseServi
 	self._running = false
 	self._currentStraitState = "Open"
 	self._baseOilPrice = PricingConfig.BasePrice -- the ONE price that fluctuates
-	self._currentPrices = {} -- derived: { HeavyCrude = 6, StandardCrude = 8, ... }
+	self._currentPrices = {} -- derived per QualityConfig.Tiers keys
 	self._basePriceHistory = {} -- track base price for trend
 	self._nextMicroTickAt = 0
 end
@@ -213,12 +213,19 @@ function OilMarketService:HandleSellWarehouseBarrels(userId: number, payload: an
 	local player = Players:GetPlayerByUserId(userId)
 	if not player then return end
 
+	local p = payload :: { [string]: any }
+	local legacyStandard = math.max(0, math.floor(tonumber(p.StandardCrude) or 0))
+
 	local removals: { [string]: number } = {}
 	local totalSell = 0
 	for _, oilType in ipairs(OIL_TYPES) do
-		local n = math.max(0, math.floor(tonumber(payload[oilType]) or 0))
+		local n = math.max(0, math.floor(tonumber(p[oilType]) or 0))
 		removals[oilType] = n
 		totalSell += n
+	end
+	if legacyStandard > 0 then
+		removals.HeavyCrude = (removals.HeavyCrude or 0) + legacyStandard
+		totalSell += legacyStandard
 	end
 
 	if totalSell <= 0 then

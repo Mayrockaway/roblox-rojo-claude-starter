@@ -23,10 +23,9 @@ local PricingConfig = {
 	-- Per-type multiplier on the base price
 	-- HeavyCrude = worst, PremiumRefined = best
 	TypeMultipliers = {
-		HeavyCrude = 0.8,      -- $8 at base
-		StandardCrude = 1.0,   -- $10 at base
-		LightSweet = 1.4,      -- $14 at base
-		PremiumRefined = 2.0,  -- $20 at base
+		HeavyCrude = 0.8, -- $8 at base (all sub-light crude)
+		LightSweet = 1.4, -- $14 at base
+		PremiumRefined = 2.0, -- $20 at base
 	},
 
 	-- Strait state bands for the SINGLE base oil price

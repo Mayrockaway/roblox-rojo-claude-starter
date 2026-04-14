@@ -2,7 +2,7 @@
 
 **Purpose:** Read-only **infographic** with **three barrel tiers** only:
 
-1. **Crude** — one crude grade (single row; no separate heavy/standard split).
+1. **Heavy crude**
 2. **Light sweet**
 3. **Premium refined**
 
@@ -46,8 +46,7 @@ Example **`ColorSequence`** (tune in Studio):
 
 ## Data (`PricingConfig.luau`)
 
-- Map **Crude** row to the **one** crude **`TypeMultipliers`** entry you ship (e.g. **StandardCrude** only, or rename in catalog later). **Light sweet** → **LightSweet**, **Premium** → **PremiumRefined**.
-- **Heavy crude** is **out of this panel** by design.
+- Map **Heavy crude** row to **`HeavyCrude`** (`TypeMultipliers.HeavyCrude`). **Light sweet** → **`LightSweet`**, **Premium refined** → **`PremiumRefined`**.
 - Marker **X** = normalize current type price into **`[GlobalBaseMin * mult, GlobalBaseMax * mult]`** or a single global dollar band — **pick one rule** and keep it consistent across the three rows.
 
 ## Wiring (checklist)

@@ -1,4 +1,7 @@
 --!strict
+-- Dev-only: grants free starter tools for local testing. For launch, replace this
+-- with the real economy path (e.g. EquipmentShopService purchases) so tools
+-- come from the shop / progression, not unconditional grants.
 
 local Players = game:GetService("Players")
 

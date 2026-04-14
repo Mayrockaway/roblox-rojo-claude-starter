@@ -14,7 +14,6 @@ local PlayerStateService = {}
 local function makeEmptyOilByTier()
 	return {
 		HeavyCrude = 0,
-		StandardCrude = 0,
 		LightSweet = 0,
 		PremiumRefined = 0,
 	}
@@ -432,7 +431,6 @@ function PlayerStateService:_rollQualityTier(state): string
 
 	local rank = {
 		HeavyCrude = -2,
-		StandardCrude = -1,
 		LightSweet = 1,
 		PremiumRefined = 2,
 	}

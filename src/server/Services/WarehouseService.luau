@@ -12,11 +12,11 @@ local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames
 
 local WarehouseService = {}
 
-local TIER_ORDER = { "HeavyCrude", "StandardCrude", "LightSweet", "PremiumRefined" }
+local TIER_ORDER = { "HeavyCrude", "LightSweet", "PremiumRefined" }
 local SAVE_INTERVAL = 20
 
 local function emptyBarrelMap()
-	return { HeavyCrude = 0, StandardCrude = 0, LightSweet = 0, PremiumRefined = 0 }
+	return { HeavyCrude = 0, LightSweet = 0, PremiumRefined = 0 }
 end
 
 local function totalBarrels(barrels)
@@ -146,8 +146,13 @@ function WarehouseService:_onPlayerAdded(player: Player)
 	if persisted then
 		state.tier = math.clamp(persisted.tier or 1, 1, #WarehouseConfig.Tiers)
 		if typeof(persisted.barrels) == "table" then
+			local pb = persisted.barrels :: { [string]: any }
+			local legacyStandard = math.max(0, math.floor(tonumber(pb.StandardCrude) or 0))
 			for _, tier in ipairs(TIER_ORDER) do
-				state.barrels[tier] = math.max(0, math.floor(tonumber(persisted.barrels[tier]) or 0))
+				state.barrels[tier] = math.max(0, math.floor(tonumber(pb[tier]) or 0))
+			end
+			if legacyStandard > 0 then
+				state.barrels.HeavyCrude = (state.barrels.HeavyCrude or 0) + legacyStandard
 			end
 		end
 		state.slotId = persisted.slotId
@@ -347,7 +352,6 @@ function WarehouseService:GetAllBarrels(userId: number)
 	if not state then return emptyBarrelMap() end
 	return {
 		HeavyCrude = state.barrels.HeavyCrude or 0,
-		StandardCrude = state.barrels.StandardCrude or 0,
 		LightSweet = state.barrels.LightSweet or 0,
 		PremiumRefined = state.barrels.PremiumRefined or 0,
 	}
@@ -415,7 +419,6 @@ function WarehouseService:GetWarehouseForClient(userId: number)
 		tier = state.tier,
 		barrels = {
 			HeavyCrude = state.barrels.HeavyCrude or 0,
-			StandardCrude = state.barrels.StandardCrude or 0,
 			LightSweet = state.barrels.LightSweet or 0,
 			PremiumRefined = state.barrels.PremiumRefined or 0,
 		},
@@ -447,7 +450,6 @@ function WarehouseService:_syncBarrelVisuals(userId: number)
 
 	local tierTemplates = {
 		HeavyCrude = "Barrel_HeavyCrude",
-		StandardCrude = "Barrel_StandardCrude",
 		LightSweet = "Barrel_LightSweet",
 		PremiumRefined = "Barrel_PremiumRefined",
 	}

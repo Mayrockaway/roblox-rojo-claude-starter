@@ -44,6 +44,16 @@ end
 local mod = require(modScript :: ModuleScript) :: { init: (PlayerGui) -> (), onVisualPacket: (string, any, Player) -> () }
 mod.init(playerGui)
 
+local ActiveManifestController: { start: (PlayerGui) -> (), onVisualPacket: (string, any, Player) -> () }? = nil
+local amScript = ui:FindFirstChild("ActiveManifestController")
+if amScript and amScript:IsA("ModuleScript") then
+	local am = require(amScript :: ModuleScript) :: { start: (PlayerGui) -> (), onVisualPacket: (string, any, Player) -> () }
+	am.start(playerGui)
+	ActiveManifestController = am
+else
+	warn("[ShipmentProgressBootstrap] ActiveManifestController ModuleScript missing under Client.UI")
+end
+
 local remotesFolder: Instance?
 local okR, errR = pcall(function()
 	remotesFolder = Shared:WaitForChild("Remotes", 120)
@@ -85,8 +95,10 @@ shipmentVisualEventTyped.OnClientEvent:Connect(function(packet: any)
 		end
 	end
 	local uid = data.ownerUserId or data.playerUserId
-	if typeof(uid) ~= "number" or uid ~= player.UserId then
-		return
-	end
+	local isOwner = typeof(uid) == "number" and uid == player.UserId
+	-- ShipmentProgressHud: own bar + optional crowd markers for other players on the same track.
 	mod.onVisualPacket(kind, data, player)
+	if isOwner and ActiveManifestController then
+		ActiveManifestController.onVisualPacket(kind, data, player)
+	end
 end)

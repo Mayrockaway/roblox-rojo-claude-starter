@@ -1,11 +1,7 @@
 --!strict
 
 local RemoteNames = {
-	-- legacy / previously scaffolded
-	RequestShipment = "RequestShipment",
-	RequestInitialState = "RequestInitialState",
 	RequestUpgrade = "RequestUpgrade",
-	RequestLocalSell = "RequestLocalSell",
 	RequestAdminForceClose = "RequestAdminForceClose",
 	GlobalStateUpdate = "GlobalStateUpdate",
 	PlayerStateUpdate = "PlayerStateUpdate",
@@ -47,6 +43,10 @@ local RemoteNames = {
 	OilStateUpdate = "OilStateUpdate",
 	OilActionResult = "OilActionResult",
 	RequestDevSetStraitBracket = "RequestDevSetStraitBracket",
+
+	-- One-shot equipment shop (Tools cloned into `Player.Backpack`; cash via `OilStateService`).
+	RequestPurchaseEquipment = "RequestPurchaseEquipment",
+	RequestEquipmentShopCatalog = "RequestEquipmentShopCatalog",
 }
 
 return RemoteNames

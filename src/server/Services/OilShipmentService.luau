@@ -9,11 +9,13 @@ local TweenService = game:GetService("TweenService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
+local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local BoatConfig = require(Shared:WaitForChild("Config"):WaitForChild("BoatConfig"))
 local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
 local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
 local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
 local StraitEventCatalog = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("Catalog"))
+local ManifestIncidentTitle = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("ManifestIncidentTitle"))
 local StraitEventConfig = require(Shared:WaitForChild("Config"):WaitForChild("StraitEventConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local ParticleFxScale = require(Shared:WaitForChild("ParticleFxScale"))
@@ -23,20 +25,31 @@ local OilShipmentService = {}
 local TIER_ORDER = {
 	"PremiumRefined",
 	"LightSweet",
-	"StandardCrude",
 	"HeavyCrude",
 }
 
 -- Barrels lost to spillage: take from cheaper tiers first.
 local BARREL_LOSS_TIER_ORDER = {
 	"HeavyCrude",
-	"StandardCrude",
+	"LightSweet",
+	"PremiumRefined",
+}
+
+--- HUD / manifest snapshot tier key order (matches `ActiveManifestPanel` loaded rows).
+local MANIFEST_HUD_TIER_ORDER = {
+	"HeavyCrude",
 	"LightSweet",
 	"PremiumRefined",
 }
 
 local function floorPositive(value: number): number
 	return math.max(0, math.floor(value))
+end
+
+local function hudPerBarrelOilUnits(): number
+	local barrelsCfg = OilConfig.Barrels
+	local n = (barrelsCfg and barrelsCfg.PerBarrelOil) or 1
+	return math.max(1, math.floor(n))
 end
 
 local function clamp01(value: number): number
@@ -276,6 +289,14 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		self:_sendActionResult(player, false, "ERR_BAD_PAYLOAD", "Missing manifest.")
 		return
 	end
+	do
+		local m = manifest :: { [string]: any }
+		local legacyStd = floorPositive(tonumber(m.StandardCrude) or 0)
+		if legacyStd > 0 then
+			m.HeavyCrude = floorPositive(tonumber(m.HeavyCrude) or 0) + legacyStd
+			m.StandardCrude = nil
+		end
+	end
 
 	local state = self._oilStateService:GetState(player.UserId)
 	if not state then
@@ -315,6 +336,11 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		normalizedManifest[tier] = floorPositive(tonumber(manifest[tier]) or 0)
 	end
 
+	local dispatchManifestOil: { [string]: number } = {}
+	for _, tier in ipairs(MANIFEST_HUD_TIER_ORDER) do
+		dispatchManifestOil[tier] = normalizedManifest[tier] or 0
+	end
+
 	if not self._oilStateService:TrySpendCash(player.UserId, stats.dispatchFee) then
 		self:_sendActionResult(player, false, "ERR_NOT_ENOUGH_CASH", "Not enough cash for dispatch fee.")
 		return
@@ -335,11 +361,11 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
 		manifest = normalizedManifest,
+		dispatchManifestOil = dispatchManifestOil,
 		totalLoaded = totalRequested,
 		dispatchFee = stats.dispatchFee,
 		travelSeconds = stats.travelSeconds,
 		eventRisk = stats.eventRisk,
-		priceMultiplier = BoatConfig.DefaultPriceMultiplier,
 	}
 
 	self:_sendActionResult(player, true, "OK", "Shipment dispatched.", {
@@ -416,6 +442,7 @@ function OilShipmentService:_runShipment(shipment)
 		voyageStartTime = tNow + dockHoldBeforeVoyage,
 		voyageEndTime = tNow + dockHoldBeforeVoyage + shipment.travelSeconds,
 	})
+	self:_emitManifestHudSnapshot(shipment, nil)
 
 	-- Load animation at the dock
 	self:_playLoadAnimation(stackRoot, loadPoint, shipment.totalLoaded)
@@ -647,7 +674,6 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 	local tierTemplates = {
 		PremiumRefined = "Barrel_PremiumRefined",
 		LightSweet = "Barrel_LightSweet",
-		StandardCrude = "Barrel_StandardCrude",
 		HeavyCrude = "Barrel_HeavyCrude",
 	}
 
@@ -806,7 +832,6 @@ function OilShipmentService:_finishShipmentWithoutPayout(shipment, reason: strin
 		loaded = shipment.totalLoaded,
 		delivered = 0,
 		lost = shipment.totalLoaded,
-		payout = 0,
 		dispatchFee = shipment.dispatchFee,
 		failureReason = reason,
 	})
@@ -831,25 +856,26 @@ function OilShipmentService:_straitDebugLogEnabled(): boolean
 	return false
 end
 
--- Returns barrels removed (whole units). Loss = ceil(manifestSum * fraction); min 0.
-function OilShipmentService:_applyLooseBarrelLoss(shipment, fraction: number): number
+-- Returns oil units removed (sum) and per-tier oil removed. Loss = ceil(manifestSum * fraction); min 0.
+function OilShipmentService:_applyLooseBarrelLoss(shipment, fraction: number): (number, { [string]: number })
+	local removedByTier: { [string]: number } = {}
 	if fraction <= 0 then
-		return 0
+		return 0, removedByTier
 	end
 	local manifest = shipment.manifest
 	if typeof(manifest) ~= "table" then
-		return 0
+		return 0, removedByTier
 	end
 	local onShip = 0
 	for _, tier in ipairs(TIER_ORDER) do
 		onShip += manifest[tier] or 0
 	end
 	if onShip <= 0 then
-		return 0
+		return 0, removedByTier
 	end
 	local toRemove = math.ceil(onShip * fraction)
 	if toRemove <= 0 then
-		return 0
+		return 0, removedByTier
 	end
 	local removed = 0
 	for _, tier in ipairs(BARREL_LOSS_TIER_ORDER) do
@@ -859,6 +885,7 @@ function OilShipmentService:_applyLooseBarrelLoss(shipment, fraction: number): n
 			if take > 0 then
 				manifest[tier] = have - take
 				removed += take
+				removedByTier[tier] = (removedByTier[tier] or 0) + take
 			end
 		end
 		if removed >= toRemove then
@@ -870,7 +897,68 @@ function OilShipmentService:_applyLooseBarrelLoss(shipment, fraction: number): n
 		newTotal += manifest[tier] or 0
 	end
 	shipment.totalLoaded = newTotal
-	return removed
+	return removed, removedByTier
+end
+
+function OilShipmentService:_snapshotManifestOil(shipment): { [string]: number }
+	local out: { [string]: number } = {}
+	local m = shipment.manifest
+	if typeof(m) ~= "table" then
+		return out
+	end
+	for _, tier in ipairs(MANIFEST_HUD_TIER_ORDER) do
+		out[tier] = floorPositive(tonumber(m[tier]) or 0)
+	end
+	return out
+end
+
+function OilShipmentService:_zeroManifestForTotalLoss(shipment)
+	local m = shipment.manifest
+	if typeof(m) ~= "table" then
+		return
+	end
+	for _, tier in ipairs(TIER_ORDER) do
+		m[tier] = 0
+	end
+	shipment.totalLoaded = 0
+end
+
+function OilShipmentService:_emitManifestHudSnapshot(shipment, incident: any?)
+	local function tierMapCopy(m: { [string]: any }): { [string]: number }
+		local o: { [string]: number } = {}
+		for _, tier in ipairs(MANIFEST_HUD_TIER_ORDER) do
+			o[tier] = floorPositive(tonumber(m[tier]) or 0)
+		end
+		return o
+	end
+	local dispatchedRaw = shipment.dispatchManifestOil
+	if typeof(dispatchedRaw) ~= "table" then
+		dispatchedRaw = shipment.manifest
+	end
+	local dispatched = tierMapCopy(dispatchedRaw :: any)
+	local remaining = tierMapCopy(shipment.manifest :: any)
+	local payload: { [string]: any } = {
+		ownerUserId = shipment.ownerUserId,
+		shipmentId = shipment.shipmentId,
+		perBarrelOil = hudPerBarrelOilUnits(),
+		dispatchedOilByTier = dispatched,
+		remainingOilByTier = remaining,
+	}
+	if incident ~= nil then
+		payload.incident = incident
+	end
+	self:_emitShipmentEvent("ManifestHudSnapshot", payload)
+end
+
+function OilShipmentService:_emitTotalLossManifestHud(shipment, eventId: string)
+	local lossOil = self:_snapshotManifestOil(shipment)
+	self:_zeroManifestForTotalLoss(shipment)
+	self:_emitManifestHudSnapshot(shipment, {
+		title = "Total loss",
+		eventId = eventId,
+		totalLoss = true,
+		lossOilByTier = lossOil,
+	})
 end
 
 function OilShipmentService:_buildStraitTriggerSlots(path: { Vector3 }, segDists: { number })
@@ -1076,10 +1164,18 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		-- Apply outcomes: small hits first, then check for direct hit
 		for mi = 1, missileCount do
 			if outcomes[mi] == "smallHit" and not smallHitApplied then
-				local barrelsLost = self:_applyLooseBarrelLoss(shipment, mc.SmallHitBarrelLossFraction)
+				local barrelsLost, lossByTier = self:_applyLooseBarrelLoss(shipment, mc.SmallHitBarrelLossFraction)
 				smallHitApplied = true
 				if log then
 					print(string.format("  [StraitShipment DEBUG] BARRAGE small hit applied: lost %d barrels", barrelsLost))
+				end
+				if barrelsLost > 0 then
+					self:_emitManifestHudSnapshot(shipment, {
+						title = ManifestIncidentTitle.fromEventId(def.id),
+						eventId = def.id,
+						totalLoss = false,
+						lossOilByTier = lossByTier,
+					})
 				end
 			end
 		end
@@ -1088,6 +1184,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			if log then
 				print("  [StraitShipment DEBUG] BARRAGE: DIRECT HIT — total loss")
 			end
+			self:_emitTotalLossManifestHud(shipment, def.id)
 			return true
 		end
 		return false
@@ -1157,6 +1254,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			if log then
 				print("  [StraitShipment DEBUG] MINE HIT — total loss")
 			end
+			self:_emitTotalLossManifestHud(shipment, def.id)
 			return true
 		end
 		return false
@@ -1203,8 +1301,9 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			print(string.format("  [StraitShipment DEBUG] US SHIP SLAP: side=%d, pausing %ds then total loss",
 				approachSide, cfg.SequenceDuration))
 		end
+		self:_emitTotalLossManifestHud(shipment, def.id)
 		task.wait(cfg.SequenceDuration)
-		return true  -- total loss
+		return true -- total loss
 	end
 
 	-- Special pirate raid handling: visual boarding + barrel stealing sequence
@@ -1213,8 +1312,17 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 
 		-- Apply barrel loss (server-authoritative, same as normal event)
 		local barrelsStolen = 0
+		local stolenByTier: { [string]: number } = {}
 		if def.looseBarrelLossFraction and def.looseBarrelLossFraction > 0 then
-			barrelsStolen = self:_applyLooseBarrelLoss(shipment, def.looseBarrelLossFraction)
+			barrelsStolen, stolenByTier = self:_applyLooseBarrelLoss(shipment, def.looseBarrelLossFraction)
+		end
+		if barrelsStolen > 0 then
+			self:_emitManifestHudSnapshot(shipment, {
+				title = ManifestIncidentTitle.fromEventId(def.id),
+				eventId = def.id,
+				totalLoss = false,
+				lossOilByTier = stolenByTier,
+			})
 		end
 
 		-- Pick approach side (perpendicular to ship heading)
@@ -1259,12 +1367,21 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		local didBarrelLoss = rng:NextNumber() < clamp01(tonumber(sc.BarrelLossChance) or 0)
 		local barrelLossFraction = 0
 		local barrelsLost = 0
+		local stormLossByTier: { [string]: number } = {}
 		if didBarrelLoss then
 			local lossMin = clamp01(tonumber(sc.BarrelLossFractionMin) or 0)
 			local lossMax = math.max(lossMin, clamp01(tonumber(sc.BarrelLossFractionMax) or lossMin))
 			barrelLossFraction = clamp01(rng:NextNumber(lossMin, lossMax))
-			barrelsLost = self:_applyLooseBarrelLoss(shipment, barrelLossFraction)
+			barrelsLost, stormLossByTier = self:_applyLooseBarrelLoss(shipment, barrelLossFraction)
 			didBarrelLoss = barrelsLost > 0
+		end
+		if barrelsLost > 0 then
+			self:_emitManifestHudSnapshot(shipment, {
+				title = ManifestIncidentTitle.fromEventId(def.id),
+				eventId = def.id,
+				totalLoss = false,
+				lossOilByTier = stormLossByTier,
+			})
 		end
 
 		local sequenceSeconds = baseSequenceSeconds + delaySeconds
@@ -1319,12 +1436,21 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		local didBarrelLoss = rng:NextNumber() < clamp01(tonumber(tc.BarrelLossChance) or 0)
 		local barrelLossFraction = 0
 		local barrelsLost = 0
+		local tornadoLossByTier: { [string]: number } = {}
 		if didBarrelLoss then
 			local lossMin = clamp01(tonumber(tc.BarrelLossFractionMin) or 0)
 			local lossMax = math.max(lossMin, clamp01(tonumber(tc.BarrelLossFractionMax) or lossMin))
 			barrelLossFraction = clamp01(rng:NextNumber(lossMin, lossMax))
-			barrelsLost = self:_applyLooseBarrelLoss(shipment, barrelLossFraction)
+			barrelsLost, tornadoLossByTier = self:_applyLooseBarrelLoss(shipment, barrelLossFraction)
 			didBarrelLoss = barrelsLost > 0
+		end
+		if barrelsLost > 0 then
+			self:_emitManifestHudSnapshot(shipment, {
+				title = ManifestIncidentTitle.fromEventId(def.id),
+				eventId = def.id,
+				totalLoss = false,
+				lossOilByTier = tornadoLossByTier,
+			})
 		end
 
 		local sequenceSeconds = baseSequenceSeconds + delaySeconds
@@ -1388,6 +1514,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
 			particleFxScale = particleFxScale,
 		})
+		self:_emitTotalLossManifestHud(shipment, def.id)
 		task.wait(animPause)
 		if log then
 			print(
@@ -1403,13 +1530,18 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		return true
 	end
 
-	if def.priceMultiplierFactor and def.priceMultiplierFactor > 0 then
-		shipment.priceMultiplier *= def.priceMultiplierFactor
-	end
-
 	local barrelsLost = 0
+	local waypointLossByTier: { [string]: number } = {}
 	if def.looseBarrelLossFraction and def.looseBarrelLossFraction > 0 then
-		barrelsLost = self:_applyLooseBarrelLoss(shipment, def.looseBarrelLossFraction)
+		barrelsLost, waypointLossByTier = self:_applyLooseBarrelLoss(shipment, def.looseBarrelLossFraction)
+	end
+	if barrelsLost > 0 then
+		self:_emitManifestHudSnapshot(shipment, {
+			title = ManifestIncidentTitle.fromEventId(def.id),
+			eventId = def.id,
+			totalLoss = false,
+			lossOilByTier = waypointLossByTier,
+		})
 	end
 
 	local pauseSeconds = 0
@@ -1426,7 +1558,6 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		severity = severity,
 		laneWaypointIndex = laneWaypointIndex,
 		totalLoss = false,
-		priceMultiplier = shipment.priceMultiplier,
 		pauseSeconds = pauseSeconds,
 		worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
 		totalLoaded = shipment.totalLoaded,
@@ -1444,10 +1575,9 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	if log then
 		print(
 			string.format(
-				"  [StraitShipment DEBUG] OUTCOME: event applied (engine=%s bracket=%s)  priceMultiplier=%.4f  barrelsLost=%d  totalLoaded=%d  pause=%.1fs  fired StraitWaypointEvent to clients",
+				"  [StraitShipment DEBUG] OUTCOME: event applied (engine=%s bracket=%s)  barrelsLost=%d  totalLoaded=%d  pause=%.1fs  fired StraitWaypointEvent to clients",
 				engineState,
 				bracket,
-				shipment.priceMultiplier,
 				barrelsLost,
 				shipment.totalLoaded,
 				pauseSeconds
@@ -1764,7 +1894,7 @@ function OilShipmentService:DebugDispatchMissile(player: Player)
 	dbg.ForceOccurrenceAtWaypoint = true
 	dbg.ForceMissileStrike = true
 
-	local manifest = { HeavyCrude = 30, StandardCrude = 0, LightSweet = 0, PremiumRefined = 0 }
+	local manifest = { HeavyCrude = 30, LightSweet = 0, PremiumRefined = 0 }
 	local st = self._oilStateService:GetState(userId)
 	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
 	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
@@ -1782,7 +1912,6 @@ function OilShipmentService:DebugDispatchMissile(player: Player)
 		dispatchFee = 0,
 		travelSeconds = stats.travelSeconds,
 		eventRisk = 0,
-		priceMultiplier = 1,
 	}
 
 	print(string.format("[DebugDispatch] Launching missile test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
@@ -1814,7 +1943,7 @@ function OilShipmentService:DebugDispatchMine(player: Player)
 	dbg.ForceOccurrenceAtWaypoint = true
 	dbg.ForceMineStrike = true
 
-	local manifest = { HeavyCrude = 30, StandardCrude = 0, LightSweet = 0, PremiumRefined = 0 }
+	local manifest = { HeavyCrude = 30, LightSweet = 0, PremiumRefined = 0 }
 	local st = self._oilStateService:GetState(userId)
 	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
 	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
@@ -1832,7 +1961,6 @@ function OilShipmentService:DebugDispatchMine(player: Player)
 		dispatchFee = 0,
 		travelSeconds = stats.travelSeconds,
 		eventRisk = 0,
-		priceMultiplier = 1,
 	}
 
 	print(string.format("[DebugDispatch] Launching mine test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
@@ -1862,7 +1990,7 @@ function OilShipmentService:DebugDispatchPirate(player: Player)
 	dbg.ForceOccurrenceAtWaypoint = true
 	dbg.ForcePirateRaid = true
 
-	local manifest = { HeavyCrude = 15, StandardCrude = 10, LightSweet = 5, PremiumRefined = 0 }
+	local manifest = { HeavyCrude = 25, LightSweet = 5, PremiumRefined = 0 }
 	local st = self._oilStateService:GetState(userId)
 	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
 	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
@@ -1880,7 +2008,6 @@ function OilShipmentService:DebugDispatchPirate(player: Player)
 		dispatchFee = 0,
 		travelSeconds = stats.travelSeconds,
 		eventRisk = 0,
-		priceMultiplier = 1,
 	}
 
 	print(string.format("[DebugDispatch] Launching pirate test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
@@ -1933,12 +2060,11 @@ function OilShipmentService:DebugDispatchStorm(player: Player)
 		shipSkinId = skinId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
-		manifest = { HeavyCrude = 18, StandardCrude = 10, LightSweet = 6, PremiumRefined = 2 },
+		manifest = { HeavyCrude = 28, LightSweet = 6, PremiumRefined = 2 },
 		totalLoaded = 36,
 		dispatchFee = 0,
 		travelSeconds = stats.travelSeconds,
 		eventRisk = 0,
-		priceMultiplier = 1,
 	}
 
 	print(string.format("[DebugDispatch] Launching storm test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
@@ -1990,12 +2116,11 @@ function OilShipmentService:DebugDispatchTornado(player: Player)
 		shipSkinId = skinId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
-		manifest = { HeavyCrude = 20, StandardCrude = 12, LightSweet = 8, PremiumRefined = 4 },
+		manifest = { HeavyCrude = 32, LightSweet = 8, PremiumRefined = 4 },
 		totalLoaded = 44,
 		dispatchFee = 0,
 		travelSeconds = stats.travelSeconds,
 		eventRisk = 0,
-		priceMultiplier = 1,
 	}
 
 	print(string.format("[DebugDispatch] Launching tornado test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
@@ -2047,12 +2172,11 @@ function OilShipmentService:DebugDispatchCoastGuard(player: Player)
 		shipSkinId = skinId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
-		manifest = { HeavyCrude = 15, StandardCrude = 10, LightSweet = 5, PremiumRefined = 0 },
+		manifest = { HeavyCrude = 25, LightSweet = 5, PremiumRefined = 0 },
 		totalLoaded = 30,
 		dispatchFee = 0,
 		travelSeconds = stats.travelSeconds,
 		eventRisk = 0,
-		priceMultiplier = 1,
 	}
 
 	print(string.format("[DebugDispatch] Launching coast guard inspection test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
@@ -2104,12 +2228,11 @@ function OilShipmentService:DebugDispatchUSShipSlap(player: Player)
 		shipSkinId = skinId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
-		manifest = { HeavyCrude = 15, StandardCrude = 10, LightSweet = 5, PremiumRefined = 0 },
+		manifest = { HeavyCrude = 25, LightSweet = 5, PremiumRefined = 0 },
 		totalLoaded = 30,
 		dispatchFee = 0,
 		travelSeconds = stats.travelSeconds,
 		eventRisk = 0,
-		priceMultiplier = 1,
 	}
 
 	print(string.format("[DebugDispatch] Launching US ship slap test for %s (shipmentId=%s)", player.Name, shipment.shipmentId))

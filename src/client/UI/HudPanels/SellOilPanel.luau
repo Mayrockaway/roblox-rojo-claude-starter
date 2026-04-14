@@ -1,11 +1,12 @@
 --!strict
 -- Sell oil / warehouse modal (`StarterGui.SellOilPanelGui` → `PlayerGui`).
 -- Stored counts = warehouse barrels; prices from `MarketPriceUpdate` / `RequestMarketSnapshot`.
--- Crude row = Heavy + Standard tiers (allocation: + prefers Heavy, − prefers Standard).
+-- Heavy crude row = `HeavyCrude` only (all sub–light-sweet product).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
@@ -15,34 +16,42 @@ local SCREEN_NAME = "SellOilPanelGui"
 
 type RowUiConfig = { kind: "crude" } | { kind: "tier", tier: string }
 
+-- Row `Frame` names: prefer **`OilSellRowHeavyCrude`**, **`OilSellRowLightSweet`**, **`OilSellRowPremiumRefined`** in Studio; legacy names remain wired.
 local ROW_UI: { [string]: RowUiConfig } = {
+	OilSellRowHeavyCrude = { kind = "crude" },
 	OilSellRowCrude = { kind = "crude" },
-	OilSellRowLightSweet = { kind = "tier", tier = "LightSweet" },
-	OilSellRowPremiumRefined = { kind = "tier", tier = "PremiumRefined" },
 	OilSellRowHeavy = { kind = "crude" },
+	OilSellRowLightSweet = { kind = "tier", tier = "LightSweet" },
 	OilSellRowLight = { kind = "tier", tier = "LightSweet" },
+	OilSellRowPremiumRefined = { kind = "tier", tier = "PremiumRefined" },
 	OilSellRowStandard = { kind = "tier", tier = "PremiumRefined" },
 }
 
-local ROW_TYPE_TITLE: { [string]: string } = {
-	OilSellRowCrude = "Crude",
-	OilSellRowLightSweet = "Light Sweet",
-	OilSellRowPremiumRefined = "Premium Refined",
-	OilSellRowHeavy = "Crude",
-	OilSellRowLight = "Light Sweet",
-	OilSellRowStandard = "Premium Refined",
-}
-
 local SUBTOTAL_FRAME_NAMES: { [string]: { string } } = {
-	OilSellRowCrude = { "SubtotalCrude", "SubtotalHeavy" },
+	OilSellRowHeavyCrude = { "SubtotalHeavyCrude", "SubtotalCrude", "SubtotalHeavy" },
+	OilSellRowCrude = { "SubtotalHeavyCrude", "SubtotalCrude", "SubtotalHeavy" },
+	OilSellRowHeavy = { "SubtotalHeavyCrude", "SubtotalCrude", "SubtotalHeavy" },
 	OilSellRowLightSweet = { "SubtotalLightSweet", "SubtotalLight" },
-	OilSellRowPremiumRefined = { "SubtotalPremiumRefined", "SubtotalStandard" },
-	OilSellRowHeavy = { "SubtotalCrude", "SubtotalHeavy" },
 	OilSellRowLight = { "SubtotalLightSweet", "SubtotalLight" },
-	OilSellRowStandard = { "SubtotalPremiumRefined", "SubtotalStandard" },
+	OilSellRowPremiumRefined = { "SubtotalPremiumRefined", "SubtotalPremium", "SubtotalStandard" },
+	OilSellRowStandard = { "SubtotalPremiumRefined", "SubtotalPremium", "SubtotalStandard" },
 }
 
-local TIER_KEYS = { "HeavyCrude", "StandardCrude", "LightSweet", "PremiumRefined" }
+local TIER_KEYS = { "HeavyCrude", "LightSweet", "PremiumRefined" }
+
+local function rowTypeTitle(rowName: string): string?
+	local cfg = ROW_UI[rowName]
+	if not cfg then
+		return nil
+	end
+	if cfg.kind == "crude" then
+		return QualityConfig.hudShortLabel("HeavyCrude")
+	end
+	if cfg.kind == "tier" then
+		return QualityConfig.hudShortLabel(cfg.tier)
+	end
+	return nil
+end
 
 local SellOilPanel = {}
 
@@ -66,21 +75,18 @@ local rowBindings: { RowBinding } = {}
 
 local warehouseBarrelsByTier: { [string]: number } = {
 	HeavyCrude = 0,
-	StandardCrude = 0,
 	LightSweet = 0,
 	PremiumRefined = 0,
 }
 
 local pricesByTier: { [string]: number } = {
 	HeavyCrude = 0,
-	StandardCrude = 0,
 	LightSweet = 0,
 	PremiumRefined = 0,
 }
 
 local selected: { [string]: number } = {
 	HeavyCrude = 0,
-	StandardCrude = 0,
 	LightSweet = 0,
 	PremiumRefined = 0,
 }
@@ -121,29 +127,17 @@ local function maxBarrelsInWarehouseForTier(tier: string): number
 end
 
 local function maxCrudeWarehouseBarrels(): number
-	return maxBarrelsInWarehouseForTier("HeavyCrude") + maxBarrelsInWarehouseForTier("StandardCrude")
+	return maxBarrelsInWarehouseForTier("HeavyCrude")
 end
 
 local function crudeBlendSelected(): number
-	return (selected.HeavyCrude or 0) + (selected.StandardCrude or 0)
+	return selected.HeavyCrude or 0
 end
 
 local function clampCrudeSelectionToWarehouse()
 	local wH = maxBarrelsInWarehouseForTier("HeavyCrude")
-	local wS = maxBarrelsInWarehouseForTier("StandardCrude")
 	local h = math.min(selected.HeavyCrude or 0, wH)
-	local s = math.min(selected.StandardCrude or 0, wS)
-	local total = h + s
-	local cap = wH + wS
-	if total > cap then
-		local over = total - cap
-		local remS = math.min(s, over)
-		s -= remS
-		over -= remS
-		h -= math.min(h, over)
-	end
 	selected.HeavyCrude = h
-	selected.StandardCrude = s
 end
 
 local function clampSelectionsToInventory()
@@ -158,16 +152,10 @@ end
 
 local function crudeDisplayPriceText(): string
 	local pH = pricesByTier.HeavyCrude or 0
-	local pS = pricesByTier.StandardCrude or 0
-	if pH <= 0 and pS <= 0 then
+	if pH <= 0 then
 		return "$—/bbl"
 	end
-	if pH == pS then
-		return string.format("$%d/bbl", pH)
-	end
-	local lo = math.min(pH, pS)
-	local hi = math.max(pH, pS)
-	return string.format("$%d–$%d/bbl", lo, hi)
+	return string.format("$%d/bbl", pH)
 end
 
 local function rowPriceText(bind: RowBinding): string
@@ -186,7 +174,6 @@ end
 local function subtotalDollarsForRow(bind: RowBinding): number
 	if bind.kind == "crude" then
 		return (selected.HeavyCrude or 0) * (pricesByTier.HeavyCrude or 0)
-			+ (selected.StandardCrude or 0) * (pricesByTier.StandardCrude or 0)
 	elseif bind.kind == "tier" and bind.tier then
 		local t = bind.tier
 		return (selected[t] or 0) * (pricesByTier[t] or 0)
@@ -239,7 +226,7 @@ local function refreshRowUi()
 			bind.amountLabel.Text = tostring(s)
 		end
 		if bind.typeNameLabel then
-			local title = ROW_TYPE_TITLE[bind.rowName]
+			local title = rowTypeTitle(bind.rowName)
 			if title then
 				bind.typeNameLabel.Text = title
 			end
@@ -270,31 +257,7 @@ local function bumpTier(tier: string, delta: number)
 end
 
 local function bumpCrudeBlend(delta: number)
-	local wH = maxBarrelsInWarehouseForTier("HeavyCrude")
-	local wS = maxBarrelsInWarehouseForTier("StandardCrude")
-	local h = selected.HeavyCrude or 0
-	local s = selected.StandardCrude or 0
-	if delta > 0 then
-		if h + s >= wH + wS then
-			return
-		end
-		if h < wH then
-			selected.HeavyCrude = h + 1
-		elseif s < wS then
-			selected.StandardCrude = s + 1
-		else
-			return
-		end
-	else
-		if s > 0 then
-			selected.StandardCrude = s - 1
-		elseif h > 0 then
-			selected.HeavyCrude = h - 1
-		else
-			return
-		end
-	end
-	refreshRowUi()
+	bumpTier("HeavyCrude", delta)
 end
 
 local function trySell()
@@ -303,16 +266,15 @@ local function trySell()
 		return
 	end
 	lastSellFire = now
-	local h, s = selected.HeavyCrude or 0, selected.StandardCrude or 0
+	local h = selected.HeavyCrude or 0
 	local ls, pr = selected.LightSweet or 0, selected.PremiumRefined or 0
-	if h + s + ls + pr <= 0 then
+	if h + ls + pr <= 0 then
 		return
 	end
 	local ev = requestSellWarehouseBarrels
 	if ev then
 		ev:FireServer({
 			HeavyCrude = h,
-			StandardCrude = s,
 			LightSweet = ls,
 			PremiumRefined = pr,
 		})

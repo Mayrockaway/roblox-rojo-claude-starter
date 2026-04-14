@@ -9,7 +9,7 @@ local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"
 local OilVisualService = {}
 
 local DRILL_HEIGHT_OFFSET = 0
-local TIER_ORDER = { "HeavyCrude", "StandardCrude", "LightSweet", "PremiumRefined" }
+local TIER_ORDER = { "HeavyCrude", "LightSweet", "PremiumRefined" }
 
 local function floorPositive(value: number): number
 	return math.max(0, math.floor(value))
@@ -482,10 +482,10 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 		return
 	end
 	local oilByTier = snapshot.oilByTier or {}
-	local totalOilDebug = (oilByTier.HeavyCrude or 0) + (oilByTier.StandardCrude or 0) + (oilByTier.LightSweet or 0) + (oilByTier.PremiumRefined or 0)
+	local totalOilDebug = (oilByTier.HeavyCrude or 0) + (oilByTier.LightSweet or 0) + (oilByTier.PremiumRefined or 0)
 	if totalOilDebug > 0 then
-		print(string.format("[_syncBarrels] called. HC=%d SC=%d LS=%d PR=%d total=%d",
-			oilByTier.HeavyCrude or 0, oilByTier.StandardCrude or 0,
+		print(string.format("[_syncBarrels] called. HC=%d LS=%d PR=%d total=%d",
+			oilByTier.HeavyCrude or 0,
 			oilByTier.LightSweet or 0, oilByTier.PremiumRefined or 0, totalOilDebug))
 	end
 	local barrelConfig = OilConfig.Barrels or {}
@@ -678,7 +678,6 @@ function OilVisualService:_createBarrelForTier(tier: string, templateName: strin
 	-- Fallback: colored cylinder
 	local colors = {
 		HeavyCrude = Color3.fromRGB(30, 25, 20),
-		StandardCrude = Color3.fromRGB(165, 80, 30),
 		LightSweet = Color3.fromRGB(220, 180, 60),
 		PremiumRefined = Color3.fromRGB(200, 200, 210),
 	}

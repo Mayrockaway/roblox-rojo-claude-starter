@@ -52,7 +52,6 @@ input[type="color"] { height: 28px; padding: 2px; cursor: pointer; }
 .stats-box div { margin: 2px 0; }
 .oil-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
 .oil-dot.HeavyCrude { background: #888; }
-.oil-dot.StandardCrude { background: #e77c3c; }
 .oil-dot.LightSweet { background: #3498db; }
 .oil-dot.PremiumRefined { background: #f1c40f; }
 .no-edit-msg { text-align: center; color: #556; margin-top: 40px; font-size: 14px; }
@@ -68,7 +67,7 @@ input[type="color"] { height: 28px; padding: 2px; cursor: pointer; }
     <div class="add-section">
         <label>Name</label><input id="new-tile-name" placeholder="e.g. Lava Pool">
         <label>Oil Type</label>
-        <select id="new-tile-oil"><option value="HeavyCrude">Heavy Crude</option><option value="StandardCrude">Standard Crude</option><option value="LightSweet">Light Sweet</option><option value="PremiumRefined">Premium Refined</option></select>
+        <select id="new-tile-oil"><option value="HeavyCrude">Heavy Crude</option><option value="LightSweet">Light Sweet</option><option value="PremiumRefined">Premium Refined</option></select>
         <label>Color</label><input type="color" id="new-tile-color" value="#aa8855">
         <label>Material</label><select id="new-tile-mat"></select>
         <button class="btn btn-green" onclick="addTile()">+ Add Tile</button>
@@ -95,19 +94,19 @@ input[type="color"] { height: 28px; padding: 2px; cursor: pointer; }
 const USED_MATERIALS=["Sand","Sandstone","Ground","Pebble","Basalt","Mud","Ice","Grass","LeafyGrass","Glacier","Rock"];
 let tiles=[
     {id:1,name:"Sand",oil:"HeavyCrude",color:"#d2b982",mat:"Sand"},
-    {id:2,name:"Dry Clay",oil:"StandardCrude",color:"#b4825a",mat:"Sandstone"},
+    {id:2,name:"Dry Clay",oil:"HeavyCrude",color:"#b4825a",mat:"Sandstone"},
     {id:3,name:"Golden Sand",oil:"LightSweet",color:"#f0d250",mat:"Sand"},
     {id:4,name:"Peat",oil:"HeavyCrude",color:"#372d23",mat:"Ground"},
-    {id:5,name:"Sulfur",oil:"StandardCrude",color:"#b4aa3c",mat:"Pebble"},
+    {id:5,name:"Sulfur",oil:"HeavyCrude",color:"#b4aa3c",mat:"Pebble"},
     {id:6,name:"Ash",oil:"HeavyCrude",color:"#322d28",mat:"Basalt"},
     {id:7,name:"Hard Magma",oil:"LightSweet",color:"#ff7b42",mat:"Mud"},
     {id:8,name:"Obsidian",oil:"PremiumRefined",color:"#030303",mat:"Ice"},
-    {id:9,name:"Soil",oil:"StandardCrude",color:"#645037",mat:"Ground"},
-    {id:10,name:"Grass",oil:"StandardCrude",color:"#04ff00",mat:"Grass"},
+    {id:9,name:"Soil",oil:"HeavyCrude",color:"#645037",mat:"Ground"},
+    {id:10,name:"Grass",oil:"HeavyCrude",color:"#04ff00",mat:"Grass"},
     {id:11,name:"Water",oil:"HeavyCrude",color:"#00ffe1",mat:"Mud"},
     {id:12,name:"Rich Soil",oil:"LightSweet",color:"#a4640a",mat:"Mud"},
     {id:13,name:"Fern Patch",oil:"HeavyCrude",color:"#32642d",mat:"LeafyGrass"},
-    {id:14,name:"Rocky Ground",oil:"StandardCrude",color:"#31220c",mat:"Ground"},
+    {id:14,name:"Rocky Ground",oil:"HeavyCrude",color:"#31220c",mat:"Ground"},
     {id:15,name:"Snow",oil:"LightSweet",color:"#e6f0fa",mat:"Glacier"},
     {id:16,name:"Permafrost",oil:"PremiumRefined",color:"#a0c8f0",mat:"Glacier"},
     {id:17,name:"Tundra",oil:"HeavyCrude",color:"#78736e",mat:"Rock"},

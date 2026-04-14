@@ -7,6 +7,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
+local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
 local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
@@ -15,35 +16,26 @@ local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
 
 local SCREEN_NAME = "ShipOilPanelGui"
 
--- Studio row names → manifest tier keys (UI order: Heavy → Light Sweet → Premium).
+-- Studio row `Frame` names → manifest tier keys. Prefer **`ShipCargoRowHeavyCrude`**, **`ShipCargoRowLightSweet`**, **`ShipCargoRowPremiumRefined`**; legacy aliases keep old places working.
 local ROW_NAME_TO_TIER: { [string]: string } = {
+	ShipCargoRowHeavyCrude = "HeavyCrude",
 	ShipCargoRowHeavy = "HeavyCrude",
-	ShipCargoRowLight = "LightSweet",
-	ShipCargoRowStandard = "PremiumRefined",
-	ShipCargoRowPremium = "PremiumRefined",
-	-- Aliases if hierarchy still uses strait-market names (binds one tier per row).
 	ShipCargoRowCrude = "HeavyCrude",
 	ShipCargoRowLightSweet = "LightSweet",
+	ShipCargoRowLight = "LightSweet",
 	ShipCargoRowPremiumRefined = "PremiumRefined",
+	ShipCargoRowStandard = "PremiumRefined",
+	ShipCargoRowPremium = "PremiumRefined",
 }
 
-local ROW_FRAME_TITLE: { [string]: string } = {
-	ShipCargoRowHeavy = "Heavy Crude",
-	ShipCargoRowLight = "Light Sweet",
-	ShipCargoRowStandard = "Premium Refined",
-	ShipCargoRowPremium = "Premium Refined",
-	ShipCargoRowCrude = "Heavy Crude",
-	ShipCargoRowLightSweet = "Light Sweet",
-	ShipCargoRowPremiumRefined = "Premium Refined",
-}
-
-local TIER_KEYS = { "HeavyCrude", "StandardCrude", "LightSweet", "PremiumRefined" }
+local TIER_KEYS = { "HeavyCrude", "LightSweet", "PremiumRefined" }
 
 local ShipOilPanel = {}
 
 local wiredScreen: ScreenGui? = nil
 local connections: { RBXScriptConnection } = {}
 local rowBindings: { [string]: {
+	tier: string,
 	inventoryLabel: TextLabel,
 	amountLabel: TextLabel,
 	minus: GuiButton,
@@ -53,7 +45,6 @@ local rowBindings: { [string]: {
 -- Raw oil units at home refinery (same keys / semantics as `OilStateService` server state).
 local refineryOilByTier: { [string]: number } = {
 	HeavyCrude = 0,
-	StandardCrude = 0,
 	LightSweet = 0,
 	PremiumRefined = 0,
 }
@@ -70,7 +61,6 @@ local function perBarrelOilUnits(): number
 end
 local selected: { [string]: number } = {
 	HeavyCrude = 0,
-	StandardCrude = 0,
 	LightSweet = 0,
 	PremiumRefined = 0,
 }
@@ -172,10 +162,11 @@ local function mergeResolvedFromSnapshot(snap: any)
 end
 
 local function applyCargoRowTitles(row: Instance)
-	local title = ROW_FRAME_TITLE[row.Name]
-	if not title then
+	local tier = ROW_NAME_TO_TIER[row.Name]
+	if not tier then
 		return
 	end
+	local title = QualityConfig.hudShortLabel(tier)
 	local crude = row:FindFirstChild("CrudeTitle", true)
 	if crude and crude:IsA("TextLabel") then
 		crude.Text = title
@@ -191,7 +182,8 @@ local function applyCargoRowTitles(row: Instance)
 end
 
 local function refreshRowUi()
-	for tier, bind in pairs(rowBindings) do
+	for _, bind in pairs(rowBindings) do
+		local tier = bind.tier
 		local inv = maxBarrelsInRefineryForTier(tier)
 		bind.inventoryLabel.Text = formatBarrelInventoryCount(inv)
 		local s = math.min(selected[tier] or 0, inv)
@@ -350,7 +342,8 @@ local function wireShipOil(screen: ScreenGui)
 			if not (minus and minus:IsA("GuiButton") and plus and plus:IsA("GuiButton") and amt and amt:IsA("TextLabel")) then
 				continue
 			end
-			rowBindings[tier] = {
+			rowBindings[ch.Name] = {
+				tier = tier,
 				inventoryLabel = invLabel :: TextLabel,
 				amountLabel = amt :: TextLabel,
 				minus = minus :: GuiButton,

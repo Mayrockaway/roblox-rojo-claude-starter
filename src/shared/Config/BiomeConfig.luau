@@ -32,7 +32,7 @@ local BiomeConfig = {
 			emoji = "🌿",
 			tileTypes = {
 				{ name = "Sand", oilType = "HeavyCrude", weight = 64, material = Enum.Material.Sand, color = Color3.fromRGB(210, 185, 130) },
-				{ name = "Dry Clay", oilType = "StandardCrude", weight = 20, material = Enum.Material.Sandstone, color = Color3.fromRGB(180, 130, 90) },
+				{ name = "Dry Clay", oilType = "HeavyCrude", weight = 20, material = Enum.Material.Sandstone, color = Color3.fromRGB(180, 130, 90) },
 				{ name = "Golden Sand", oilType = "LightSweet", weight = 4, material = Enum.Material.Sand, color = Color3.fromRGB(240, 210, 80) },
 				{ name = "Peat", oilType = "HeavyCrude", weight = 12, material = Enum.Material.Ground, color = Color3.fromRGB(55, 45, 35) },
 			},
@@ -45,7 +45,7 @@ local BiomeConfig = {
 			emoji = "🌲",
 			tileTypes = {
 				{ name = "Sand", oilType = "HeavyCrude", weight = 48, material = Enum.Material.Sand, color = Color3.fromRGB(210, 185, 130) },
-				{ name = "Dry Clay", oilType = "StandardCrude", weight = 52, material = Enum.Material.Sandstone, color = Color3.fromRGB(180, 130, 90) },
+				{ name = "Dry Clay", oilType = "HeavyCrude", weight = 52, material = Enum.Material.Sandstone, color = Color3.fromRGB(180, 130, 90) },
 			},
 			obstacleRate = 0.32,
 			obstacleTypes = { "MudPit", "Pyramid" },
@@ -56,10 +56,10 @@ local BiomeConfig = {
 			emoji = "❄️",
 			tileTypes = {
 				{ name = "Sand", oilType = "HeavyCrude", weight = 32, material = Enum.Material.Sand, color = Color3.fromRGB(210, 185, 130) },
-				{ name = "Dry Clay", oilType = "StandardCrude", weight = 32, material = Enum.Material.Sandstone, color = Color3.fromRGB(180, 130, 90) },
+				{ name = "Dry Clay", oilType = "HeavyCrude", weight = 32, material = Enum.Material.Sandstone, color = Color3.fromRGB(180, 130, 90) },
 				{ name = "Golden Sand", oilType = "LightSweet", weight = 8, material = Enum.Material.Sand, color = Color3.fromRGB(240, 210, 80) },
 				{ name = "Peat", oilType = "HeavyCrude", weight = 20, material = Enum.Material.Ground, color = Color3.fromRGB(55, 45, 35) },
-				{ name = "Sulfur", oilType = "StandardCrude", weight = 8, material = Enum.Material.Pebble, color = Color3.fromRGB(180, 170, 60) },
+				{ name = "Sulfur", oilType = "HeavyCrude", weight = 8, material = Enum.Material.Pebble, color = Color3.fromRGB(180, 170, 60) },
 			},
 			obstacleRate = 0.28,
 			obstacleTypes = { "ObsidianPillar" },
@@ -71,7 +71,7 @@ local BiomeConfig = {
 			tileTypes = {
 				{ name = "Peat", oilType = "HeavyCrude", weight = 12, material = Enum.Material.Ground, color = Color3.fromRGB(55, 45, 35) },
 				{ name = "Ash", oilType = "HeavyCrude", weight = 12, material = Enum.Material.Basalt, color = Color3.fromRGB(50, 45, 40) },
-				{ name = "Sulfur", oilType = "StandardCrude", weight = 20, material = Enum.Material.Pebble, color = Color3.fromRGB(180, 170, 60) },
+				{ name = "Sulfur", oilType = "HeavyCrude", weight = 20, material = Enum.Material.Pebble, color = Color3.fromRGB(180, 170, 60) },
 				{ name = "Hard Magma", oilType = "LightSweet", weight = 44, material = Enum.Material.Mud, color = Color3.fromRGB(255, 123, 66) },
 				{ name = "Obsidian", oilType = "PremiumRefined", weight = 12, material = Enum.Material.Ice, color = Color3.fromRGB(3, 3, 3) },
 			},
@@ -94,8 +94,8 @@ local BiomeConfig = {
 			displayName = "GrassyFarm",
 			emoji = "🌍",
 			tileTypes = {
-				{ name = "Soil", oilType = "StandardCrude", weight = 20, material = Enum.Material.Ground, color = Color3.fromRGB(100, 80, 55) },
-				{ name = "Grass", oilType = "StandardCrude", weight = 32, material = Enum.Material.Grass, color = Color3.fromRGB(4, 255, 0) },
+				{ name = "Soil", oilType = "HeavyCrude", weight = 20, material = Enum.Material.Ground, color = Color3.fromRGB(100, 80, 55) },
+				{ name = "Grass", oilType = "HeavyCrude", weight = 32, material = Enum.Material.Grass, color = Color3.fromRGB(4, 255, 0) },
 				{ name = "Water", oilType = "HeavyCrude", weight = 24, material = Enum.Material.Mud, color = Color3.fromRGB(0, 255, 225) },
 				{ name = "Rich Soil", oilType = "LightSweet", weight = 24, material = Enum.Material.Mud, color = Color3.fromRGB(164, 100, 10) },
 			},
@@ -108,8 +108,8 @@ local BiomeConfig = {
 			emoji = "🌍",
 			tileTypes = {
 				{ name = "Fern Patch", oilType = "HeavyCrude", weight = 36, material = Enum.Material.LeafyGrass, color = Color3.fromRGB(50, 100, 45) },
-				{ name = "Grass", oilType = "StandardCrude", weight = 40, material = Enum.Material.Grass, color = Color3.fromRGB(4, 255, 0) },
-				{ name = "Rocky Ground", oilType = "StandardCrude", weight = 24, material = Enum.Material.Ground, color = Color3.fromRGB(49, 34, 12) },
+				{ name = "Grass", oilType = "HeavyCrude", weight = 40, material = Enum.Material.Grass, color = Color3.fromRGB(4, 255, 0) },
+				{ name = "Rocky Ground", oilType = "HeavyCrude", weight = 24, material = Enum.Material.Ground, color = Color3.fromRGB(49, 34, 12) },
 			},
 			obstacleRate = 0.40,
 			obstacleTypes = { "Tree" },

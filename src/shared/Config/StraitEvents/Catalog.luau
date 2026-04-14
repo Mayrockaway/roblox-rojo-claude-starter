@@ -15,7 +15,7 @@ export type StraitEventDef = {
 	-- Multiplies shipment.priceMultiplier (e.g. 0.94 = 6% effective payout hit at resolution).
 	priceMultiplierFactor: number?,
 	totalLoss: boolean?,
-	-- Whole barrels lost: ceil(manifestTotal * fraction), removed HeavyCrude → … → PremiumRefined.
+	-- Whole barrels lost: ceil(manifestTotal * fraction), removed HeavyCrude → LightSweet → PremiumRefined.
 	looseBarrelLossFraction: number?,
 	-- If true, server handles missile flight with hit/smallHit/miss outcomes instead of instant totalLoss.
 	missileEvent: boolean?,
@@ -41,9 +41,11 @@ local Catalog = {}
 -- Missile strike outcome config
 Catalog.MissileConfig = {
 	MissileCount = 4,       -- missiles fired per trigger (3 triggers × 4 = 12 total)
-	HitChance = 0.05,       -- 5% direct hit → total loss
+	-- Per missile: roll hit → total loss; else small hit → partial loss; else miss.
+	-- HitChance chosen so P(no direct hit in 4) ≈ 50% (~50% survival vs total loss from barrage).
+	HitChance = 0.16,       -- ~50% chance at least one of 4 is a direct hit → total loss
 	SmallHitChance = 0.25,  -- 25% small hit → lose 50% barrels
-	-- remaining 70% = clean miss, nothing happens
+	-- remainder = clean miss for that missile
 	SmallHitBarrelLossFraction = 0.50, -- 50% barrels lost on small hit
 	FlightSeconds = 2.5,    -- missile flight duration
 	BarrageStagger = 0.3,   -- seconds between each missile launch in the barrage
@@ -56,7 +58,7 @@ Catalog.MissileConfig = {
 -- Mine event config
 Catalog.MineConfig = {
 	MineCount = 15,          -- total mines that surface around the boat
-	HitChance = 0.10,        -- 10% chance a mine spawns in the boat's path → boom
+	HitChance = 0.50,        -- 50% path hit → total loss; 50% survive (no loss after sequence)
 	RiseSeconds = 5.0,       -- SLOW rise to the surface
 	SpawnRadiusMin = 30,     -- minimum distance from ship
 	SpawnRadiusMax = 120,    -- maximum distance — wide spread around the ship

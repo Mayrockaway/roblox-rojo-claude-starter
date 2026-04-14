@@ -8,10 +8,10 @@ local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames
 local RemoteService = {}
 
 local remoteFunctionNames = {
-	[RemoteNames.RequestInitialState] = true,
 	[RemoteNames.RequestOilSnapshot] = true,
 	[RemoteNames.RequestMarketSnapshot] = true,
 	[RemoteNames.RequestWarehouseSnapshot] = true,
+	[RemoteNames.RequestEquipmentShopCatalog] = true,
 }
 
 function RemoteService:Init()

@@ -21,10 +21,20 @@ local DATASTORE_NAME = "OilMiningProfiles_v3"
 
 local TIER_ORDER = {
 	"HeavyCrude",
-	"StandardCrude",
 	"LightSweet",
 	"PremiumRefined",
 }
+
+local function migrateLegacyStandardTileOil(tiles: any)
+	if typeof(tiles) ~= "table" then
+		return
+	end
+	for _, tile in pairs(tiles) do
+		if typeof(tile) == "table" and (tile :: any).oilType == "StandardCrude" then
+			(tile :: any).oilType = "HeavyCrude"
+		end
+	end
+end
 
 local function floorPositive(value: number): number
 	return math.max(0, math.floor(value))
@@ -42,7 +52,6 @@ end
 local function copyTierMap(source)
 	return {
 		HeavyCrude = source.HeavyCrude or 0,
-		StandardCrude = source.StandardCrude or 0,
 		LightSweet = source.LightSweet or 0,
 		PremiumRefined = source.PremiumRefined or 0,
 	}
@@ -63,7 +72,6 @@ local function buildDefaultPersisted()
 		storageCapacity = OilConfig.StartingStorageCapacity,
 		oilByTier = {
 			HeavyCrude = 0,
-			StandardCrude = 0,
 			LightSweet = 0,
 			PremiumRefined = 0,
 		},
@@ -84,7 +92,6 @@ end
 local function emptyTierMap()
 	return {
 		HeavyCrude = 0,
-		StandardCrude = 0,
 		LightSweet = 0,
 		PremiumRefined = 0,
 	}
@@ -1198,13 +1205,11 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		totalOil = 0,
 		oilByTier = {
 			HeavyCrude = 0,
-			StandardCrude = 0,
 			LightSweet = 0,
 			PremiumRefined = 0,
 		},
 		pendingFloats = {
 			HeavyCrude = 0,
-			StandardCrude = 0,
 			LightSweet = 0,
 			PremiumRefined = 0,
 		},
@@ -1343,11 +1348,16 @@ function OilStateService:_applyPersistedIntoState(state, persisted)
 		state.storageCapacity = math.max(1, floorPositive(persisted.storageCapacity))
 	end
 	if typeof(persisted.oilByTier) == "table" then
+		local pot = persisted.oilByTier :: { [string]: any }
+		local legacyStandard = floorPositive(tonumber(pot.StandardCrude) or 0)
 		for _, tier in ipairs(TIER_ORDER) do
-			local value = persisted.oilByTier[tier]
+			local value = pot[tier]
 			if typeof(value) == "number" then
 				state.oilByTier[tier] = floorPositive(value)
 			end
+		end
+		if legacyStandard > 0 then
+			state.oilByTier.HeavyCrude = (state.oilByTier.HeavyCrude or 0) + legacyStandard
 		end
 	end
 
@@ -1382,6 +1392,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted)
 				-- Restore per-tile data
 				if typeof(persisted.chunkTiles) == "table" and typeof(persisted.chunkTiles[chunkId]) == "table" then
 					chunk.tiles = persisted.chunkTiles[chunkId]
+					migrateLegacyStandardTileOil(chunk.tiles)
 				end
 			end
 		end
@@ -1402,8 +1413,13 @@ function OilStateService:_applyPersistedIntoState(state, persisted)
 					-- Restore local buffer
 					local restoredBuffer = emptyTierMap()
 					if typeof(record.localBuffer) == "table" then
+						local lb = record.localBuffer :: { [string]: any }
+						local legacyBufStd = floorPositive(tonumber(lb.StandardCrude) or 0)
 						for _, tier in ipairs(TIER_ORDER) do
-							restoredBuffer[tier] = floorPositive(tonumber(record.localBuffer[tier]) or 0)
+							restoredBuffer[tier] = floorPositive(tonumber(lb[tier]) or 0)
+						end
+						if legacyBufStd > 0 then
+							restoredBuffer.HeavyCrude += legacyBufStd
 						end
 					end
 					local drillX = tonumber(record.position.x) or chunk.worldX

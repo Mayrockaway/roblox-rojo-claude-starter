@@ -19,6 +19,9 @@ local ErrorCodes = {
 	UpgradeNotFound = "ERR_UPGRADE_NOT_FOUND",
 	UpgradeMaxed = "ERR_UPGRADE_MAXED",
 	NotEnoughCash = "ERR_NOT_ENOUGH_CASH",
+	EquipmentNotFound = "ERR_EQUIPMENT_NOT_FOUND",
+	EquipmentTemplateMissing = "ERR_EQUIPMENT_TEMPLATE_MISSING",
+	EquipmentQuantity = "ERR_EQUIPMENT_QUANTITY",
 }
 
 return ErrorCodes

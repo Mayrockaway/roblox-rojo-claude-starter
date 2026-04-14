@@ -32,7 +32,6 @@ local function defaultProfile()
 		capacity = Constants.DefaultStorageCapacity,
 		oilByTier = {
 			HeavyCrude = 0,
-			StandardCrude = 0,
 			LightSweet = 0,
 			PremiumRefined = 0,
 		},

@@ -31,7 +31,7 @@ Use this file to **list and design** each event before (or while) you add it to 
 | `skipWaypointPause` | If true: no wait at waypoint (rare); if false/omit: `pauseSeconds` or **`DefaultWaypointPauseSeconds` (5s)** |
 | `pauseSeconds` | Override pause duration when pausing |
 | `totalLoss` | Shipment ends immediately; no payout; failure reason |
-| `looseBarrelLossFraction` | e.g. `0.1` → remove **`ceil(onShipBarrels * 0.1)`** whole barrels from manifest (1-barrel case removes 1); tier order **HeavyCrude → StandardCrude → LightSweet → PremiumRefined** |
+| `looseBarrelLossFraction` | e.g. `0.1` → remove **`ceil(onShipBarrels * 0.1)`** whole barrels from manifest (1-barrel case removes 1); tier order **HeavyCrude → LightSweet → PremiumRefined** |
 
 *Known gap:* deck **visual** barrel count is set at load; mid-voyage loss updates **manifest / payout** only until a visual refresh exists.
 

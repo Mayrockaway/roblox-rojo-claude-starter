@@ -20,7 +20,7 @@ ShipOilPanelGui [ScreenGui]
             ├─ CargoSection
             │  ├─ CargoHeader  ("Cargo")
             │  ├─ CargoRows  (vertical list, scale Padding)
-            │  │  └─ ShipCargoRowHeavy | ShipCargoRowLight | ShipCargoRowStandard  (tiers: Heavy Crude, Light Sweet, Premium Refined — `ShipOilPanel.luau` maps rows → `HeavyCrude` / `LightSweet` / `PremiumRefined`)
+            │  │  └─ **Preferred:** `ShipCargoRowHeavyCrude` | `ShipCargoRowLightSweet` | `ShipCargoRowPremiumRefined` — tiers **Heavy Crude**, **Light Sweet**, **Premium Refined** (`ShipOilPanel.luau` → `HeavyCrude` / `LightSweet` / `PremiumRefined`). **Legacy row names still bind:** `ShipCargoRowHeavy`, `ShipCargoRowLight`, `ShipCargoRowStandard`, `ShipCargoRowCrude`, `ShipCargoRowPremium`.
             │  │        OilIcon, NameColumn / CrudeTitle, RowSpacer+UIFlexItem.Fill,
             │  │        InventoryCount, Stepper
             │  └─ CargoSubtotalRow  — right-aligned subtotal copy

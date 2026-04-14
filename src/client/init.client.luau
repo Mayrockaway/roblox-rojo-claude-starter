@@ -712,7 +712,6 @@ local function updateFocusUi()
 			if tileData then
 				local oilNames = {
 					HeavyCrude = "Heavy Crude",
-					StandardCrude = "Standard Crude",
 					LightSweet = "Light Sweet",
 					PremiumRefined = "Premium Refined",
 				}
@@ -1006,7 +1005,7 @@ end)
 
 local warehouseState: any = nil
 
-local MARKET_TYPE_MULS = { HeavyCrude = 0.8, StandardCrude = 1.0, LightSweet = 1.4, PremiumRefined = 2.0 }
+local MARKET_TYPE_MULS = { HeavyCrude = 0.8, LightSweet = 1.4, PremiumRefined = 2.0 }
 local marketState = {
 	basePrice = 10,
 	prices = {} :: { [string]: number },
@@ -1035,10 +1034,30 @@ local function getStraitStatusHud(): { refresh: (PlayerGui, string) -> () }?
 	return straitStatusHudModule
 end
 
+local oilPriceHudModule: { refresh: (PlayerGui, any) -> () }? = nil
+local function getOilPriceHud(): { refresh: (PlayerGui, any) -> () }?
+	if oilPriceHudModule then
+		return oilPriceHudModule
+	end
+	local ui = getHudUiFolder()
+	if not ui then
+		return nil
+	end
+	local m = ui:FindFirstChild("OilPriceHud")
+	if m and m:IsA("ModuleScript") then
+		oilPriceHudModule = require(m) :: { refresh: (PlayerGui, any) -> () }
+	end
+	return oilPriceHudModule
+end
+
 local function updateMarketUi()
 	local h = getStraitStatusHud()
 	if h then
 		h.refresh(playerGui, tostring(marketState.straitState or "Open"))
+	end
+	local op = getOilPriceHud()
+	if op then
+		op.refresh(playerGui, marketState)
 	end
 	_ = warehouseState
 end
@@ -1233,10 +1252,9 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 	elseif kind == "ShipmentResolved" then
 		setStatus(
 			string.format(
-				"Shipment done. Delivered %d, lost %d, payout $%d",
+				"Shipment done. %d barrels delivered to warehouse (%d lost). Sell at market for cash.",
 				tonumber(data.delivered) or 0,
-				tonumber(data.lost) or 0,
-				tonumber(data.payout) or 0
+				tonumber(data.lost) or 0
 			),
 			true
 		)
