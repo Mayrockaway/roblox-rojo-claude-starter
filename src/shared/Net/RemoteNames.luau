@@ -29,6 +29,7 @@ local RemoteNames = {
 	RequestPickupBarrel = "RequestPickupBarrel",
 	RequestTeleportToShip = "RequestTeleportToShip",
 	RequestTeleportHome = "RequestTeleportHome",
+	RequestTeleportToDocks = "RequestTeleportToDocks",
 	RequestUpgradeWarehouse = "RequestUpgradeWarehouse",
 	RequestSellAllWarehouse = "RequestSellAllWarehouse",
 	RequestTeleportToWarehouse = "RequestTeleportToWarehouse",

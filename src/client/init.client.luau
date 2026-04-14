@@ -12,6 +12,7 @@ local mouse = player:GetMouse()
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local Constants = require(Shared:WaitForChild("Constants"))
 
 type StraitWaypointFxModule = {
 	OnStraitWaypointPayload: (data: { [string]: any }) -> (),
@@ -298,6 +299,18 @@ local function cellKeyOf(row, col): string
 	return string.format("R%dC%d", row, col)
 end
 
+local function readLocalFtueCellKey(attributeName: string): string?
+	local v = player:GetAttribute(attributeName)
+	if typeof(v) ~= "string" then
+		return nil
+	end
+	local s = (v :: string):gsub("^%s+", ""):gsub("%s+$", "")
+	if s == "" then
+		return nil
+	end
+	return s
+end
+
 local function clientWorldToCell(x, z): (number, number)
 	local cellOriginX, cellOriginZ = plotGridConstants()
 	local col = math.floor((x - cellOriginX) / SUB_TILE_SIZE + 0.5) + 1
@@ -564,9 +577,33 @@ local function distanceXZ(a: Vector3, b: Vector3): number
 	return math.sqrt(dx * dx + dz * dz)
 end
 
-local function isPlacementValid(chunkId: string, hitPos: Vector3): boolean
+local function isPlacementValid(chunkId: string, hitPos: Vector3, equipKind: string?): boolean
 	if not isChunkUnlocked(chunkId) then
 		return false
+	end
+	local kind = equipKind
+	if kind == nil then
+		kind = select(1, getEquippedToolInfo())
+		if kind == nil and getEquippedToolName() == TOOL_DRILL then
+			kind = "Drill"
+		end
+	end
+	if kind == "Drill" then
+		local want = readLocalFtueCellKey(Constants.FtueRestrictDrillCellKeyAttribute)
+		if want then
+			local row, col = clientWorldToCell(hitPos.X, hitPos.Z)
+			if not clientCellInBounds(row, col) or cellKeyOf(row, col) ~= want then
+				return false
+			end
+		end
+	elseif kind == "Pump" then
+		local want = readLocalFtueCellKey(Constants.FtueRestrictPumpCellKeyAttribute)
+		if want then
+			local row, col = clientWorldToCell(hitPos.X, hitPos.Z)
+			if not clientCellInBounds(row, col) or cellKeyOf(row, col) ~= want then
+				return false
+			end
+		end
 	end
 	for _, drill in pairs(drillStateById) do
 		local pos = Vector3.new(drill.position.x, drill.position.y, drill.position.z)
@@ -652,6 +689,11 @@ local function updateGhost()
 		hideGhost()
 		return
 	end
+	local equipKind = select(1, getEquippedToolInfo())
+	if equipKind == nil and equipped == TOOL_DRILL then
+		equipKind = "Drill"
+	end
+
 	local g = ensureGhost()
 	if not g then
 		return
@@ -667,7 +709,7 @@ local function updateGhost()
 	end
 	g:PivotTo(CFrame.new(hitPos.X, surfaceY + pivotToBottom, hitPos.Z))
 	if ghostHighlight then
-		if isPlacementValid(chunkId, hitPos) then
+		if isPlacementValid(chunkId, hitPos, equipKind) then
 			ghostHighlight.FillColor = Color3.fromRGB(80, 220, 120)
 			ghostHighlight.OutlineColor = Color3.fromRGB(190, 255, 200)
 		else
@@ -1182,8 +1224,24 @@ local function tryPrimaryAction()
 		tier = tier or "T1",
 	}
 	if kind == "Drill" then
+		local wantDrill = readLocalFtueCellKey(Constants.FtueRestrictDrillCellKeyAttribute)
+		if wantDrill then
+			local row, col = clientWorldToCell(hitPos.X, hitPos.Z)
+			if not clientCellInBounds(row, col) or cellKeyOf(row, col) ~= wantDrill then
+				setStatus("Place the drill on the marked tile.", false)
+				return
+			end
+		end
 		requestStartDrill:FireServer(payload)
 	elseif kind == "Pump" then
+		local wantPump = readLocalFtueCellKey(Constants.FtueRestrictPumpCellKeyAttribute)
+		if wantPump then
+			local row, col = clientWorldToCell(hitPos.X, hitPos.Z)
+			if not clientCellInBounds(row, col) or cellKeyOf(row, col) ~= wantPump then
+				setStatus("Place the collector on the marked tile.", false)
+				return
+			end
+		end
 		requestPlacePump:FireServer(payload)
 	elseif kind == "Prospector" then
 		requestProspect:FireServer(payload)

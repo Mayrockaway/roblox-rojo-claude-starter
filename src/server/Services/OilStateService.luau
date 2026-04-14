@@ -5,6 +5,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Constants = require(Shared:WaitForChild("Constants"))
 local DataStoreWriteGate = require(script.Parent.Parent.Utils.DataStoreWriteGate)
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local BiomeConfig = require(Shared:WaitForChild("Config"):WaitForChild("BiomeConfig"))
@@ -195,6 +196,22 @@ end
 
 local function cellKey(globalRow: number, globalCol: number): string
 	return string.format("R%dC%d", globalRow, globalCol)
+end
+
+local function readFtueCellAttribute(userId: number, attributeName: string): string?
+	local plr = Players:GetPlayerByUserId(userId)
+	if not plr then
+		return nil
+	end
+	local v = plr:GetAttribute(attributeName)
+	if typeof(v) ~= "string" then
+		return nil
+	end
+	local s = (v :: string):gsub("^%s+", ""):gsub("%s+$", "")
+	if s == "" then
+		return nil
+	end
+	return s
 end
 
 local function worldToCell(plot: Model, x: number, z: number): (number, number)
@@ -932,6 +949,10 @@ function OilStateService:TryPlacePump(userId: number, payload): (boolean, string
 	end
 
 	local ck = cellKey(cellR, cellC)
+	local ftuePumpCell = readFtueCellAttribute(userId, Constants.FtueRestrictPumpCellKeyAttribute)
+	if ftuePumpCell and ftuePumpCell ~= ck then
+		return false, "ERR_FTUE_WRONG_TILE", "Place the collector on the marked tile.", nil
+	end
 	for _, existing in pairs(state.drillsById) do
 		if existing.cellKey == ck then
 			return false, "ERR_CELL_OCCUPIED", "A pump is already placed here.", nil

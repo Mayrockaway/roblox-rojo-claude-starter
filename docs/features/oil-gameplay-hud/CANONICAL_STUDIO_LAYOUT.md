@@ -51,7 +51,8 @@ HUD [ScreenGui]
       ├─ UIListLayout (Vertical)
       ├─ TeleportHomeButton
       ├─ TeleportShipButton
-      └─ TeleportWarehouseButton
+      ├─ TeleportWarehouseButton
+      └─ TeleportDocksButton *(clone of another teleport row for identical layout; `HudTeleportRouter` → `RequestTeleportToDocks`.)*
 ```
 
 ## ShipmentProgressPanel (Studio)
@@ -85,7 +86,7 @@ Author this block **in Studio** (not via `ShipmentProgressHud` creating instance
 | `Canvas.UIPadding` | Safe areas | Top `0.012`, Bottom `0.14` (toolbar reserve), Left/Right `0.018` scale |
 | `TopRow` | Top strip | `Size` `(1,0), (0.092,0)`, under `Canvas` after padding |
 | `LeftStack` | Cash + shop + sell/ship | **`AnchorPoint (0.5, 0.5)`**, **`Position` scale `(0.25, 0.5)`** — vertically centered, centered in **left half**; **`Size` scale `(0.22, 0.46)`** |
-| `TeleportStack` | Teleports | **`AnchorPoint (1, 1)`**, **`Position` scale `(1, 1)`** (offset `0,0`) — bottom-right of **Canvas**; **`Size` scale `(0.13, 0.17)`**; list **`Padding`** `UDim.new(0.012, 3)` (scale + px gap between teleports); each **`TextButton`** height **`0.3`** relative to stack; `UITextSizeConstraint` max **13** on teleports |
+| `TeleportStack` | Teleports | **`AnchorPoint (1, 1)`**, **`Position` scale `(1, 1)`** (offset `0,0`) — bottom-right of **Canvas**; **`Size` scale `(0.13, 0.32)`** — taller frame for **four** rows without shrinking row **`0.3`** scale; list **`Padding`** `UDim.new(0.012, 3)`; each **`GuiButton`** row height **`0.3`**; `UITextSizeConstraint` max **13** on teleports |
 
 ## Placeholder copy (scripts will replace later)
 

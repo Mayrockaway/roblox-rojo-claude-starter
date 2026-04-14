@@ -44,6 +44,11 @@ local Constants = {
 		VerboseStraitWaypointLogsInStudio = true,
 	},
 
+	-- FTUE: set on `Player` while onboarding. Global plot cell key, same format as server (`R{row}C{col}`).
+	-- Empty / unset = no restriction. Server + client enforce drill / pump placement to that cell only.
+	FtueRestrictDrillCellKeyAttribute = "FtueRestrictDrillCellKey",
+	FtueRestrictPumpCellKeyAttribute = "FtueRestrictPumpCellKey",
+
 	-- Dev strait UI (3 buttons). Server accepts only in Studio unless this is true.
 	StraitDevUiEnabled = false,
 	-- After dev UI sets strait, delay automatic state rolls this many seconds (testing).

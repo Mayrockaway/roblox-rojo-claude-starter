@@ -10,6 +10,7 @@ local BUTTON_TO_REMOTE: { [string]: string } = {
 	TeleportHomeButton = RemoteNames.RequestTeleportHome,
 	TeleportShipButton = RemoteNames.RequestTeleportToShip,
 	TeleportWarehouseButton = RemoteNames.RequestTeleportToWarehouse,
+	TeleportDocksButton = RemoteNames.RequestTeleportToDocks,
 }
 
 local HudTeleportRouter = {}

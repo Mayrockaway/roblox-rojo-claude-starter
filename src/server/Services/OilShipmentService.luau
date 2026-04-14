@@ -296,6 +296,11 @@ function OilShipmentService:Start()
 	table.insert(self._connections, teleportHome.OnServerEvent:Connect(function(player)
 		self:_handleTeleportHome(player)
 	end))
+
+	local teleportDocks = self._remoteService:GetEvent(RemoteNames.RequestTeleportToDocks)
+	table.insert(self._connections, teleportDocks.OnServerEvent:Connect(function(player)
+		self:_handleTeleportToDocks(player)
+	end))
 end
 
 function OilShipmentService:_handleTeleportToShip(player: Player)
@@ -353,6 +358,29 @@ function OilShipmentService:_handleTeleportHome(player: Player)
 	local claimPad = plot:FindFirstChild("ClaimPad")
 	if claimPad and claimPad:IsA("BasePart") then
 		character:PivotTo(CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)))
+	end
+end
+
+--- Plot dock / boat load marker (`BoatSpawn`), not the active ship seat.
+function OilShipmentService:_handleTeleportToDocks(player: Player)
+	local character = player.Character
+	if not character then
+		return
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid and humanoid.SeatPart then
+		humanoid.SeatPart:Sit(nil)
+		task.wait(0.1)
+	end
+
+	local plot = self._plotService:GetOwnedPlot(player.UserId)
+	if not plot then
+		return
+	end
+	local boatSpawn = plot:FindFirstChild("BoatSpawn")
+	if boatSpawn and boatSpawn:IsA("BasePart") then
+		character:PivotTo(CFrame.new(boatSpawn.Position + Vector3.new(0, 5, 0)))
 	end
 end
 
