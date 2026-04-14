@@ -2214,19 +2214,22 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 			return
 		end
 
-		local aheadPositions = data.aheadPositions
-		local aheadRaw = if typeof(aheadPositions) == "table" then aheadPositions[1] else nil
-		local ahead1 = vector3FromWorldPosition(aheadRaw)
-		if not ahead1 then
-			return
+		-- Travel direction: prefer FRONT_MARKER, fall back to velocity sample (same pattern as CoastGuard/USShip)
+		local bbCF0, _ = playerBoat:GetBoundingBox()
+		local rootPos = bbCF0.Position
+		local frontMarker = playerBoat:FindFirstChild("FRONT_MARKER", true)
+		local fwd: Vector3
+		if frontMarker and frontMarker:IsA("BasePart") then
+			local dir = Vector3.new(frontMarker.Position.X - rootPos.X, 0, frontMarker.Position.Z - rootPos.Z)
+			fwd = if dir.Magnitude > 0.5 then dir.Unit else Vector3.new(0, 0, -1)
+		else
+			task.wait(0.15)
+			local bbCF1, _ = playerBoat:GetBoundingBox()
+			local delta = Vector3.new(bbCF1.Position.X - rootPos.X, 0, bbCF1.Position.Z - rootPos.Z)
+			rootPos = bbCF1.Position
+			fwd = if delta.Magnitude > 0.005 then delta.Unit else Vector3.new(0, 0, -1)
 		end
-
-		local rootPos = boatRoot.Position
-		local dir = Vector3.new(ahead1.X - rootPos.X, 0, ahead1.Z - rootPos.Z)
-		if dir.Magnitude < 0.001 then
-			return
-		end
-		local fwd = dir.Unit
+		rootPos = boatRoot.Position  -- rest of handler uses boatRoot.Position for spawn base
 		local sideSign = if approachSide >= 0 then 1 else -1
 		local perp = Vector3.new(-fwd.Z, 0, fwd.X) * sideSign
 
@@ -2270,6 +2273,37 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 			pirate.cf = targetCF
 		end
 
+		-- Speed-based walking (CoastGuard pattern): duration derived from distance, with footstep bob
+		local PIRATE_WALK_SPEED = 9
+		local function walkPirate(pirate, targetCF: CFrame, speed: number?, carry: BasePart?)
+			local spd = speed or PIRATE_WALK_SPEED
+			local fromPos = pirate.cf.Position
+			local toPos   = targetCF.Position
+			local dist    = (toPos - fromPos).Magnitude
+			if dist < 0.3 then
+				pirate.cf = targetCF
+				setObjectCF(pirate.npc, targetCF)
+				return
+			end
+			local dur = dist / spd
+			local t0 = os.clock()
+			local flat = Vector3.new(toPos.X - fromPos.X, 0, toPos.Z - fromPos.Z)
+			local lookD = if flat.Magnitude > 0.001 then flat.Unit else fwd
+			while true do
+				local alpha = math.min((os.clock() - t0) / dur, 1)
+				local pos = fromPos:Lerp(toPos, alpha)
+				local bob = math.abs(math.sin(os.clock() * math.pi * 2.4)) * 0.32
+				setObjectCF(pirate.npc, CFrame.lookAt(pos + Vector3.new(0, bob, 0), pos + lookD + Vector3.new(0, bob, 0)))
+				if carry and carry.Parent then
+					carry.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+				end
+				if alpha >= 1 then break end
+				task.wait()
+			end
+			pirate.cf = targetCF
+			setObjectCF(pirate.npc, targetCF)
+		end
+
 		local function runTimedParallel(tasks, minDuration: number)
 			local startTime = os.clock()
 			local remaining = #tasks
@@ -2306,6 +2340,9 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		local ZIP_SIDE_OFFSET = 5
 		local ZIP_ATTACH_UP = 1.5
 		local LANDING_BACK_OFFSET = 5
+		-- Calibrated tanker-deck landing (same values CoastGuard uses)
+		local LAND_LATERAL = -1
+		local LAND_FWD     = 35
 		local BARREL_SIDE_OFFSET = 4.5
 		local BARREL_CARRY_UP = 3
 		local TOSS_ARC_HEIGHT = 22
@@ -2348,7 +2385,10 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 
 		local pirateBoatPos = pirateBoat:GetPivot().Position
 		local zipFromBase = Vector3.new(pirateBoatPos.X, pirateBoatPos.Y + PIRATE_BOAT_DECK_Y, pirateBoatPos.Z) + perp * ZIP_SIDE_OFFSET
-		local zipToBase = Vector3.new(rootPos.X, rootPos.Y + TANKER_DECK_Y, rootPos.Z) + perp * ZIP_SIDE_OFFSET
+		-- Tanker landing: bbox center for XZ + calibrated offsets (match CoastGuard)
+		local tankerBBCF, _ = playerBoat:GetBoundingBox()
+		local tankerDeckCtr = Vector3.new(tankerBBCF.Position.X, boatRoot.Position.Y + TANKER_DECK_Y, tankerBBCF.Position.Z)
+		local zipToBase = tankerDeckCtr + perp * LAND_LATERAL + fwd * LAND_FWD
 		local ropeStart = zipFromBase + Vector3.new(0, ZIP_ATTACH_UP, 0)
 		local ropeEnd = zipToBase + Vector3.new(0, ZIP_ATTACH_UP, 0)
 
@@ -2395,7 +2435,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		rope.Color = ColorSequence.new(Color3.fromRGB(90, 70, 45))
 		rope.Parent = zipA
 
-		local landingBase = Vector3.new(zipToBase.X, rootPos.Y + TANKER_DECK_Y, zipToBase.Z) - fwd * LANDING_BACK_OFFSET
+		local landingBase = Vector3.new(zipToBase.X, boatRoot.Position.Y + TANKER_DECK_Y, zipToBase.Z) - fwd * LANDING_BACK_OFFSET
 		local landingPositions = {}
 		for i = 1, PIRATE_COUNT do
 			landingPositions[i] = landingBase + perp * ((i - pirateMid) * 1.6)
@@ -2408,39 +2448,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 			pirate.cf = worldCF
 		end
 
-		local boardTasks = {}
-		local BOARD_STAGGER = 0.25
-		local BOARD_TO_ROPE_DUR = 0.2
-		local BOARD_SLIDE_DUR = 0.6
-		local BOARD_DROP_DUR = 0.2
-		for i, pirate in ipairs(pirates) do
-			local idx = i
-			local pirateData = pirate
-			table.insert(boardTasks, function()
-				task.wait((idx - 1) * BOARD_STAGGER)
-				movePirate(pirateData, uprightLookAt(ropeStart, ropeEnd), BOARD_TO_ROPE_DUR, 0)
-
-				local slideStart = os.clock()
-				while true do
-					local alpha = math.min((os.clock() - slideStart) / BOARD_SLIDE_DUR, 1)
-					local eased = alpha * alpha * (3 - 2 * alpha)
-					local slidePos = ropeStart:Lerp(ropeEnd, eased)
-					slidePos += Vector3.new(0, -2.5 * math.sin(eased * math.pi), 0)
-					setObjectCF(pirateData.npc, uprightLookAt(slidePos, ropeEnd))
-					if alpha >= 1 then
-						break
-					end
-					task.wait()
-				end
-
-				local landPos = landingPositions[idx]
-				local landCF = uprightLookAt(landPos, ropeEnd)
-				animateMove(pirateData.npc, uprightLookAt(ropeEnd, landPos), landCF, BOARD_DROP_DUR, 0)
-				pirateData.cf = landCF
-			end)
-		end
-		runTimedParallel(boardTasks, PHASE_BOARD)
-
+		-- Find barrels to steal before any pirate moves
 		local deckBarrels = {}
 		for _, d in ipairs(playerBoat:GetDescendants()) do
 			if d.Name == "DeckBarrel" and d.Parent then
@@ -2452,39 +2460,47 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 			local by = if b:IsA("Model") then b:GetPivot().Position.Y else b.Position.Y
 			return ay > by
 		end)
+		local toSteal = math.min(barrelsStolen, #deckBarrels, PIRATE_COUNT)
 
-		local toSteal = math.min(barrelsStolen, #deckBarrels)
-		if toSteal <= 0 then
-			task.wait(PHASE_STEAL)
-		else
-			local cycles = math.max(1, math.ceil(toSteal / PIRATE_COUNT))
-			local cycleDur = PHASE_STEAL / cycles
-			local barrelIndex = 0
+		-- Unified per-pirate flow: board → steal → return, all in parallel, no phase walls
+		local BOARD_STAGGER = 0.25
+		local BOARD_TO_ROPE_DUR, BOARD_SLIDE_DUR, BOARD_DROP_DUR = 0.2, 0.6, 0.2
+		local RETURN_TO_ROPE_DUR, RETURN_SLIDE_DUR, RETURN_DROP_DUR = 0.2, 0.55, 0.2
 
-			for _ = 1, cycles do
-				local cycleTasks = {}
-				for i, pirate in ipairs(pirates) do
-					local idx = i
-					local pirateData = pirate
-					barrelIndex += 1
-					local barrel = if barrelIndex <= toSteal then deckBarrels[barrelIndex] else nil
+		local pirateFlows = {}
+		for i, pirate in ipairs(pirates) do
+			local idx = i
+			local pirateData = pirate
+			local myBarrel = if idx <= toSteal then deckBarrels[idx] else nil
+			table.insert(pirateFlows, function()
+				-- Stagger so all pirates don't zipline at the exact same instant
+				task.wait((idx - 1) * BOARD_STAGGER)
 
-					table.insert(cycleTasks, function()
-						if not barrel or not barrel.Parent then
-							local holdPos = landingPositions[idx]
-							movePirate(pirateData, uprightLookAt(holdPos, ropeEnd), cycleDur * 0.2, 0)
-							return
-						end
+				-- === BOARD: slide down rope, drop to landing ===
+				movePirate(pirateData, uprightLookAt(ropeStart, ropeEnd), BOARD_TO_ROPE_DUR, 0)
+				local slideStart = os.clock()
+				while true do
+					local alpha = math.min((os.clock() - slideStart) / BOARD_SLIDE_DUR, 1)
+					local eased = alpha * alpha * (3 - 2 * alpha)
+					local slidePos = ropeStart:Lerp(ropeEnd, eased)
+					slidePos += Vector3.new(0, -2.5 * math.sin(eased * math.pi), 0)
+					setObjectCF(pirateData.npc, uprightLookAt(slidePos, ropeEnd))
+					if alpha >= 1 then break end
+					task.wait()
+				end
+				local landPos = landingPositions[idx]
+				local landCF = uprightLookAt(landPos, ropeEnd)
+				animateMove(pirateData.npc, uprightLookAt(ropeEnd, landPos), landCF, BOARD_DROP_DUR, 0)
+				pirateData.cf = landCF
 
-						local barrelPos = if barrel:IsA("Model") then barrel:GetPivot().Position else barrel.Position
-						local standPos = Vector3.new(barrelPos.X, rootPos.Y + TANKER_DECK_Y, barrelPos.Z) + perp * BARREL_SIDE_OFFSET
-						movePirate(pirateData, uprightLookAt(standPos, barrelPos), cycleDur * 0.22, 0)
-
-						if not barrel.Parent then
-							movePirate(pirateData, uprightLookAt(landingPositions[idx], ropeEnd), cycleDur * 0.15, 0)
-							return
-						end
-						barrel:Destroy()
+				-- === STEAL: walk to barrel, grab, walk to edge, toss ===
+				if myBarrel and myBarrel.Parent then
+					local barrelPos = if myBarrel:IsA("Model") then myBarrel:GetPivot().Position else myBarrel.Position
+					local standPos = Vector3.new(barrelPos.X, boatRoot.Position.Y + TANKER_DECK_Y, barrelPos.Z) + perp * BARREL_SIDE_OFFSET
+					walkPirate(pirateData, uprightLookAt(standPos, barrelPos))
+					if myBarrel.Parent then
+						myBarrel:Destroy()
+						task.wait(0.2)
 
 						local carry = Instance.new("Part")
 						carry.Name = "CarriedBarrel"
@@ -2501,70 +2517,30 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 						Debris:AddItem(carry, 20)
 
 						local edgeDir = Vector3.new(zipFromBase.X - standPos.X, 0, zipFromBase.Z - standPos.Z)
-						if edgeDir.Magnitude < 0.001 then
-							edgeDir = -fwd
-						else
-							edgeDir = edgeDir.Unit
-						end
-						local edgePos = standPos + edgeDir * 6
-						edgePos = Vector3.new(edgePos.X, rootPos.Y + TANKER_DECK_Y, edgePos.Z)
-						local edgeCF = uprightLookAt(edgePos, zipFromBase)
-
-						local walkStart = os.clock()
-						local walkDur = cycleDur * 0.25
-						local fromCF = pirateData.cf
-						while true do
-							local alpha = math.min((os.clock() - walkStart) / walkDur, 1)
-							local eased = alpha * alpha * (3 - 2 * alpha)
-							local npcPos = fromCF.Position:Lerp(edgeCF.Position, eased)
-							setObjectCF(pirateData.npc, uprightLookAt(npcPos, zipFromBase))
-							carry.CFrame = CFrame.new(npcPos + Vector3.new(0, BARREL_CARRY_UP, 0))
-							if alpha >= 1 then
-								break
-							end
-							task.wait()
-						end
-						pirateData.cf = edgeCF
+						edgeDir = if edgeDir.Magnitude > 0.001 then edgeDir.Unit else fwd
+						local edgePos = Vector3.new(standPos.X + edgeDir.X * 8, boatRoot.Position.Y + TANKER_DECK_Y, standPos.Z + edgeDir.Z * 8)
+						walkPirate(pirateData, uprightLookAt(edgePos, zipFromBase), nil, carry)
 
 						local tossTarget = pirateBoat:GetPivot().Position
 							+ Vector3.new(0, PIRATE_BOAT_DECK_Y + 1, 0)
 							+ fwd * ((idx - pirateMid) * PIRATE_SPACING)
-						animateMove(carry, carry.CFrame, CFrame.new(tossTarget), cycleDur * 0.28, TOSS_ARC_HEIGHT)
-
-						local backPos = landingPositions[idx]
-						movePirate(pirateData, uprightLookAt(backPos, ropeEnd), cycleDur * 0.2, 0)
-					end)
+						animateMove(carry, carry.CFrame, CFrame.new(tossTarget), 0.9, TOSS_ARC_HEIGHT)
+					end
 				end
-				runTimedParallel(cycleTasks, cycleDur)
-			end
-		end
 
-		local returnTasks = {}
-		local RETURN_WINDOW = 1.8
-		local RETURN_STAGGER = 0.2
-		local RETURN_TO_ROPE_DUR = 0.2
-		local RETURN_SLIDE_DUR = 0.55
-		local RETURN_DROP_DUR = 0.2
-		for i, pirate in ipairs(pirates) do
-			local idx = i
-			local pirateData = pirate
-			table.insert(returnTasks, function()
-				task.wait((idx - 1) * RETURN_STAGGER)
+				-- === RETURN: walk back to landing, slide up rope, drop on pirate boat ===
+				walkPirate(pirateData, uprightLookAt(landingPositions[idx], ropeEnd))
 				movePirate(pirateData, uprightLookAt(ropeEnd, ropeStart), RETURN_TO_ROPE_DUR, 0)
-
-				local slideStart = os.clock()
+				local upStart = os.clock()
 				while true do
-					local alpha = math.min((os.clock() - slideStart) / RETURN_SLIDE_DUR, 1)
+					local alpha = math.min((os.clock() - upStart) / RETURN_SLIDE_DUR, 1)
 					local eased = alpha * alpha * (3 - 2 * alpha)
 					local slidePos = ropeEnd:Lerp(ropeStart, eased)
 					slidePos += Vector3.new(0, -2.5 * math.sin(eased * math.pi), 0)
 					setObjectCF(pirateData.npc, uprightLookAt(slidePos, ropeStart))
-					if alpha >= 1 then
-						break
-					end
+					if alpha >= 1 then break end
 					task.wait()
 				end
-
 				local pbPos = pirateBoat:GetPivot().Position
 				local returnPos = pbPos + Vector3.new(0, PIRATE_BOAT_DECK_Y, 0) + fwd * ((idx - pirateMid) * PIRATE_SPACING)
 				local returnCF = uprightLookAt(returnPos, returnPos + fwd)
@@ -2572,7 +2548,8 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 				pirateData.cf = returnCF
 			end)
 		end
-		runTimedParallel(returnTasks, RETURN_WINDOW)
+		-- Wait until EVERY pirate has finished their full flow (no minimum hold)
+		runTimedParallel(pirateFlows, 0)
 
 		Debris:AddItem(zipA, 0.1)
 		Debris:AddItem(zipB, 0.1)

@@ -110,11 +110,17 @@ function OilVisualService:_syncUserVisuals(userId: number, snapshot)
 
 	local visualRoot = self:_ensureVisualRoot(plot)
 	local drillsFolder = ensureFolder(visualRoot, "Drills")
+	local activeDrillsFolder = ensureFolder(visualRoot, "ActiveDrills")
+	local activeProspectorsFolder = ensureFolder(visualRoot, "ActiveProspectors")
+	local spraysFolder = ensureFolder(visualRoot, "OilSprays")
 	local barrelsFolder = ensureFolder(visualRoot, "Barrels")
 	local pipesFolder = ensureFolder(visualRoot, "Pipes")
 	local drumsFolder = ensureFolder(visualRoot, "Drums")
 
 	self:_syncDrills(plot, drillsFolder, snapshot.drills or {})
+	self:_syncActiveDrills(plot, activeDrillsFolder, snapshot.activeDrills or {})
+	self:_syncActiveProspectors(plot, activeProspectorsFolder, snapshot.activeProspectors or {})
+	self:_syncOilSprays(plot, spraysFolder, snapshot)
 	self:_syncPipes(plot, pipesFolder, snapshot.pipes or {}, snapshot.drills or {}, snapshot.drums or {})
 	self:_syncDrums(plot, drumsFolder, snapshot.drums or {})
 	self:_syncBarrels(plot, barrelsFolder, snapshot)
@@ -141,6 +147,314 @@ function OilVisualService:_clearPlotVisuals(plot: Model)
 	end
 end
 
+-- In-progress drills: spawn the tier's drill model at the tile, store StartTime/EndTime attributes
+-- so clients can run a local sink+spin animation. Destroyed when the activeDrill leaves the snapshot
+-- (i.e. CompleteDrill cleared it).
+-- In-progress prospector placements. Same pattern as active drills but uses the Prospector
+-- template and tags with prospectId so the client animates it separately.
+function OilVisualService:_syncActiveProspectors(_plot: Model, folder: Folder, activeProspectors)
+	local wanted = {}
+	for _, entry in ipairs(activeProspectors) do
+		local pid = entry.prospectId
+		if typeof(pid) ~= "number" or typeof(entry.position) ~= "table" then continue end
+		local name = "ActiveProspector_" .. tostring(pid)
+		wanted[name] = true
+		local model = folder:FindFirstChild(name)
+		local justCreated = false
+		if not model then
+			local template = self._assetsFolder and self._assetsFolder:FindFirstChild(entry.template or "Prospector")
+			if template then
+				model = template:Clone()
+			else
+				model = Instance.new("Model")
+			end
+			model.Name = name
+			model:SetAttribute("StartTime", tonumber(entry.startTime) or 0)
+			model:SetAttribute("EndTime", tonumber(entry.endTime) or 0)
+			model:SetAttribute("Duration", math.max(0.01, (tonumber(entry.endTime) or 0) - (tonumber(entry.startTime) or 0)))
+			model:SetAttribute("ProspectId", pid)
+			model.Parent = folder
+			justCreated = true
+		end
+		if justCreated then
+			local px = tonumber(entry.position.x) or 0
+			local py = tonumber(entry.position.y) or 0
+			local pz = tonumber(entry.position.z) or 0
+			local halfH = 0
+			if model:IsA("Model") then
+				local _, bbSize = model:GetBoundingBox()
+				halfH = bbSize.Y / 2
+			elseif model:IsA("BasePart") then
+				halfH = (model :: BasePart).Size.Y / 2
+			end
+			local cframe = CFrame.new(px, py + halfH, pz)
+			if model:IsA("Model") then
+				model:PivotTo(cframe)
+			elseif model:IsA("BasePart") then
+				model.CFrame = cframe
+			end
+			anchorAllBaseParts(model)
+		end
+	end
+	for _, child in ipairs(folder:GetChildren()) do
+		if not wanted[child.Name] then child:Destroy() end
+	end
+end
+
+function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, activeDrills)
+	local wanted = {}
+	for _, entry in ipairs(activeDrills) do
+		local drillId = entry.drillId
+		if typeof(drillId) ~= "number" or typeof(entry.position) ~= "table" then continue end
+		local name = "ActiveDrill_" .. tostring(drillId)
+		local timerName = "DrillTimer_" .. tostring(drillId)
+		wanted[name] = true
+		wanted[timerName] = true
+
+		local model = folder:FindFirstChild(name)
+		if model and model:GetAttribute("Template") ~= entry.template then
+			model:Destroy()
+			model = nil
+		end
+		local justCreated = false
+		if not model then
+			local template = self:_getDrillTemplate(entry.template)
+			if template then
+				model = template:Clone()
+			else
+				model = Instance.new("Model")
+			end
+			model.Name = name
+			model:SetAttribute("Template", entry.template)
+			model:SetAttribute("StartTime", tonumber(entry.startTime) or 0)
+			model:SetAttribute("EndTime", tonumber(entry.endTime) or 0)
+			model:SetAttribute("Duration", math.max(0.01, (tonumber(entry.endTime) or 0) - (tonumber(entry.startTime) or 0)))
+			model:SetAttribute("OilType", entry.oilType)
+			model:SetAttribute("DrillId", drillId)
+			model.Parent = folder
+			justCreated = true
+
+			-- Static timer anchor Part with BillboardGui. Does NOT sink/spin with the drill.
+			local anchor = Instance.new("Part")
+			anchor.Name = timerName
+			anchor.Size = Vector3.new(0.2, 0.2, 0.2)
+			anchor.Transparency = 1
+			anchor.Anchored = true
+			anchor.CanCollide = false
+			anchor.CanQuery = false
+			anchor.CanTouch = false
+			anchor.Parent = folder
+
+			local bb = Instance.new("BillboardGui")
+			bb.Name = "TimerGui"
+			bb.Adornee = anchor
+			bb.Size = UDim2.new(0, 140, 0, 40)
+			bb.StudsOffsetWorldSpace = Vector3.new(0, 8, 0)
+			bb.AlwaysOnTop = true
+			bb.Parent = anchor
+
+			local lbl = Instance.new("TextLabel")
+			lbl.Name = "TimerLabel"
+			lbl.Size = UDim2.fromScale(1, 1)
+			lbl.BackgroundColor3 = Color3.new(0, 0, 0)
+			lbl.BackgroundTransparency = 0.4
+			lbl.TextColor3 = Color3.fromRGB(255, 230, 100)
+			lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+			lbl.TextStrokeTransparency = 0
+			lbl.Font = Enum.Font.GothamBold
+			lbl.TextScaled = true
+			lbl.Text = "--"
+			lbl.Parent = bb
+
+			anchor:SetAttribute("StartTime", tonumber(entry.startTime) or 0)
+			anchor:SetAttribute("EndTime", tonumber(entry.endTime) or 0)
+		end
+
+		-- Keep the static anchor parked at (px, py + 3) above the drill tip
+		local anchor = folder:FindFirstChild(timerName)
+		if anchor and anchor:IsA("BasePart") then
+			local px = tonumber(entry.position.x) or 0
+			local py = tonumber(entry.position.y) or 0
+			local pz = tonumber(entry.position.z) or 0
+			anchor.Position = Vector3.new(px, py + 3, pz)
+		end
+
+		-- Only set CFrame on creation; the client's animation loop owns the CFrame after that,
+		-- otherwise snapshot pushes would stomp the sink/spin every tick.
+		if justCreated then
+			local px = tonumber(entry.position.x) or 0
+			local py = tonumber(entry.position.y) or 0
+			local pz = tonumber(entry.position.z) or 0
+			-- Compute pivot→bottom offset so the model's actual bbox bottom sits on the surface,
+			-- regardless of where the model's pivot is authored (fixes hovering assets).
+			local pivotToBottom = 0
+			if model:IsA("Model") then
+				local bbCF, bbSize = model:GetBoundingBox()
+				local pivotY = model:GetPivot().Position.Y
+				pivotToBottom = pivotY - (bbCF.Position.Y - bbSize.Y / 2)
+			elseif model:IsA("BasePart") then
+				pivotToBottom = (model :: BasePart).Size.Y / 2
+			end
+			local cframe = CFrame.new(px, py + pivotToBottom, pz)
+			if model:IsA("Model") then
+				model:PivotTo(cframe)
+			elseif model:IsA("BasePart") then
+				model.CFrame = cframe
+			end
+			anchorAllBaseParts(model)
+		end
+	end
+	for _, child in ipairs(folder:GetChildren()) do
+		if not wanted[child.Name] then child:Destroy() end
+	end
+end
+
+-- Persistent oil spray on any tile that has been drilled but doesn't yet have a pump.
+-- One ParticleEmitter-bearing invisible Part per qualifying tile, colored per oil type.
+function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
+	local pumpCellKeys = {}
+	for _, d in ipairs(snapshot.drills or {}) do
+		if d.cellKey then pumpCellKeys[d.cellKey] = true end
+	end
+	local activeCellKeys = {}
+	for _, a in ipairs(snapshot.activeDrills or {}) do
+		-- We'll key active drills by chunkId:tileKey (same as sprays below).
+		if a.chunkId and a.tileKey then
+			activeCellKeys[a.chunkId .. ":" .. a.tileKey] = true
+		end
+	end
+
+	local wanted = {}
+	for _, chunk in ipairs(snapshot.chunks or {}) do
+		if chunk.tiles and chunk.unlocked then
+			for tileKey, tile in pairs(chunk.tiles) do
+				-- Dry holes (hasOil == false) never spawn a spray
+				if tile and tile.drilled and tile.hasOil ~= false then
+					local spraySig = chunk.chunkId .. ":" .. tileKey
+					-- If a pump exists on this cell, suppress the spray. We have to map tileKey -> cellKey.
+					-- For now rely on the broadcast "pumpPlaced" event + state push; the server snapshot
+					-- has enough data because the newly placed pump will clear drilled visibility below
+					-- via cellKey match heuristic. Simpler: check if any pump has matching tileKey.
+					local hasPump = false
+					for _, d in ipairs(snapshot.drills or {}) do
+						if d.tileKey == tileKey and d.chunkId == chunk.chunkId then
+							hasPump = true; break
+						end
+					end
+					if not hasPump and not activeCellKeys[spraySig] then
+						wanted[spraySig] = { chunk = chunk, tileKey = tileKey, tile = tile }
+					end
+				end
+			end
+		end
+	end
+
+	-- (Pruning happens AFTER spawn, at bottom, so we can strip SUPER TILE suffixes correctly)
+
+	-- Spawn a puddle on the drilled tile (colored per oil type). Removed when pump is placed
+	-- (pruning loop at the bottom of this function).
+	local function spawnPuddleForTile(sig: string, info: any)
+		local childName = "Puddle_" .. sig
+		local part = folder:FindFirstChild(childName)
+		local oilType = info.tile.oilType or "HeavyCrude"
+		local color = (OilConfig.OilSprayColors and OilConfig.OilSprayColors[oilType])
+			or Color3.fromRGB(30, 30, 30)
+		if not part then
+			local template = self._assetsFolder and self._assetsFolder:FindFirstChild("Puddle")
+			if template and template:IsA("BasePart") then
+				part = template:Clone()
+				part.Name = childName
+				part.Anchored = true; part.CanCollide = false; part.CanQuery = false; part.CanTouch = false
+				part.Color = color
+				part.Parent = folder
+			end
+		else
+			part.Color = color
+		end
+		if part then
+			local sectionModel = self._plotService:GetChunkModel(_plot, info.chunk.chunkId)
+			if sectionModel then
+				local tilePart = sectionModel:FindFirstChild(info.tileKey)
+				if tilePart and tilePart:IsA("BasePart") then
+					local topY = tilePart.Position.Y + tilePart.Size.Y / 2
+					-- Puddle sits flush on the tile, scaled to fit the tile footprint (~7 studs)
+					if part:IsA("BasePart") then
+						part.Size = Vector3.new(6.5, part.Size.Y, 6.5)
+						part.Position = Vector3.new(tilePart.Position.X, topY + part.Size.Y / 2, tilePart.Position.Z)
+					end
+				end
+			end
+		end
+	end
+
+	-- Spawn sprays. SUPER TILE drilled → emit ALL 3 oil types at once. Normal tiles → just one.
+	local function spawnSprayForTile(sig: string, info: any, oilTypeOverride: string?, offset: Vector3?)
+		local suffix = oilTypeOverride and ("_" .. oilTypeOverride) or ""
+		local childName = "Spray_" .. sig .. suffix
+		local part = folder:FindFirstChild(childName)
+		if not part then
+			local oilType = oilTypeOverride or info.tile.oilType or "HeavyCrude"
+			local templateName = "OilSpray_" .. tostring(oilType)
+			local template = self._assetsFolder and self._assetsFolder:FindFirstChild(templateName)
+			if template and template:IsA("BasePart") then
+				part = template:Clone()
+				part.Name = childName
+				part.Anchored = true
+				part.CanCollide = false
+				part.CanQuery = false
+				part.CanTouch = false
+				part.Parent = folder
+			else
+				part = Instance.new("Part")
+				part.Name = childName
+				part.Size = Vector3.new(0.4, 0.4, 0.4)
+				part.Anchored = true
+				part.Transparency = 1
+				part.CanCollide = false
+				part.CanQuery = false
+				part.CanTouch = false
+				part.Parent = folder
+			end
+		end
+
+		local sectionModel = self._plotService:GetChunkModel(_plot, info.chunk.chunkId)
+		if sectionModel then
+			local tilePart = sectionModel:FindFirstChild(info.tileKey)
+			if tilePart and tilePart:IsA("BasePart") then
+				local topY = tilePart.Position.Y + tilePart.Size.Y / 2
+				local basePos = Vector3.new(tilePart.Position.X, topY + 0.3, tilePart.Position.Z)
+				part.Position = basePos + (offset or Vector3.new(0, 0, 0))
+			end
+		end
+	end
+
+	for sig, info in pairs(wanted) do
+		if info.tile.tileName == "SUPER TILE" then
+			-- Triple spray, one per oil type, slightly offset so they're visible separately
+			spawnSprayForTile(sig, info, "HeavyCrude",     Vector3.new(-1.5, 0, -1.5))
+			spawnSprayForTile(sig, info, "LightSweet",     Vector3.new( 1.5, 0, -1.5))
+			spawnSprayForTile(sig, info, "PremiumRefined", Vector3.new( 0,   0,  1.8))
+		else
+			spawnSprayForTile(sig, info)
+		end
+		spawnPuddleForTile(sig, info)
+	end
+
+	-- Prune any sprays/puddles whose base sig is no longer wanted (pump placed → removed)
+	for _, child in ipairs(folder:GetChildren()) do
+		local sprayBase = child.Name:match("^Spray_(.+)")
+		local puddleBase = child.Name:match("^Puddle_(.+)")
+		local base = sprayBase or puddleBase
+		if base then
+			-- Strip the oil-type suffix on sprays before looking up wanted
+			local coreSig = base:gsub("_HeavyCrude$", ""):gsub("_LightSweet$", ""):gsub("_PremiumRefined$", "")
+			if not wanted[coreSig] then
+				child:Destroy()
+			end
+		end
+	end
+end
+
 function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills)
 	local wanted = {}
 	for _, drill in ipairs(drills) do
@@ -156,33 +470,97 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				model:Destroy()
 				model = nil
 			end
+			local justCreated = false
 			if not model then
 				model = self:_createDrillVisual(drillName, templateName)
 				model:SetAttribute("Template", templateName)
 				model.Parent = drillsFolder
+				justCreated = true
 			end
 
 			local px = tonumber(drill.position.x) or 0
 			local py = tonumber(drill.position.y) or 0
 			local pz = tonumber(drill.position.z) or 0
-			local targetCf = CFrame.new(px, py + DRILL_HEIGHT_OFFSET, pz)
 			local scale = tonumber(drill.scale) or 1
-			if model:IsA("Model") then
-				-- Trust the template's baked WorldPivot (bottom-center). Do not set PrimaryPart.
-				model:PivotTo(targetCf)
-				if math.abs(scale - 1) > 0.001 and model:GetAttribute("AppliedScale") ~= scale then
+
+			-- Apply target scale. On FIRST creation, start at ~0 then tween up for the fill-up animation.
+			if model:IsA("Model") and model:GetAttribute("AppliedScale") ~= scale then
+				if justCreated then
+					model:ScaleTo(0.01)
+				else
 					model:ScaleTo(scale)
 					model:SetAttribute("AppliedScale", scale)
-					-- Re-snap to ground after scaling so the base sits on the surface
-					model:PivotTo(targetCf)
 				end
+			end
+
+			-- Compute the pivot→bottom Y offset so the pump's actual bbox bottom sits on the ground,
+			-- regardless of where the model's pivot is authored. Fixes pumps hovering above tiles.
+			local pivotToBottom = 0
+			if model:IsA("Model") then
+				local bbCF, bbSize = model:GetBoundingBox()
+				local pivotY = model:GetPivot().Position.Y
+				local bbBottomY = bbCF.Position.Y - bbSize.Y / 2
+				pivotToBottom = pivotY - bbBottomY
+			elseif model:IsA("BasePart") then
+				pivotToBottom = (model :: BasePart).Size.Y / 2
+			end
+			local targetCf = CFrame.new(px, py + DRILL_HEIGHT_OFFSET + pivotToBottom, pz)
+			if model:IsA("Model") then
+				model:PivotTo(targetCf)
 			elseif model:IsA("BasePart") then
 				model.CFrame = targetCf
 			end
 			anchorAllBaseParts(model)
 
+			-- Fill-up animation for fresh placements: tween scale 0.01 → target over ~0.7s
+			if justCreated and model:IsA("Model") then
+				local currentScale = 0.01
+				local targetScale = scale
+				local startT = os.clock()
+				local DUR = 0.7
+				local animModel = model
+				task.spawn(function()
+					while animModel and animModel.Parent do
+						local a = math.min((os.clock() - startT) / DUR, 1)
+						-- Ease: backout — pop past target then settle
+						local eased = 1 - (1 - a) * (1 - a) * (1 - a)
+						local sc = currentScale + (targetScale - currentScale) * eased
+						animModel:ScaleTo(sc)
+						animModel:PivotTo(targetCf)
+						if a >= 1 then break end
+						task.wait()
+					end
+					if animModel and animModel.Parent then
+						animModel:SetAttribute("AppliedScale", targetScale)
+					end
+				end)
+			end
+
 			-- Write Connected attribute so the OilBurstSpawner script can pause emission
 			model:SetAttribute("Connected", drill.connected == true)
+
+			-- Rare cosmetic variant: add a Highlight in the variant's color
+			local variant = drill.variant
+			if variant ~= model:GetAttribute("AppliedVariant") then
+				for _, c in ipairs(model:GetChildren()) do
+					if c:IsA("Highlight") and c.Name == "VariantHighlight" then c:Destroy() end
+				end
+				if variant == "gold" or variant == "rainbow" then
+					local hl = Instance.new("Highlight")
+					hl.Name = "VariantHighlight"
+					hl.FillTransparency = 0.75
+					hl.OutlineTransparency = 0
+					if variant == "gold" then
+						hl.FillColor = OilConfig.GoldPumpHighlightColor or Color3.fromRGB(255, 215, 70)
+						hl.OutlineColor = Color3.fromRGB(255, 240, 140)
+					else
+						hl.FillColor = OilConfig.RainbowPumpHighlightColor or Color3.fromRGB(180, 140, 255)
+						hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+					end
+					hl.Parent = model
+				end
+				model:SetAttribute("AppliedVariant", variant)
+			end
 		end
 	end
 
@@ -231,6 +609,20 @@ function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, d
 				model = Instance.new("Model")
 				model.Name = pipeName
 
+				-- Thin tile-wide metallic base plate (flat color, no texture)
+				local body = Instance.new("Part")
+				body.Name = "Body"
+				body.Shape = Enum.PartType.Block
+				body.Size = Vector3.new(7.6, 0.3, 7.6)
+				body.Material = Enum.Material.SmoothPlastic
+				body.Color = Color3.fromRGB(90, 95, 105)
+				body.Anchored = true
+				body.CanCollide = false
+				body.CanQuery = true
+				body.Reflectance = 0.15
+				body:SetAttribute("PipeTile", true)
+				body.Parent = model
+
 				-- Central hub: smooth block (not a ball) for clean intersections
 				local hub = Instance.new("Part")
 				hub.Name = "Hub"
@@ -272,21 +664,39 @@ function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, d
 			local py = tonumber(pipe.position.y) or 6
 			local pz = tonumber(pipe.position.z) or 0
 
-			-- Position the hub
+			-- Lookup ACTUAL tile top Y — pipe.position.y is often stale/default(6) and makes
+			-- the pipe float above the real tile. Find the tile part by sectionId+row/col.
+			if pipe.sectionId then
+				local sectionModel = self._plotService:GetChunkModel(_plot, pipe.sectionId)
+				if sectionModel then
+					-- Convert global row/col to local tile name "T<localR><localC>"
+					local localR = ((pipe.row - 1) % 5) + 1
+					local localC = ((pipe.col - 1) % 5) + 1
+					local tilePart = sectionModel:FindFirstChild(string.format("T%d%d", localR, localC))
+					if tilePart and tilePart:IsA("BasePart") then
+						py = tilePart.Position.Y + tilePart.Size.Y / 2
+					end
+				end
+			end
+
+			-- Position the base plate flush with the tile top: plate center = py + (plate.Size.Y / 2)
+			local body = model:FindFirstChild("Body")
+			if body and body:IsA("BasePart") then
+				body.Position = Vector3.new(px, py + body.Size.Y / 2, pz)
+			end
+
+			-- Position the hub just above the plate
 			local hub = model:FindFirstChild("Hub")
 			if hub and hub:IsA("BasePart") then
-				hub.Position = Vector3.new(px, py + 0.5, pz)
+				hub.Position = Vector3.new(px, py + body.Size.Y + hub.Size.Y / 2, pz)
 			end
 
 			-- Position arms relative to hub center; cylinder axis is local X = stud-length axis
-			-- North = -Z, South = +Z, East = +X, West = -X
 			local armN = model:FindFirstChild("ArmN")
 			local armS = model:FindFirstChild("ArmS")
 			local armE = model:FindFirstChild("ArmE")
 			local armW = model:FindFirstChild("ArmW")
 
-			-- For pipe-to-pipe: arm length 4 studs (meets in middle of cell-cell gap).
-			-- For pipe-to-drill or pipe-to-drum: arm length 8 studs (reaches into the body).
 			local function armLengthFor(neighborType)
 				if neighborType == "drill" or neighborType == "drum" then
 					return 8
@@ -294,6 +704,7 @@ function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, d
 				return 4
 			end
 
+			local armY = py + 0.7 -- level with hub center
 			local function setArm(arm, neighborType, dirVec)
 				if not (arm and arm:IsA("BasePart")) then return end
 				if not neighborType then
@@ -305,11 +716,8 @@ function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, d
 				arm.CanQuery = true
 				local len = armLengthFor(neighborType)
 				arm.Size = Vector3.new(len, 1.2, 1.2)
-				-- Position the arm so its base is at the hub and it extends outward by len
-				local hubCenter = Vector3.new(px, py + 0.5, pz)
+				local hubCenter = Vector3.new(px, armY, pz)
 				local center = hubCenter + dirVec * (len / 2)
-				-- Cylinder default axis is local X. We need to orient X along dirVec.
-				-- Use lookAt to derive rotation.
 				if dirVec.X ~= 0 then
 					arm.CFrame = CFrame.new(center)
 				else

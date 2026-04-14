@@ -7,14 +7,60 @@ local Players = game:GetService("Players")
 
 local ToolService = {}
 
-local STARTER_TOOL_NAMES = {
-	"Drill",
-	"Pipe",
+-- Dev grants: 3 drill tiers + 3 pump tiers + pipe. Each tool carries attributes the
+-- client inspects when placing: ToolKind = "Drill" | "Pump" | "Pipe", Tier = "T1"|"T2"|"T3"
+-- Order matters: first entry lands in slot 1. Hammer is always slot 1.
+local STARTER_TOOLS = {
+	{ name = "Hammer",     kind = "Hammer",     tier = nil },
+	{ name = "Drill_T1",   kind = "Drill",      tier = "T1" },
+	{ name = "Drill_T2",   kind = "Drill",      tier = "T2" },
+	{ name = "Drill_T3",   kind = "Drill",      tier = "T3" },
+	{ name = "Pump_T1",    kind = "Pump",       tier = "T1" },
+	{ name = "Pump_T2",    kind = "Pump",       tier = "T2" },
+	{ name = "Pump_T3",    kind = "Pump",       tier = "T3" },
+	{ name = "Prospector", kind = "Prospector", tier = nil },
+	{ name = "Pipe",       kind = "Pipe",       tier = nil },
 }
 
-local function ensureTool(container: Instance, toolName: string)
-	local existing = container:FindFirstChild(toolName)
+-- Build a simple hammer out of two Parts welded to a Handle
+local function buildHammerHandle(): Part
+	-- Handle (wood shaft) — this is the Part that auto-grips in the player's hand
+	local handle = Instance.new("Part")
+	handle.Name = "Handle"
+	handle.Shape = Enum.PartType.Cylinder
+	handle.Size = Vector3.new(1.6, 0.35, 0.35)
+	handle.Material = Enum.Material.Wood
+	handle.Color = Color3.fromRGB(110, 70, 40)
+	handle.TopSurface = Enum.SurfaceType.Smooth
+	handle.BottomSurface = Enum.SurfaceType.Smooth
+	handle.CanCollide = false
+
+	-- Hammer head (steel)
+	local head = Instance.new("Part")
+	head.Name = "Head"
+	head.Shape = Enum.PartType.Block
+	head.Size = Vector3.new(0.7, 0.8, 0.45)
+	head.Material = Enum.Material.Metal
+	head.Color = Color3.fromRGB(175, 175, 180)
+	head.Reflectance = 0.15
+	head.CanCollide = false
+
+	-- Weld head to the end of the handle
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = handle
+	weld.Part1 = head
+	weld.Parent = head
+	head.CFrame = handle.CFrame * CFrame.new(0.75, 0.4, 0)
+
+	head.Parent = handle
+	return handle
+end
+
+local function ensureTool(container: Instance, info: { name: string, kind: string, tier: string? })
+	local existing = container:FindFirstChild(info.name)
 	if existing and existing:IsA("Tool") then
+		existing:SetAttribute("ToolKind", info.kind)
+		existing:SetAttribute("Tier", info.tier)
 		return
 	end
 	if existing and not existing:IsA("Tool") then
@@ -22,9 +68,21 @@ local function ensureTool(container: Instance, toolName: string)
 	end
 
 	local tool = Instance.new("Tool")
-	tool.Name = toolName
-	tool.RequiresHandle = false
+	tool.Name = info.name
 	tool.CanBeDropped = false
+	tool:SetAttribute("ToolKind", info.kind)
+	tool:SetAttribute("Tier", info.tier)
+
+	if info.kind == "Hammer" then
+		tool.RequiresHandle = true
+		local handle = buildHammerHandle()
+		handle.Parent = tool
+		-- Grip so the hammer sits naturally pointing forward in the character's hand
+		tool.Grip = CFrame.new(0, 0, 0.2) * CFrame.Angles(0, math.rad(90), 0)
+	else
+		tool.RequiresHandle = false
+	end
+
 	tool.Parent = container
 end
 
@@ -66,6 +124,7 @@ end
 
 local LEGACY_TOOL_NAMES = {
 	"LandSurveyor",
+	"Drill", -- old single-drill name, replaced by Drill_T1/T2/T3
 }
 
 local function purgeLegacyTools(container: Instance)
@@ -84,8 +143,8 @@ function ToolService:_grantStarterTools(player: Player)
 	end
 	if backpack then
 		purgeLegacyTools(backpack)
-		for _, toolName in ipairs(STARTER_TOOL_NAMES) do
-			ensureTool(backpack, toolName)
+		for _, info in ipairs(STARTER_TOOLS) do
+			ensureTool(backpack, info)
 		end
 	end
 
@@ -95,8 +154,8 @@ function ToolService:_grantStarterTools(player: Player)
 	end
 	if starterGear then
 		purgeLegacyTools(starterGear)
-		for _, toolName in ipairs(STARTER_TOOL_NAMES) do
-			ensureTool(starterGear, toolName)
+		for _, info in ipairs(STARTER_TOOLS) do
+			ensureTool(starterGear, info)
 		end
 	end
 

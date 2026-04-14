@@ -90,7 +90,7 @@ Catalog.CoastGuardInspectionConfig = {
 -- Pirate raid visual sequence config
 Catalog.PirateRaidConfig = {
 	PirateCount = 4,
-	SequenceDuration = 18,
+	SequenceDuration = 28,
 	ApproachDistance = 200,
 	PullUpDistance = 15,
 	ApproachSeconds = 4,
