@@ -93,6 +93,89 @@ local function setInstanceCFrame(instance: Instance, cf: CFrame)
 	end
 end
 
+-- World-space axis-aligned bounds for a rotated box (BasePart / Model:GetBoundingBox).
+local function worldAxisAlignedBoundsFromOriented(cf: CFrame, size: Vector3): (Vector3, Vector3)
+	local hx, hy, hz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
+	local corners = {
+		Vector3.new(-hx, -hy, -hz),
+		Vector3.new(hx, -hy, -hz),
+		Vector3.new(-hx, hy, -hz),
+		Vector3.new(hx, hy, -hz),
+		Vector3.new(-hx, -hy, hz),
+		Vector3.new(hx, -hy, hz),
+		Vector3.new(-hx, hy, hz),
+		Vector3.new(hx, hy, hz),
+	}
+	local minX, minY, minZ = math.huge, math.huge, math.huge
+	local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+	for _, lc in ipairs(corners) do
+		local w = cf:PointToWorldSpace(lc)
+		minX = math.min(minX, w.X)
+		minY = math.min(minY, w.Y)
+		minZ = math.min(minZ, w.Z)
+		maxX = math.max(maxX, w.X)
+		maxY = math.max(maxY, w.Y)
+		maxZ = math.max(maxZ, w.Z)
+	end
+	return Vector3.new(minX, minY, minZ), Vector3.new(maxX, maxY, maxZ)
+end
+
+local function worldAxisAlignedBoundsForMapRegion(root: Instance?): (Vector3?, Vector3?)
+	if root == nil then
+		return nil, nil
+	end
+	if root:IsA("BasePart") then
+		local aMin, aMax = worldAxisAlignedBoundsFromOriented(root.CFrame, root.Size)
+		return aMin, aMax
+	end
+	if root:IsA("Model") then
+		local cf, size = root:GetBoundingBox()
+		return worldAxisAlignedBoundsFromOriented(cf, size)
+	end
+	local minV: Vector3? = nil
+	local maxV: Vector3? = nil
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("BasePart") then
+			local aMin, aMax = worldAxisAlignedBoundsFromOriented(d.CFrame, d.Size)
+			if minV == nil then
+				minV, maxV = aMin, aMax
+			else
+				minV = Vector3.new(
+					math.min(minV.X, aMin.X),
+					math.min(minV.Y, aMin.Y),
+					math.min(minV.Z, aMin.Z)
+				)
+				maxV = Vector3.new(
+					math.max(maxV.X, aMax.X),
+					math.max(maxV.Y, aMax.Y),
+					math.max(maxV.Z, aMax.Z)
+				)
+			end
+		end
+	end
+	return minV, maxV
+end
+
+--- Horizontal footprint (XZ) with padding, and root must be at/above the volume's low Y (standing on deck / water / beach).
+local function worldPosOverMapAabbFootprint(
+	worldPos: Vector3,
+	minV: Vector3,
+	maxV: Vector3,
+	xzPadding: number,
+	ySlack: number
+): boolean
+	if worldPos.X < minV.X - xzPadding or worldPos.X > maxV.X + xzPadding then
+		return false
+	end
+	if worldPos.Z < minV.Z - xzPadding or worldPos.Z > maxV.Z + xzPadding then
+		return false
+	end
+	if worldPos.Y < minV.Y - ySlack then
+		return false
+	end
+	return true
+end
+
 function OilShipmentService:Init(remoteService, oilStateService, plotService, warehouseService, straitStateService)
 	self._remoteService = remoteService
 	self._oilStateService = oilStateService
@@ -125,6 +208,12 @@ function OilShipmentService:_discoverLanes()
 	local Workspace = game:GetService("Workspace")
 	local map = Workspace:FindFirstChild("Map")
 	local ocean = map and map:FindFirstChild("Ocean")
+	-- Post–successful voyage: footprint vs `Map.Ocean` and beaches (see `_postStraitWarehouseTeleportByMapPosition`).
+	-- Beaches may live under `StartPlot` / `FinishPlot` in Studio; recursive find matches that layout.
+	self._postStraitMapOcean = ocean
+	self._postStraitMapStartBeach = map and map:FindFirstChild("StartBeach", true)
+	self._postStraitMapFinishBeach = map and map:FindFirstChild("FinishBeach", true)
+
 	local strait = ocean and ocean:FindFirstChild("StraitHormuz")
 	local routes = strait and strait:FindFirstChild("Routes")
 	if not routes then
@@ -341,7 +430,8 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		dispatchManifestOil[tier] = normalizedManifest[tier] or 0
 	end
 
-	if not self._oilStateService:TrySpendCash(player.UserId, stats.dispatchFee) then
+	local dispatchFee = ShipStats.ComputeDispatchFeeFromManifestOilUnits(normalizedManifest, hudPerBarrelOilUnits())
+	if not self._oilStateService:TrySpendCash(player.UserId, dispatchFee) then
 		self:_sendActionResult(player, false, "ERR_NOT_ENOUGH_CASH", "Not enough cash for dispatch fee.")
 		return
 	end
@@ -363,7 +453,7 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		manifest = normalizedManifest,
 		dispatchManifestOil = dispatchManifestOil,
 		totalLoaded = totalRequested,
-		dispatchFee = stats.dispatchFee,
+		dispatchFee = dispatchFee,
 		travelSeconds = stats.travelSeconds,
 		eventRisk = stats.eventRisk,
 	}
@@ -423,6 +513,8 @@ function OilShipmentService:_runShipment(shipment)
 	if boat:IsA("Model") then
 		boat:SetAttribute("ShipmentId", shipment.shipmentId)
 		boat:SetAttribute("OwnerUserId", ownerUserId)
+		-- HUD progress bar: distance along dock→lane→finish polyline (0..1), not wall-clock.
+		boat:SetAttribute("RouteProgress01", 0)
 	end
 
 	-- Add player flag to the ship
@@ -501,6 +593,9 @@ function OilShipmentService:_runShipment(shipment)
 
 		-- Map alpha (0..1) to a position along the polyline
 		local targetDist = alpha * totalPathLen
+		if boat:IsA("Model") then
+			boat:SetAttribute("RouteProgress01", clamp01(targetDist / totalPathLen))
+		end
 		local currentPos = path[#path]
 		local nextPos = path[#path]
 		for i = 2, #path do
@@ -565,7 +660,6 @@ function OilShipmentService:_runShipment(shipment)
 		end
 
 		if alpha >= 1 then
-			-- Clients keep clock-based fill until this moment (path + pauses), then snap full for finish zone.
 			self:_emitShipmentEvent("ShipmentVoyageComplete", {
 				ownerUserId = ownerUserId,
 				shipmentId = shipment.shipmentId,
@@ -607,11 +701,11 @@ function OilShipmentService:_runShipment(shipment)
 		deliveredByTier = deliveredManifest,
 	})
 
-	-- Unseat riders and destroy
+	-- Owner on strait / ocean → warehouse spawn; on StartBeach / FinishBeach footprint → stay; at home plot → no-op
 	if boardConnection then
 		boardConnection:Disconnect()
 	end
-	self:_unseatPlayersFromBoat(boat)
+	self:_handleOwnerAfterSuccessfulShipmentFinish(boat, ownerUserId)
 	self:_cleanupShip(shipment.shipmentId, boat)
 end
 
@@ -642,26 +736,90 @@ function OilShipmentService:_enableBoarding(boat: Instance, ownerUserId: number)
 	return connection
 end
 
-function OilShipmentService:_unseatPlayersFromBoat(boat: Instance)
-	local seat = boat:FindFirstChild("DeckSeat", true)
-	if not (seat and seat:IsA("Seat")) then return end
+--- Successful voyage: sample **HumanoidRootPart** before unseat. Warehouse if over **`Map.Ocean`** footprint (not over **`StartBeach`** / **`FinishBeach`** anywhere under **`Map`**). Seated-on-ship fallback: **ClaimPad** if warehouse unavailable.
+function OilShipmentService:_handleOwnerAfterSuccessfulShipmentFinish(boat: Instance, ownerUserId: number)
+	local player = Players:GetPlayerByUserId(ownerUserId)
+	if not player then
+		return
+	end
+	local character = player.Character
+	if not character then
+		return
+	end
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp or not hrp:IsA("BasePart") then
+		return
+	end
+	local samplePos = hrp.Position
 
-	local occupant = seat.Occupant
-	if occupant and occupant:IsA("Humanoid") then
-		seat:Sit(nil)
-		-- Teleport the player back to their plot
-		local character = occupant.Parent
-		if character then
-			local player = game:GetService("Players"):GetPlayerFromCharacter(character)
-			if player then
-				local plot = self._plotService:GetOwnedPlot(player.UserId)
-				local claimPad = plot and plot:FindFirstChild("ClaimPad")
-				if claimPad and claimPad:IsA("BasePart") then
-					character:PivotTo(CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)))
-				end
-			end
+	local wasSeatedOnThisBoat = false
+	local hum = character:FindFirstChildOfClass("Humanoid")
+	if hum and hum.SeatPart and hum.SeatPart:IsDescendantOf(boat) then
+		wasSeatedOnThisBoat = true
+		hum.SeatPart:Sit(nil)
+	end
+
+	if self._warehouseService and self:_postStraitWarehouseTeleportByMapPosition(samplePos) then
+		if self._warehouseService:TryTeleportPlayerToWarehouse(player) then
+			return
 		end
 	end
+
+	if wasSeatedOnThisBoat then
+		local plot = self._plotService:GetOwnedPlot(player.UserId)
+		local claimPad = plot and plot:FindFirstChild("ClaimPad")
+		if claimPad and claimPad:IsA("BasePart") then
+			character:PivotTo(CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)))
+		end
+	end
+end
+
+--- Strait total loss, etc.: unseat from **DeckSeat** and send rider to home **ClaimPad**.
+function OilShipmentService:_unseatPlayersFromBoat(boat: Instance)
+	local seat = boat:FindFirstChild("DeckSeat", true)
+	if not (seat and seat:IsA("Seat")) then
+		return
+	end
+
+	local occupant = seat.Occupant
+	if not (occupant and occupant:IsA("Humanoid")) then
+		return
+	end
+
+	seat:Sit(nil)
+	local character = occupant.Parent
+	if not character then
+		return
+	end
+	local player = Players:GetPlayerFromCharacter(character)
+	if not player then
+		return
+	end
+
+	local plot = self._plotService:GetOwnedPlot(player.UserId)
+	local claimPad = plot and plot:FindFirstChild("ClaimPad")
+	if claimPad and claimPad:IsA("BasePart") then
+		character:PivotTo(CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)))
+	end
+end
+
+function OilShipmentService:_postStraitWarehouseTeleportByMapPosition(worldPos: Vector3): boolean
+	local xzPad = 6
+	local ySlack = 20
+	local function overRegion(root: Instance?): boolean
+		local minV, maxV = worldAxisAlignedBoundsForMapRegion(root)
+		if not minV or not maxV then
+			return false
+		end
+		return worldPosOverMapAabbFootprint(worldPos, minV, maxV, xzPad, ySlack)
+	end
+	if overRegion(self._postStraitMapStartBeach) then
+		return false
+	end
+	if overRegion(self._postStraitMapFinishBeach) then
+		return false
+	end
+	return overRegion(self._postStraitMapOcean)
 end
 
 function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
@@ -1081,6 +1239,8 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		)
 	end
 
+	local playtestTitle = StraitEventCatalog.GetPlaytestTitle(def)
+
 	local skinFx = ShipSkinCatalog.GetSkin(shipment.shipSkinId).fxParticleScale
 	local particleFxScale = ParticleFxScale.ComputePayloadScale(boat, skinFx)
 
@@ -1135,6 +1295,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 				shipmentId = shipment.shipmentId,
 				eventId = def.id,
 				displayName = def.displayName,
+				playtestTitle = playtestTitle,
 				severity = severity,
 				outcome = outcomes[mi],
 				missileIndex = mi,
@@ -1233,6 +1394,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			shipmentId = shipment.shipmentId,
 			eventId = def.id,
 			displayName = def.displayName,
+			playtestTitle = playtestTitle,
 			severity = severity,
 			didHit = didHit,
 			minePositions = minePositions,
@@ -1269,6 +1431,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			shipmentId = shipment.shipmentId,
 			eventId = def.id,
 			displayName = def.displayName,
+			playtestTitle = playtestTitle,
 			severity = severity,
 			approachSide = approachSide,
 			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
@@ -1292,6 +1455,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			shipmentId = shipment.shipmentId,
 			eventId = def.id,
 			displayName = def.displayName,
+			playtestTitle = playtestTitle,
 			severity = severity,
 			approachSide = approachSide,
 			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
@@ -1334,6 +1498,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			shipmentId = shipment.shipmentId,
 			eventId = def.id,
 			displayName = def.displayName,
+			playtestTitle = playtestTitle,
 			severity = severity,
 			barrelsStolen = barrelsStolen,
 			approachSide = approachSide,
@@ -1390,6 +1555,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			shipmentId = shipment.shipmentId,
 			eventId = def.id,
 			displayName = def.displayName,
+			playtestTitle = playtestTitle,
 			severity = severity,
 			laneWaypointIndex = laneWaypointIndex,
 			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
@@ -1466,6 +1632,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			shipmentId = shipment.shipmentId,
 			eventId = def.id,
 			displayName = def.displayName,
+			playtestTitle = playtestTitle,
 			severity = severity,
 			laneWaypointIndex = laneWaypointIndex,
 			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
@@ -1507,6 +1674,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			shipmentId = shipment.shipmentId,
 			eventId = def.id,
 			displayName = def.displayName,
+			playtestTitle = playtestTitle,
 			severity = severity,
 			laneWaypointIndex = laneWaypointIndex,
 			totalLoss = true,
@@ -1555,6 +1723,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		shipmentId = shipment.shipmentId,
 		eventId = def.id,
 		displayName = def.displayName,
+		playtestTitle = playtestTitle,
 		severity = severity,
 		laneWaypointIndex = laneWaypointIndex,
 		totalLoss = false,

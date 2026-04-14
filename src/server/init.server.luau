@@ -40,6 +40,21 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local DevLog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("DevLog"))
 local RemoteNames = require(ReplicatedStorage.Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
+-- Strait waypoint VFX templates live under RS; if any Sound is saved with Playing=true it is audible
+-- to everyone from join. Storm/tornado audio is started only from cloned sounds on StormEvent/TornadoEvent.
+do
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	local straitFx = assets and assets:FindFirstChild("StraitWaypointsFx")
+	if straitFx then
+		for _, d in ipairs(straitFx:GetDescendants()) do
+			if d:IsA("Sound") then
+				d.Playing = false
+				d:Stop()
+			end
+		end
+	end
+end
+
 RemoteService:Init()
 DevLog.SetBroadcaster(function(msg)
 	local ev = RemoteService:GetEvent(RemoteNames.DevLog)
@@ -55,7 +70,7 @@ ChunkOwnershipService:Init(PlotService, OilStateService)
 PipeNetworkService:Init()
 WarehouseService:Init(RemoteService, OilStateService)
 OilMarketService:Init(RemoteService, StraitStateService, WarehouseService, OilStateService)
-EquipmentShopService:Init(RemoteService, OilStateService)
+EquipmentShopService:Init(RemoteService, OilStateService, PlotService)
 PlotResourceService:Init(RemoteService, OilStateService, PlotService, OilVisualService, OilShipmentService, ChunkOwnershipService)
 OilProductionService:Init(OilStateService, PipeNetworkService)
 DrillingService:Init(RemoteService, OilStateService)

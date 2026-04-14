@@ -1,10 +1,13 @@
 --!strict
--- `ProgressFill.Size` X scale from `ShipmentStarted` until `ShipmentVoyageComplete` (server: ship reached path end / finish).
+-- `ProgressFill.Size` follows **distance along the shipment polyline** (lane route + dock→finish), via replicated
+-- `ActiveShipmentBoat.RouteProgress01` from the server. Falls back to `voyageStartTime`/`voyageEndTime` if the boat
+-- is not available (e.g. streaming). Until `ShipmentVoyageComplete`, then full until `ShipmentResolved`.
 -- Cruise hint: `.` → `..` → `...` text only (no UIScale bounce). Strait halt freezes bar.
 -- **Studio:** author a `TextLabel` named `Hint` under `ShipmentProgressPanel` (see `docs/features/oil-gameplay-hud/CANONICAL_STUDIO_LAYOUT.md`). If track + fill exist but no bindable status line is found, a single `TextLabel` named `Hint` is created under that panel once (fallback only).
 -- Wired from `ShipmentProgressBootstrap.client.luau` (expects `{ type, data }` packets with owner id).
 
 local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -459,6 +462,54 @@ local function crowdEnsureHost(track: GuiObject): Frame
 	return host
 end
 
+--- Active shipment boat under `Workspace.Map.Plots` for HUD route progress (`RouteProgress01` attribute).
+local function findActiveShipmentBoat(ownerUserId: number, shipmentId: string?): Model?
+	local map = Workspace:FindFirstChild("Map")
+	if not map then
+		return nil
+	end
+	local plots = map:FindFirstChild("Plots")
+	if not plots then
+		return nil
+	end
+	for _, plot in ipairs(plots:GetChildren()) do
+		if plot:IsA("Model") and plot:GetAttribute("OwnerUserId") == ownerUserId then
+			local oilV = plot:FindFirstChild("OilVisuals")
+			local boat = oilV and oilV:FindFirstChild("ActiveShipmentBoat")
+			if boat and boat:IsA("Model") then
+				if shipmentId and shipmentId ~= "" then
+					local sid = boat:GetAttribute("ShipmentId")
+					if typeof(sid) == "string" and sid ~= shipmentId then
+						continue
+					end
+				end
+				return boat
+			end
+		end
+	end
+	return nil
+end
+
+local function routeProgress01FromBoat(ownerUserId: number, shipmentId: string?): number?
+	local boat = findActiveShipmentBoat(ownerUserId, shipmentId)
+	if not boat then
+		return nil
+	end
+	local r = tonumber(boat:GetAttribute("RouteProgress01"))
+	if typeof(r) ~= "number" then
+		return nil
+	end
+	return math.clamp(r, 0, 1)
+end
+
+local function crowdProgressSnapshot(userId: number, row: CrowdStateRow, now: number): number
+	local route = routeProgress01FromBoat(userId, row.shipmentId)
+	if route ~= nil then
+		return route
+	end
+	return crowdLinearAlphaAtNow(row, now)
+end
+
 local function crowdLinearAlphaAtNow(row: CrowdStateRow, now: number): number
 	if row.voyageComplete then
 		return 1
@@ -476,13 +527,17 @@ local function crowdLinearAlphaAtNow(row: CrowdStateRow, now: number): number
 	return (now - vs) / span
 end
 
-local function crowdAlphaForRow(row: CrowdStateRow): number
+local function crowdAlphaForRow(userId: number, row: CrowdStateRow): number
 	local now = workspace:GetServerTimeNow()
 	if row.haltFreezeUntil then
 		if now < row.haltFreezeUntil then
 			local frozen = row.haltFrozenAlpha
 			if typeof(frozen) == "number" then
 				return math.clamp(frozen :: number, 0, 1)
+			end
+			local route = routeProgress01FromBoat(userId, row.shipmentId)
+			if route ~= nil then
+				return route
 			end
 			return math.clamp(crowdLinearAlphaAtNow(row, now), 0, 1)
 		end
@@ -491,6 +546,10 @@ local function crowdAlphaForRow(row: CrowdStateRow): number
 	end
 	if row.voyageComplete then
 		return 1
+	end
+	local route = routeProgress01FromBoat(userId, row.shipmentId)
+	if route ~= nil then
+		return route
 	end
 	return math.clamp(crowdLinearAlphaAtNow(row, now), 0, 1)
 end
@@ -561,7 +620,7 @@ local function crowdStep()
 	end
 	local host = crowdEnsureHost(track)
 	for userId, row in pairs(crowdState) do
-		local alpha = math.clamp(crowdAlphaForRow(row), 0, 1)
+		local alpha = math.clamp(crowdAlphaForRow(userId, row), 0, 1)
 		local fr = crowdMarkers[userId]
 		if not fr or not fr.Parent then
 			fr = crowdBuildMarker(userId, row.displayName)
@@ -704,7 +763,7 @@ local function crowdOnVisualPacket(kind: string, data: Packet, localPlayer: Play
 	local nowOther = workspace:GetServerTimeNow()
 	local function startCrowdHalt(holdSeconds: number)
 		local hold = math.clamp(holdSeconds, 0.35, 120)
-		stOther.haltFrozenAlpha = crowdLinearAlphaAtNow(stOther, nowOther)
+		stOther.haltFrozenAlpha = crowdProgressSnapshot(uid, stOther, nowOther)
 		stOther.haltFreezeUntil = nowOther + hold
 		crowdStep()
 	end
@@ -714,7 +773,7 @@ local function crowdOnVisualPacket(kind: string, data: Packet, localPlayer: Play
 		local pauseSec = tonumber(data.pauseSeconds) or 0
 		if totalLoss then
 			local hold = math.clamp(if pauseSec > 0 then pauseSec else 5, 0.35, 60)
-			stOther.haltFrozenAlpha = crowdLinearAlphaAtNow(stOther, nowOther)
+			stOther.haltFrozenAlpha = crowdProgressSnapshot(uid, stOther, nowOther)
 			stOther.haltFreezeUntil = nowOther + hold
 			crowdStep()
 		else
@@ -1028,13 +1087,26 @@ local function progressAlphaFromClock(): number
 	return (now - voyageStartTime) / span
 end
 
+--- Prefer distance-based `RouteProgress01` on the owner's active boat; else legacy wall-clock span.
+local function ownerProgressFillAlpha(): number
+	local lp = Players.LocalPlayer
+	if not lp or not activeShipmentId then
+		return progressAlphaFromClock()
+	end
+	local r = routeProgress01FromBoat(lp.UserId, activeShipmentId)
+	if r ~= nil then
+		return r
+	end
+	return progressAlphaFromClock()
+end
+
 local function showHalted(severityRaw: string, holdSeconds: number)
 	local h = statusLine
 	if not (h and h.Parent) then
 		return
 	end
 	local hold = math.clamp(holdSeconds, 0.35, 120)
-	haltFrozenFillAlpha = progressAlphaFromClock()
+	haltFrozenFillAlpha = ownerProgressFillAlpha()
 	haltProgressFreezeUntil = workspace:GetServerTimeNow() + hold
 	cancelAllHintFx()
 	h.RichText = false
@@ -1077,7 +1149,7 @@ local function showTotalLossDuringPause(holdSeconds: number)
 		return
 	end
 	local hold = math.clamp(holdSeconds, 0.35, 60)
-	haltFrozenFillAlpha = progressAlphaFromClock()
+	haltFrozenFillAlpha = ownerProgressFillAlpha()
 	haltProgressFreezeUntil = workspace:GetServerTimeNow() + hold
 	cancelAllHintFx()
 	h.RichText = false
@@ -1129,7 +1201,7 @@ local function voyageTick()
 		haltProgressFreezeUntil = nil
 		haltFrozenFillAlpha = nil
 	end
-	setFillScaleX(progressAlphaFromClock())
+	setFillScaleX(ownerProgressFillAlpha())
 end
 
 local function startVoyageTick()

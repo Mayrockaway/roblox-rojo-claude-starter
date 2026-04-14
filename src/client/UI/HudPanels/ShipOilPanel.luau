@@ -104,7 +104,6 @@ local refineryOilByTier: { [string]: number } = {
 
 local latestResolved: {
 	capacity: number,
-	dispatchFee: number,
 }? = nil
 
 local function perBarrelOilUnits(): number
@@ -130,11 +129,19 @@ local function remotesFolder(): Folder
 end
 
 local function resolvedStats(): { capacity: number, dispatchFee: number }
+	local cap: number
 	if latestResolved then
-		return latestResolved
+		cap = latestResolved.capacity
+	else
+		cap = ShipStats.Resolve(1, 1).capacity
 	end
-	local r = ShipStats.Resolve(1, 1)
-	return { capacity = r.capacity, dispatchFee = r.dispatchFee }
+	local per = perBarrelOilUnits()
+	local manifest: { [string]: number } = {}
+	for _, k in ipairs(TIER_KEYS) do
+		manifest[k] = (selected[k] or 0) * per
+	end
+	local fee = ShipStats.ComputeDispatchFeeFromManifestOilUnits(manifest, per)
+	return { capacity = cap, dispatchFee = fee }
 end
 
 local function maxShipCapacityOilUnits(): number
@@ -208,9 +215,8 @@ local function mergeResolvedFromSnapshot(snap: any)
 	end
 	local rs = (snap :: any).resolvedShip
 	local cap = tonumber(rs.capacity)
-	local fee = tonumber(rs.dispatchFee)
-	if cap and cap > 0 and fee and fee >= 0 then
-		latestResolved = { capacity = math.floor(cap), dispatchFee = math.floor(fee) }
+	if cap and cap > 0 then
+		latestResolved = { capacity = math.floor(cap) }
 	end
 end
 

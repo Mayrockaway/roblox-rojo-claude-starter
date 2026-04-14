@@ -35,6 +35,133 @@
         "$path": "src/server"
       }
     },
+    "ServerStorage": {
+      "$className": "ServerStorage",
+      "$ignoreUnknownInstances": true,
+      "EquipmentShopTemplates": {
+        "$className": "Folder",
+        "Drill_T1": {
+          "$className": "Tool",
+          "$properties": {
+            "CanBeDropped": true,
+            "RequiresHandle": true
+          },
+          "Handle": {
+            "$className": "Part",
+            "$properties": {
+              "Size": [0.25, 0.25, 1],
+              "Transparency": 0.4,
+              "Material": "SmoothPlastic"
+            }
+          }
+        },
+        "Drill_T2": {
+          "$className": "Tool",
+          "$properties": {
+            "CanBeDropped": true,
+            "RequiresHandle": true
+          },
+          "Handle": {
+            "$className": "Part",
+            "$properties": {
+              "Size": [0.25, 0.25, 1],
+              "Transparency": 0.4,
+              "Material": "SmoothPlastic"
+            }
+          }
+        },
+        "Drill_T3": {
+          "$className": "Tool",
+          "$properties": {
+            "CanBeDropped": true,
+            "RequiresHandle": true
+          },
+          "Handle": {
+            "$className": "Part",
+            "$properties": {
+              "Size": [0.25, 0.25, 1],
+              "Transparency": 0.4,
+              "Material": "SmoothPlastic"
+            }
+          }
+        },
+        "Pump_T1": {
+          "$className": "Tool",
+          "$properties": {
+            "CanBeDropped": true,
+            "RequiresHandle": true
+          },
+          "Handle": {
+            "$className": "Part",
+            "$properties": {
+              "Size": [0.25, 0.25, 1],
+              "Transparency": 0.4,
+              "Material": "SmoothPlastic"
+            }
+          }
+        },
+        "Pump_T2": {
+          "$className": "Tool",
+          "$properties": {
+            "CanBeDropped": true,
+            "RequiresHandle": true
+          },
+          "Handle": {
+            "$className": "Part",
+            "$properties": {
+              "Size": [0.25, 0.25, 1],
+              "Transparency": 0.4,
+              "Material": "SmoothPlastic"
+            }
+          }
+        },
+        "Pump_T3": {
+          "$className": "Tool",
+          "$properties": {
+            "CanBeDropped": true,
+            "RequiresHandle": true
+          },
+          "Handle": {
+            "$className": "Part",
+            "$properties": {
+              "Size": [0.25, 0.25, 1],
+              "Transparency": 0.4,
+              "Material": "SmoothPlastic"
+            }
+          }
+        },
+        "Prospector": {
+          "$className": "Tool",
+          "$properties": {
+            "CanBeDropped": true,
+            "RequiresHandle": true
+          },
+          "Handle": {
+            "$className": "Part",
+            "$properties": {
+              "Size": [0.25, 0.25, 1],
+              "Transparency": 0.4,
+              "Material": "SmoothPlastic"
+            }
+          }
+        },
+        "Pipe": {
+          "$className": "Tool",
+          "$properties": {
+            "CanBeDropped": true,
+            "RequiresHandle": true
+          },
+          "Handle": {
+            "$className": "Part",
+            "$properties": {
+              "Size": [0.25, 0.25, 1],
+              "Transparency": 0.4,
+              "Material": "SmoothPlastic"
+            }
+          }
+        }
+      }
+    },
     "StarterPlayer": {
       "$className": "StarterPlayer",
       "StarterPlayerScripts": {

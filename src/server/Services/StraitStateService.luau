@@ -44,6 +44,7 @@ function StraitStateService:Init(remoteService, telemetryService)
 	end
 end
 
+--- Every server session starts with engine strait **Open**, publishes that snapshot (MemoryStore / Messaging when enabled), and bumps `version` past any stale cross-server snapshot.
 function StraitStateService:_forceStraitOpenAtLaunch()
 	self._forcedClosedUntil = nil
 	self._state = "Open"
@@ -68,11 +69,7 @@ function StraitStateService:Start()
 	end
 	self._running = true
 
-	if Constants.StraitForceOpenAtLaunch then
-		self:_forceStraitOpenAtLaunch()
-	else
-		self:_broadcast()
-	end
+	self:_forceStraitOpenAtLaunch()
 
 	self:_subscribeMessaging()
 

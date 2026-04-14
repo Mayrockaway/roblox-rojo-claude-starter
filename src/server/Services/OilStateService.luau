@@ -3,9 +3,9 @@
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local DataStoreWriteGate = require(script.Parent.Parent.Utils.DataStoreWriteGate)
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local BiomeConfig = require(Shared:WaitForChild("Config"):WaitForChild("BiomeConfig"))
 local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
@@ -17,7 +17,10 @@ local DevLog = require(Shared:WaitForChild("DevLog"))
 
 local OilStateService = {}
 
-local SAVE_INTERVAL_SECONDS = 20
+local SAVE_INTERVAL_SECONDS = 25
+--- Avoid stacking multiple `SetAsync` calls for the same profile key in one burst (queue / throttling).
+local MIN_DATASTORE_SET_INTERVAL_SECONDS = 7
+local FLUSH_MULTI_USER_SPACING_SECONDS = 0.2
 local DATASTORE_NAME = "OilMiningProfiles_v3"
 
 local TIER_ORDER = {
@@ -47,6 +50,14 @@ local function floorPositive(value: number): number
 	return math.max(0, math.floor(value))
 end
 
+local function isDatastoreStudioAccessError(err: any): boolean
+	local s = tostring(err)
+	return string.find(s, "StudioAccessToApisNotAllowed", 1, true) ~= nil
+		or string.find(s, "API access is not enabled", 1, true) ~= nil
+		or string.find(s, "Cannot write to DataStore", 1, true) ~= nil
+		or string.find(s, "Cannot read from DataStore", 1, true) ~= nil
+end
+
 local function getPlotId(plot: Instance): number
 	local plotId = plot:GetAttribute("PlotId")
 	if typeof(plotId) == "number" then
@@ -74,7 +85,7 @@ end
 
 local function buildDefaultPersisted()
 	return {
-		version = 4,
+		version = 5,
 		cash = OilConfig.StartingCash,
 		storageCapacity = OilConfig.StartingStorageCapacity,
 		oilByTier = {
@@ -83,9 +94,11 @@ local function buildDefaultPersisted()
 			PremiumRefined = 0,
 		},
 		unlockedChunkIds = {},
+		chunkProspected = {},
 		drills = {},
 		pipes = {},
 		drums = {},
+		equipmentOwned = {},
 		nextDrillId = 1,
 		nextPipeId = 1,
 		nextDrumId = 1,
@@ -239,20 +252,17 @@ function OilStateService:Init(remoteService, plotService)
 	self._memoryStore = {}
 	self._running = false
 	self._autosaveThread = nil
-	self._memoryOnly = RunService:IsStudio()
-
-	if self._memoryOnly then
-		self._dataStore = nil
+	self._dataStoreStudioFallbackWarned = false
+	self._lastOilDataStoreSaveClock = {} :: { [number]: number }
+	self._dataStore = nil
+	local okStore, storeOrErr = pcall(function()
+		return DataStoreService:GetDataStore(DATASTORE_NAME)
+	end)
+	if okStore then
+		self._dataStore = storeOrErr
 	else
-		local ok, storeOrErr = pcall(function()
-			return DataStoreService:GetDataStore(DATASTORE_NAME)
-		end)
-		if ok then
-			self._dataStore = storeOrErr
-		else
-			self._dataStore = nil
-			warn("[OilStateService] DataStore unavailable, using memory fallback:", storeOrErr)
-		end
+		self._dataStore = nil
+		warn("[OilStateService] DataStore unavailable (enable API access in Studio if needed); using memory fallback:", storeOrErr)
 	end
 end
 
@@ -273,6 +283,7 @@ function OilStateService:Start()
 	end))
 
 	self._autosaveThread = task.spawn(function()
+		task.wait(3)
 		while self._running do
 			task.wait(SAVE_INTERVAL_SECONDS)
 			self:_flushDirtyUsers()
@@ -290,7 +301,7 @@ end
 
 function OilStateService:Stop()
 	self._running = false
-	self:_flushDirtyUsers()
+	self:_flushDirtyUsers(true)
 
 	for _, connection in ipairs(self._connections) do
 		connection:Disconnect()
@@ -987,6 +998,66 @@ function OilStateService:TryPlaceDrill(userId: number, payload): (boolean, strin
 	return self:TryPlacePump(userId, payload)
 end
 
+local function positionVectorFromStateEntry(pos: any): Vector3?
+	-- Runtime state often uses Vector3; persisted saves use { x, y, z } tables.
+	if typeof(pos) == "Vector3" then
+		return pos :: Vector3
+	end
+	if typeof(pos) ~= "table" then
+		return nil
+	end
+	local x = tonumber((pos :: any).x)
+	local y = tonumber((pos :: any).y)
+	local z = tonumber((pos :: any).z)
+	if not x or not y or not z then
+		return nil
+	end
+	return Vector3.new(x, y, z)
+end
+
+--- World position used for salvage range checks (`OilConfig.SalvageProximityMaxStuds`).
+function OilStateService:GetHammerTargetWorldPosition(userId: number, payload: any): Vector3?
+	if typeof(payload) ~= "table" then
+		return nil
+	end
+	local state = self._statesByUserId[userId]
+	if not state then
+		return nil
+	end
+	local kind = payload.targetKind
+	if kind == "pump" then
+		local drillId = tonumber(payload.targetId)
+		local pump = drillId and state.drillsById[drillId]
+		return pump and positionVectorFromStateEntry(pump.position) or nil
+	elseif kind == "pipe" then
+		local ck = tostring(payload.cellKey or "")
+		local pipe = ck ~= "" and state.pipesByCellKey[ck] or nil
+		return pipe and positionVectorFromStateEntry(pipe.position) or nil
+	elseif kind == "drum" then
+		local drumId = tonumber(payload.targetId)
+		local drum = drumId and state.drumsById[drumId]
+		return drum and positionVectorFromStateEntry(drum.position) or nil
+	elseif kind == "drill" then
+		local drillId = tonumber(payload.targetId)
+		local active = drillId and state.activeDrills[drillId]
+		return active and positionVectorFromStateEntry(active.position) or nil
+	elseif kind == "prospector" then
+		local prospectId = tonumber(payload.targetId)
+		local pr = prospectId and state.activeProspectors[prospectId]
+		return pr and positionVectorFromStateEntry(pr.position) or nil
+	end
+	return nil
+end
+
+function OilStateService:IsHammerDestroyInRange(userId: number, payload: any, hrpPosition: Vector3): boolean
+	local p = self:GetHammerTargetWorldPosition(userId, payload)
+	if not p then
+		return false
+	end
+	local maxD = tonumber(OilConfig.SalvageProximityMaxStuds) or 24
+	return (p - hrpPosition).Magnitude <= maxD
+end
+
 function OilStateService:TryRemoveDrill(userId: number, drillId: number): (boolean, string, string)
 	local state = self._statesByUserId[userId]
 	if not state then
@@ -1512,6 +1583,9 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		nextPipeId = 1,
 		nextDrumId = 1,
 		activeDrillCount = 0,
+		equipmentOwnedByItemId = {} :: { [string]: number },
+		--- When true, first inventory sync seeds `equipmentOwnedByItemId` from shop tools in Backpack (legacy profiles).
+		equipmentOwnedNeedsInventoryBackfill = false,
 	}
 
 	local persisted = self:_loadPersistedProfile(userId)
@@ -1648,6 +1722,26 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		end
 	end
 
+	state.equipmentOwnedByItemId = {}
+	state.equipmentOwnedNeedsInventoryBackfill = false
+	if typeof(persisted.equipmentOwned) == "table" then
+		for _, row in ipairs(persisted.equipmentOwned) do
+			if typeof(row) == "table" then
+				local r = row :: { [string]: any }
+				local itemId = r.itemId
+				local cnt = r.count
+				if typeof(itemId) == "string" and itemId ~= "" and typeof(cnt) == "number" then
+					local c = floorPositive(cnt)
+					if c > 0 then
+						state.equipmentOwnedByItemId[itemId] = c
+					end
+				end
+			end
+		end
+	elseif persisted.equipmentOwned == nil then
+		state.equipmentOwnedNeedsInventoryBackfill = true
+	end
+
 	-- Player ship (v4): migrate from legacy `selectedBoatTypeId` when profile version < 4.
 	local pVer = tonumber(persisted.version) or 1
 	if pVer >= 4 then
@@ -1685,11 +1779,120 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		end
 	end
 
-	-- Drill/pump refactor wipe: previously persisted "drills" are legacy pumps placed without
-	-- the new drill-then-pump flow. Discard on load; players start fresh with the new system.
-	-- (Tile.drilled state and new pump placements will accumulate from here on.)
+	if typeof(persisted.chunkProspected) == "table" then
+		for chunkId, v in pairs(persisted.chunkProspected) do
+			if typeof(chunkId) == "string" and v == true then
+				local ch = state.chunksById[chunkId]
+				if ch then
+					ch.prospected = true
+				end
+			end
+		end
+	end
+
+	-- Restore placed pumps (requires `tileKey` + cell coords or position — v5+ saves).
 	if typeof(persisted.drills) == "table" then
-		-- intentionally skipped — records remain in DB but are not hydrated
+		local maxDrillId = 0
+		for _, record in ipairs(persisted.drills) do
+			if typeof(record) == "table" then
+				local rec = record :: { [string]: any }
+				local drillId = tonumber(rec.drillId)
+				if drillId then
+					maxDrillId = math.max(maxDrillId, drillId)
+					local chunkId = rec.chunkId
+					if typeof(chunkId) == "string" then
+						local chunk = state.chunksById[chunkId]
+						local tileKey = if typeof(rec.tileKey) == "string" then rec.tileKey :: string else nil
+						if chunk and tileKey and chunk.tiles and chunk.tiles[tileKey] then
+							local cellR = tonumber(rec.cellRow)
+							local cellC = tonumber(rec.cellCol)
+							if not cellR or not cellC or not cellInBounds(cellR, cellC) then
+								local pv = positionVectorFromStateEntry(rec.position)
+								if pv then
+									cellR, cellC = worldToCell(plot, pv.X, pv.Z)
+								end
+							end
+							if cellR and cellC and cellInBounds(cellR, cellC) then
+								local ck = cellKey(cellR, cellC)
+								local duplicateCell = false
+								for _, existing in pairs(state.drillsById) do
+									if existing.cellKey == ck then
+										duplicateCell = true
+										break
+									end
+								end
+								if not duplicateCell then
+									local tier = if typeof(rec.tier) == "string" and rec.tier ~= "" then rec.tier :: string else "T1"
+									local tierCfg = OilConfig.PumpTiers[tier]
+									if not tierCfg then
+										tier = "T1"
+										tierCfg = OilConfig.PumpTiers["T1"]
+									end
+									local biome = if typeof(rec.biome) == "string" then rec.biome :: string else chunk.biome
+									local biomeConfig = OilConfig.Biomes[biome] or OilConfig.Biomes.Desert
+									local pos = positionVectorFromStateEntry(rec.position)
+									if not pos then
+										local wx, wz = cellToWorld(plot, cellR, cellC)
+										pos = Vector3.new(wx, 6, wz)
+									end
+									local scale = tonumber(rec.scale) or 1
+									local flowBase = OilConfig.DrillBaseFlow * biomeConfig.flowMul * tierCfg.flowMultiplier * scale
+									local tierMix = emptyTierMap()
+									if typeof(rec.tierMix) == "table" then
+										local tm = rec.tierMix :: { [string]: any }
+										for _, tk in ipairs(TIER_ORDER) do
+											local vv = tm[tk]
+											if typeof(vv) == "number" then
+												tierMix[tk] = floorPositive(vv)
+											end
+										end
+									else
+										tierMix = copyTierMap(biomeConfig.tierMix)
+									end
+									local tileData = chunk.tiles[tileKey] :: any
+									local tileOilType = if typeof(rec.tileOilType) == "string" then rec.tileOilType :: string else tileData.oilType
+									state.drillsById[drillId] = {
+										drillId = drillId,
+										chunkId = chunkId,
+										biome = biome,
+										tier = tier,
+										tileKey = tileKey,
+										template = (typeof(rec.template) == "string" and rec.template) or tierCfg.templateName,
+										scale = scale,
+										variant = if typeof(rec.variant) == "string" then rec.variant :: string else nil,
+										position = pos,
+										flowBase = flowBase,
+										tierMix = tierMix,
+										tileOilType = tileOilType,
+										cellKey = ck,
+										cellRow = cellR,
+										cellCol = cellC,
+										localBuffer = (function()
+											local lb = emptyTierMap()
+											if typeof(rec.localBuffer) == "table" then
+												local lbIn = rec.localBuffer :: { [string]: any }
+												for _, tk in ipairs(TIER_ORDER) do
+													local vv = lbIn[tk]
+													if typeof(vv) == "number" then
+														lb[tk] = floorPositive(vv)
+													end
+												end
+											end
+											return lb
+										end)(),
+										connected = rec.connected == true,
+										placementCost = floorPositive(tonumber(rec.placementCost) or tierCfg.cost or 0),
+										intakeAttachmentId = rec.intakeAttachmentId,
+									}
+									state.activeDrillCount += 1
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+		state.nextDrillId = math.max(state.nextDrillId, maxDrillId + 1)
 	end
 
 	if typeof(persisted.pipes) == "table" then
@@ -1776,18 +1979,26 @@ function OilStateService:_markDirty(userId: number)
 end
 
 function OilStateService:_flushAndDropUser(userId: number)
-	self:_saveUser(userId)
+	self:_saveUser(userId, true)
 	self._statesByUserId[userId] = nil
 	self._dirtyByUserId[userId] = nil
 end
 
-function OilStateService:_flushDirtyUsers()
+function OilStateService:_flushDirtyUsers(force: boolean?)
+	local ids: { number } = {}
 	for userId, _ in pairs(self._dirtyByUserId) do
-		self:_saveUser(userId)
+		table.insert(ids, userId)
+	end
+	table.sort(ids)
+	for i, userId in ipairs(ids) do
+		self:_saveUser(userId, force)
+		if not force and i < #ids and self._dataStore then
+			task.wait(FLUSH_MULTI_USER_SPACING_SECONDS)
+		end
 	end
 end
 
-function OilStateService:_saveUser(userId: number)
+function OilStateService:_saveUser(userId: number, force: boolean?)
 	if not self._dirtyByUserId[userId] then
 		return
 	end
@@ -1807,14 +2018,36 @@ function OilStateService:_saveUser(userId: number)
 		return
 	end
 
+	if not force then
+		local last = self._lastOilDataStoreSaveClock[userId]
+		if last and (os.clock() - last) < MIN_DATASTORE_SET_INTERVAL_SECONDS then
+			return
+		end
+		DataStoreWriteGate.waitForWriteBudget(2.8)
+	end
+
 	local ok, err = pcall(function()
 		self._dataStore:SetAsync(key, payload)
 	end)
 	if ok then
+		self._lastOilDataStoreSaveClock[userId] = os.clock()
 		self._dirtyByUserId[userId] = nil
-	else
-		warn(string.format("[OilStateService] Save failed for user %d: %s", userId, tostring(err)))
+		return
 	end
+	if self._dataStore ~= nil and isDatastoreStudioAccessError(err) then
+		if not self._dataStoreStudioFallbackWarned then
+			self._dataStoreStudioFallbackWarned = true
+			warn(
+				"[OilStateService] Studio cannot access DataStores (Game Settings → Security → Enable Studio Access to API Services). "
+					.. "Using in-session memory for oil profiles for this server run — no cross-session persistence in Studio until enabled."
+			)
+		end
+		self._dataStore = nil
+		self._memoryStore[key] = payload
+		self._dirtyByUserId[userId] = nil
+		return
+	end
+	warn(string.format("[OilStateService] Save failed for user %d: %s", userId, tostring(err)))
 end
 
 function OilStateService:_loadPersistedProfile(userId: number)
@@ -1832,7 +2065,16 @@ function OilStateService:_loadPersistedProfile(userId: number)
 	if ok and typeof(profileOrErr) == "table" then
 		return profileOrErr
 	end
-	if not ok then
+	if not ok and self._dataStore ~= nil and isDatastoreStudioAccessError(profileOrErr) then
+		if not self._dataStoreStudioFallbackWarned then
+			self._dataStoreStudioFallbackWarned = true
+			warn(
+				"[OilStateService] Studio cannot access DataStores (Game Settings → Security → Enable Studio Access to API Services). "
+					.. "Using in-session memory for oil profiles for this server run — no cross-session persistence in Studio until enabled."
+			)
+		end
+		self._dataStore = nil
+	elseif not ok then
 		warn(string.format("[OilStateService] Load failed for user %d: %s", userId, tostring(profileOrErr)))
 	end
 	return nil
@@ -1855,6 +2097,9 @@ function OilStateService:_serializeState(state)
 			if chunk.tiles then
 				persisted.chunkTiles[chunkId] = chunk.tiles
 			end
+			if chunk.prospected then
+				persisted.chunkProspected[chunkId] = true
+			end
 		end
 	end
 	persisted.drills = {}
@@ -1863,10 +2108,20 @@ function OilStateService:_serializeState(state)
 			drillId = drill.drillId,
 			chunkId = drill.chunkId,
 			template = drill.template or OilConfig.DefaultDrillTemplate,
+			tier = drill.tier,
+			tileKey = drill.tileKey,
+			cellRow = drill.cellRow,
+			cellCol = drill.cellCol,
 			scale = drill.scale or 1,
+			variant = drill.variant,
+			biome = drill.biome,
+			tileOilType = drill.tileOilType,
 			position = { x = drill.position.X, y = drill.position.Y, z = drill.position.Z },
 			localBuffer = drill.localBuffer and copyTierMap(drill.localBuffer) or emptyTierMap(),
+			tierMix = drill.tierMix and copyTierMap(drill.tierMix) or nil,
 			intakeAttachmentId = drill.intakeAttachmentId,
+			connected = drill.connected == true,
+			placementCost = drill.placementCost,
 		})
 	end
 
@@ -1895,10 +2150,18 @@ function OilStateService:_serializeState(state)
 	persisted.nextDrillId = state.nextDrillId
 	persisted.nextPipeId = state.nextPipeId
 	persisted.nextDrumId = state.nextDrumId
-	persisted.version = 4
+	persisted.version = 5
 	persisted.shipSpeedLevel = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
 	persisted.shipCapacityLevel = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
 	persisted.shipSkinId = (typeof(state.shipSkinId) == "string" and state.shipSkinId) or "DefaultTanker"
+
+	persisted.equipmentOwned = {}
+	for itemId, n in pairs(state.equipmentOwnedByItemId or {}) do
+		local c = floorPositive(n)
+		if typeof(itemId) == "string" and itemId ~= "" and c > 0 then
+			table.insert(persisted.equipmentOwned, { itemId = itemId, count = c })
+		end
+	end
 
 	return persisted
 end
@@ -1956,6 +2219,48 @@ function OilStateService:TryUpgradeShipCapacity(userId: number): (boolean, strin
 	state.shipCapacityLevel = level + 1
 	self:_markDirty(userId)
 	return true, "OK", "Capacity upgraded."
+end
+
+function OilStateService:AddShopEquipmentOwned(userId: number, itemId: string, count: number)
+	if typeof(itemId) ~= "string" or itemId == "" or count <= 0 then
+		return
+	end
+	local state = self._statesByUserId[userId]
+	if not state then
+		return
+	end
+	state.equipmentOwnedByItemId[itemId] = (state.equipmentOwnedByItemId[itemId] or 0) + floorPositive(count)
+	self:_markDirty(userId)
+end
+
+function OilStateService:NotifyShopToolConsumed(userId: number, itemId: string)
+	if typeof(itemId) ~= "string" or itemId == "" then
+		return
+	end
+	local state = self._statesByUserId[userId]
+	if not state then
+		return
+	end
+	local cur = state.equipmentOwnedByItemId[itemId] or 0
+	if cur <= 0 then
+		return
+	end
+	local nxt = cur - 1
+	if nxt <= 0 then
+		state.equipmentOwnedByItemId[itemId] = nil
+	else
+		state.equipmentOwnedByItemId[itemId] = nxt
+	end
+	self:_markDirty(userId)
+end
+
+function OilStateService:MarkEquipmentInventoryBackfillComplete(userId: number)
+	local state = self._statesByUserId[userId]
+	if not state then
+		return
+	end
+	state.equipmentOwnedNeedsInventoryBackfill = false
+	self:_markDirty(userId)
 end
 
 return OilStateService

@@ -8,6 +8,8 @@ local Players = game:GetService("Players")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local ConsumeShopEquipmentTool = require(script.Parent.Parent.Utils.ConsumeShopEquipmentTool)
+local NotifyShopToolConsumedSafe = require(script.Parent.Parent.Utils.NotifyShopToolConsumedSafe)
 
 local ProspectingService = {}
 
@@ -74,6 +76,11 @@ function ProspectingService:_handleStartProspect(player: Player, payload: any)
 	self._remoteService:GetEvent(RemoteNames.OilActionResult):FireClient(player, {
 		action = "Prospect", ok = true, code = code, message = message, data = data,
 	})
+
+	local consumed, itemId = ConsumeShopEquipmentTool.consumeMatching(player, "Prospector", nil)
+	if consumed and itemId then
+		NotifyShopToolConsumedSafe.tryCall(self._oilStateService, userId, itemId, "ProspectingService:StartProspect")
+	end
 
 	self._oilStateService:PushState(userId)
 

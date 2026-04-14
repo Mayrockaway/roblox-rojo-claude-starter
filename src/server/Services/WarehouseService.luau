@@ -3,20 +3,31 @@
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local DataStoreWriteGate = require(script.Parent.Parent.Utils.DataStoreWriteGate)
 local WarehouseConfig = require(Shared:WaitForChild("Config"):WaitForChild("WarehouseConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local WarehouseService = {}
 
 local TIER_ORDER = { "HeavyCrude", "LightSweet", "PremiumRefined" }
-local SAVE_INTERVAL = 20
+local SAVE_INTERVAL = 25
+local AUTOSAVE_START_OFFSET_SECONDS = 12
+local MIN_DATASTORE_SET_INTERVAL_SECONDS = 7
+local FLUSH_MULTI_USER_SPACING_SECONDS = 0.2
 
 local function emptyBarrelMap()
 	return { HeavyCrude = 0, LightSweet = 0, PremiumRefined = 0 }
+end
+
+local function isDatastoreStudioAccessError(err: any): boolean
+	local s = tostring(err)
+	return string.find(s, "StudioAccessToApisNotAllowed", 1, true) ~= nil
+		or string.find(s, "API access is not enabled", 1, true) ~= nil
+		or string.find(s, "Cannot write to DataStore", 1, true) ~= nil
+		or string.find(s, "Cannot read from DataStore", 1, true) ~= nil
 end
 
 local function totalBarrels(barrels)
@@ -38,15 +49,16 @@ function WarehouseService:Init(remoteService, oilStateService)
 	self._slots = {}
 	self._dirtyByUserId = {}
 	self._memoryStore = {}
-	self._memoryOnly = RunService:IsStudio()
-
-	if self._memoryOnly then
-		self._dataStore = nil
+	self._dataStoreStudioFallbackWarned = false
+	self._lastWarehouseDataStoreSaveClock = {} :: { [number]: number }
+	self._dataStore = nil
+	local okStore, storeOrErr = pcall(function()
+		return DataStoreService:GetDataStore(WarehouseConfig.DataStoreName)
+	end)
+	if okStore then
+		self._dataStore = storeOrErr
 	else
-		local ok, storeOrErr = pcall(function()
-			return DataStoreService:GetDataStore(WarehouseConfig.DataStoreName)
-		end)
-		self._dataStore = ok and storeOrErr or nil
+		warn("[WarehouseService] DataStore unavailable; using memory fallback:", storeOrErr)
 	end
 
 	-- Discover slot markers
@@ -111,11 +123,12 @@ function WarehouseService:Start()
 		}
 	end
 
-	-- Autosave
+	-- Autosave (offset from oil autosave to avoid paired bursts for the same user)
 	task.spawn(function()
+		task.wait(AUTOSAVE_START_OFFSET_SECONDS)
 		while true do
 			task.wait(SAVE_INTERVAL)
-			self:_flushDirty()
+			self:_flushDirty(false)
 		end
 	end)
 
@@ -126,7 +139,7 @@ function WarehouseService:Start()
 end
 
 function WarehouseService:Stop()
-	self:_flushDirty()
+	self:_flushDirty(true)
 	for _, conn in ipairs(self._connections) do
 		conn:Disconnect()
 	end
@@ -179,7 +192,7 @@ end
 
 function WarehouseService:_onPlayerRemoving(player: Player)
 	local userId = player.UserId
-	self:_saveProfile(userId)
+	self:_saveProfile(userId, true)
 
 	-- Release slot
 	local slotId = self._slotByUserId[userId]
@@ -547,30 +560,68 @@ function WarehouseService:_updateSign(userId: number)
 	end
 end
 
-function WarehouseService:_teleportToWarehouse(player: Player)
+--- Teleport to this player's `WarehouseTemplate` **`WarehouseSpawn`** (finish zone). Returns false if no visual/spawn/character.
+function WarehouseService:TryTeleportPlayerToWarehouse(player: Player): boolean
 	local visual = self._visualByUserId[player.UserId]
-	if not visual then return end
+	if not visual then
+		return false
+	end
 	local spawn = visual:FindFirstChild("WarehouseSpawn")
-	if not spawn then return end
+	if not (spawn and spawn:IsA("BasePart")) then
+		return false
+	end
 	local character = player.Character
-	if not character then return end
+	if not character then
+		return false
+	end
 	character:PivotTo(CFrame.new(spawn.Position + Vector3.new(0, 3, 0)))
+	return true
+end
+
+function WarehouseService:_teleportToWarehouse(player: Player)
+	self:TryTeleportPlayerToWarehouse(player)
 end
 
 -- =================== PERSISTENCE ===================
 
 function WarehouseService:_loadProfile(userId: number)
 	local key = tostring(userId)
-	if self._memoryStore[key] then return self._memoryStore[key] end
-	if not self._dataStore then return nil end
-	local ok, result = pcall(function() return self._dataStore:GetAsync(key) end)
-	return ok and typeof(result) == "table" and result or nil
+	if self._memoryStore[key] then
+		return self._memoryStore[key]
+	end
+	if not self._dataStore then
+		return nil
+	end
+	local ok, result = pcall(function()
+		return self._dataStore:GetAsync(key)
+	end)
+	if ok and typeof(result) == "table" then
+		return result
+	end
+	if not ok and self._dataStore ~= nil and isDatastoreStudioAccessError(result) then
+		if not self._dataStoreStudioFallbackWarned then
+			self._dataStoreStudioFallbackWarned = true
+			warn(
+				"[WarehouseService] Studio cannot access DataStores (Game Settings → Security → Enable Studio Access to API Services). "
+					.. "Using in-session memory for warehouse profiles for this server run — no cross-session persistence in Studio until enabled."
+			)
+		end
+		self._dataStore = nil
+	elseif not ok then
+		warn(string.format("[WarehouseService] Load failed for user %d: %s", userId, tostring(result)))
+	end
+	return nil
 end
 
-function WarehouseService:_saveProfile(userId: number)
-	if not self._dirtyByUserId[userId] then return end
+function WarehouseService:_saveProfile(userId: number, force: boolean?)
+	if not self._dirtyByUserId[userId] then
+		return
+	end
 	local state = self._stateByUserId[userId]
-	if not state then self._dirtyByUserId[userId] = nil; return end
+	if not state then
+		self._dirtyByUserId[userId] = nil
+		return
+	end
 
 	local payload = {
 		tier = state.tier,
@@ -585,13 +636,49 @@ function WarehouseService:_saveProfile(userId: number)
 		return
 	end
 
-	local ok = pcall(function() self._dataStore:SetAsync(key, payload) end)
-	if ok then self._dirtyByUserId[userId] = nil end
+	if not force then
+		local last = self._lastWarehouseDataStoreSaveClock[userId]
+		if last and (os.clock() - last) < MIN_DATASTORE_SET_INTERVAL_SECONDS then
+			return
+		end
+		DataStoreWriteGate.waitForWriteBudget(2.8)
+	end
+
+	local ok, err = pcall(function()
+		self._dataStore:SetAsync(key, payload)
+	end)
+	if ok then
+		self._lastWarehouseDataStoreSaveClock[userId] = os.clock()
+		self._dirtyByUserId[userId] = nil
+		return
+	end
+	if self._dataStore ~= nil and isDatastoreStudioAccessError(err) then
+		if not self._dataStoreStudioFallbackWarned then
+			self._dataStoreStudioFallbackWarned = true
+			warn(
+				"[WarehouseService] Studio cannot access DataStores (Game Settings → Security → Enable Studio Access to API Services). "
+					.. "Using in-session memory for warehouse profiles for this server run — no cross-session persistence in Studio until enabled."
+			)
+		end
+		self._dataStore = nil
+		self._memoryStore[key] = payload
+		self._dirtyByUserId[userId] = nil
+		return
+	end
+	warn(string.format("[WarehouseService] Save failed for user %d: %s", userId, tostring(err)))
 end
 
-function WarehouseService:_flushDirty()
+function WarehouseService:_flushDirty(force: boolean?)
+	local ids: { number } = {}
 	for userId in pairs(self._dirtyByUserId) do
-		self:_saveProfile(userId)
+		table.insert(ids, userId)
+	end
+	table.sort(ids)
+	for i, userId in ipairs(ids) do
+		self:_saveProfile(userId, force)
+		if not force and i < #ids and self._dataStore then
+			task.wait(FLUSH_MULTI_USER_SPACING_SECONDS)
+		end
 	end
 end
 

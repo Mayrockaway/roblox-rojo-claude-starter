@@ -1,6 +1,6 @@
 # Strait waypoint shipment events — SPEC
 
-Authoritative handoff for **oil shipment** strait events: design intent, tuning numbers, and **what is implemented** in this repository (as of this document).
+Authoritative handoff for **oil shipment** strait events: design intent, tuning numbers, and **what is implemented** in this repository. **Canonical event list and numbers:** `src/shared/Config/StraitEvents/Catalog.luau` (this SPEC summarizes behavior).
 
 ---
 
@@ -26,8 +26,10 @@ Authoritative handoff for **oil shipment** strait events: design intent, tuning 
 
 | Area | Path |
 |------|------|
-| Event catalog (add new events here) | `src/shared/Config/StraitEvents/Catalog.luau` |
+| Event catalog (**single source of truth**; ids, flags, tuning) | `src/shared/Config/StraitEvents/Catalog.luau` |
 | Per-event design writeups + backlog | [EVENTS.md](./EVENTS.md) |
+| Playtest full-screen title (temporary) | `src/client/UI/StraitEventPlaytestBanner.luau` + `init.client` `ShipmentVisualEvent` |
+| Strait world VFX module | `src/client/StraitWaypointWorldFx.luau` |
 | Occurrence/severeity tuning, lane trigger ordinals, default pause | `src/shared/Config/StraitEventConfig.luau` |
 | Voyage loop, crossing detection, apply event, pause clock | `src/server/Services/OilShipmentService.luau` |
 | Global strait state (Open, Restricted, Closed) | `src/shared/Config/StraitConfig.luau` |
@@ -35,8 +37,8 @@ Authoritative handoff for **oil shipment** strait events: design intent, tuning 
 | Server bootstrap (Telemetry + Strait + OilShipment wiring) | `src/server/init.server.luau` |
 | Client broadcast handling for strait events | `src/client/init.client.luau` |
 | Visual remote | `RemoteNames.ShipmentVisualEvent` → `ShipmentVisualEvent` |
-| **Planned:** strait presentation (VFX/SFX listener + `eventId` table) | *TBD module path* — see **§8.2** (thin bootstrap in `init.client` acceptable v1) |
-| **Planned:** strait HUD toast | *UI layer* — see **§8.3** |
+| Strait presentation (VFX/SFX; branches on `packet.type`) | `StraitWaypointWorldFx` required from `init.client` — see **§8.2** |
+| Interim strait title banner | `StraitEventPlaytestBanner` — see **§8.3** |
 
 ---
 
@@ -91,8 +93,8 @@ Each of the three waypoints rolls separately:
 
 ### 4.7 Networking
 
-- Server fires `ShipmentVisualEvent` with `type = "StraitWaypointEvent"` and a `data` table (owner, shipment id, event id, severity, lane waypoint index, `totalLoss`, optional multiplier/pause/barrel-loss fields, `worldPosition`).
-- **All clients** are fired; client shows **StraitWaypointEvent** even when `ownerUserId` is not the local player (abbreviated copy for non-owners).
+- Server fires `ShipmentVisualEvent` with `type` set per pipeline, e.g. **`StraitWaypointEvent`** (generic pause / multiplier / simple FX), **`StormEvent`**, **`TornadoEvent`**, **`PirateRaidEvent`**, **`CoastGuardInspectionEvent`**, **`USShipSlapEvent`**, **`MineStrikeEvent`**, **`MissileStrikeEvent`**. Each `data` table includes **`eventId`**, **`displayName`**, **`playtestTitle`** (for playtest banner; from `Catalog.GetPlaytestTitle`), **`ownerUserId`**, **`shipmentId`**, **`severity`**, **`worldPosition`**, plus kind-specific fields.
+- **All clients** receive the same packets; handlers in `init.client` run world FX and status copy for owners vs non-owners.
 
 Legacy **`ShipmentEvent`** (random voyage hazard ticks on the non–oil shipment path) is **no longer emitted** by `OilShipmentService`.
 
@@ -107,27 +109,29 @@ Each event may set:
 | `id` | Stable string id |
 | `severity` | `Low` \| `Medium` \| `High` |
 | `displayName` | UI / status string |
-| `totalLoss` | If true: shipment ends with **no payout**, boat cleaned up, `ShipmentResolved` with failure reason |
+| `playtestTitle` | Optional; if set, preferred line for interim full-screen banner (else `displayName`) |
+| `totalLoss` | On catalog row: marks intent; **actual** total loss is applied in the branch that handles `usShipSlapEvent`, mine hit, missile direct hit, or rare generic `StraitWaypointEvent` total loss |
 | `priceMultiplierFactor` | Multiplies cumulative `shipment.priceMultiplier` (applied at payout resolution) |
 | `skipWaypointPause` | If true: **no** default pause at waypoint (explicit opt-out) |
 | `pauseSeconds` | If pausing: override default pause length (catalog may use `ExtendedWaypointPauseSeconds`) |
-| `looseBarrelLossFraction` | e.g. `0.1` → lose `ceil(onShipTotal * 0.1)` **whole** barrels from `shipment.manifest` (Heavy → … → Premium); `totalLoaded` updated |
+| `looseBarrelLossFraction` | Whole-barrel strip before/around cinematics (e.g. pirate raid); tier order Heavy → … → Premium |
+| `missileEvent` / `mineEvent` / `pirateEvent` / `stormEvent` / `tornadoEvent` / `coastGuardEvent` / `usShipSlapEvent` | Select dedicated `OilShipmentService` + client handlers (`MissileStrikeEvent`, …) |
 
-**Default pause:** unless `skipWaypointPause`, the server `task.wait`s for `pauseSeconds` or `StraitEventConfig.DefaultWaypointPauseSeconds` (**5** seconds) for VFX. Catalog entries that previously used longer holds use **`ExtendedWaypointPauseSeconds` (10)** (`EXT` in `Catalog.luau`).
+**Default pause:** unless `skipWaypointPause`, generic `StraitWaypointEvent` path uses `pauseSeconds` or **`DefaultWaypointPauseSeconds` (~5s)**. `EXT` = **`ExtendedWaypointPauseSeconds` (~10s)**.
 
-**Total loss:** server emits `StraitWaypointEvent` with `pauseSeconds` = default (**5**), then `task.wait`s that long before cleanup.
+**Total loss:** depends on pipeline (e.g. **`USShipSlapEvent`** then cleanup; mine/missile branches emit dedicated kinds first). Generic **`StraitWaypointEvent`** with `totalLoss` remains possible for future catalog rows.
 
 **Voyage clock:** after a pause (non–total-loss), `voyageClock.startTime` is **advanced** by the pause duration so **route progress does not jump** (alpha stays frozen during wait).
 
 ---
 
-## 6. Implemented catalog entries (initial set)
+## 6. Implemented catalog entries (consolidated set)
 
-Defined in `StraitEvents/Catalog.luau`. **Design notes, fantasy, and backlog:** [EVENTS.md](./EVENTS.md).
+Defined in `StraitEvents/Catalog.luau`. **Design notes, merge history:** [EVENTS.md](./EVENTS.md).
 
-- **Low:** `RoutinePaperwork`, `CoastGuardGlance` (default **5s** pause), `MinorInspection`, `HighWinds` (**10s** extended pause)
-- **Medium:** `TurbulentSeas` (10% barrels + **5s** default pause), `PirateRaid` (25% barrels, same whole-barrel logic + **5s** default pause), `ExtendedInspection` / `EngineRoomSmoke` (**10s** `EXT`), `FuelSiphoningAttempt` (**5s** default pause)
-- **High:** `BoardingAndSeizure`, `MineStrike`, `MissileStrike` (all `totalLoss`)
+- **Low:** `RoutinePaperwork` (generic waypoint + paperwork FX); `CoastGuardInspection` (**`CoastGuardInspectionEvent`** — absorbs former glance); `HighWinds` (**`tornadoEvent`** → **`TornadoEvent`**, same as tornado pipeline)
+- **Medium:** `EngineRoomSmoke` (generic waypoint; **EXT** pause + payout trim); `PirateRaid` (**`PirateRaidEvent`**); `Storm` (**`StormEvent`** — replaces old fixed-fraction turbulent-seas row)
+- **High:** `USShipSlap` (**`USShipSlapEvent`** — absorbs former boarding-only total loss); `Tornado` (**`TornadoEvent`**); `MineStrike` / `MissileStrike` (**`MineStrikeEvent`** / **`MissileStrikeEvent`**)
 
 ---
 
@@ -136,7 +140,8 @@ Defined in `StraitEvents/Catalog.luau`. **Design notes, fantasy, and backlog:** 
 - `OilShipmentService:Init(..., straitStateService)` stores `StraitStateService` reference.
 - `_buildStraitTriggerSlots` builds sorted slots `{ laneWaypointIndex, pathIndex, distance }`.
 - Voyage loop: removed `_buildEventTimes` / `_rollDamagePercent` and time-based `ShipmentEvent` damage.
-- **Total loss:** emit `StraitWaypointEvent` (includes `pauseSeconds`), **`task.wait`** for that duration (animation window), then disconnect boarding, unseat, `_cleanupShip`, `_finishShipmentWithoutPayout(shipment, "Strait event: total loss")`, return from `_runShipment`.
+- **`_handleStraitWaypointTrigger`:** branches on catalog flags in a fixed order (missile → mine → coast guard → US slap → pirate → storm → tornado → generic `totalLoss` → generic pause/barrels/multiplier). Each branch emits the matching **`ShipmentVisualEvent.type`** and advances `voyageClock` for pauses.
+- **Total loss:** e.g. **`USShipSlapEvent`** + `_finishShipmentWithoutPayout`; mine hit / missile direct hit paths; rare generic **`StraitWaypointEvent`** with `totalLoss` if a future catalog row uses only that flag.
 - Shipments still run **asynchronously** per player via existing `task.spawn` around `_runShipment`.
 
 ---
@@ -145,14 +150,15 @@ Defined in `StraitEvents/Catalog.luau`. **Design notes, fantasy, and backlog:** 
 
 ### 8.1 Current (shipped)
 
-- `shipmentVisualEvent` handler processes **`StraitWaypointEvent` before** the owner-only guard.
-- Owner vs non-owner strings differ slightly; both see that a strait event occurred (and total loss vs non-loss tone); owner may see `barrelsLost` / `totalLoaded` when present.
+- `shipmentVisualEvent` handler branches on **`packet.type`** (`StraitWaypointEvent`, `StormEvent`, `TornadoEvent`, `PirateRaidEvent`, `CoastGuardInspectionEvent`, `USShipSlapEvent`, `MineStrikeEvent`, `MissileStrikeEvent`, …) **before** the owner-only guard for non–strait kinds.
+- **Playtest:** `StraitEventPlaytestBanner` shows **`playtestTitle`** (or `displayName`) once per strait trigger (missile barrage: first missile only).
+- Owner vs non-owner status strings differ; both see that a strait event occurred; owner may see `barrelsLost` / `totalLoaded` when present.
 
 ### 8.2 Locked plan — world VFX & SFX (cosmetic only)
 
 **Authority:** The server owns all outcomes. Clients **only spawn cosmetics** in response to replicated `ShipmentVisualEvent` packets. **No** client-side changes to economy, manifest, or voyage state.
 
-**Entry point:** One code path subscribing to `ShipmentVisualEvent`, branching on `packet.type == "StraitWaypointEvent"`. May live in a small **dedicated module** required from `init.client.luau` (preferred as the table grows) or inline for v1.
+**Entry point:** `init.client` subscribes to `ShipmentVisualEvent`, dispatches **`StraitWaypointWorldFx`** methods per `packet.type`, and handles **`StraitWaypointEvent`** for generic catalog rows (optional `StraitWaypointsFx/<eventId>` folder clone).
 
 **Payload contract** (do not remove or rename without a **version / migration** strategy; additive fields are OK):
 
@@ -160,6 +166,7 @@ Defined in `StraitEvents/Catalog.luau`. **Design notes, fantasy, and backlog:** 
 |-------|-----|
 | `eventId` | **Primary key** into presentation table (must match `StraitEvents/Catalog.luau` `id`). |
 | `displayName` | HUD copy; optional subtitle on world feedback. |
+| `playtestTitle` | Interim full-screen banner text (server sends; client falls back to `displayName`). |
 | `severity` | `"Low"` \| `"Medium"` \| `"High"` — **fallback** row when `eventId` unknown. |
 | `worldPosition` | Table `{ x, y, z }` (numbers) — **spawn anchor** for particles / `Sound` / attachments. |
 | `pauseSeconds` | Align **effect length** (emit duration, looping cutoff, or “hold” timer) with server hold so VFX does not outrun the frozen ship. |
@@ -173,13 +180,13 @@ Defined in `StraitEvents/Catalog.luau`. **Design notes, fantasy, and backlog:** 
 
 **Replication:** Effects are **local** to each client; all clients receive the same event and spawn their own copies. **Do not** rely on client-only VFX for hidden information.
 
-### 8.3 Locked plan — HUD (ScreenGui / toast)
+### 8.3 HUD — status line + interim banner
 
-**Owner:** **UI implementer** (`.cursor/agents/ui-implementer.md`) — StarterGui templates + controller modules per repo UI rules.
+**Shipped (playtest):** `StraitEventPlaytestBanner` — large temporary title using **`playtestTitle`** / **`displayName`** on strait visual kinds (see `init.client`).
 
-**Behavior:** Dedicated **strait toast or banner** (not only `setStatus`): `displayName`, `severity` badge/color, optional `barrelsLost` / `totalLoaded` for owner. Non-owners keep **short** copy (existing pattern) but may reuse the same visual system with abbreviated text.
+**Planned / polish:** Dedicated strait toast with **severity** badge/color and richer copy (not only `setStatus`); non-owners keep abbreviated text. **Owner:** UI implementer per repo UI rules.
 
-**Authority:** Display only; all numbers come from **payload** (already server-authoritative).
+**Authority:** Display only; strings and numbers come from **payload** (server-authoritative).
 
 ### 8.4 Locked plan — deck barrels after spill (optional Phase 2)
 
@@ -212,7 +219,7 @@ Defined in `StraitEvents/Catalog.luau`. **Design notes, fantasy, and backlog:** 
 
 ## 9b. How to test (events are data, not Studio instances)
 
-**Events already “exist”** as rows in `src/shared/Config/StraitEvents/Catalog.luau`. There are no separate scripts or models required for the server to pick an event: it chooses a catalog entry by severity and applies `priceMultiplierFactor`, `totalLoss`, `looseBarrelLossFraction`, and pause flags.
+**Events “exist”** as rows in `src/shared/Config/StraitEvents/Catalog.luau`. The server picks by severity and applies the row’s flags (`stormEvent`, `missileEvent`, …) and numeric tuning blocks (`StormConfig`, `MissileConfig`, …). **Dedicated** rows emit dedicated **`ShipmentVisualEvent`** kinds; generic rows use **`StraitWaypointEvent`**.
 
 **Why you might see nothing in play:**
 
@@ -268,3 +275,4 @@ Defined in `StraitEvents/Catalog.luau`. **Design notes, fantasy, and backlog:** 
 |------|------|
 | 2026-04-10 | Initial SPEC: design + implementation snapshot after strait waypoint system landed. |
 | 2026-04-10 | **§8.2–8.5:** Locked client presentation plan (world VFX/SFX, HUD, optional deck sync) + handoff table; §2/§3/§7/§11 aligned. |
+| 2026-04-09 | **Consolidated catalog** (fewer ids; glance→inspection, high winds→tornado pipeline, turbulent→storm, boarding→USShipSlap). **§4.7 / §5–7 / §8:** multi-type `ShipmentVisualEvent`, `playtestTitle`, `StraitWaypointWorldFx` + playtest banner paths. §3 file table updated. |

@@ -83,6 +83,7 @@ local function requireStraitWaypointWorldFx(): StraitWaypointFxModule
 end
 
 local StraitWaypointWorldFx = requireStraitWaypointWorldFx()
+local StraitEventPlaytestBanner = require(script.Parent:WaitForChild("UI"):WaitForChild("StraitEventPlaytestBanner"))
 
 local remotesFolder = Shared:FindFirstChild("Remotes")
 while remotesFolder == nil do
@@ -316,8 +317,45 @@ local function clientCellInBounds(row, col): boolean
 	return row >= 1 and row <= globalRows and col >= 1 and col <= globalCols
 end
 
-local function setStatus(_message: string, _ok: boolean?)
-	-- Previously OilHud status label; rebind to StarterGui `HUD` when wired.
+--- Shipment strip `Hint` under `HUD` / `ShipmentProgressPanel` (see CANONICAL_STUDIO_LAYOUT.md).
+local function resolveShipmentHintLine(): (TextLabel | TextButton)?
+	local panel = playerGui:FindFirstChild("ShipmentProgressPanel", true)
+	if not (panel and panel:IsA("GuiObject")) then
+		return nil
+	end
+	local hint = panel:FindFirstChild("Hint", true)
+	if hint and hint:IsA("TextLabel") then
+		return hint
+	end
+	if hint and hint:IsA("TextButton") then
+		return hint
+	end
+	if hint and hint:IsA("GuiObject") then
+		for _, d in ipairs(hint:GetDescendants()) do
+			if d:IsA("TextLabel") or d:IsA("TextButton") then
+				return d
+			end
+		end
+	end
+	return nil
+end
+
+local function setStatus(message: string, ok: boolean?)
+	local line = resolveShipmentHintLine()
+	if line then
+		line.RichText = false
+		line.Text = message
+		if ok == true then
+			line.TextColor3 = Color3.fromRGB(75, 200, 115)
+		elseif ok == false then
+			line.TextColor3 = Color3.fromRGB(235, 100, 100)
+		else
+			line.TextColor3 = Color3.fromRGB(218, 228, 240)
+		end
+	end
+	if RunService:IsStudio() then
+		print("[Client] status:", message, " ok=", ok)
+	end
 end
 
 local function getEquippedToolName(): string?
@@ -1284,7 +1322,16 @@ oilStateUpdate.OnClientEvent:Connect(function(newState)
 end)
 
 oilActionResult.OnClientEvent:Connect(function(payload)
-	setStatus(tostring(payload.message or "?"), payload.ok == true)
+	if typeof(payload) ~= "table" then
+		return
+	end
+	local okOpt: boolean? = nil
+	if payload.ok == true then
+		okOpt = true
+	elseif payload.ok == false then
+		okOpt = false
+	end
+	setStatus(tostring(payload.message or "?"), okOpt)
 end)
 
 local warehouseState: any = nil
@@ -1434,6 +1481,33 @@ globalStateUpdate.OnClientEvent:Connect(function(snapshot)
 	end
 end)
 
+local STRAIT_PLAYTEST_BANNER_KINDS: { [string]: boolean } = {
+	StraitWaypointEvent = true,
+	PirateRaidEvent = true,
+	CoastGuardInspectionEvent = true,
+	USShipSlapEvent = true,
+	StormEvent = true,
+	TornadoEvent = true,
+	MineStrikeEvent = true,
+	MissileStrikeEvent = true,
+}
+
+local function showStraitPlaytestBannerIfNeeded(kind: string, data: { [string]: any })
+	if not STRAIT_PLAYTEST_BANNER_KINDS[kind] then
+		return
+	end
+	if kind == "MissileStrikeEvent" then
+		local idx = tonumber(data.missileIndex) or 1
+		if idx ~= 1 then
+			return
+		end
+	end
+	local title = if typeof(data.playtestTitle) == "string" and data.playtestTitle ~= "" then data.playtestTitle elseif typeof(data.displayName) == "string" then data.displayName else nil
+	if typeof(title) == "string" and title ~= "" then
+		StraitEventPlaytestBanner.show(playerGui, title)
+	end
+end
+
 shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 	if typeof(packet) ~= "table" then
 		return
@@ -1443,6 +1517,8 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 	if typeof(data) ~= "table" then
 		return
 	end
+
+	showStraitPlaytestBannerIfNeeded(kind, data)
 
 	if kind == "PirateRaidEvent" then
 		StraitWaypointWorldFx.OnPirateRaidPayload(data)

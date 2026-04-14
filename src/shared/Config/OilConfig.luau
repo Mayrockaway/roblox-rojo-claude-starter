@@ -1,5 +1,7 @@
 --!strict
 
+local EquipmentCatalog = require(script.Parent:WaitForChild("EquipmentCatalog"))
+
 local OilConfig = {
 	-- Plot section grid: 3 cols x 4 rows of 40-stud sections (5x5 sub-tiles of 8 studs each).
 	-- Total plot footprint = 120 wide x 160 deep.
@@ -23,21 +25,11 @@ local OilConfig = {
 	DrillScaleMin = 0.5,
 	DrillScaleMax = 1.2,
 
-	-- Drill tiers. `timeDivisor` means: every 1 real second counts as N seconds of drill progress.
-	-- So effective drill duration = tile.drillSeconds / timeDivisor.
-	-- T1 = 1x (normal), T2 = 10x faster, T3 = 30x faster.
-	DrillTiers = {
-		T1 = { cost = 100,  timeDivisor = 1,  fallbackSeconds = 10, templateName = "Drill_T1", displayName = "Basic Drill" },
-		T2 = { cost = 400,  timeDivisor = 10, fallbackSeconds = 10, templateName = "Drill_T2", displayName = "Standard Drill" },
-		T3 = { cost = 1500, timeDivisor = 30, fallbackSeconds = 10, templateName = "Drill_T3", displayName = "Advanced Drill" },
-	},
+	-- Drill / pump / pipe / prospector economy: single source `EquipmentCatalog`.
+	DrillTiers = EquipmentCatalog.getDrillTiersMap(),
+	DrillPlacementCost = EquipmentCatalog.getDrillPlacementCostHint(),
 
-	-- Pump tiers (placed on drilled tiles; flow multiplier scales base production)
-	PumpTiers = {
-		T1 = { cost = 500,  flowMultiplier = 1.0, templateName = "Pump_T1", displayName = "Basic Pump" },
-		T2 = { cost = 2000, flowMultiplier = 2.5, templateName = "Pump_T2", displayName = "Standard Pump" },
-		T3 = { cost = 8000, flowMultiplier = 6.0, templateName = "Pump_T3", displayName = "Advanced Pump" },
-	},
+	PumpTiers = EquipmentCatalog.getPumpTiersMap(),
 	-- Each placed pump gets a random visual scale.
 	PumpScaleMin = 0.36,
 	PumpScaleMax = 0.57,
@@ -48,12 +40,7 @@ local OilConfig = {
 	RainbowPumpChance = 0.02,
 	RainbowPumpHighlightColor = Color3.fromRGB(180, 140, 255),
 
-	-- Prospecting: single-use tool that reveals ALL tiles' oil status in one 5x5 chunk.
-	Prospecting = {
-		durationSeconds = 5,   -- time from placement to reveal
-		cost = 0,              -- unlimited for dev; set > 0 once shop wires it up
-		templateName = "Prospector",
-	},
+	Prospecting = EquipmentCatalog.getProspecting(),
 
 	-- Colors for the oil spray VFX between drill completion and pump placement
 	OilSprayColors = {
@@ -62,13 +49,7 @@ local OilConfig = {
 		PremiumRefined = Color3.fromRGB(180, 80, 255),
 	},
 
-	-- Pipe network
-	Pipes = {
-		Cost = 50,
-		MinLength = 4,
-		MaxLength = 60,
-		EndpointSnapRadius = 3,
-	},
+	Pipes = EquipmentCatalog.getPipes(),
 	Drums = {
 		Cost = 0,
 		IntakeStubLength = 4,
@@ -83,6 +64,8 @@ local OilConfig = {
 	-- Drill removal
 	RemoveDrillHoldSeconds = 2,
 	RemoveDrillRangeStuds = 18,
+	--- Server: `RequestHammerDestroy` / salvage — HRP must be within this of the target's authored world position.
+	SalvageProximityMaxStuds = 24,
 
 	-- Barrel display system
 	Barrels = {

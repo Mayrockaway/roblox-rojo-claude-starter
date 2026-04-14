@@ -20,8 +20,6 @@ local Constants = {
 	StraitLeaderLockSeconds = 12,
 	StraitLeaderHeartbeatSeconds = 4,
 	StraitFollowerPollSeconds = 6,
-	-- When true, first server `StraitStateService:Start` publishes Open and bumps version past any stale MemoryStore snapshot (temporary until live strait cycles ship).
-	StraitForceOpenAtLaunch = true,
 	LocalSellMultiplier = 0.5,
 	LocalSellFlatBasePerBarrel = 10,
 	MaxTotalPayoutMultiplier = 20,

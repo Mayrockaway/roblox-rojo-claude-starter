@@ -6,6 +6,8 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local ShipProfileMigration = require(Shared:WaitForChild("Config"):WaitForChild("ShipProfileMigration"))
+local ConsumeShopEquipmentTool = require(script.Parent.Parent.Utils.ConsumeShopEquipmentTool)
+local NotifyShopToolConsumedSafe = require(script.Parent.Parent.Utils.NotifyShopToolConsumedSafe)
 
 local PlotResourceService = {}
 
@@ -200,6 +202,14 @@ function PlotResourceService:_handlePlaceDrillRequest(player: Player, payload)
 	local ok, code, message, data = self._oilStateService:TryPlaceDrill(player.UserId, payload)
 	self:_sendResult(player, ok, code, message, data or { chunkId = payload.chunkId })
 	if ok then
+		local tier = "T1"
+		if typeof(payload.tier) == "string" and payload.tier ~= "" then
+			tier = payload.tier
+		end
+		local consumed, itemId = ConsumeShopEquipmentTool.consumeMatching(player, "Pump", tier)
+		if consumed and itemId then
+			NotifyShopToolConsumedSafe.tryCall(self._oilStateService, player.UserId, itemId, "PlotResourceService:PlaceDrill")
+		end
 		self._oilStateService:PushState(player.UserId)
 	end
 end
@@ -246,6 +256,10 @@ function PlotResourceService:_handlePlacePipeRequest(player: Player, payload)
 	local ok, code, message, data = self._oilStateService:TryPlacePipe(player.UserId, payload)
 	self:_sendResult(player, ok, code, message, data)
 	if ok then
+		local consumed, itemId = ConsumeShopEquipmentTool.consumeMatching(player, "Pipe", nil)
+		if consumed and itemId then
+			NotifyShopToolConsumedSafe.tryCall(self._oilStateService, player.UserId, itemId, "PlotResourceService:PlacePipe")
+		end
 		self._oilStateService:PushState(player.UserId)
 	end
 end
@@ -325,6 +339,16 @@ end
 function PlotResourceService:_handleHammerDestroyRequest(player: Player, payload)
 	if not self:_allow(player.UserId, "hammer", 30, 10) then
 		self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many hammer requests.")
+		return
+	end
+	local character = player.Character
+	local hrp = character and character:FindFirstChild("HumanoidRootPart")
+	if not (hrp and hrp:IsA("BasePart")) then
+		self:_sendResult(player, false, "ERR_NO_CHARACTER", "Character not ready.")
+		return
+	end
+	if not self._oilStateService:IsHammerDestroyInRange(player.UserId, payload, hrp.Position) then
+		self:_sendResult(player, false, "ERR_TOO_FAR", "Move closer to salvage.")
 		return
 	end
 	local ok, code, message, data = self._oilStateService:TryHammerDestroy(player.UserId, payload)

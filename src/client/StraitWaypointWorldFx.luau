@@ -155,6 +155,8 @@ local function playClonedSounds(root: Instance)
 	for _, d in ipairs(root:GetDescendants()) do
 		if d:IsA("Sound") then
 			d.RollOffMaxDistance = math.max(d.RollOffMaxDistance, 140)
+			d.Playing = false
+			d:Stop()
 			d:Play()
 		end
 	end
@@ -511,6 +513,8 @@ local function playSoundTemplateOn(root: Instance, eventId: string, assetName: s
 		return
 	end
 	local s = template
+	s.Playing = false
+	s:Stop()
 	s.Parent = root
 	s.Volume = s.Volume * (volumeScale or 1)
 	s.RollOffMaxDistance = math.max(s.RollOffMaxDistance, 220)
@@ -1095,6 +1099,10 @@ function StraitWaypointWorldFx.OnStraitWaypointPayload(data: { [string]: any })
 	local hold = if typeof(pause) == "number" and pause == pause then pause else 5
 
 	local id = if typeof(data.eventId) == "string" then data.eventId else ""
+	-- Dedicated packets (StormEvent / TornadoEvent) own these visuals + audio; never clone-play RS templates here.
+	if id == "Storm" or id == "Tornado" then
+		return
+	end
 	local fxScale = particleFxScaleFromPayload(data)
 
 	local custom = EVENT_FX[id]

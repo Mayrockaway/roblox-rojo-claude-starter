@@ -5,6 +5,7 @@ local TweenService = game:GetService("TweenService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
+local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local OilVisualService = {}
 
@@ -62,6 +63,217 @@ local function ensureFolder(parent: Instance, name: string): Folder
 	return folder
 end
 
+local SELL_BACK_PROMPT = "SellBackPrompt"
+local SELL_BACK_ATTACH = "SellBackPromptAttachment"
+
+type SellPromptSpec = {
+	ownerUserId: number,
+	hammerKind: string,
+	drillId: number?,
+	cellKey: string?,
+	drumId: number?,
+	prospectId: number?,
+}
+
+local sellBackPromptConnections: { [ProximityPrompt]: RBXScriptConnection } = {}
+local SELL_BACK_RATE_WINDOW = 2
+local SELL_BACK_RATE_MAX = 15
+local sellBackRateByUserId: { [number]: { start: number, count: number } } = {}
+
+local function disconnectSellBackPrompt(prompt: ProximityPrompt)
+	local c = sellBackPromptConnections[prompt]
+	if c then
+		c:Disconnect()
+		sellBackPromptConnections[prompt] = nil
+	end
+end
+
+local function sellBackRateAllow(userId: number): boolean
+	local now = os.clock()
+	local b = sellBackRateByUserId[userId]
+	if not b or now - b.start >= SELL_BACK_RATE_WINDOW then
+		sellBackRateByUserId[userId] = { start = now, count = 1 }
+		return true
+	end
+	if b.count >= SELL_BACK_RATE_MAX then
+		return false
+	end
+	b.count += 1
+	return true
+end
+
+local function fireOilActionResult(player: Player, ok: boolean, code: string, message: string, data: any)
+	local remotes = Shared:FindFirstChild("Remotes") :: Folder?
+	if not remotes then
+		return
+	end
+	local ev = remotes:FindFirstChild(RemoteNames.OilActionResult)
+	if ev and ev:IsA("RemoteEvent") then
+		ev:FireClient(player, { ok = ok, code = code, message = message, data = data })
+	end
+end
+
+local function payloadFromSellSpec(spec: SellPromptSpec): any?
+	if spec.hammerKind == "pump" or spec.hammerKind == "drill" then
+		local id = spec.drillId
+		if typeof(id) ~= "number" then
+			return nil
+		end
+		return { targetKind = spec.hammerKind, targetId = id }
+	elseif spec.hammerKind == "pipe" then
+		if typeof(spec.cellKey) ~= "string" or spec.cellKey == "" then
+			return nil
+		end
+		return { targetKind = "pipe", cellKey = spec.cellKey }
+	elseif spec.hammerKind == "drum" then
+		local id = spec.drumId
+		if typeof(id) ~= "number" then
+			return nil
+		end
+		return { targetKind = "drum", targetId = id }
+	elseif spec.hammerKind == "prospector" then
+		local id = spec.prospectId
+		if typeof(id) ~= "number" then
+			return nil
+		end
+		return { targetKind = "prospector", targetId = id }
+	end
+	return nil
+end
+
+function OilVisualService:_bindSellBackPromptServer(prompt: ProximityPrompt, spec: SellPromptSpec)
+	disconnectSellBackPrompt(prompt)
+	local oil = self._oilStateService
+	sellBackPromptConnections[prompt] = prompt.Triggered:Connect(function(player: Player)
+		if player.UserId ~= spec.ownerUserId then
+			return
+		end
+		local payload = payloadFromSellSpec(spec)
+		if not payload then
+			return
+		end
+		local char = player.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if not (hrp and hrp:IsA("BasePart")) then
+			fireOilActionResult(player, false, "ERR_NO_CHARACTER", "Character not ready.", nil)
+			return
+		end
+		if not oil:IsHammerDestroyInRange(player.UserId, payload, hrp.Position) then
+			fireOilActionResult(player, false, "ERR_TOO_FAR", "Move closer to salvage.", nil)
+			return
+		end
+		if not sellBackRateAllow(player.UserId) then
+			fireOilActionResult(player, false, "ERR_RATE_LIMIT", "Too many salvage requests.", nil)
+			return
+		end
+		local ok, code, message, data = oil:TryHammerDestroy(player.UserId, payload)
+		fireOilActionResult(player, ok, code, message, data)
+		if ok then
+			oil:PushState(player.UserId)
+		end
+	end)
+end
+
+local function largestBasePart(root: Instance): BasePart?
+	local best: BasePart? = nil
+	local bestV = 0
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("BasePart") then
+			local v = d.Size.X * d.Size.Y * d.Size.Z
+			if v > bestV then
+				bestV = v
+				best = d
+			end
+		end
+	end
+	return best
+end
+
+local function basePartForSellPrompt(root: Instance): BasePart?
+	if not root then
+		return nil
+	end
+	if root:IsA("BasePart") then
+		return root
+	end
+	if root:IsA("Model") then
+		local pp = root.PrimaryPart
+		if pp then
+			return pp
+		end
+		return largestBasePart(root)
+	end
+	return nil
+end
+
+local function configureSellBackPrompt(prompt: ProximityPrompt, spec: SellPromptSpec)
+	prompt.ActionText = "Sell back (10%)"
+	local objectText = "Equipment"
+	if spec.hammerKind == "pump" then
+		objectText = "Oil pump"
+	elseif spec.hammerKind == "pipe" then
+		objectText = "Pipe"
+	elseif spec.hammerKind == "drill" then
+		objectText = "Drill"
+	elseif spec.hammerKind == "drum" then
+		objectText = "Drum"
+	elseif spec.hammerKind == "prospector" then
+		objectText = "Prospector"
+	end
+	prompt.ObjectText = objectText
+	prompt.HoldDuration = 0.45
+	prompt.MaxActivationDistance = 12
+	prompt.RequiresLineOfSight = false
+	prompt.Enabled = true
+	prompt:SetAttribute("OwnerUserId", spec.ownerUserId)
+	prompt:SetAttribute("HammerKind", spec.hammerKind)
+	if spec.drillId then
+		prompt:SetAttribute("TargetDrillId", spec.drillId)
+	else
+		prompt:SetAttribute("TargetDrillId", nil)
+	end
+	if spec.cellKey and spec.cellKey ~= "" then
+		prompt:SetAttribute("CellKey", spec.cellKey)
+	else
+		prompt:SetAttribute("CellKey", nil)
+	end
+	if spec.drumId then
+		prompt:SetAttribute("TargetDrumId", spec.drumId)
+	else
+		prompt:SetAttribute("TargetDrumId", nil)
+	end
+	if spec.prospectId then
+		prompt:SetAttribute("TargetProspectId", spec.prospectId)
+	else
+		prompt:SetAttribute("TargetProspectId", nil)
+	end
+end
+
+local function ensureSellBackPromptOnHost(service: OilVisualService, host: Instance, spec: SellPromptSpec)
+	if not host or not host.Parent then
+		return
+	end
+	local adornee = basePartForSellPrompt(host)
+	if not adornee then
+		return
+	end
+	local att = adornee:FindFirstChild(SELL_BACK_ATTACH) :: Attachment?
+	if not att then
+		att = Instance.new("Attachment")
+		att.Name = SELL_BACK_ATTACH
+		att.Parent = adornee
+	end
+	att.Position = Vector3.new(0, math.min(adornee.Size.Y * 0.35 + 1.2, 5), 0)
+	local prompt = att:FindFirstChild(SELL_BACK_PROMPT) :: ProximityPrompt?
+	if not prompt then
+		prompt = Instance.new("ProximityPrompt")
+		prompt.Name = SELL_BACK_PROMPT
+		prompt.Parent = att
+	end
+	configureSellBackPrompt(prompt, spec)
+	service:_bindSellBackPromptServer(prompt, spec)
+end
+
 function OilVisualService:Init(oilStateService, plotService)
 	self._oilStateService = oilStateService
 	self._plotService = plotService
@@ -117,12 +329,12 @@ function OilVisualService:_syncUserVisuals(userId: number, snapshot)
 	local pipesFolder = ensureFolder(visualRoot, "Pipes")
 	local drumsFolder = ensureFolder(visualRoot, "Drums")
 
-	self:_syncDrills(plot, drillsFolder, snapshot.drills or {})
-	self:_syncActiveDrills(plot, activeDrillsFolder, snapshot.activeDrills or {})
-	self:_syncActiveProspectors(plot, activeProspectorsFolder, snapshot.activeProspectors or {})
+	self:_syncDrills(plot, drillsFolder, snapshot.drills or {}, userId)
+	self:_syncActiveDrills(plot, activeDrillsFolder, snapshot.activeDrills or {}, userId)
+	self:_syncActiveProspectors(plot, activeProspectorsFolder, snapshot.activeProspectors or {}, userId)
 	self:_syncOilSprays(plot, spraysFolder, snapshot)
-	self:_syncPipes(plot, pipesFolder, snapshot.pipes or {}, snapshot.drills or {}, snapshot.drums or {})
-	self:_syncDrums(plot, drumsFolder, snapshot.drums or {})
+	self:_syncPipes(plot, pipesFolder, snapshot.pipes or {}, snapshot.drills or {}, snapshot.drums or {}, userId)
+	self:_syncDrums(plot, drumsFolder, snapshot.drums or {}, userId)
 	self:_syncBarrels(plot, barrelsFolder, snapshot)
 end
 
@@ -152,7 +364,7 @@ end
 -- (i.e. CompleteDrill cleared it).
 -- In-progress prospector placements. Same pattern as active drills but uses the Prospector
 -- template and tags with prospectId so the client animates it separately.
-function OilVisualService:_syncActiveProspectors(_plot: Model, folder: Folder, activeProspectors)
+function OilVisualService:_syncActiveProspectors(_plot: Model, folder: Folder, activeProspectors, ownerUserId: number)
 	local wanted = {}
 	for _, entry in ipairs(activeProspectors) do
 		local pid = entry.prospectId
@@ -195,13 +407,16 @@ function OilVisualService:_syncActiveProspectors(_plot: Model, folder: Folder, a
 			end
 			anchorAllBaseParts(model)
 		end
+		if model then
+			ensureSellBackPromptOnHost(self, model, { ownerUserId = ownerUserId, hammerKind = "prospector", prospectId = pid })
+		end
 	end
 	for _, child in ipairs(folder:GetChildren()) do
 		if not wanted[child.Name] then child:Destroy() end
 	end
 end
 
-function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, activeDrills)
+function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, activeDrills, ownerUserId: number)
 	local wanted = {}
 	for _, entry in ipairs(activeDrills) do
 		local drillId = entry.drillId
@@ -302,6 +517,9 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 				model.CFrame = cframe
 			end
 			anchorAllBaseParts(model)
+		end
+		if model then
+			ensureSellBackPromptOnHost(self, model, { ownerUserId = ownerUserId, hammerKind = "drill", drillId = drillId })
 		end
 	end
 	for _, child in ipairs(folder:GetChildren()) do
@@ -455,7 +673,7 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 	end
 end
 
-function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills)
+function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills, ownerUserId: number)
 	local wanted = {}
 	for _, drill in ipairs(drills) do
 		local drillId = drill.drillId
@@ -561,6 +779,8 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				end
 				model:SetAttribute("AppliedVariant", variant)
 			end
+
+			ensureSellBackPromptOnHost(self, model, { ownerUserId = ownerUserId, hammerKind = "pump", drillId = drillId })
 		end
 	end
 
@@ -572,7 +792,7 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 	end
 end
 
-function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, drills, drums)
+function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, drills, drums, ownerUserId: number)
 	-- Build a typed occupancy map: cellKey -> "pipe" | "drill" | "drum"
 	-- Drills and drums should make pipe arms extend further so they visually meet the body.
 	local occupancy = {}
@@ -729,6 +949,8 @@ function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, d
 			setArm(armS, sType, Vector3.new(0, 0,  1))
 			setArm(armE, eType, Vector3.new(1, 0,  0))
 			setArm(armW, wType, Vector3.new(-1, 0, 0))
+
+			ensureSellBackPromptOnHost(self, model, { ownerUserId = ownerUserId, hammerKind = "pipe", cellKey = pipe.cellKey })
 		end
 	end
 
@@ -799,7 +1021,7 @@ function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, d
 	end
 end
 
-function OilVisualService:_syncDrums(_plot: Model, drumsFolder: Folder, drums)
+function OilVisualService:_syncDrums(_plot: Model, drumsFolder: Folder, drums, ownerUserId: number)
 	local wanted = {}
 	local drumTemplate = self._assetsFolder and self._assetsFolder:FindFirstChild("Drum")
 
@@ -836,6 +1058,7 @@ function OilVisualService:_syncDrums(_plot: Model, drumsFolder: Folder, drums)
 				model.CFrame = CFrame.new(px, py, pz)
 			end
 			anchorAllBaseParts(model)
+			ensureSellBackPromptOnHost(self, model, { ownerUserId = ownerUserId, hammerKind = "drum", drumId = drumId })
 		end
 	end
 

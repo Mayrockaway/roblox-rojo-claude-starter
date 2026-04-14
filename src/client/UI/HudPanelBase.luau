@@ -30,7 +30,12 @@ function HudPanelBase.bindScreenGui(screen: ScreenGui, screenName: string): HudP
 end
 
 function HudPanelBase.tryBind(playerGui: PlayerGui, screenName: string): HudPanelController?
-	local sg = playerGui:FindFirstChild(screenName, true)
+	-- Prefer the real PlayerGui modal (direct child). Recursive search can grab a stray nested
+	-- duplicate name first and leave wiring on a hidden instance while the player sees another.
+	local sg = playerGui:FindFirstChild(screenName)
+	if not (sg and sg:IsA("ScreenGui")) then
+		sg = playerGui:FindFirstChild(screenName, true)
+	end
 	if not (sg and sg:IsA("ScreenGui")) then
 		return nil
 	end

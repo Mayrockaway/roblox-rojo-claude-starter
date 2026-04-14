@@ -1,8 +1,8 @@
 --!strict
 
--- Central list of strait shipment events. Server resolves impacts from these flags.
--- Design / fantasy / backlog: docs/features/strait-waypoint-events/EVENTS.md
--- pause: default ~5s (StraitEventConfig.DefaultWaypointPauseSeconds) unless pauseSeconds / skipWaypointPause set.
+-- **Single source of truth** for strait waypoint shipment events (triggers stay at lane ordinals 3/6/9 in `StraitEventConfig`).
+-- Add new events here: flags drive server behavior; `MissileConfig` / `StormConfig` / … hold tuning; optional `StraitWaypointsFx/<id>` for generic FX.
+-- Human-oriented writeups: docs/features/strait-waypoint-events/EVENTS.md (keep in sync when changing rows).
 
 export type Severity = "Low" | "Medium" | "High"
 
@@ -10,6 +10,8 @@ export type StraitEventDef = {
 	id: string,
 	severity: Severity,
 	displayName: string,
+	--- Optional banner line for playtest HUD (defaults to `displayName` if omitted).
+	playtestTitle: string?,
 	skipWaypointPause: boolean?,
 	pauseSeconds: number?,
 	-- Multiplies shipment.priceMultiplier (e.g. 0.94 = 6% effective payout hit at resolution).
@@ -123,63 +125,28 @@ Catalog.TornadoConfig = {
 }
 
 Catalog.Events = {
+	-- Low: paperwork FX (StraitWaypointWorldFx EVENT_FX + optional StraitWaypointsFx assets)
 	{
 		id = "RoutinePaperwork",
 		severity = "Low",
 		displayName = "Routine paperwork",
 		priceMultiplierFactor = 0.97,
 	} :: StraitEventDef,
-	{
-		id = "CoastGuardGlance",
-		severity = "Low",
-		displayName = "Coast guard glance",
-		priceMultiplierFactor = 1,
-	} :: StraitEventDef,
+	-- Low: former "Coast guard glance" — same boarding inspection cinematic as full inspection
 	{
 		id = "CoastGuardInspection",
 		severity = "Low",
 		displayName = "Coast guard inspection",
 		coastGuardEvent = true,
 	} :: StraitEventDef,
-	{
-		id = "MinorInspection",
-		severity = "Low",
-		displayName = "Minor inspection",
-		pauseSeconds = EXT,
-		priceMultiplierFactor = 0.95,
-	} :: StraitEventDef,
+	-- Low: former "High winds" — uses tornado rolls + `TornadoEvent` / Tornado VFX (catalog id stays for manifests / logs)
 	{
 		id = "HighWinds",
 		severity = "Low",
 		displayName = "High winds",
-		pauseSeconds = EXT,
+		tornadoEvent = true,
 	} :: StraitEventDef,
-	{
-		id = "TurbulentSeas",
-		severity = "Medium",
-		displayName = "Turbulent seas",
-		looseBarrelLossFraction = 0.1,
-	} :: StraitEventDef,
-	{
-		id = "PirateRaid",
-		severity = "Medium",
-		displayName = "Pirate raid",
-		looseBarrelLossFraction = 0.25,
-		pirateEvent = true,
-	} :: StraitEventDef,
-	{
-		id = "ExtendedInspection",
-		severity = "Medium",
-		displayName = "Extended inspection",
-		pauseSeconds = EXT,
-		priceMultiplierFactor = 0.88,
-	} :: StraitEventDef,
-	{
-		id = "FuelSiphoningAttempt",
-		severity = "Medium",
-		displayName = "Fuel siphoning attempt",
-		priceMultiplierFactor = 0.82,
-	} :: StraitEventDef,
+	-- Medium: no bespoke world FX yet; payout + extended pause only
 	{
 		id = "EngineRoomSmoke",
 		severity = "Medium",
@@ -188,17 +155,20 @@ Catalog.Events = {
 		priceMultiplierFactor = 0.9,
 	} :: StraitEventDef,
 	{
+		id = "PirateRaid",
+		severity = "Medium",
+		displayName = "Pirate raid",
+		looseBarrelLossFraction = 0.25,
+		pirateEvent = true,
+	} :: StraitEventDef,
+	-- Medium: storm cinematic + storm gameplay rolls (replaces old fixed-fraction `TurbulentSeas` barrel spill)
+	{
 		id = "Storm",
 		severity = "Medium",
 		displayName = "Thunderstorm",
 		stormEvent = true,
 	} :: StraitEventDef,
-	{
-		id = "BoardingAndSeizure",
-		severity = "High",
-		displayName = "Boarding and seizure",
-		totalLoss = true,
-	} :: StraitEventDef,
+	-- High: US Navy slap cinematic (absorbs old plain "Boarding and seizure" total-loss row)
 	{
 		id = "USShipSlap",
 		severity = "High",
@@ -224,7 +194,6 @@ Catalog.Events = {
 		severity = "High",
 		displayName = "Missile strike",
 		totalLoss = true,
-		-- Handled specially by OilShipmentService: missile flight animation with hit/smallHit/miss
 		missileEvent = true,
 	} :: StraitEventDef,
 } :: { StraitEventDef }
@@ -236,6 +205,13 @@ function Catalog.GetById(id: string): StraitEventDef?
 		end
 	end
 	return nil
+end
+
+function Catalog.GetPlaytestTitle(def: StraitEventDef): string
+	if def.playtestTitle and def.playtestTitle ~= "" then
+		return def.playtestTitle
+	end
+	return def.displayName
 end
 
 function Catalog.GetPool(severity: Severity): { StraitEventDef }

@@ -13,6 +13,8 @@ local Players = game:GetService("Players")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local ConsumeShopEquipmentTool = require(script.Parent.Parent.Utils.ConsumeShopEquipmentTool)
+local NotifyShopToolConsumedSafe = require(script.Parent.Parent.Utils.NotifyShopToolConsumedSafe)
 
 local DrillingService = {}
 
@@ -93,6 +95,15 @@ function DrillingService:_handleStartDrill(player: Player, payload: any)
 		action = "StartDrill", ok = true, code = code, message = message, data = data,
 	})
 
+	local tier = "T1"
+	if typeof(payload) == "table" and typeof(payload.tier) == "string" and payload.tier ~= "" then
+		tier = payload.tier
+	end
+	local consumed, itemId = ConsumeShopEquipmentTool.consumeMatching(player, "Drill", tier)
+	if consumed and itemId then
+		NotifyShopToolConsumedSafe.tryCall(self._oilStateService, userId, itemId, "DrillingService:StartDrill")
+	end
+
 	-- Push state so activeDrills + cash reflect in the client's inventory right away
 	self._oilStateService:PushState(userId)
 
@@ -126,6 +137,16 @@ function DrillingService:_handlePlacePump(player: Player, payload: any)
 	self._remoteService:GetEvent(RemoteNames.OilActionResult):FireClient(player, {
 		action = "PlacePump", ok = ok, code = code, message = message, data = data,
 	})
+	if ok then
+		local tier = "T1"
+		if typeof(payload) == "table" and typeof(payload.tier) == "string" and payload.tier ~= "" then
+			tier = payload.tier
+		end
+		local consumed, itemId = ConsumeShopEquipmentTool.consumeMatching(player, "Pump", tier)
+		if consumed and itemId then
+			NotifyShopToolConsumedSafe.tryCall(self._oilStateService, userId, itemId, "DrillingService:PlacePump")
+		end
+	end
 	if ok and self._progressEvent then
 		-- Broadcast pump-placed so clients stop the oil spray on that tile
 		self._progressEvent:FireAllClients({
