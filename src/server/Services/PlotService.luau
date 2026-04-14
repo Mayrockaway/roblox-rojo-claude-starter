@@ -279,8 +279,26 @@ function PlotService:_ensurePlotMarkers(plot: Model)
 	end
 
 	ensureMarker("ShipLoadPoint", Vector3.new(0, 3, 20), Color3.fromRGB(80, 160, 220))
-	ensureMarker("BoatSpawn", Vector3.new(0, 2, 40), Color3.fromRGB(80, 220, 160))
-	ensureMarker("BoatExit", Vector3.new(0, 2, 170), Color3.fromRGB(230, 160, 80))
+	-- BoatSpawn / BoatExit per-plot markers are no longer used: boats live at
+	-- workspace.dOCKS.BoatSpawn{1..8} managed by BoatDockService.
+
+	-- OilTanks rig: clone ReplicatedStorage.Assets.OilTanksTemplate to <plot>.OilTanks
+	-- if missing, pivoted to the plot's OilTanksAnchor (authored in Studio). The rig carries
+	-- tier tubes tagged with attribute OilType; the liquid Parts are anchored fill indicators.
+	local existingTanks = plot:FindFirstChild("OilTanks")
+	local tanksAnchor = plot:FindFirstChild("OilTanksAnchor")
+	if not existingTanks and tanksAnchor and tanksAnchor:IsA("BasePart") then
+		local assets = game:GetService("ReplicatedStorage"):FindFirstChild("Assets")
+		local template = assets and assets:FindFirstChild("OilTanksTemplate")
+		if template then
+			local tanks = template:Clone()
+			tanks.Name = "OilTanks"
+			tanks:PivotTo(tanksAnchor.CFrame)
+			tanks.Parent = plot
+		else
+			warn(string.format("[PlotService] %s: no OilTanksTemplate in ReplicatedStorage.Assets", plot.Name))
+		end
+	end
 end
 
 function PlotService:_getPlotsSorted(): { Model }

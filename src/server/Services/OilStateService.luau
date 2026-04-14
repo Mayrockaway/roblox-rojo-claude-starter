@@ -13,6 +13,7 @@ local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("Ship
 local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
 local ShipUpgradeConfig = require(Shared:WaitForChild("Config"):WaitForChild("ShipUpgradeConfig"))
 local ShipProfileMigration = require(Shared:WaitForChild("Config"):WaitForChild("ShipProfileMigration"))
+local OilTankConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilTankConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local DevLog = require(Shared:WaitForChild("DevLog"))
 
@@ -116,6 +117,28 @@ local function emptyTierMap()
 		LightSweet = 0,
 		PremiumRefined = 0,
 	}
+end
+
+local function defaultTankTiers()
+	return {
+		HeavyCrude = 1,
+		LightSweet = 1,
+		PremiumRefined = 1,
+	}
+end
+
+-- Capacity of a single tank (per oil type). Reads per-player tier from state.
+local function tankCapacity(state, oilType: string): number
+	local tier = state.tankTiers and state.tankTiers[oilType] or 1
+	return OilTankConfig.GetCapacity(tier)
+end
+
+local function totalTankCapacity(state): number
+	local sum = 0
+	for _, tier in ipairs(TIER_ORDER) do
+		sum += tankCapacity(state, tier)
+	end
+	return sum
 end
 
 -- =================== CELL GRID HELPERS ===================
@@ -271,6 +294,8 @@ function OilStateService:Init(remoteService, plotService)
 	self._autosaveThread = nil
 	self._dataStoreStudioFallbackWarned = false
 	self._lastOilDataStoreSaveClock = {} :: { [number]: number }
+	self._boatDockService = nil :: any
+	self._skinChangedHandler = nil :: ((number, string) -> ())?
 	self._dataStore = nil
 	local okStore, storeOrErr = pcall(function()
 		return DataStoreService:GetDataStore(DATASTORE_NAME)
@@ -485,16 +510,37 @@ function OilStateService:GetStateForClient(userId: number)
 		})
 	end
 
+	local tankTiers = {
+		HeavyCrude = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.HeavyCrude or 1),
+		LightSweet = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.LightSweet or 1),
+		PremiumRefined = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.PremiumRefined or 1),
+	}
+	local tankCapacities = {
+		HeavyCrude = OilTankConfig.GetCapacity(tankTiers.HeavyCrude),
+		LightSweet = OilTankConfig.GetCapacity(tankTiers.LightSweet),
+		PremiumRefined = OilTankConfig.GetCapacity(tankTiers.PremiumRefined),
+	}
+	local tankUpgradeCosts = {
+		HeavyCrude = OilTankConfig.GetUpgradeCost(tankTiers.HeavyCrude),
+		LightSweet = OilTankConfig.GetUpgradeCost(tankTiers.LightSweet),
+		PremiumRefined = OilTankConfig.GetUpgradeCost(tankTiers.PremiumRefined),
+	}
+
 	return {
 		plotId = state.plotId,
 		cash = state.cash,
 		totalOil = state.totalOil,
 		storageCapacity = state.storageCapacity,
 		oilByTier = copyTierMap(state.oilByTier),
+		tankTiers = tankTiers,
+		tankCapacities = tankCapacities,
+		tankUpgradeCosts = tankUpgradeCosts,
 		activeDrillCount = state.activeDrillCount,
 		stalledDrillCount = stalledCount,
 		maxActiveDrills = maxActiveDrillsFor(state),
 		activeShipmentCount = state.activeShipmentCount,
+		boatState = (self._boatDockService and self._boatDockService:GetState(userId)) or nil,
+		boatCooldownEndsAt = (self._boatDockService and self._boatDockService:GetCooldownEndsAt(userId)) or nil,
 		shipSpeedLevel = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel),
 		shipCapacityLevel = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel),
 		shipSkinId = (typeof(state.shipSkinId) == "string" and state.shipSkinId) or "DefaultTanker",
@@ -1345,21 +1391,19 @@ function OilStateService:DrainDrillBuffer(userId: number, drillId: number): numb
 	if not drill or not drill.localBuffer then
 		return 0
 	end
-	local space = state.storageCapacity - state.totalOil
-	if space <= 0 then
-		return 0
-	end
 	local drained = 0
 	for _, tier in ipairs(TIER_ORDER) do
-		if space <= 0 then break end
-		local amt = floorPositive(drill.localBuffer[tier] or 0)
-		local take = math.min(space, amt)
-		if take > 0 then
-			drill.localBuffer[tier] -= take
-			state.oilByTier[tier] += take
-			state.totalOil += take
-			drained += take
-			space -= take
+		local cap = tankCapacity(state, tier)
+		local tierSpace = cap - (state.oilByTier[tier] or 0)
+		if tierSpace > 0 then
+			local amt = floorPositive(drill.localBuffer[tier] or 0)
+			local take = math.min(tierSpace, amt)
+			if take > 0 then
+				drill.localBuffer[tier] -= take
+				state.oilByTier[tier] += take
+				state.totalOil += take
+				drained += take
+			end
 		end
 	end
 	if drained > 0 then
@@ -1396,9 +1440,6 @@ function OilStateService:ApplyProduction(userId: number, additionsByTier): numbe
 	if not state then
 		return 0
 	end
-	if state.totalOil >= state.storageCapacity then
-		return 0
-	end
 
 	for _, tier in ipairs(TIER_ORDER) do
 		state.pendingFloats[tier] += additionsByTier[tier] or 0
@@ -1410,18 +1451,18 @@ function OilStateService:ApplyProduction(userId: number, additionsByTier): numbe
 		state.pendingFloats[tier] = state.pendingFloats[tier] - integersToAdd[tier]
 	end
 
-	local space = state.storageCapacity - state.totalOil
+	-- Per-tank capacity gating: each tier has its own cap (state.tankTiers[tier]).
+	-- When a tank is full, excess for that tier is discarded here (the producer should
+	-- also check TankIsFull and avoid generating that tier in the first place).
 	local added = 0
 	for _, tier in ipairs(TIER_ORDER) do
-		if space <= 0 then
-			break
-		end
-		local take = math.min(space, integersToAdd[tier])
-		if take > 0 then
+		local cap = tankCapacity(state, tier)
+		local space = cap - (state.oilByTier[tier] or 0)
+		if space > 0 and integersToAdd[tier] > 0 then
+			local take = math.min(space, integersToAdd[tier])
 			state.oilByTier[tier] += take
 			state.totalOil += take
 			added += take
-			space -= take
 		end
 	end
 
@@ -1433,6 +1474,55 @@ end
 
 function OilStateService:GetAllStates()
 	return self._statesByUserId
+end
+
+-- Tank accessors used by OilProductionService (per-tier gating) and OilTankService (upgrades).
+function OilStateService:GetTankTier(userId: number, oilType: string): number
+	local state = self._statesByUserId[userId]
+	if not state or not state.tankTiers then return 1 end
+	return OilTankConfig.ClampTier(state.tankTiers[oilType] or 1)
+end
+
+function OilStateService:GetTankCapacity(userId: number, oilType: string): number
+	local state = self._statesByUserId[userId]
+	if not state then return OilTankConfig.GetCapacity(1) end
+	return tankCapacity(state, oilType)
+end
+
+function OilStateService:TankIsFull(userId: number, oilType: string): boolean
+	local state = self._statesByUserId[userId]
+	if not state then return false end
+	return (state.oilByTier[oilType] or 0) >= tankCapacity(state, oilType)
+end
+
+-- Upgrade one tank one tier. Charges `OilTankConfig.GetUpgradeCost(currentTier)` on success.
+-- Returns (ok, code, message, payload).
+function OilStateService:TryUpgradeTank(userId: number, oilType: string): (boolean, string, string, any)
+	local state = self._statesByUserId[userId]
+	if not state then return false, "ERR_NO_STATE", "State unavailable.", nil end
+	if OilTankConfig.OilColors[oilType] == nil then
+		return false, "ERR_BAD_OIL_TYPE", "Unknown oil type.", nil
+	end
+	local currentTier = OilTankConfig.ClampTier(state.tankTiers[oilType] or 1)
+	if currentTier >= OilTankConfig.MaxTier then
+		return false, "ERR_MAX_TIER", "Tank already at max tier.", nil
+	end
+	local cost = OilTankConfig.GetUpgradeCost(currentTier)
+	if not cost then
+		return false, "ERR_MAX_TIER", "No further upgrade available.", nil
+	end
+	if not self:TrySpendCash(userId, cost) then
+		return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to upgrade.", cost), nil
+	end
+	state.tankTiers[oilType] = currentTier + 1
+	state.storageCapacity = totalTankCapacity(state)
+	self:_markDirty(userId)
+	self:PushState(userId)
+	return true, "OK", string.format("%s tank upgraded to tier %d.", oilType, state.tankTiers[oilType]), {
+		oilType = oilType,
+		tier = state.tankTiers[oilType],
+		capacity = tankCapacity(state, oilType),
+	}
 end
 
 function OilStateService:_rebindExistingStateToPlot(state, plot: Model)
@@ -1576,7 +1666,9 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		plotId = plotId,
 		plot = plot,
 		cash = OilConfig.StartingCash,
-		storageCapacity = OilConfig.StartingStorageCapacity,
+		-- Per-tank upgrade levels. storageCapacity is derived = sum of tank capacities.
+		tankTiers = defaultTankTiers(),
+		storageCapacity = 0, -- set below from tankTiers
 		totalOil = 0,
 		oilByTier = {
 			HeavyCrude = 0,
@@ -1613,6 +1705,9 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 	if persisted then
 		self:_applyPersistedIntoState(state, persisted, plot)
 	end
+
+	-- Derive storageCapacity from per-tank capacities (after persistence may have set tankTiers).
+	state.storageCapacity = totalTankCapacity(state)
 
 	self:_ensureDefaultDrumForPlayer(state, plot)
 	self:_ensureDefaultPipesForPlayer(state, plot)
@@ -1726,8 +1821,16 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 	if typeof(persisted.cash) == "number" then
 		state.cash = floorPositive(persisted.cash)
 	end
-	if typeof(persisted.storageCapacity) == "number" then
-		state.storageCapacity = math.max(1, floorPositive(persisted.storageCapacity))
+	-- Legacy: earlier profiles stored a single `storageCapacity` global.
+	-- New model derives it from `tankTiers`. We ignore the legacy field unless tankTiers is missing,
+	-- in which case we let the default (tier 1 all around) stand — legacy capacity is unused.
+	if typeof(persisted.tankTiers) == "table" then
+		for _, oilType in ipairs(TIER_ORDER) do
+			local v = persisted.tankTiers[oilType]
+			if typeof(v) == "number" then
+				state.tankTiers[oilType] = OilTankConfig.ClampTier(v)
+			end
+		end
 	end
 	if typeof(persisted.oilByTier) == "table" then
 		local pot = persisted.oilByTier :: { [string]: any }
@@ -2106,6 +2209,11 @@ function OilStateService:_serializeState(state)
 	persisted.cash = floorPositive(state.cash)
 	persisted.storageCapacity = math.max(1, floorPositive(state.storageCapacity))
 	persisted.oilByTier = copyTierMap(state.oilByTier)
+	persisted.tankTiers = {
+		HeavyCrude = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.HeavyCrude or 1),
+		LightSweet = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.LightSweet or 1),
+		PremiumRefined = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.PremiumRefined or 1),
+	}
 	persisted.unlockedChunkIds = {}
 	persisted.chunkBiomes = {}
 	persisted.chunkTiles = {}
@@ -2187,6 +2295,14 @@ function OilStateService:_serializeState(state)
 	return persisted
 end
 
+function OilStateService:SetBoatDockService(svc)
+	self._boatDockService = svc
+end
+
+function OilStateService:SetSkinChangedHandler(fn: (number, string) -> ())
+	self._skinChangedHandler = fn
+end
+
 function OilStateService:SetShipSkinId(userId: number, skinId: string): (boolean, string)
 	local state = self._statesByUserId[userId]
 	if not state then
@@ -2195,8 +2311,12 @@ function OilStateService:SetShipSkinId(userId: number, skinId: string): (boolean
 	if typeof(skinId) ~= "string" or not ShipSkinCatalog.Skins[skinId] then
 		return false, "ERR_BAD_SKIN"
 	end
+	local prev = state.shipSkinId
 	state.shipSkinId = skinId
 	self:_markDirty(userId)
+	if prev ~= skinId and self._skinChangedHandler then
+		task.spawn(self._skinChangedHandler, userId, skinId)
+	end
 	return true, "OK"
 end
 

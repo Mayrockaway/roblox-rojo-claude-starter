@@ -84,7 +84,7 @@ local function requireStraitWaypointWorldFx(): StraitWaypointFxModule
 end
 
 local StraitWaypointWorldFx = requireStraitWaypointWorldFx()
-local StraitEventPlaytestBanner = require(script.Parent:WaitForChild("UI"):WaitForChild("StraitEventPlaytestBanner"))
+local StraitEventPlaytestBanner = require(script:WaitForChild("UI"):WaitForChild("StraitEventPlaytestBanner"))
 
 local remotesFolder = Shared:FindFirstChild("Remotes")
 while remotesFolder == nil do
