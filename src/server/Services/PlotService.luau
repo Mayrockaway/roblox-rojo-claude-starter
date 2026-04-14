@@ -51,6 +51,7 @@ function PlotService:Start()
 	end
 	self._running = true
 
+	print("[PlotService] Start() begin")
 	local map = Workspace:WaitForChild("Map", 20)
 	if not map then
 		warn("[PlotService] Workspace.Map not found.")
@@ -61,8 +62,20 @@ function PlotService:Start()
 		warn("[PlotService] Map.Plots not found.")
 		return
 	end
+	print("[PlotService] Plots folder has "..#self._plotsFolder:GetChildren().." children before init")
 
 	self:_initializePlots()
+
+	-- Log final state of every plot after init
+	for _, p in ipairs(self._plotsFolder:GetChildren()) do
+		if p:IsA("Model") then
+			print(string.format("[PlotService] POST-INIT: %s PlotId=%s Owner=%s",
+				p.Name,
+				tostring(p:GetAttribute("PlotId")),
+				tostring(p:GetAttribute("OwnerUserId"))
+			))
+		end
+	end
 
 	table.insert(self._connections, Players.PlayerAdded:Connect(function(player)
 		self:_onPlayerAdded(player)
@@ -76,7 +89,7 @@ function PlotService:Start()
 		self:_onPlayerAdded(player)
 	end
 
-	print("[PlotService] Running: chunked plot mode")
+	print("[PlotService] Start() done — running")
 end
 
 function PlotService:Stop()

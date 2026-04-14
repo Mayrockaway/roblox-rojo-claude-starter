@@ -307,29 +307,36 @@ end
 
 local function getOwnedPlotByAttribute(): Model?
 	local plotId = player:GetAttribute("PlotId")
+	print(string.format("[Client] getOwnedPlotByAttribute — my PlotId=%s", tostring(plotId)))
 	if typeof(plotId) ~= "number" or plotId <= 0 then
+		print("[Client] PlotId is nil/zero — skipping lookup")
 		return nil
 	end
 	local map = Workspace:FindFirstChild("Map")
 	if not map then
+		print("[Client] Workspace.Map missing")
 		return nil
 	end
 	local plots = map:FindFirstChild("Plots")
 	if not plots then
+		print("[Client] Workspace.Map.Plots missing")
 		return nil
 	end
+	local seen = {}
 	for _, item in ipairs(plots:GetChildren()) do
 		if item:IsA("Model") then
 			local id = item:GetAttribute("PlotId")
-			-- Fallback: if a plot is missing the PlotId attribute, parse it from the name.
 			if typeof(id) ~= "number" then
 				id = tonumber(item.Name:match("(%d+)"))
 			end
+			table.insert(seen, string.format("%s(id=%s)", item.Name, tostring(id)))
 			if typeof(id) == "number" and id == plotId then
+				print(string.format("[Client] MATCHED %s for PlotId=%d", item.Name, plotId))
 				return item
 			end
 		end
 	end
+	print(string.format("[Client] No plot matched PlotId=%d. Plots seen: [%s]", plotId, table.concat(seen, ", ")))
 	return nil
 end
 
@@ -1084,11 +1091,23 @@ local function tryPrimaryAction()
 
 	-- DIAGNOSTIC: log each click so we can see why placement fails
 	local _h, _hp, _c = getTargetedChunkHit()
-	print(string.format("[PlaceClick] kind=%s tier=%s ownedPlot=%s target=%s hit=%s chunkId=%s",
-		tostring(kind), tostring(tier),
+	local myPlotId = player:GetAttribute("PlotId")
+	local plotsInWorkspace = {}
+	local map = Workspace:FindFirstChild("Map")
+	local plotsFolder = map and map:FindFirstChild("Plots")
+	if plotsFolder then
+		for _, p in ipairs(plotsFolder:GetChildren()) do
+			if p:IsA("Model") then
+				table.insert(plotsInWorkspace, p.Name .. "(id=" .. tostring(p:GetAttribute("PlotId")) .. ")")
+			end
+		end
+	end
+	print(string.format("[PlaceClick] myPlotId=%s ownedPlot=%s plots=[%s] kind=%s tier=%s target=%s chunkId=%s",
+		tostring(myPlotId),
 		ownedPlot and ownedPlot.Name or "nil",
+		table.concat(plotsInWorkspace, ","),
+		tostring(kind), tostring(tier),
 		mouse.Target and mouse.Target:GetFullName() or "nil",
-		_h and _h:GetFullName() or "nil",
 		tostring(_c)
 	))
 
@@ -1121,6 +1140,36 @@ local function clearRemoveHold()
 end
 
 bindOwnedPlot()
+
+-- Retry bindOwnedPlot for up to 10s in case plot replication lags behind the PlotId attribute
+task.spawn(function()
+	for i = 1, 20 do
+		if ownedPlot then break end
+		task.wait(0.5)
+		print("[Client] Retry bindOwnedPlot attempt "..i)
+		bindOwnedPlot()
+	end
+	if ownedPlot then
+		print("[Client] ownedPlot resolved to "..ownedPlot.Name)
+	else
+		print("[Client] FAILED to resolve ownedPlot after 10s")
+	end
+end)
+
+-- Re-bind whenever a new plot model shows up (server-side auto-dup replicated late)
+do
+	local map = Workspace:FindFirstChild("Map") or Workspace:WaitForChild("Map", 10)
+	local plots = map and (map:FindFirstChild("Plots") or map:WaitForChild("Plots", 10))
+	if plots then
+		plots.ChildAdded:Connect(function(child)
+			if child:IsA("Model") then
+				print("[Client] Plots folder got new child: "..child.Name.." — re-binding")
+				task.wait(0.1) -- let the model's children + attributes finish replicating
+				bindOwnedPlot()
+			end
+		end)
+	end
+end
 
 local initial = requestOilSnapshot:InvokeServer()
 if typeof(initial) == "table" then
