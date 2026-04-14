@@ -262,14 +262,32 @@ end
 function PlotService:_initializePlots()
 	self:_ensureEnoughPlots()
 	local plots = self:_getPlotsSorted()
+	local OilConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("OilConfig"))
 	for _, plot in ipairs(plots) do
-		-- Force-reset OwnerUserId to 0 on every server boot.
 		plot:SetAttribute("OwnerUserId", 0)
-		-- Guarantee every plot has a PlotId attribute. Without this, the CLIENT can't match
-		-- their player.PlotId (server-assigned) against the plot's attribute → no interaction.
 		if typeof(plot:GetAttribute("PlotId")) ~= "number" then
 			local parsed = tonumber(plot.Name:match("(%d+)")) or 1
 			plot:SetAttribute("PlotId", parsed)
+		end
+		-- Guarantee every plot has ONE section tagged StartingChunk. Without this, OilStateService
+		-- never unlocks a starter chunk for the player → they spawn on a plot with nothing usable.
+		local ground = plot:FindFirstChild("PlotGround")
+		if ground and ground:IsA("Model") then
+			local startingSectionId = string.format("S%02d_%02d", OilConfig.Chunks.StartingRow, OilConfig.Chunks.StartingCol)
+			local anyMarked = false
+			for _, section in ipairs(ground:GetChildren()) do
+				if section:IsA("Model") then
+					if section.Name == startingSectionId then
+						section:SetAttribute("StartingChunk", true)
+						anyMarked = true
+					else
+						section:SetAttribute("StartingChunk", false)
+					end
+				end
+			end
+			if not anyMarked then
+				warn(string.format("[PlotService] %s: no section named %s — starter chunk couldn't be marked", plot.Name, startingSectionId))
+			end
 		end
 		self:_ensurePlotMarkers(plot)
 		self:_refreshPlotVisual(plot)

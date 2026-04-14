@@ -1082,6 +1082,16 @@ local function tryPrimaryAction()
 
 	if kind ~= "Drill" and kind ~= "Pump" and kind ~= "Prospector" then return end
 
+	-- DIAGNOSTIC: log each click so we can see why placement fails
+	local _h, _hp, _c = getTargetedChunkHit()
+	print(string.format("[PlaceClick] kind=%s tier=%s ownedPlot=%s target=%s hit=%s chunkId=%s",
+		tostring(kind), tostring(tier),
+		ownedPlot and ownedPlot.Name or "nil",
+		mouse.Target and mouse.Target:GetFullName() or "nil",
+		_h and _h:GetFullName() or "nil",
+		tostring(_c)
+	))
+
 	local _, hitPos, chunkId = getTargetedChunkHit()
 	if not (hitPos and chunkId) then return end
 	if not isChunkUnlocked(chunkId) then
