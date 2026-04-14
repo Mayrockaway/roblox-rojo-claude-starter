@@ -215,16 +215,62 @@ function PlotService:_ensureEnoughPlots()
 	print(string.format("[PlotService] Auto-duplicated plots to target %d (had %d)", TARGET_PLOT_COUNT, #existing))
 end
 
+function PlotService:_emergencyCreatePlot()
+	-- Count existing plots, find highest PlotId, and clone one more at the next offset.
+	if not self._plotsFolder then return end
+	local src = self._plotsFolder:FindFirstChild("Plot_01")
+	if not src then return end
+	local count = 0
+	local maxId = 0
+	for _, p in ipairs(self._plotsFolder:GetChildren()) do
+		if p:IsA("Model") then
+			count += 1
+			local id = p:GetAttribute("PlotId") or tonumber(p.Name:match("Plot_(%d+)")) or 0
+			if id > maxId then maxId = id end
+		end
+	end
+	local _, bbSize = src:GetBoundingBox()
+	local spacing = bbSize.X + 40
+	local newId = maxId + 1
+	local offsetX = spacing * (newId - 1)
+	local name = string.format("Plot_%02d", newId)
+	if self._plotsFolder:FindFirstChild(name) then return end
+
+	local clone = src:Clone()
+	clone.Name = name
+	clone:SetAttribute("PlotId", newId)
+	clone:SetAttribute("OwnerUserId", 0)
+	for _, d in ipairs(clone:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Position = d.Position + Vector3.new(offsetX, 0, 0)
+		end
+	end
+	for _, d in ipairs(clone:GetDescendants()) do
+		if d:IsA("Model") then
+			local cx = d:GetAttribute("CenterX")
+			if typeof(cx) == "number" then
+				d:SetAttribute("CenterX", cx + offsetX)
+			end
+		end
+	end
+	clone.Parent = self._plotsFolder
+	self:_ensurePlotMarkers(clone)
+	self:_refreshPlotVisual(clone)
+	print(string.format("[PlotService] Emergency-created %s at offset +%d", name, offsetX))
+end
+
 function PlotService:_initializePlots()
 	self:_ensureEnoughPlots()
 	local plots = self:_getPlotsSorted()
 	for _, plot in ipairs(plots) do
-		if plot:GetAttribute("OwnerUserId") == nil then
-			plot:SetAttribute("OwnerUserId", 0)
-		end
+		-- Force-reset to 0 on every server boot. Each server session is a fresh lobby — no one
+		-- owns anything until they actually join. This prevents stale OwnerUserId baked into
+		-- the published place file from blocking new players.
+		plot:SetAttribute("OwnerUserId", 0)
 		self:_ensurePlotMarkers(plot)
 		self:_refreshPlotVisual(plot)
 	end
+	print(string.format("[PlotService] %d plots ready, all unowned", #plots))
 end
 
 function PlotService:_ensurePlotMarkers(plot: Model)
@@ -401,8 +447,19 @@ end
 
 function PlotService:_onPlayerAdded(player: Player)
 	local plot = self:_claimRandomOpenPlot(player.UserId)
+	if not plot then
+		-- No open plots — emergency duplicate one more and claim it.
+		warn(string.format("[PlotService] No open plot for %s — auto-creating one", player.Name))
+		self:_emergencyCreatePlot()
+		plot = self:_claimRandomOpenPlot(player.UserId)
+	end
 	self._assignedByUserId[player.UserId] = plot
 	player:SetAttribute("PlotId", plot and getPlotId(plot) or 0)
+	if plot then
+		print(string.format("[PlotService] %s assigned to %s", player.Name, plot.Name))
+	else
+		warn(string.format("[PlotService] FAILED to assign a plot to %s", player.Name))
+	end
 	if self._plotAssignedEvent and plot then
 		self._plotAssignedEvent:Fire(player.UserId, plot)
 	end
