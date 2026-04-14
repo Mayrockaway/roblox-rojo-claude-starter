@@ -188,17 +188,22 @@ function PlotService:_ensureEnoughPlots()
 		clone.Name = name
 		clone:SetAttribute("PlotId", newId)
 		clone:SetAttribute("OwnerUserId", 0)
+		-- Move every BasePart by offsetX (world-space positions)
 		for _, d in ipairs(clone:GetDescendants()) do
 			if d:IsA("BasePart") then
 				d.Position = d.Position + Vector3.new(offsetX, 0, 0)
 			end
 		end
-		-- Models with baked pivots need a pass too
+		-- CRITICAL: update CenterX / CenterZ attributes on chunk section Models.
+		-- OilStateService reads these as the chunk's world-space center; if we don't update
+		-- them, every drill/pump placement resolves to the ORIGINAL plot's coordinates.
 		for _, d in ipairs(clone:GetDescendants()) do
 			if d:IsA("Model") then
-				-- PivotTo is idempotent after all parts moved, but keeps pivot cached correctly
-				local piv = d:GetPivot()
-				d:PivotTo(piv) -- no-op but reconciles pivot
+				local cx = d:GetAttribute("CenterX")
+				if typeof(cx) == "number" then
+					d:SetAttribute("CenterX", cx + offsetX)
+				end
+				-- CenterZ is unchanged since we only shifted on X
 			end
 		end
 		clone.Parent = self._plotsFolder
