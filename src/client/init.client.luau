@@ -1034,6 +1034,22 @@ local function getStraitStatusHud(): { refresh: (PlayerGui, string) -> () }?
 	return straitStatusHudModule
 end
 
+local straitStatusChangeFxModule: { trigger: (PlayerGui, string) -> () }? = nil
+local function getStraitStatusChangeFx(): { trigger: (PlayerGui, string) -> () }?
+	if straitStatusChangeFxModule then
+		return straitStatusChangeFxModule
+	end
+	local ui = getHudUiFolder()
+	if not ui then
+		return nil
+	end
+	local m = ui:FindFirstChild("StraitStatusChangeFx")
+	if m and m:IsA("ModuleScript") then
+		straitStatusChangeFxModule = require(m) :: { trigger: (PlayerGui, string) -> () }
+	end
+	return straitStatusChangeFxModule
+end
+
 local oilPriceHudModule: { refresh: (PlayerGui, any) -> () }? = nil
 local function getOilPriceHud(): { refresh: (PlayerGui, any) -> () }?
 	if oilPriceHudModule then
@@ -1099,8 +1115,15 @@ globalStateUpdate.OnClientEvent:Connect(function(snapshot)
 		return
 	end
 	if typeof(snapshot.state) == "string" then
+		local prev = marketState.straitState
 		marketState.straitState = snapshot.state
 		updateMarketUi()
+		if prev and prev ~= snapshot.state then
+			local fx = getStraitStatusChangeFx()
+			if fx then
+				fx.trigger(playerGui, snapshot.state)
+			end
+		end
 	end
 end)
 
