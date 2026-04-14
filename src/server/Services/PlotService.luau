@@ -263,10 +263,14 @@ function PlotService:_initializePlots()
 	self:_ensureEnoughPlots()
 	local plots = self:_getPlotsSorted()
 	for _, plot in ipairs(plots) do
-		-- Force-reset to 0 on every server boot. Each server session is a fresh lobby — no one
-		-- owns anything until they actually join. This prevents stale OwnerUserId baked into
-		-- the published place file from blocking new players.
+		-- Force-reset OwnerUserId to 0 on every server boot.
 		plot:SetAttribute("OwnerUserId", 0)
+		-- Guarantee every plot has a PlotId attribute. Without this, the CLIENT can't match
+		-- their player.PlotId (server-assigned) against the plot's attribute → no interaction.
+		if typeof(plot:GetAttribute("PlotId")) ~= "number" then
+			local parsed = tonumber(plot.Name:match("(%d+)")) or 1
+			plot:SetAttribute("PlotId", parsed)
+		end
 		self:_ensurePlotMarkers(plot)
 		self:_refreshPlotVisual(plot)
 	end

@@ -321,6 +321,10 @@ local function getOwnedPlotByAttribute(): Model?
 	for _, item in ipairs(plots:GetChildren()) do
 		if item:IsA("Model") then
 			local id = item:GetAttribute("PlotId")
+			-- Fallback: if a plot is missing the PlotId attribute, parse it from the name.
+			if typeof(id) ~= "number" then
+				id = tonumber(item.Name:match("(%d+)"))
+			end
 			if typeof(id) == "number" and id == plotId then
 				return item
 			end
