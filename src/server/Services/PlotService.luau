@@ -162,7 +162,56 @@ function PlotService:OnPlotReleased(callback)
 	return self._plotReleasedEvent.Event:Connect(callback)
 end
 
+-- Target number of player plots. If the map only has 1 plot authored, we duplicate it on server
+-- boot so every player (up to this count) can claim their own slot.
+local TARGET_PLOT_COUNT = 4
+
+function PlotService:_ensureEnoughPlots()
+	if not self._plotsFolder then return end
+	local existing = {}
+	for _, p in ipairs(self._plotsFolder:GetChildren()) do
+		if p:IsA("Model") then table.insert(existing, p) end
+	end
+	if #existing >= TARGET_PLOT_COUNT or #existing == 0 then return end
+
+	-- Use Plot_01 (or the first plot) as the template
+	local src = self._plotsFolder:FindFirstChild("Plot_01") or existing[1]
+	if not src then return end
+
+	local _, bbSize = src:GetBoundingBox()
+	local spacing = bbSize.X + 40
+
+	local function dup(newId, offsetX)
+		local name = string.format("Plot_%02d", newId)
+		if self._plotsFolder:FindFirstChild(name) then return end
+		local clone = src:Clone()
+		clone.Name = name
+		clone:SetAttribute("PlotId", newId)
+		clone:SetAttribute("OwnerUserId", 0)
+		for _, d in ipairs(clone:GetDescendants()) do
+			if d:IsA("BasePart") then
+				d.Position = d.Position + Vector3.new(offsetX, 0, 0)
+			end
+		end
+		-- Models with baked pivots need a pass too
+		for _, d in ipairs(clone:GetDescendants()) do
+			if d:IsA("Model") then
+				-- PivotTo is idempotent after all parts moved, but keeps pivot cached correctly
+				local piv = d:GetPivot()
+				d:PivotTo(piv) -- no-op but reconciles pivot
+			end
+		end
+		clone.Parent = self._plotsFolder
+	end
+
+	for i = 2, TARGET_PLOT_COUNT do
+		dup(i, spacing * (i - 1))
+	end
+	print(string.format("[PlotService] Auto-duplicated plots to target %d (had %d)", TARGET_PLOT_COUNT, #existing))
+end
+
 function PlotService:_initializePlots()
+	self:_ensureEnoughPlots()
 	local plots = self:_getPlotsSorted()
 	for _, plot in ipairs(plots) do
 		if plot:GetAttribute("OwnerUserId") == nil then
