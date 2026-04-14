@@ -8,6 +8,7 @@ local OilPriceInfoPanel = require(script.Parent.HudPanels.OilPriceInfoPanel)
 local SellOilPanel = require(script.Parent.HudPanels.SellOilPanel)
 local ShipManagementPanel = require(script.Parent.HudPanels.ShipManagementPanel)
 local ShipOilPanel = require(script.Parent.HudPanels.ShipOilPanel)
+local StraitControlPanel = require(script.Parent.HudPanels.StraitControlPanel)
 local StraitInfoPanel = require(script.Parent.HudPanels.StraitInfoPanel)
 local HudPanelTypes = require(script.Parent.HudPanelTypes)
 local HudTriggerHover = require(script.Parent.HudTriggerHover)
@@ -23,6 +24,7 @@ local BUTTON_TO_SCREEN: { [string]: string } = {
 
 local SCREEN_BIND: { [string]: (PlayerGui) -> HudPanelTypes.HudPanelController? } = {
 	[OilPriceInfoPanel.screenName()] = OilPriceInfoPanel.bind,
+	[StraitControlPanel.screenName()] = StraitControlPanel.bind,
 	[StraitInfoPanel.screenName()] = StraitInfoPanel.bind,
 	[EquipmentShopPanel.screenName()] = EquipmentShopPanel.bind,
 	[ShipOilPanel.screenName()] = ShipOilPanel.bind,

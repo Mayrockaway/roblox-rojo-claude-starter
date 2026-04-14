@@ -17,6 +17,7 @@ local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
 local SCREEN_NAME = "ShipOilPanelGui"
 
 -- Studio row `Frame` names → manifest tier keys. Prefer **`ShipCargoRowHeavyCrude`**, **`ShipCargoRowLightSweet`**, **`ShipCargoRowPremiumRefined`**; legacy aliases keep old places working.
+-- Renamed rows: set attribute **`ShipOilTier`** = `HeavyCrude` | `LightSweet` | `PremiumRefined`, or keep **`CrudeTitle` / `TypeName` / `NameColumn`** copy matching **`QualityConfig.Tiers`** display / hud short names.
 local ROW_NAME_TO_TIER: { [string]: string } = {
 	ShipCargoRowHeavyCrude = "HeavyCrude",
 	ShipCargoRowHeavy = "HeavyCrude",
@@ -29,6 +30,58 @@ local ROW_NAME_TO_TIER: { [string]: string } = {
 }
 
 local TIER_KEYS = { "HeavyCrude", "LightSweet", "PremiumRefined" }
+
+local function inferTierKeyFromLabelText(text: string): string?
+	local norm = string.lower((string.match(text, "^%s*(.-)%s*$") or text))
+	for tierKey, def in pairs(QualityConfig.Tiers) do
+		if norm == string.lower(def.displayName) or norm == string.lower(def.hudShortName) then
+			return tierKey :: string
+		end
+	end
+	return nil
+end
+
+--- Text used in Studio for the oil type (before script may overwrite with `hudShortLabel`).
+local function cargoTierLabelText(row: GuiObject): string?
+	local crude = row:FindFirstChild("CrudeTitle", true)
+	if crude and crude:IsA("TextLabel") then
+		return crude.Text
+	end
+	local typeName = row:FindFirstChild("TypeName", true)
+	if typeName and typeName:IsA("TextLabel") then
+		return typeName.Text
+	end
+	local nameCol = row:FindFirstChild("NameColumn", true)
+	if nameCol then
+		local tl = nameCol:FindFirstChildWhichIsA("TextLabel", true)
+		if tl and tl:IsA("TextLabel") then
+			return tl.Text
+		end
+	end
+	return nil
+end
+
+--- Resolve warehouse tier when row frames are renamed: canonical **`ShipCargoRow*`** names, optional **`ShipOilTier`** attribute, or label text vs **`QualityConfig.Tiers`**.
+local function resolveRowTierKey(row: GuiObject): string?
+	local byName = ROW_NAME_TO_TIER[row.Name]
+	if byName then
+		return byName
+	end
+	local attr = row:GetAttribute("ShipOilTier")
+	if typeof(attr) == "string" then
+		local a = attr :: string
+		for _, k in ipairs(TIER_KEYS) do
+			if a == k then
+				return k
+			end
+		end
+	end
+	local raw = cargoTierLabelText(row)
+	if raw then
+		return inferTierKeyFromLabelText(raw)
+	end
+	return nil
+end
 
 local ShipOilPanel = {}
 
@@ -161,11 +214,7 @@ local function mergeResolvedFromSnapshot(snap: any)
 	end
 end
 
-local function applyCargoRowTitles(row: Instance)
-	local tier = ROW_NAME_TO_TIER[row.Name]
-	if not tier then
-		return
-	end
+local function applyCargoRowTitles(row: Instance, tier: string)
 	local title = QualityConfig.hudShortLabel(tier)
 	local crude = row:FindFirstChild("CrudeTitle", true)
 	if crude and crude:IsA("TextLabel") then
@@ -321,15 +370,20 @@ local function wireShipOil(screen: ScreenGui)
 	requestDispatchShipmentEvent = rf:WaitForChild(RemoteNames.RequestDispatchShipment) :: RemoteEvent
 
 	if cargoRows and cargoRows:IsA("Instance") then
+		local tierSeen: { [string]: boolean } = {}
 		for _, ch in ipairs(cargoRows:GetChildren()) do
 			if not ch:IsA("GuiObject") then
 				continue
 			end
-			local tier = ROW_NAME_TO_TIER[ch.Name]
+			local tier = resolveRowTierKey(ch)
 			if not tier then
 				continue
 			end
-			applyCargoRowTitles(ch)
+			if tierSeen[tier] then
+				continue
+			end
+			tierSeen[tier] = true
+			applyCargoRowTitles(ch, tier)
 			local invLabel = ch:FindFirstChild("InventoryCount", true)
 			local stepper = ch:FindFirstChild("Stepper", true)
 			if not (invLabel and invLabel:IsA("TextLabel") and stepper) then

@@ -27,31 +27,14 @@ local ROW_UI: { [string]: RowUiConfig } = {
 	OilSellRowStandard = { kind = "tier", tier = "PremiumRefined" },
 }
 
-local SUBTOTAL_FRAME_NAMES: { [string]: { string } } = {
-	OilSellRowHeavyCrude = { "SubtotalHeavyCrude", "SubtotalCrude", "SubtotalHeavy" },
-	OilSellRowCrude = { "SubtotalHeavyCrude", "SubtotalCrude", "SubtotalHeavy" },
-	OilSellRowHeavy = { "SubtotalHeavyCrude", "SubtotalCrude", "SubtotalHeavy" },
-	OilSellRowLightSweet = { "SubtotalLightSweet", "SubtotalLight" },
-	OilSellRowLight = { "SubtotalLightSweet", "SubtotalLight" },
-	OilSellRowPremiumRefined = { "SubtotalPremiumRefined", "SubtotalPremium", "SubtotalStandard" },
-	OilSellRowStandard = { "SubtotalPremiumRefined", "SubtotalPremium", "SubtotalStandard" },
+--- TotalsPanel subtotal row `Frame` names by **warehouse tier** (not by oil row frame name — rows may be reordered/renamed in Studio).
+local SUBTOTAL_NAMES_BY_TIER: { [string]: { string } } = {
+	HeavyCrude = { "SubtotalHeavyCrude", "SubtotalCrude", "SubtotalHeavy" },
+	LightSweet = { "SubtotalLightSweet", "SubtotalLight" },
+	PremiumRefined = { "SubtotalPremiumRefined", "SubtotalPremium", "SubtotalStandard" },
 }
 
 local TIER_KEYS = { "HeavyCrude", "LightSweet", "PremiumRefined" }
-
-local function rowTypeTitle(rowName: string): string?
-	local cfg = ROW_UI[rowName]
-	if not cfg then
-		return nil
-	end
-	if cfg.kind == "crude" then
-		return QualityConfig.hudShortLabel("HeavyCrude")
-	end
-	if cfg.kind == "tier" then
-		return QualityConfig.hudShortLabel(cfg.tier)
-	end
-	return nil
-end
 
 local SellOilPanel = {}
 
@@ -70,6 +53,65 @@ type RowBinding = {
 	plus: GuiButton,
 	subtotalRight: TextLabel?,
 }
+
+local function rowDisplayTitle(bind: RowBinding): string?
+	if bind.kind == "crude" then
+		return QualityConfig.hudShortLabel("HeavyCrude")
+	end
+	if bind.kind == "tier" and bind.tier then
+		return QualityConfig.hudShortLabel(bind.tier)
+	end
+	return nil
+end
+
+local function inferTierKeyFromTypeNameText(text: string): string?
+	local norm = string.lower((string.match(text, "^%s*(.-)%s*$") or text))
+	for tierKey, def in pairs(QualityConfig.Tiers) do
+		if norm == string.lower(def.displayName) or norm == string.lower(def.hudShortName) then
+			return tierKey :: string
+		end
+	end
+	return nil
+end
+
+--- Studio may rename row frames; resolve tier from **canonical names** or optional **`SellOilTier`** attribute (`HeavyCrude` | `LightSweet` | `PremiumRefined`).
+local function resolveRowUiConfig(row: GuiObject): RowUiConfig?
+	local byName = ROW_UI[row.Name]
+	if byName then
+		return byName
+	end
+	local attr = row:GetAttribute("SellOilTier")
+	if typeof(attr) == "string" then
+		local a = attr :: string
+		if a == "HeavyCrude" then
+			return { kind = "crude" }
+		elseif a == "LightSweet" then
+			return { kind = "tier", tier = "LightSweet" }
+		elseif a == "PremiumRefined" then
+			return { kind = "tier", tier = "PremiumRefined" }
+		end
+	end
+	local infoCol = row:FindFirstChild("InfoColumn", true)
+	local typeName = infoCol and infoCol:FindFirstChild("TypeName", true)
+	if typeName and typeName:IsA("TextLabel") then
+		local tierKey = inferTierKeyFromTypeNameText(typeName.Text)
+		if tierKey == "HeavyCrude" then
+			return { kind = "crude" }
+		elseif tierKey == "LightSweet" then
+			return { kind = "tier", tier = "LightSweet" }
+		elseif tierKey == "PremiumRefined" then
+			return { kind = "tier", tier = "PremiumRefined" }
+		end
+	end
+	return nil
+end
+
+local function dataTierForRowConfig(cfg: RowUiConfig): string
+	if cfg.kind == "crude" then
+		return "HeavyCrude"
+	end
+	return cfg.tier
+end
 
 local rowBindings: { RowBinding } = {}
 
@@ -189,11 +231,11 @@ local function totalSelectedPayout(): number
 	return t
 end
 
-local function findSubtotalRight(totalsPanel: Instance?, rowName: string): TextLabel?
+local function findSubtotalRight(totalsPanel: Instance?, dataTier: string): TextLabel?
 	if not totalsPanel then
 		return nil
 	end
-	local names = SUBTOTAL_FRAME_NAMES[rowName]
+	local names = SUBTOTAL_NAMES_BY_TIER[dataTier]
 	if not names then
 		return nil
 	end
@@ -226,7 +268,7 @@ local function refreshRowUi()
 			bind.amountLabel.Text = tostring(s)
 		end
 		if bind.typeNameLabel then
-			local title = rowTypeTitle(bind.rowName)
+			local title = rowDisplayTitle(bind)
 			if title then
 				bind.typeNameLabel.Text = title
 			end
@@ -333,7 +375,7 @@ local function wireSellOil(screen: ScreenGui)
 			if not ch:IsA("GuiObject") then
 				continue
 			end
-			local cfg = ROW_UI[ch.Name]
+			local cfg = resolveRowUiConfig(ch)
 			if not cfg then
 				continue
 			end
@@ -357,6 +399,7 @@ local function wireSellOil(screen: ScreenGui)
 			if not (minus and minus:IsA("GuiButton") and plus and plus:IsA("GuiButton") and amt and amt:IsA("TextLabel")) then
 				continue
 			end
+			local dataTier = dataTierForRowConfig(cfg)
 			local bind: RowBinding = {
 				kind = cfg.kind,
 				tier = if cfg.kind == "tier" then cfg.tier else nil,
@@ -367,7 +410,7 @@ local function wireSellOil(screen: ScreenGui)
 				amountLabel = amt :: TextLabel,
 				minus = minus :: GuiButton,
 				plus = plus :: GuiButton,
-				subtotalRight = findSubtotalRight(totalsPanel, ch.Name),
+				subtotalRight = findSubtotalRight(totalsPanel, dataTier),
 			}
 			table.insert(rowBindings, bind)
 			if cfg.kind == "crude" then

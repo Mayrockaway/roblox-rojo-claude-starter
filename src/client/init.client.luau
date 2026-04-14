@@ -1071,6 +1071,29 @@ task.defer(function()
 	updateMarketUi()
 end)
 
+-- Strait Robux CTA: hover scale pop (`UIScale` only — see `StraitControlCtaHover.luau`).
+task.defer(function()
+	local ui = getHudUiFolder()
+	if not ui then
+		return
+	end
+	local m = ui:FindFirstChild("StraitControlCtaHover")
+	if not (m and m:IsA("ModuleScript")) then
+		return
+	end
+	local ok, mod = pcall(require, m)
+	if not ok or typeof(mod) ~= "table" or typeof((mod :: any).bind) ~= "function" then
+		return
+	end
+	local bind = (mod :: any).bind :: (PlayerGui) -> boolean
+	for _ = 1, 100 do
+		if bind(playerGui) then
+			return
+		end
+		task.wait(0.25)
+	end
+end)
+
 local function updateWarehouseUi()
 	-- Rebind to StarterGui `HUD` warehouse labels/buttons when wired.
 	_ = warehouseState
