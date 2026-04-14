@@ -34,6 +34,7 @@ local OilMarketService = require(serviceFolder:WaitForChild("OilMarketService"))
 local EquipmentShopService = require(serviceFolder:WaitForChild("EquipmentShopService"))
 local DrillingService = require(serviceFolder:WaitForChild("DrillingService"))
 local ProspectingService = require(serviceFolder:WaitForChild("ProspectingService"))
+local FighterPlaneWaveService = require(serviceFolder:WaitForChild("FighterPlaneWaveService"))
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local DevLog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("DevLog"))
@@ -60,6 +61,7 @@ OilProductionService:Init(OilStateService, PipeNetworkService)
 DrillingService:Init(RemoteService, OilStateService)
 ProspectingService:Init(RemoteService, OilStateService)
 ToolService:Init()
+FighterPlaneWaveService:Init(RemoteService)
 
 RemoteService:Start()
 StraitStateService:Start()
@@ -77,10 +79,12 @@ OilProductionService:Start()
 DrillingService:Start()
 ProspectingService:Start()
 ToolService:Start()
+FighterPlaneWaveService:Start()
 
 game:BindToClose(function()
 	ToolService:Stop()
 	ProspectingService:Stop()
+	FighterPlaneWaveService:Stop()
 	DrillingService:Stop()
 	OilProductionService:Stop()
 	PlotResourceService:Stop()
@@ -116,6 +120,12 @@ if RunService:IsStudio() then
 				OilShipmentService:DebugDispatchCoastGuard(player)
 			elseif cmd == "/slap" then
 				OilShipmentService:DebugDispatchUSShipSlap(player)
+			elseif cmd == "/fighterwave" or cmd == "/fighters" then
+				FighterPlaneWaveService:DebugSpawnWave(player.Name)
+			elseif cmd == "/fighterhere" or cmd == "/jethere" then
+				FighterPlaneWaveService:DebugSpawnOverPlayer(player)
+			elseif cmd == "/fighterretarget" or cmd == "/jetretarget" then
+				FighterPlaneWaveService:DebugRetargetTemplate(player.Name)
 			end
 		end)
 	end)

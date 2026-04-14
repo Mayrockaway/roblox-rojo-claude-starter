@@ -49,6 +49,7 @@ local RemoteNames = {
 	OilStateUpdate = "OilStateUpdate",
 	OilActionResult = "OilActionResult",
 	RequestDevSetStraitBracket = "RequestDevSetStraitBracket",
+	FighterFlyoverEvent = "FighterFlyoverEvent",
 
 	-- One-shot equipment shop (Tools cloned into `Player.Backpack`; cash via `OilStateService`).
 	RequestPurchaseEquipment = "RequestPurchaseEquipment",

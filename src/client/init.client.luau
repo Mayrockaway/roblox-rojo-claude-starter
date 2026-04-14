@@ -118,6 +118,7 @@ local oilActionResult = remotesFolder:WaitForChild(RemoteNames.OilActionResult) 
 local shipmentVisualEvent = remotesFolder:WaitForChild(RemoteNames.ShipmentVisualEvent) :: RemoteEvent
 local requestDevSetStraitBracket = remotesFolder:WaitForChild(RemoteNames.RequestDevSetStraitBracket) :: RemoteEvent
 local globalStateUpdate = remotesFolder:WaitForChild(RemoteNames.GlobalStateUpdate) :: RemoteEvent
+local fighterFlyoverEvent = remotesFolder:WaitForChild(RemoteNames.FighterFlyoverEvent) :: RemoteEvent
 
 -- Dev diagnostic: mirror server-side [PlotService]/[OilState]/[ChunkOwnership] prints
 -- to this client's Output so the user doesn't have to hunt the Server Studio process.
@@ -125,6 +126,41 @@ local devLogEvent = remotesFolder:WaitForChild(RemoteNames.DevLog) :: RemoteEven
 devLogEvent.OnClientEvent:Connect(function(msg)
 	print("[SRV] " .. tostring(msg))
 end)
+
+local function requireFighterPlaneFlyoverFx(): { Start: (RemoteEvent) -> (), Stop: () -> () }?
+	local modScript: ModuleScript? = nil
+	local sibling = script.Parent:FindFirstChild("FighterPlaneFlyoverFx")
+	if sibling and sibling:IsA("ModuleScript") then
+		modScript = sibling
+	end
+
+	if not modScript then
+		local ps = player:FindFirstChild("PlayerScripts") or player:WaitForChild("PlayerScripts", 30)
+		local clientFolder = ps and ps:FindFirstChild("Client")
+		local m = clientFolder and clientFolder:FindFirstChild("FighterPlaneFlyoverFx")
+		if m and m:IsA("ModuleScript") then
+			modScript = m
+		end
+	end
+
+	if not modScript then
+		warn("[Client] FighterPlaneFlyoverFx module missing; jet flyovers will not render.")
+		return nil
+	end
+
+	local ok, loaded = pcall(require, modScript)
+	if ok and typeof(loaded) == "table" then
+		return loaded :: any
+	end
+
+	warn("[Client] FighterPlaneFlyoverFx failed to load:", loaded)
+	return nil
+end
+
+local fighterPlaneFlyoverFx = requireFighterPlaneFlyoverFx()
+if fighterPlaneFlyoverFx then
+	fighterPlaneFlyoverFx.Start(fighterFlyoverEvent)
+end
 
 local function requireStraitDevPanel(): { mount: (PlayerGui, RemoteEvent, RemoteEvent) -> (), shouldShow: () -> boolean }?
 	local modScript: ModuleScript? = nil
