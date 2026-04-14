@@ -92,6 +92,12 @@ end
 
 local requestOilSnapshot = remotesFolder:WaitForChild(RemoteNames.RequestOilSnapshot) :: RemoteFunction
 local requestPlaceDrill = remotesFolder:WaitForChild(RemoteNames.RequestPlaceDrill) :: RemoteEvent
+local requestStartDrill = remotesFolder:WaitForChild(RemoteNames.RequestStartDrill) :: RemoteEvent
+local requestPlacePump = remotesFolder:WaitForChild(RemoteNames.RequestPlacePump) :: RemoteEvent
+local drillProgressUpdate = remotesFolder:WaitForChild(RemoteNames.DrillProgressUpdate) :: RemoteEvent
+local requestProspect = remotesFolder:WaitForChild(RemoteNames.RequestProspect) :: RemoteEvent
+local prospectProgressUpdate = remotesFolder:WaitForChild(RemoteNames.ProspectProgressUpdate) :: RemoteEvent
+local requestHammerDestroy = remotesFolder:WaitForChild(RemoteNames.RequestHammerDestroy) :: RemoteEvent
 local requestRemoveDrill = remotesFolder:WaitForChild(RemoteNames.RequestRemoveDrill) :: RemoteEvent
 local requestBuyChunk = remotesFolder:WaitForChild(RemoteNames.RequestBuyChunk) :: RemoteEvent
 local requestPlacePipe = remotesFolder:WaitForChild(RemoteNames.RequestPlacePipe) :: RemoteEvent
@@ -104,7 +110,7 @@ local requestSellAllWarehouse = remotesFolder:WaitForChild(RemoteNames.RequestSe
 local requestTeleportToWarehouse = remotesFolder:WaitForChild(RemoteNames.RequestTeleportToWarehouse) :: RemoteEvent
 local warehouseStateUpdate = remotesFolder:WaitForChild(RemoteNames.WarehouseStateUpdate) :: RemoteEvent
 local requestWarehouseSnapshot = remotesFolder:WaitForChild(RemoteNames.RequestWarehouseSnapshot) :: RemoteFunction
-local requestClearObstacle = remotesFolder:WaitForChild(RemoteNames.RequestClearObstacle) :: RemoteEvent
+-- RequestClearObstacle remote no longer bound (obstacle system removed)
 local biomeRevealEvent = remotesFolder:WaitForChild(RemoteNames.BiomeRevealEvent) :: RemoteEvent
 local requestDispatchShipment = remotesFolder:WaitForChild(RemoteNames.RequestDispatchShipment) :: RemoteEvent
 local oilStateUpdate = remotesFolder:WaitForChild(RemoteNames.OilStateUpdate) :: RemoteEvent
@@ -282,6 +288,21 @@ local function getEquippedToolName(): string?
 		end
 	end
 	return nil
+end
+
+-- Returns (kind, tier) for the currently equipped tool based on its attributes.
+-- kind ∈ {"Drill", "Pump", "Pipe", nil}
+local function getEquippedToolInfo(): (string?, string?)
+	local character = player.Character
+	if not character then return nil, nil end
+	for _, child in ipairs(character:GetChildren()) do
+		if child:IsA("Tool") then
+			local kind = child:GetAttribute("ToolKind")
+			local tier = child:GetAttribute("Tier")
+			return typeof(kind) == "string" and kind or nil, typeof(tier) == "string" and tier or nil
+		end
+	end
+	return nil, nil
 end
 
 local function getOwnedPlotByAttribute(): Model?
@@ -472,27 +493,39 @@ end
 local ghostDrill: Model? = nil
 local ghostHighlight: Highlight? = nil
 
+-- Maps equipped tool (kind + tier) → RS.Assets template name to preview
+local function resolveGhostTemplateName(): string?
+	local kind, tier = getEquippedToolInfo()
+	if kind == "Drill" and tier then return "Drill_" .. tier end
+	if kind == "Pump" and tier then return "Pump_" .. tier end
+	if kind == "Prospector" then return "Prospector" end
+	-- Legacy fallback
+	if getEquippedToolName() == TOOL_DRILL then return "Drill_T1" end
+	return nil
+end
+
+local ghostTemplateName: string? = nil
+
 local function ensureGhost(): Model?
-	if ghostDrill and ghostDrill.Parent then
+	local wantName = resolveGhostTemplateName()
+	if not wantName then return nil end
+
+	-- If the equipped tool changed, rebuild the ghost with the new template
+	if ghostDrill and ghostDrill.Parent and ghostTemplateName == wantName then
 		return ghostDrill
 	end
-	local template = ReplicatedStorage:FindFirstChild("Assets")
-	template = template and template:FindFirstChild("Drill")
-	if not template then
-		return nil
-	end
+	if ghostDrill then ghostDrill:Destroy(); ghostDrill = nil; ghostHighlight = nil end
+
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	local template = assets and assets:FindFirstChild(wantName)
+	if not template then return nil end
+
 	local clone = template:Clone()
-	clone.Name = "DrillGhost"
-	-- Strip any server scripts so the ghost doesn't run OilBurstSpawner
+	clone.Name = "PlacementGhost"
 	for _, d in ipairs(clone:GetDescendants()) do
-		if d:IsA("Script") or d:IsA("LocalScript") then
-			d:Destroy()
-		end
+		if d:IsA("Script") or d:IsA("LocalScript") then d:Destroy() end
 		if d:IsA("BasePart") then
-			d.Anchored = true
-			d.CanCollide = false
-			d.CanQuery = false
-			d.CanTouch = false
+			d.Anchored = true; d.CanCollide = false; d.CanQuery = false; d.CanTouch = false
 		end
 	end
 	local hl = Instance.new("Highlight")
@@ -506,6 +539,7 @@ local function ensureGhost(): Model?
 	clone.Parent = Workspace
 	ghostDrill = clone
 	ghostHighlight = hl
+	ghostTemplateName = wantName
 	return clone
 end
 
@@ -518,8 +552,9 @@ local function hideGhost()
 end
 
 local function updateGhost()
+	local kind = select(1, getEquippedToolInfo())
 	local equipped = getEquippedToolName()
-	if equipped ~= TOOL_DRILL then
+	if kind ~= "Drill" and kind ~= "Pump" and kind ~= "Prospector" and equipped ~= TOOL_DRILL then
 		hideGhost()
 		return
 	end
@@ -533,7 +568,15 @@ local function updateGhost()
 		return
 	end
 	local surfaceY = getChunkSurfaceY(chunkId) or hitPos.Y
-	g:PivotTo(CFrame.new(hitPos.X, surfaceY, hitPos.Z))
+	-- Compute pivot→bbox-bottom offset so the ghost's bottom sits on the ground, not its pivot.
+	-- Pump_T2/T3 + Drill_T2/T3 have off-center pivots and would sink without this.
+	local pivotToBottom = 0
+	if g:IsA("Model") then
+		local bbCF, bbSize = g:GetBoundingBox()
+		local pivotY = g:GetPivot().Position.Y
+		pivotToBottom = pivotY - (bbCF.Position.Y - bbSize.Y / 2)
+	end
+	g:PivotTo(CFrame.new(hitPos.X, surfaceY + pivotToBottom, hitPos.Z))
 	if ghostHighlight then
 		if isPlacementValid(chunkId, hitPos) then
 			ghostHighlight.FillColor = Color3.fromRGB(80, 220, 120)
@@ -704,26 +747,25 @@ local function updateFocusUi()
 	end
 	focusBillboard.Adornee = adornee
 	if chunk.unlocked and chunk.revealed then
-		-- Show biome name + per-tile oil type if we can determine which tile is hovered
-		local tileInfo = ""
+		-- Show biome + tile name. Oil status line only appears once the chunk has been prospected.
+		focusLabel.RichText = true
+		local tileInfoText = ""
 		if chunk.tiles and mouse.Target and mouse.Target:IsA("BasePart") then
 			local targetName = mouse.Target.Name
 			local tileData = chunk.tiles[targetName]
 			if tileData then
-				local oilNames = {
-					HeavyCrude = "Heavy Crude",
-					LightSweet = "Light Sweet",
-					PremiumRefined = "Premium Refined",
-				}
 				local tileName = tileData.tileName or "?"
-				local oilName = oilNames[tileData.oilType] or tileData.oilType or "?"
-				tileInfo = string.format(" | %s — %s", tileName, oilName)
-				if tileData.hasObstacle then
-					tileInfo = tileInfo .. " [BLOCKED]"
+				tileInfoText = string.format(" | %s", tileName)
+				if chunk.prospected then
+					if tileData.hasOil == false then
+						tileInfoText = tileInfoText .. " <font color='rgb(240,70,70)'>— NO OIL</font>"
+					else
+						tileInfoText = tileInfoText .. " <font color='rgb(80,230,120)'>— HAS OIL</font>"
+					end
 				end
 			end
 		end
-		focusLabel.Text = string.format("%s%s", chunk.biome or "?", tileInfo)
+		focusLabel.Text = string.format("%s%s", chunk.biome or "?", tileInfoText)
 		focusLabel.TextColor3 = Color3.fromRGB(160, 230, 170)
 	elseif not chunk.unlocked then
 		local label = string.format("??? — $%d", chunk.cost or 0)
@@ -886,25 +928,177 @@ local function distanceFromCharacter(pos: Vector3): number
 	return (hrp.Position - pos).Magnitude
 end
 
+-- Hammer target detection: walks up from whatever the mouse is on to find something placed
+local function resolveHammerTarget()
+	local t = mouse.Target
+	while t and t.Parent do
+		local n = t.Name
+		if n:match("^Drill_%d+$") then
+			local id = tonumber(n:match("^Drill_(%d+)$"))
+			return { targetKind = "pump", targetId = id }
+		elseif n:match("^Pipe_") then
+			local cellKey = n:match("^Pipe_(.+)$")
+			return { targetKind = "pipe", cellKey = cellKey }
+		elseif n:match("^Drum_%d+$") then
+			local id = tonumber(n:match("^Drum_(%d+)$"))
+			return { targetKind = "drum", targetId = id }
+		elseif n:match("^ActiveDrill_%d+$") then
+			local id = tonumber(n:match("^ActiveDrill_(%d+)$"))
+			return { targetKind = "drill", targetId = id }
+		elseif n:match("^ActiveProspector_%d+$") then
+			local id = tonumber(n:match("^ActiveProspector_(%d+)$"))
+			return { targetKind = "prospector", targetId = id }
+		end
+		t = t.Parent
+	end
+	return nil
+end
+
+-- Client-side placement cost lookup for refund preview (mirrors OilConfig tier costs)
+local function estimateRefundForTarget(target): (number, Instance?)
+	if not target then return 0, nil end
+	if target.targetKind == "pump" then
+		local drill = drillStateById[target.targetId]
+		if drill then
+			-- Walk the DrillTiers to get the pump tier cost. Use OilConfig from shared.
+			local okCfg, OilConfig = pcall(function()
+				return require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
+			end)
+			if okCfg and OilConfig.PumpTiers and drill.tier and OilConfig.PumpTiers[drill.tier] then
+				local scale = drill.scale or 1
+				local cost = OilConfig.PumpTiers[drill.tier].cost or 0
+				return math.floor(cost * 0.10 * 1), nil -- scale doesn't affect cost
+			end
+		end
+		return 0, nil
+	elseif target.targetKind == "pipe" then
+		local okCfg, OilConfig = pcall(function()
+			return require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
+		end)
+		local cost = (okCfg and OilConfig.Pipes and OilConfig.Pipes.Cost) or 50
+		return math.floor(cost * 0.10), nil
+	elseif target.targetKind == "drum" then
+		local okCfg, OilConfig = pcall(function()
+			return require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
+		end)
+		local cost = (okCfg and OilConfig.Drums and OilConfig.Drums.Cost) or 0
+		return math.floor(cost * 0.10), nil
+	elseif target.targetKind == "drill" then
+		local okCfg, OilConfig = pcall(function()
+			return require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
+		end)
+		if okCfg and OilConfig.DrillTiers then
+			for _, tier in pairs(OilConfig.DrillTiers) do
+				return math.floor((tier.cost or 0) * 0.10), nil
+			end
+		end
+		return 0, nil
+	end
+	return 0, nil
+end
+
+-- Floating hover billboard showing the refund preview
+local hammerHoverBB: BillboardGui? = nil
+local hammerHoverLbl: TextLabel? = nil
+local function ensureHammerHover()
+	if hammerHoverBB and hammerHoverBB.Parent then
+		return hammerHoverBB, hammerHoverLbl
+	end
+	local bb = Instance.new("BillboardGui")
+	bb.Name = "HammerHoverBB"
+	bb.Size = UDim2.new(0, 180, 0, 44)
+	bb.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
+	bb.AlwaysOnTop = true
+	bb.Parent = playerGui
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.fromScale(1, 1)
+	lbl.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+	lbl.BackgroundTransparency = 0.15
+	lbl.TextColor3 = Color3.fromRGB(255, 210, 80)
+	lbl.TextStrokeTransparency = 0
+	lbl.Font = Enum.Font.GothamBold
+	lbl.TextScaled = true
+	lbl.Text = ""
+	lbl.Parent = bb
+	hammerHoverBB = bb
+	hammerHoverLbl = lbl
+	return bb, lbl
+end
+
+local function hideHammerHover()
+	if hammerHoverBB then
+		hammerHoverBB.Enabled = false
+		hammerHoverBB.Adornee = nil
+	end
+end
+
+-- Called from RenderStepped when hammer is equipped — updates the billboard
+local function updateHammerHover()
+	local kind = select(1, getEquippedToolInfo())
+	if kind ~= "Hammer" then
+		hideHammerHover()
+		return
+	end
+	local target = resolveHammerTarget()
+	if not target then
+		hideHammerHover()
+		return
+	end
+	-- Find a BasePart on the target to adorn
+	local adorn: BasePart? = nil
+	local ancestor = mouse.Target
+	while ancestor and ancestor.Parent do
+		if ancestor:IsA("BasePart") then adorn = ancestor; break end
+		ancestor = ancestor.Parent
+	end
+	if not adorn then hideHammerHover(); return end
+	local refund = estimateRefundForTarget(target)
+	local bb, lbl = ensureHammerHover()
+	bb.Adornee = adorn
+	bb.Enabled = true
+	if lbl then lbl.Text = string.format("Click to refund $%d", refund) end
+end
+
 local function tryPrimaryAction()
-	if getEquippedToolName() ~= TOOL_DRILL then
+	local kind, tier = getEquippedToolInfo()
+	if kind == nil and getEquippedToolName() == TOOL_DRILL then
+		kind, tier = "Drill", "T1"
+	end
+
+	-- Hammer: destroy whatever we're hovering over, refund 10%
+	if kind == "Hammer" then
+		local target = resolveHammerTarget()
+		if target then
+			requestHammerDestroy:FireServer(target)
+		else
+			setStatus("Nothing to hammer here.", false)
+		end
 		return
 	end
+
+	if kind ~= "Drill" and kind ~= "Pump" and kind ~= "Prospector" then return end
+
 	local _, hitPos, chunkId = getTargetedChunkHit()
-	if not (hitPos and chunkId) then
-		return
-	end
+	if not (hitPos and chunkId) then return end
 	if not isChunkUnlocked(chunkId) then
 		setStatus("That chunk is locked.", false)
 		return
 	end
 	local surfaceY = getChunkSurfaceY(chunkId) or hitPos.Y
-	requestPlaceDrill:FireServer({
+	local payload = {
 		chunkId = chunkId,
 		x = hitPos.X,
 		y = surfaceY,
 		z = hitPos.Z,
-	})
+		tier = tier or "T1",
+	}
+	if kind == "Drill" then
+		requestStartDrill:FireServer(payload)
+	elseif kind == "Pump" then
+		requestPlacePump:FireServer(payload)
+	elseif kind == "Prospector" then
+		requestProspect:FireServer(payload)
+	end
 end
 
 local function clearRemoveHold()
@@ -1284,10 +1478,105 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 	end
 end)
 
+-- Cache each active drill model's initial pivot + initial height so we can apply sink offsets
+local activeDrillBasePivots: { [Instance]: CFrame } = {}
+local activeDrillHeights: { [Instance]: number } = {}
+
+local function animateActiveDrill(model: Instance)
+	if not model:IsA("Model") and not model:IsA("BasePart") then return end
+	local startTime = tonumber(model:GetAttribute("StartTime"))
+	local endTime = tonumber(model:GetAttribute("EndTime"))
+	if not startTime or not endTime or endTime <= startTime then return end
+
+	local basePivot = activeDrillBasePivots[model]
+	if not basePivot then
+		basePivot = model:IsA("Model") and model:GetPivot() or (model :: BasePart).CFrame
+		activeDrillBasePivots[model] = basePivot
+
+		local bbSizeY = 1
+		if model:IsA("Model") then
+			local _, bbSize = model:GetBoundingBox()
+			bbSizeY = math.max(1, bbSize.Y)
+		else
+			bbSizeY = math.max(1, (model :: BasePart).Size.Y)
+		end
+		activeDrillHeights[model] = bbSizeY
+	end
+
+	local duration = endTime - startTime
+	local alpha = math.clamp((workspace:GetServerTimeNow() - startTime) / duration, 0, 1)
+
+	-- Spin: integrate angular speed over time. speed(t) = BASE + PEAK * t^2  (accelerating)
+	-- Integral from 0 to t = BASE*t + PEAK*t^3/3. We express in alpha so: duration * (BASE*alpha + PEAK*alpha^3/3)
+	local BASE_RAD = 3   -- starting angular speed rad/s
+	local PEAK_RAD = 40  -- added peak angular speed at alpha=1
+	local spinAngle = duration * (BASE_RAD * alpha + PEAK_RAD * alpha * alpha * alpha / 3)
+
+	-- Sink: smoothly descends to fully submerged at alpha=1
+	local heightY = activeDrillHeights[model] or 5
+	local sinkDepth = heightY * alpha * alpha  -- quadratic ease-in so it accelerates downward
+
+	local offset = CFrame.new(0, -sinkDepth, 0) * CFrame.Angles(0, spinAngle, 0)
+	local target = basePivot * offset
+	if model:IsA("Model") then
+		model:PivotTo(target)
+	else
+		(model :: BasePart).CFrame = target
+	end
+end
+
+-- Walk the whole workspace tree for ActiveDrills folders (plots might be nested in containers)
+local function forEachActiveDrill(fn)
+	for _, folder in ipairs(workspace:GetDescendants()) do
+		if folder:IsA("Folder") and folder.Name == "ActiveDrills" then
+			for _, m in ipairs(folder:GetChildren()) do
+				if m.Name:match("^ActiveDrill_") then
+					fn(m)
+				end
+			end
+		end
+	end
+end
+
+-- Update the text on every drill's static timer billboard
+local function updateDrillTimers()
+	local now = workspace:GetServerTimeNow()
+	for _, folder in ipairs(workspace:GetDescendants()) do
+		if folder:IsA("Folder") and folder.Name == "ActiveDrills" then
+			for _, anchor in ipairs(folder:GetChildren()) do
+				if anchor.Name:match("^DrillTimer_") and anchor:IsA("BasePart") then
+					local bb = anchor:FindFirstChild("TimerGui")
+					local lbl = bb and bb:FindFirstChild("TimerLabel")
+					if lbl and lbl:IsA("TextLabel") then
+						local endT = tonumber(anchor:GetAttribute("EndTime")) or 0
+						local remaining = math.max(0, endT - now)
+						if remaining >= 60 then
+							lbl.Text = string.format("%dm %02ds", math.floor(remaining / 60), math.floor(remaining % 60))
+						else
+							lbl.Text = string.format("%.1fs", remaining)
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+local function forEachActiveProspector(fn)
+	for _, folder in ipairs(workspace:GetDescendants()) do
+		if folder:IsA("Folder") and folder.Name == "ActiveProspectors" then
+			for _, m in ipairs(folder:GetChildren()) do
+				fn(m)
+			end
+		end
+	end
+end
+
 RunService.RenderStepped:Connect(function()
 	updateFocusUi()
 	updateGhost()
 	updatePipeGhost()
+	updateHammerHover()
 
 	if removeHoldDrillId ~= nil and removeHoldStart > 0 then
 		local drill = drillStateById[removeHoldDrillId]
@@ -1305,6 +1594,57 @@ RunService.RenderStepped:Connect(function()
 			requestRemoveDrill:FireServer({ drillId = removeHoldDrillId })
 			clearRemoveHold()
 		end
+	end
+
+	-- Animate every active drill regardless of how the plot is nested
+	forEachActiveDrill(animateActiveDrill)
+	-- Prospectors use the same sink animation helper
+	forEachActiveProspector(animateActiveDrill)
+	-- Countdown timers on each drill's static anchor billboard
+	updateDrillTimers()
+
+	-- SUPER TILE: pulse HSV rainbow on every tile tagged with TileName = "SUPER TILE"
+	-- (plot is nested several levels deep, so scan all descendants)
+	local t = workspace:GetServerTimeNow()
+	for _, tilePart in ipairs(workspace:GetDescendants()) do
+		if tilePart:IsA("BasePart") and tilePart:GetAttribute("TileName") == "SUPER TILE" then
+			local hue = (t * 0.6 + tilePart.Position.X * 0.02 + tilePart.Position.Z * 0.02) % 1
+			tilePart.Color = Color3.fromHSV(hue, 1, 1)
+		end
+	end
+end)
+
+-- Clean up pivot cache when models are destroyed (otherwise leaked references)
+workspace.DescendantRemoving:Connect(function(inst)
+	if activeDrillBasePivots[inst] then
+		activeDrillBasePivots[inst] = nil
+	end
+end)
+
+-- Prospector status messages
+prospectProgressUpdate.OnClientEvent:Connect(function(data)
+	if typeof(data) ~= "table" then return end
+	if data.ownerUserId ~= player.UserId then return end
+	if data.kind == "started" then
+		setStatus(string.format("Prospecting chunk %s — %.1fs", tostring(data.chunkId or "?"), tonumber(data.duration) or 0), false)
+	elseif data.kind == "completed" then
+		setStatus("Prospect complete! Oil tiles glowing green, dry tiles darkened.", false)
+	end
+end)
+
+-- Status message when the server confirms drill start/completion/pump placement
+drillProgressUpdate.OnClientEvent:Connect(function(data)
+	if typeof(data) ~= "table" then return end
+	if data.kind == "started" and data.ownerUserId == player.UserId then
+		setStatus(string.format("Drilling (%s) — %.1fs", tostring(data.tier or "?"), tonumber(data.duration) or 0), false)
+	elseif data.kind == "completed" and data.ownerUserId == player.UserId then
+		if data.hasOil == false then
+			setStatus("Dry hole — no oil under this tile.", false)
+		else
+			setStatus("Drill complete. Place a pump on this tile!", false)
+		end
+	elseif data.kind == "pumpPlaced" and data.ownerUserId == player.UserId then
+		setStatus("Pump online — producing oil.", false)
 	end
 end)
 
@@ -1357,59 +1697,36 @@ biomeRevealEvent.OnClientEvent:Connect(function(data)
 		end
 	end
 
-	-- Slot machine: flash REAL biome tile sets onto the 5x5 grid (no runtime ScreenGui; rewire banner to HUD later)
+	-- Slot machine: flash REAL biome tile sets (pulled live from BiomeConfig) onto the 5x5 grid.
+	-- Only flash biomes that could actually appear for THIS chunk (from its row pool).
 	task.spawn(function()
-		-- All 9 biomes with their actual tile types
-		local biomePresets = {
-			{ name = "Dusty Desert", tiles = {
-				{ mat = Enum.Material.Sand, col = Color3.fromRGB(210,185,130), w = 100 },
-			}},
-			{ name = "Decent Desert", tiles = {
-				{ mat = Enum.Material.Sand, col = Color3.fromRGB(210,185,130), w = 64 },
-				{ mat = Enum.Material.Sandstone, col = Color3.fromRGB(180,130,90), w = 20 },
-				{ mat = Enum.Material.Sand, col = Color3.fromRGB(240,210,80), w = 4 },
-				{ mat = Enum.Material.Ground, col = Color3.fromRGB(55,45,35), w = 12 },
-			}},
-			{ name = "Clay Desert", tiles = {
-				{ mat = Enum.Material.Sand, col = Color3.fromRGB(210,185,130), w = 48 },
-				{ mat = Enum.Material.Sandstone, col = Color3.fromRGB(180,130,90), w = 52 },
-			}},
-			{ name = "Frostlands", tiles = {
-				{ mat = Enum.Material.Sand, col = Color3.fromRGB(210,185,130), w = 32 },
-				{ mat = Enum.Material.Sandstone, col = Color3.fromRGB(180,130,90), w = 32 },
-				{ mat = Enum.Material.Sand, col = Color3.fromRGB(240,210,80), w = 8 },
-				{ mat = Enum.Material.Ground, col = Color3.fromRGB(55,45,35), w = 20 },
-				{ mat = Enum.Material.Pebble, col = Color3.fromRGB(180,170,60), w = 8 },
-			}},
-			{ name = "Volcanic", tiles = {
-				{ mat = Enum.Material.Ground, col = Color3.fromRGB(55,45,35), w = 12 },
-				{ mat = Enum.Material.Basalt, col = Color3.fromRGB(50,45,40), w = 12 },
-				{ mat = Enum.Material.Pebble, col = Color3.fromRGB(180,170,60), w = 20 },
-				{ mat = Enum.Material.Mud, col = Color3.fromRGB(255,123,66), w = 44 },
-				{ mat = Enum.Material.Ice, col = Color3.fromRGB(3,3,3), w = 12 },
-			}},
-			{ name = "MagmaGrounds", tiles = {
-				{ mat = Enum.Material.Basalt, col = Color3.fromRGB(50,45,40), w = 48 },
-				{ mat = Enum.Material.Mud, col = Color3.fromRGB(255,123,66), w = 52 },
-			}},
-			{ name = "GrassyFarm", tiles = {
-				{ mat = Enum.Material.Ground, col = Color3.fromRGB(100,80,55), w = 20 },
-				{ mat = Enum.Material.Grass, col = Color3.fromRGB(4,255,0), w = 32 },
-				{ mat = Enum.Material.Mud, col = Color3.fromRGB(0,255,225), w = 24 },
-				{ mat = Enum.Material.Mud, col = Color3.fromRGB(164,100,10), w = 24 },
-			}},
-			{ name = "Grassy Forrest", tiles = {
-				{ mat = Enum.Material.LeafyGrass, col = Color3.fromRGB(50,100,45), w = 36 },
-				{ mat = Enum.Material.Grass, col = Color3.fromRGB(4,255,0), w = 40 },
-				{ mat = Enum.Material.Ground, col = Color3.fromRGB(49,34,12), w = 24 },
-			}},
-			{ name = "IceyArea", tiles = {
-				{ mat = Enum.Material.Glacier, col = Color3.fromRGB(230,240,250), w = 28 },
-				{ mat = Enum.Material.Glacier, col = Color3.fromRGB(160,200,240), w = 32 },
-				{ mat = Enum.Material.Rock, col = Color3.fromRGB(120,115,110), w = 28 },
-				{ mat = Enum.Material.Mud, col = Color3.fromRGB(0,255,225), w = 12 },
-			}},
-		}
+		local biomeConfig = require(Shared:WaitForChild("Config"):WaitForChild("BiomeConfig"))
+
+		-- Parse the chunk row from chunkId (format "S<row>_<col>")
+		local chunkRow = tonumber(tostring(chunkId):match("^S(%d+)_"))
+		local rowPool = chunkRow and biomeConfig.RowPools and biomeConfig.RowPools[chunkRow] or nil
+
+		-- Build presets from the row's pool (fallback to all biomes if no pool found)
+		local biomePresets = {}
+		local function addPreset(bname)
+			local biome = biomeConfig.Biomes[bname]
+			if not biome then return end
+			local preset = { name = bname, tiles = {} }
+			for _, tt in ipairs(biome.tileTypes or {}) do
+				table.insert(preset.tiles, {
+					mat = tt.material or Enum.Material.Plastic,
+					col = tt.color or Color3.fromRGB(180, 180, 180),
+					w = tt.weight or 1,
+				})
+			end
+			if #preset.tiles > 0 then table.insert(biomePresets, preset) end
+		end
+		if rowPool then
+			for _, bname in ipairs(rowPool) do addPreset(bname) end
+		else
+			for bname, _ in pairs(biomeConfig.Biomes) do addPreset(bname) end
+		end
+		if #biomePresets == 0 then return end
 
 		local function rollTile(preset)
 			local totalW = 0
@@ -1423,7 +1740,6 @@ biomeRevealEvent.OnClientEvent:Connect(function(data)
 			return preset.tiles[1]
 		end
 
-		-- Collect tile parts
 		local tileParts = {}
 		if sectionModel then
 			for _, child in ipairs(sectionModel:GetChildren()) do
@@ -1433,142 +1749,24 @@ biomeRevealEvent.OnClientEvent:Connect(function(data)
 			end
 		end
 
-		-- Obstacle preview data per biome
-		local biomeObstacles = {
-			["Dusty Desert"] = { rate = 0.04, types = {"Obstacle_Rock"} },
-			["Decent Desert"] = { rate = 0.20, types = {"Obstacle_Rock", "Obstacle_MudPit"} },
-			["Clay Desert"] = { rate = 0.32, types = {"Obstacle_MudPit", "Obstacle_Pyramid"} },
-			["Frostlands"] = { rate = 0.28, types = {"Obstacle_ObsidianPillar"} },
-			["Volcanic"] = { rate = 0.36, types = {"Obstacle_Rock", "Obstacle_LavaRock", "Obstacle_ObsidianPillar"} },
-			["MagmaGrounds"] = { rate = 0, types = {} },
-			["GrassyFarm"] = { rate = 0.44, types = {"Obstacle_Bush", "Obstacle_Water"} },
-			["Grassy Forrest"] = { rate = 0.40, types = {"Obstacle_Tree"} },
-			["IceyArea"] = { rate = 0.40, types = {"Obstacle_FrozenStump", "Obstacle_Water"} },
-		}
-		local assetsFolder = ReplicatedStorage:FindFirstChild("Assets")
-		local previewObstacles = {} -- track spawned preview obstacles to clean up
-
-		local function clearPreviewObstacles()
-			for _, obj in ipairs(previewObstacles) do
-				if obj.Parent then obj:Destroy() end
-			end
-			previewObstacles = {}
-		end
-
-		-- Track tiles hidden by water preview so we can restore them
-		local hiddenTiles = {}
-
-		local function spawnPreviewObstacles(preset)
-			clearPreviewObstacles()
-			-- Restore any tiles hidden by water preview
-			for _, t in ipairs(hiddenTiles) do
-				if t and t.Parent then t.Transparency = 0 end
-			end
-			hiddenTiles = {}
-
-			local obsData = biomeObstacles[preset.name]
-			if not obsData or obsData.rate <= 0 or #obsData.types == 0 or not assetsFolder then return end
-
-			for _, part in ipairs(tileParts) do
-				if math.random() < obsData.rate then
-					local templateName = obsData.types[math.random(1, #obsData.types)]
-					local isWater = templateName == "Obstacle_Water"
-					local template = assetsFolder:FindFirstChild(templateName)
-					if template then
-						if isWater then
-							-- Water: hide tile, place water block at tile level
-							part.Transparency = 1
-							table.insert(hiddenTiles, part)
-							local waterParts = {}
-							if template:IsA("Folder") or template:IsA("Model") then
-								for _, child in ipairs(template:GetChildren()) do
-									if child:IsA("BasePart") then table.insert(waterParts, child) end
-								end
-							elseif template:IsA("BasePart") then
-								table.insert(waterParts, template)
-							end
-							for _, wp in ipairs(waterParts) do
-								local wc = wp:Clone()
-								wc.Name = "PreviewObstacle"
-								wc.Anchored = true
-								wc.CanCollide = false
-								wc.CanQuery = false
-								wc.Size = Vector3.new(part.Size.X, wp.Size.Y, part.Size.Z)
-								wc.Position = part.Position + Vector3.new(0, (wp.Size.Y - part.Size.Y) / 2, 0)
-								wc.Parent = sectionModel
-								table.insert(previewObstacles, wc)
-							end
-						else
-							-- Normal obstacles: spawn on top
-							local clone = template:Clone()
-							clone.Name = "PreviewObstacle"
-							if clone:IsA("BasePart") then
-								clone.Anchored = true
-								clone.CanCollide = false
-								clone.CanQuery = false
-								clone.Position = part.Position + Vector3.new(0, clone.Size.Y / 2 + part.Size.Y / 2, 0)
-							elseif clone:IsA("Model") then
-								clone:PivotTo(CFrame.new(part.Position + Vector3.new(0, 2, 0)))
-							end
-							clone.Parent = sectionModel
-							table.insert(previewObstacles, clone)
-						end
-					end
-				end
-			end
-		end
-
-		-- Flash through biomes, each time randomizing tiles + obstacles
+		-- Flash-through animation (no obstacle preview: obstacles removed)
 		local intervals = { 0.12, 0.12, 0.15, 0.18, 0.22, 0.3, 0.4, 0.6 }
 		for i, interval in ipairs(intervals) do
 			local preset = biomePresets[((i - 1) % #biomePresets) + 1]
-
-			-- Apply random tiles from this biome's set to each cell
 			for _, part in ipairs(tileParts) do
 				local t = rollTile(preset)
 				part.Material = t.mat
 				part.Color = t.col
 			end
-
-			-- Spawn preview obstacles for this biome
-			spawnPreviewObstacles(preset)
-
 			task.wait(interval)
 		end
 
-		-- Clean up preview obstacles before final reveal
-		clearPreviewObstacles()
-		for _, t in ipairs(hiddenTiles) do
-			if t and t.Parent then t.Transparency = 0 end
-		end
-		hiddenTiles = {}
-
-		-- Wait for server to set revealed=true and push the final tile visuals
 		_ = biomeName
 		task.wait(3.5)
 	end)
 end)
 
--- Obstacle clear prompts: bind when they appear
-Workspace.DescendantAdded:Connect(function(descendant)
-	if descendant:IsA("ProximityPrompt") and descendant.Name == "ClearPrompt" then
-		descendant.Triggered:Connect(function(triggeringPlayer)
-			if triggeringPlayer ~= player then return end
-			local obstacle = descendant.Parent
-			while obstacle and obstacle.Parent do
-				if obstacle:GetAttribute("IsObstacle") then
-					local chunkId = obstacle:GetAttribute("ChunkId")
-					local tileKey = obstacle:GetAttribute("TileKey")
-					if chunkId and tileKey then
-						requestClearObstacle:FireServer({ chunkId = chunkId, tileKey = tileKey })
-					end
-					return
-				end
-				obstacle = obstacle.Parent
-			end
-		end)
-	end
-end)
+-- Obstacle system removed; clear-prompt binding deleted.
 
 -- =================== OIL MARKET (data only; wire StarterGui HUD later) ===================
 

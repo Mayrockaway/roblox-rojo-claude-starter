@@ -11,7 +11,13 @@ local RemoteNames = {
 
 	-- oil system v2 (chunked plots, free-placed drills)
 	RequestOilSnapshot = "RequestOilSnapshot",
-	RequestPlaceDrill = "RequestPlaceDrill",
+	RequestPlaceDrill = "RequestPlaceDrill",      -- legacy; now routes to pump-place
+	RequestStartDrill = "RequestStartDrill",      -- new: begin drilling a tile (consumable drill)
+	RequestPlacePump = "RequestPlacePump",        -- new: place a pump on a drilled tile
+	DrillProgressUpdate = "DrillProgressUpdate",  -- server -> client: drill started / completed
+	RequestProspect = "RequestProspect",          -- new: place prospector on a tile (reveals whole 5x5 chunk)
+	ProspectProgressUpdate = "ProspectProgressUpdate", -- server -> client: prospect started / completed
+	RequestHammerDestroy = "RequestHammerDestroy", -- new: hammer destroys any placed object, 10% refund
 	RequestRemoveDrill = "RequestRemoveDrill",
 	RequestBuyChunk = "RequestBuyChunk",
 	RequestClearObstacle = "RequestClearObstacle",

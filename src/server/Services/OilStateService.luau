@@ -30,8 +30,14 @@ local function migrateLegacyStandardTileOil(tiles: any)
 		return
 	end
 	for _, tile in pairs(tiles) do
-		if typeof(tile) == "table" and (tile :: any).oilType == "StandardCrude" then
-			(tile :: any).oilType = "HeavyCrude"
+		if typeof(tile) == "table" then
+			local t = tile :: any
+			if t.oilType == "StandardCrude" then
+				t.oilType = "HeavyCrude"
+			end
+			-- Obstacle system removed: drop legacy fields from loaded saves.
+			t.hasObstacle = nil
+			t.obstacleType = nil
 		end
 	end
 end
@@ -344,9 +350,10 @@ function OilStateService:GetStateForClient(userId: number)
 			biome = chunk.biome,
 			unlocked = chunk.unlocked,
 			revealed = chunk.revealed or false,
+			prospected = chunk.prospected or false,
 			worldX = chunk.worldX,
 			worldZ = chunk.worldZ,
-			tiles = chunk.tiles, -- per-tile oil types + obstacles (nil if not revealed)
+			tiles = chunk.tiles,
 		}
 		if not chunk.unlocked then
 			entry.cost = chunkUnlockCost(chunk.row, chunk.col)
@@ -372,7 +379,10 @@ function OilStateService:GetStateForClient(userId: number)
 			drillId = drill.drillId,
 			chunkId = drill.chunkId,
 			biome = drill.biome,
-			template = drill.template or OilConfig.DefaultDrillTemplate,
+			template = drill.template or (OilConfig.PumpTiers.T1 and OilConfig.PumpTiers.T1.templateName),
+			tier = drill.tier,
+			tileKey = drill.tileKey,
+			variant = drill.variant,
 			scale = drill.scale or 1,
 			position = { x = drill.position.X, y = drill.position.Y, z = drill.position.Z },
 			connected = drill.connected == true,
@@ -381,6 +391,36 @@ function OilStateService:GetStateForClient(userId: number)
 			cellCol = drill.cellCol,
 			bufferTotal = bufferTotal,
 			bufferCap = (OilConfig.DrillBufferCapacity or 20) * #TIER_ORDER,
+		})
+	end
+
+	local activeProspectors = {}
+	for _, entry in pairs(state.activeProspectors or {}) do
+		table.insert(activeProspectors, {
+			prospectId = entry.prospectId,
+			chunkId = entry.chunkId,
+			tileKey = entry.tileKey,
+			template = entry.template,
+			position = { x = entry.position.X, y = entry.position.Y, z = entry.position.Z },
+			startTime = entry.startTime,
+			endTime = entry.endTime,
+		})
+	end
+
+	local activeDrills = {}
+	local nowT = workspace:GetServerTimeNow()
+	for _, entry in pairs(state.activeDrills or {}) do
+		table.insert(activeDrills, {
+			drillId = entry.drillId,
+			chunkId = entry.chunkId,
+			tier = entry.tier,
+			tileKey = entry.tileKey,
+			template = entry.template,
+			position = { x = entry.position.X, y = entry.position.Y, z = entry.position.Z },
+			startTime = entry.startTime,
+			endTime = entry.endTime,
+			remaining = math.max(0, entry.endTime - nowT),
+			oilType = entry.oilType,
 		})
 	end
 
@@ -439,6 +479,8 @@ function OilStateService:GetStateForClient(userId: number)
 		),
 		chunks = chunks,
 		drills = drills,
+		activeDrills = activeDrills,
+		activeProspectors = activeProspectors,
 		pipes = pipes,
 		drums = drums,
 		chunkConfig = {
@@ -518,9 +560,15 @@ function OilStateService:TryBuyChunk(userId: number, chunkId: string): (boolean,
 		return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to buy this chunk.", cost)
 	end
 
-	-- Roll a random biome
+	-- Roll a biome from this chunk's row pool, excluding biomes already taken by siblings in the same row.
 	local rng = Random.new(userId * 97 + chunk.row * 31 + chunk.col * 17 + math.floor(workspace:GetServerTimeNow() * 1000))
-	local biomeName = BiomeConfig.RollBiome(rng)
+	local usedInRow: { [string]: boolean } = {}
+	for _, otherChunk in pairs(state.chunksById) do
+		if otherChunk.row == chunk.row and otherChunk.biome and otherChunk.chunkId ~= chunk.chunkId then
+			usedInRow[otherChunk.biome] = true
+		end
+	end
+	local biomeName = BiomeConfig.RollBiomeForRow(chunk.row, usedInRow, rng)
 	chunk.unlocked = true
 	chunk.biome = biomeName
 	chunk.revealed = false -- stays hidden until slot machine animation finishes
@@ -530,87 +578,27 @@ function OilStateService:TryBuyChunk(userId: number, chunkId: string): (boolean,
 	local subTiles = g.subTilesPerSide
 	chunk.tiles = {}
 
-	-- First pass: assign tile types (each defines oil type + visual) to all tiles
-	local premiumTileKeys = {}
+	-- Assign tile types + bake in one oilType per tile. Then roll hasOil per tile based on row rate:
+	-- tiles that lose the roll have no oil underneath and produce a dirt patch when drilled.
+	-- SUPER TILEs always keep their oil regardless of row rate.
+	local oilRate = BiomeConfig.OilRatePerRow and BiomeConfig.OilRatePerRow[chunk.row] or 0.75
 	for tr = 1, subTiles do
 		for tc = 1, subTiles do
 			local tileKey = string.format("T%d%d", tr, tc)
 			local tileType = BiomeConfig.RollTileType(biomeName, rng)
+			local pickedOil = BiomeConfig.PickOilType(tileType, rng)
+			local hasOil = (tileType.name == "SUPER TILE") or (rng:NextNumber() < oilRate)
 			chunk.tiles[tileKey] = {
-				oilType = tileType.oilType,
+				oilType = pickedOil,
+				hasOil = hasOil,
 				tileName = tileType.name,
-				tileMaterial = tileType.material.Name, -- store as string for persistence
+				tileMaterial = tileType.material.Name,
 				tileColorR = math.floor(tileType.color.R * 255),
 				tileColorG = math.floor(tileType.color.G * 255),
 				tileColorB = math.floor(tileType.color.B * 255),
-				hasObstacle = false,
-				obstacleType = nil,
+				drillSeconds = tileType.drillSeconds,
+				drilled = false,
 			}
-			-- Track premium tiles for obstacle bias
-			if tileType.oilType == "PremiumRefined" or tileType.oilType == "LightSweet" then
-				table.insert(premiumTileKeys, tileKey)
-			end
-		end
-	end
-
-	-- Second pass: place obstacles, biased toward blocking premium tiles
-	local biomeData = BiomeConfig.Biomes[biomeName]
-	local obstacleRate = biomeData and biomeData.obstacleRate or 0.18
-	local totalTiles = subTiles * subTiles
-	local obstacleCount = math.floor(totalTiles * obstacleRate + 0.5)
-
-	-- Prioritize placing obstacles NEAR premium tiles
-	local placed = 0
-	local usedKeys = {}
-
-	-- Place some obstacles adjacent to premium tiles first (the "pain in the ass" spots)
-	for _, pKey in ipairs(premiumTileKeys) do
-		if placed >= obstacleCount then break end
-		local pr = tonumber(string.sub(pKey, 2, 2))
-		local pc = tonumber(string.sub(pKey, 3, 3))
-		if pr and pc then
-			local adjacents = {
-				string.format("T%d%d", pr - 1, pc),
-				string.format("T%d%d", pr + 1, pc),
-				string.format("T%d%d", pr, pc - 1),
-				string.format("T%d%d", pr, pc + 1),
-			}
-			for _, adjKey in ipairs(adjacents) do
-				if placed >= obstacleCount then break end
-				if chunk.tiles[adjKey] and not usedKeys[adjKey] and not chunk.tiles[adjKey].hasObstacle then
-					-- Don't block the premium tile itself, block its neighbor
-					if adjKey ~= pKey then
-						local obstType = BiomeConfig.RollObstacleType(biomeName, rng)
-						chunk.tiles[adjKey].hasObstacle = true
-						chunk.tiles[adjKey].obstacleType = obstType
-						usedKeys[adjKey] = true
-						placed += 1
-					end
-				end
-			end
-		end
-	end
-
-	-- Fill remaining obstacle quota with random tiles
-	local allTileKeys = {}
-	for tr = 1, subTiles do
-		for tc = 1, subTiles do
-			table.insert(allTileKeys, string.format("T%d%d", tr, tc))
-		end
-	end
-	-- Shuffle
-	for i = #allTileKeys, 2, -1 do
-		local j = rng:NextInteger(1, i)
-		allTileKeys[i], allTileKeys[j] = allTileKeys[j], allTileKeys[i]
-	end
-	for _, tKey in ipairs(allTileKeys) do
-		if placed >= obstacleCount then break end
-		if chunk.tiles[tKey] and not usedKeys[tKey] and not chunk.tiles[tKey].hasObstacle then
-			local obstType = BiomeConfig.RollObstacleType(biomeName, rng)
-			chunk.tiles[tKey].hasObstacle = true
-			chunk.tiles[tKey].obstacleType = obstType
-			usedKeys[tKey] = true
-			placed += 1
 		end
 	end
 
@@ -643,33 +631,10 @@ function OilStateService:TryBuyChunk(userId: number, chunkId: string): (boolean,
 	return true, "OK", string.format("%s Discovered!", biomeData and biomeData.displayName or biomeName)
 end
 
-function OilStateService:TryClearObstacle(userId: number, chunkId: string, tileKey: string): (boolean, string, string)
-	local state = self._statesByUserId[userId]
-	if not state then
-		return false, "ERR_NO_STATE", "State unavailable."
-	end
-	local chunk = state.chunksById[chunkId]
-	if not chunk or not chunk.unlocked then
-		return false, "ERR_BAD_CHUNK", "Chunk not owned."
-	end
-	if not chunk.tiles or not chunk.tiles[tileKey] then
-		return false, "ERR_BAD_TILE", "Tile does not exist."
-	end
-	local tile = chunk.tiles[tileKey]
-	if not tile.hasObstacle then
-		return false, "ERR_NO_OBSTACLE", "No obstacle on this tile."
-	end
-
-	local biomeName = chunk.biome or "Dustlands"
-	local cost = BiomeConfig.GetObstacleCost(biomeName, tile.obstacleType or "Rock")
-	if not self:TrySpendCash(userId, cost) then
-		return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to clear this obstacle.", cost)
-	end
-
-	tile.hasObstacle = false
-	tile.obstacleType = nil
-	self:_markDirty(userId)
-	return true, "OK", "Obstacle cleared."
+-- Legacy stub: obstacle system removed. Kept so any stale callers get a clear error
+-- instead of crashing. Remove once all call sites are purged.
+function OilStateService:TryClearObstacle(_userId: number, _chunkId: string, _tileKey: string): (boolean, string, string)
+	return false, "ERR_OBSTACLES_REMOVED", "Obstacles are no longer a thing."
 end
 
 local function pointInsideChunk(chunk, x: number, z: number): boolean
@@ -678,68 +643,66 @@ local function pointInsideChunk(chunk, x: number, z: number): boolean
 	return math.abs(x - chunk.worldX) <= half and math.abs(z - chunk.worldZ) <= half
 end
 
+-- Resolve which "Trr" / "Tcc" tile in a chunk contains world position (x, z).
+-- Returns (tileKey, tile) or (nil, nil) if out of range or tiles not generated yet.
+local function resolveTileAt(chunk, x: number, z: number): (string?, any?)
+	if not chunk or not chunk.tiles then return nil, nil end
+	local cellR, cellC = worldToCell(x, z)
+	local g = plotGridConstants()
+	local sRow = (chunk.row - 1) * g.subTilesPerSide
+	local sCol = (chunk.col - 1) * g.subTilesPerSide
+	local localR = cellR - sRow
+	local localC = cellC - sCol
+	if localR < 1 or localR > g.subTilesPerSide or localC < 1 or localC > g.subTilesPerSide then
+		return nil, nil
+	end
+	local key = string.format("T%d%d", localR, localC)
+	return key, chunk.tiles[key]
+end
+
 local function distanceXZ(x1, z1, x2, z2): number
 	local dx = x1 - x2
 	local dz = z1 - z2
 	return math.sqrt(dx * dx + dz * dz)
 end
 
-function OilStateService:TryPlaceDrill(userId: number, payload): (boolean, string, string, any)
+-- Validates a placement payload against tile + chunk rules. Shared by drill-start and pump-place.
+-- Returns (ok, code, message, chunk, tileKey, snappedX, snappedY, snappedZ, cellRow, cellCol).
+function OilStateService:_validateTilePlacement(userId: number, payload)
 	local state = self._statesByUserId[userId]
-	if not state then
-		return false, "ERR_NO_STATE", "State unavailable.", nil
-	end
-	if typeof(payload) ~= "table" then
-		return false, "ERR_BAD_PAYLOAD", "Missing payload.", nil
-	end
+	if not state then return false, "ERR_NO_STATE", "State unavailable." end
+	if typeof(payload) ~= "table" then return false, "ERR_BAD_PAYLOAD", "Missing payload." end
 	local chunkId = payload.chunkId
 	local x = tonumber(payload.x)
 	local y = tonumber(payload.y)
 	local z = tonumber(payload.z)
 	if typeof(chunkId) ~= "string" or not x or not y or not z then
-		return false, "ERR_BAD_PAYLOAD", "Bad drill payload.", nil
+		return false, "ERR_BAD_PAYLOAD", "Bad placement payload."
 	end
-
 	local chunk = state.chunksById[chunkId]
-	if not chunk then
-		return false, "ERR_BAD_CHUNK", "Chunk does not exist.", nil
-	end
-	if not chunk.unlocked then
-		return false, "ERR_LOCKED_CHUNK", "Chunk is not unlocked.", nil
-	end
+	if not chunk then return false, "ERR_BAD_CHUNK", "Chunk does not exist." end
+	if not chunk.unlocked then return false, "ERR_LOCKED_CHUNK", "Chunk is not unlocked." end
 	if not pointInsideChunk(chunk, x, z) then
-		return false, "ERR_OUT_OF_CHUNK", "Drill position is not on the targeted chunk.", nil
+		return false, "ERR_OUT_OF_CHUNK", "Position is not on the targeted chunk."
 	end
 
-	-- Check tile for obstacles and pipe exclusivity
-	local drillRow, drillCol = worldToCell(x, z)
-	local drillCellKey = cellKey(drillRow, drillCol)
+	local cellR, cellC = worldToCell(x, z)
+	local ck = cellKey(cellR, cellC)
 
-	-- Obstacle check: can't drill on a tile with an obstacle
-	if chunk.tiles then
-		-- Find which sub-tile within this section
-		local g = plotGridConstants()
-		local sRow = (chunk.row - 1) * g.subTilesPerSide
-		local sCol = (chunk.col - 1) * g.subTilesPerSide
-		local localR = drillRow - sRow
-		local localC = drillCol - sCol
-		local tileKey = string.format("T%d%d", localR, localC)
-		local tile = chunk.tiles[tileKey]
-		if tile and tile.hasObstacle then
-			-- Water obstacles block drills permanently (pipes only)
-			if BiomeConfig.IsPipesOnlyObstacle(tile.obstacleType or "") then
-				return false, "ERR_WATER_TILE", "Can't drill on water. Pipes only.", nil
-			end
-			return false, "ERR_OBSTACLE", "Clear the obstacle first.", nil
+	local tileKey, _tile = resolveTileAt(chunk, x, z)
+	if state.pipesByCellKey and state.pipesByCellKey[ck] then
+		return false, "ERR_PIPE_HERE", "Remove the pipe first."
+	end
+	for _, drum in pairs(state.drumsById) do
+		if drum.cellKey == ck then
+			return false, "ERR_CELL_BLOCKED", "This cell is occupied by the refinery."
 		end
 	end
-
-	-- Pipe exclusivity: can't drill where a pipe already is
-	if state.pipesByCellKey and state.pipesByCellKey[drillCellKey] then
-		return false, "ERR_PIPE_HERE", "Remove the pipe first to place a drill.", nil
+	if state._blockedCells and state._blockedCells[ck] then
+		return false, "ERR_CELL_BLOCKED", "This cell is occupied by refinery infrastructure."
 	end
 
-	-- Snap Y to the chunk's actual tile surface (exclude obstacles, overlays, signs)
+	-- Snap Y to the tile's top surface
 	local plot = self._plotService:GetOwnedPlot(userId)
 	local sectionModel = plot and self._plotService:GetChunkModel(plot, chunkId)
 	if sectionModel then
@@ -747,98 +710,270 @@ function OilStateService:TryPlaceDrill(userId: number, payload): (boolean, strin
 		for _, d in ipairs(sectionModel:GetChildren()) do
 			if d:IsA("BasePart") and d.Name:match("^T%d%d$") then
 				local surface = d.Position.Y + d.Size.Y / 2
-				if topY == nil or surface > topY then
-					topY = surface
-				end
+				if topY == nil or surface > topY then topY = surface end
 			end
 		end
-		if topY then
-			y = topY
+		if topY then y = topY end
+	end
+
+	local snappedX, snappedZ = cellToWorld(cellR, cellC)
+	return true, "OK", "", chunk, tileKey, snappedX, y, snappedZ, cellR, cellC
+end
+
+-- Begin a drill operation on a tile. Server-authoritative timer; pump placement is blocked
+-- until CompleteDrill runs (called by DrillingService after DrillTier.drillSeconds).
+function OilStateService:TryStartDrill(userId: number, payload): (boolean, string, string, any)
+	local state = self._statesByUserId[userId]
+	if not state then return false, "ERR_NO_STATE", "State unavailable.", nil end
+
+	local tier = typeof(payload) == "table" and payload.tier or nil
+	local tierCfg = tier and OilConfig.DrillTiers[tier]
+	if not tierCfg then
+		return false, "ERR_BAD_TIER", "Unknown drill tier.", nil
+	end
+
+	local ok, code, msg, chunk, tileKey, sx, sy, sz, cellR, cellC = self:_validateTilePlacement(userId, payload)
+	if not ok then return false, code, msg, nil end
+
+	local tile = chunk.tiles and chunk.tiles[tileKey]
+	if tile and tile.drilled then
+		return false, "ERR_ALREADY_DRILLED", "This tile has already been drilled.", nil
+	end
+
+	local ck = cellKey(cellR, cellC)
+	-- Block placing a drill where a pump or another drill already is
+	for _, pump in pairs(state.drillsById) do
+		if pump.cellKey == ck then
+			return false, "ERR_CELL_BLOCKED", "Cell already has a pump.", nil
+		end
+	end
+	for _, active in pairs(state.activeDrills) do
+		if active.cellKey == ck then
+			return false, "ERR_CELL_BLOCKED", "Already drilling this tile.", nil
 		end
 	end
 
+	if not self:TrySpendCash(userId, tierCfg.cost) then
+		return false, "ERR_NOT_ENOUGH_CASH", "Not enough cash.", nil
+	end
+
+	local drillId = state.nextDrillId
+	state.nextDrillId += 1
+
+	-- Effective duration = tile.drillSeconds / tier.timeDivisor (1/10/30 for T1/T2/T3).
+	-- T1 at 1x is normal speed; T2 drills 10x faster, T3 drills 30x faster.
+	local baseSeconds = (tile and tonumber(tile.drillSeconds)) or tierCfg.fallbackSeconds or 10
+	local effectiveSeconds = math.max(0.5, baseSeconds / (tierCfg.timeDivisor or 1))
+
+	local now = workspace:GetServerTimeNow()
+	local entry = {
+		drillId = drillId,
+		chunkId = chunk.chunkId,
+		tier = tier,
+		tileKey = tileKey,
+		cellKey = ck,
+		cellRow = cellR,
+		cellCol = cellC,
+		position = Vector3.new(sx, sy, sz),
+		startTime = now,
+		endTime = now + effectiveSeconds,
+		oilType = (tile and tile.oilType) or nil,
+		template = tierCfg.templateName,
+	}
+	state.activeDrills[drillId] = entry
+	return true, "OK", "Drilling...", {
+		drillId = drillId,
+		duration = effectiveSeconds,
+		position = { x = sx, y = sy, z = sz },
+		chunkId = chunk.chunkId,
+		tileKey = tileKey,
+		tier = tier,
+		template = tierCfg.templateName,
+		oilType = entry.oilType,
+	}
+end
+
+-- Called by DrillingService when a drill's timer expires. Marks the tile drilled and
+-- returns metadata so the caller can fire spray-start VFX to clients.
+function OilStateService:CompleteDrill(userId: number, drillId: number): (boolean, any)
+	local state = self._statesByUserId[userId]
+	if not state then return false, nil end
+	local entry = state.activeDrills[drillId]
+	if not entry then return false, nil end
+	state.activeDrills[drillId] = nil
+
+	local chunk = state.chunksById[entry.chunkId]
+	local hasOil = true
+	if chunk and chunk.tiles and chunk.tiles[entry.tileKey] then
+		chunk.tiles[entry.tileKey].drilled = true
+		hasOil = chunk.tiles[entry.tileKey].hasOil ~= false
+	end
+	self:_markDirty(userId)
+	return true, {
+		drillId = drillId,
+		chunkId = entry.chunkId,
+		tileKey = entry.tileKey,
+		position = entry.position,
+		oilType = entry.oilType,
+		hasOil = hasOil,
+	}
+end
+
+-- Begin a prospect op on a single tile. Affects the whole 5x5 chunk that tile belongs to.
+function OilStateService:TryStartProspect(userId: number, payload: any): (boolean, string, string, any)
+	local state = self._statesByUserId[userId]
+	if not state then return false, "ERR_NO_STATE", "State unavailable.", nil end
+
+	local cfg = OilConfig.Prospecting or { durationSeconds = 5, cost = 0, templateName = "Prospector" }
+
+	local ok, code, msg, chunk, tileKey, sx, sy, sz = self:_validateTilePlacement(userId, payload)
+	if not ok then return false, code, msg, nil end
+
+	if chunk.prospected then
+		return false, "ERR_ALREADY_PROSPECTED", "This chunk has already been prospected.", nil
+	end
+
+	-- Block if another prospect is already running on this chunk
+	for _, active in pairs(state.activeProspectors) do
+		if active.chunkId == chunk.chunkId then
+			return false, "ERR_PROSPECT_IN_PROGRESS", "Already prospecting this chunk.", nil
+		end
+	end
+
+	if (cfg.cost or 0) > 0 and not self:TrySpendCash(userId, cfg.cost) then
+		return false, "ERR_NOT_ENOUGH_CASH", "Not enough cash.", nil
+	end
+
+	local prospectId = state.nextProspectId or 1
+	state.nextProspectId = prospectId + 1
+	local now = workspace:GetServerTimeNow()
+	local entry = {
+		prospectId = prospectId,
+		chunkId = chunk.chunkId,
+		tileKey = tileKey,
+		position = Vector3.new(sx, sy, sz),
+		startTime = now,
+		endTime = now + cfg.durationSeconds,
+		template = cfg.templateName,
+	}
+	state.activeProspectors[prospectId] = entry
+
+	return true, "OK", "Prospecting...", {
+		prospectId = prospectId,
+		chunkId = chunk.chunkId,
+		tileKey = tileKey,
+		position = { x = sx, y = sy, z = sz },
+		duration = cfg.durationSeconds,
+		template = cfg.templateName,
+	}
+end
+
+-- Called by ProspectingService when the timer expires. Marks chunk.prospected = true so clients
+-- render tile highlights (oil) / darkens (dry) permanently.
+function OilStateService:CompleteProspect(userId: number, prospectId: number): (boolean, any)
+	local state = self._statesByUserId[userId]
+	if not state then return false, nil end
+	local entry = state.activeProspectors[prospectId]
+	if not entry then return false, nil end
+	state.activeProspectors[prospectId] = nil
+
+	local chunk = state.chunksById[entry.chunkId]
+	if chunk then
+		chunk.prospected = true
+	end
+	self:_markDirty(userId)
+	return true, {
+		prospectId = prospectId,
+		chunkId = entry.chunkId,
+		position = entry.position,
+	}
+end
+
+-- Place a pump on a tile that has already been drilled.
+function OilStateService:TryPlacePump(userId: number, payload): (boolean, string, string, any)
+	local state = self._statesByUserId[userId]
+	if not state then return false, "ERR_NO_STATE", "State unavailable.", nil end
+
+	local tier = typeof(payload) == "table" and payload.tier or "T1"
+	local tierCfg = OilConfig.PumpTiers[tier]
+	if not tierCfg then return false, "ERR_BAD_TIER", "Unknown pump tier.", nil end
+
+	local ok, code, msg, chunk, tileKey, sx, sy, sz, cellR, cellC = self:_validateTilePlacement(userId, payload)
+	if not ok then return false, code, msg, nil end
+
+	local tile = chunk.tiles and chunk.tiles[tileKey]
+	if not tile or not tile.drilled then
+		return false, "ERR_NOT_DRILLED", "Tile must be drilled first.", nil
+	end
+	if tile.hasOil == false then
+		return false, "ERR_NO_OIL", "This tile is a dry hole — no oil to pump.", nil
+	end
+
+	local ck = cellKey(cellR, cellC)
 	for _, existing in pairs(state.drillsById) do
-		if distanceXZ(existing.position.X, existing.position.Z, x, z) < OilConfig.DrillMinSpacing then
-			return false, "ERR_TOO_CLOSE", "Too close to another drill.", nil
+		if existing.cellKey == ck then
+			return false, "ERR_CELL_OCCUPIED", "A pump is already placed here.", nil
+		end
+	end
+	for _, active in pairs(state.activeDrills) do
+		if active.cellKey == ck then
+			return false, "ERR_CELL_BLOCKED", "Drilling in progress here.", nil
 		end
 	end
 
 	if state.activeDrillCount >= maxActiveDrillsFor(state) then
-		return false, "ERR_MAX_DRILLS", "Max active drills reached.", nil
+		return false, "ERR_MAX_DRILLS", "Max active pumps reached.", nil
 	end
 
-	if not self:TrySpendCash(userId, OilConfig.DrillPlacementCost) then
-		return false, "ERR_NOT_ENOUGH_CASH", "Not enough cash to place drill.", nil
+	if not self:TrySpendCash(userId, tierCfg.cost) then
+		return false, "ERR_NOT_ENOUGH_CASH", "Not enough cash.", nil
 	end
 
 	local biomeConfig = OilConfig.Biomes[chunk.biome] or OilConfig.Biomes.Desert
-	local drillId = state.nextDrillId
+	local pumpId = state.nextDrillId
 	state.nextDrillId += 1
 
-	local template = OilConfig.DefaultDrillTemplate
-	local roll = math.random()
-	if roll < (OilConfig.GoldDrillChance or 0) then
-		template = OilConfig.GoldDrillTemplate
-	elseif roll < (OilConfig.GoldDrillChance or 0) + (OilConfig.RareDrillChance or 0) then
-		template = OilConfig.RareDrillTemplate
-	end
-
-	local scaleMin = OilConfig.DrillScaleMin or 1
-	local scaleMax = OilConfig.DrillScaleMax or 1
+	-- Random cosmetic scale + rare variant roll (gold / rainbow tint)
+	local scaleMin = OilConfig.PumpScaleMin or 1
+	local scaleMax = OilConfig.PumpScaleMax or 1
 	local scale = scaleMin + math.random() * (scaleMax - scaleMin)
-
-	-- Compute the drill's grid cell from its world position, then SNAP x/z to the cell center
-	local cellRow, cellCol = worldToCell(x, z)
-
-	-- Block placement on cells occupied by the Lab Machine (drum cells)
-	for _, drum in pairs(state.drumsById) do
-		if drum.cellKey == cellKey(cellRow, cellCol) then
-			return false, "ERR_CELL_BLOCKED", "This cell is occupied by the refinery.", nil
-		end
-	end
-	-- Also block cells marked as blocked around the drum (flanking + pipe cells)
-	local blockedCells = state._blockedCells
-	if blockedCells and blockedCells[cellKey(cellRow, cellCol)] then
-		return false, "ERR_CELL_BLOCKED", "This cell is occupied by refinery infrastructure.", nil
+	local roll = math.random()
+	local variant = nil
+	if roll < (OilConfig.RainbowPumpChance or 0) then
+		variant = "rainbow"
+	elseif roll < (OilConfig.RainbowPumpChance or 0) + (OilConfig.GoldPumpChance or 0) then
+		variant = "gold"
 	end
 
-	local snappedX, snappedZ = cellToWorld(cellRow, cellCol)
-
-	-- Determine the tile's oil type from the chunk's per-tile data
-	local tileOilType = nil
-	if chunk.tiles then
-		local g = plotGridConstants()
-		local sRow = (chunk.row - 1) * g.subTilesPerSide
-		local sCol = (chunk.col - 1) * g.subTilesPerSide
-		local localR = cellRow - sRow
-		local localC = cellCol - sCol
-		local tileKey = string.format("T%d%d", localR, localC)
-		local tile = chunk.tiles[tileKey]
-		if tile then
-			tileOilType = tile.oilType
-		end
-	end
-
-	local drill = {
-		drillId = drillId,
-		chunkId = chunkId,
+	local pump = {
+		drillId = pumpId,
+		chunkId = chunk.chunkId,
 		biome = chunk.biome,
-		template = template,
+		tier = tier,
+		tileKey = tileKey,
+		template = tierCfg.templateName,
 		scale = scale,
-		position = Vector3.new(snappedX, y, snappedZ),
-		flowBase = OilConfig.DrillBaseFlow * biomeConfig.flowMul * scale,
+		variant = variant,
+		position = Vector3.new(sx, sy, sz),
+		flowBase = OilConfig.DrillBaseFlow * biomeConfig.flowMul * tierCfg.flowMultiplier * scale,
 		tierMix = copyTierMap(biomeConfig.tierMix),
-		tileOilType = tileOilType, -- per-tile oil type (if available)
-		cellKey = cellKey(cellRow, cellCol),
-		cellRow = cellRow,
-		cellCol = cellCol,
+		tileOilType = tile.oilType,
+		cellKey = ck,
+		cellRow = cellR,
+		cellCol = cellC,
 		localBuffer = emptyTierMap(),
 		connected = false,
+		placementCost = tierCfg.cost or 0,
 	}
-	state.drillsById[drillId] = drill
+	state.drillsById[pumpId] = pump
 	state.activeDrillCount += 1
 	self:_markDirty(userId)
-	return true, "OK", "Drill placed.", { drillId = drillId }
+	return true, "OK", "Pump placed.", { drillId = pumpId, pumpId = pumpId, tier = tier, tileKey = tileKey }
+end
+
+-- Legacy name kept for backward compat at call sites; now routes to TryPlacePump.
+function OilStateService:TryPlaceDrill(userId: number, payload): (boolean, string, string, any)
+	return self:TryPlacePump(userId, payload)
 end
 
 function OilStateService:TryRemoveDrill(userId: number, drillId: number): (boolean, string, string)
@@ -854,6 +989,68 @@ function OilStateService:TryRemoveDrill(userId: number, drillId: number): (boole
 	state.activeDrillCount = math.max(0, state.activeDrillCount - 1)
 	self:_markDirty(userId)
 	return true, "OK", "Drill removed."
+end
+
+-- Hammer destruction: refunds 10% of the placement cost.
+-- payload = { targetKind = "pump"|"pipe"|"drum"|"drill"|"prospector", targetId or cellKey }
+function OilStateService:TryHammerDestroy(userId: number, payload: any): (boolean, string, string, any)
+	local state = self._statesByUserId[userId]
+	if not state then return false, "ERR_NO_STATE", "State unavailable.", nil end
+	if typeof(payload) ~= "table" then return false, "ERR_BAD_PAYLOAD", "Missing payload.", nil end
+	local kind = payload.targetKind
+	local refundedAmount = 0
+
+	if kind == "pump" then
+		local drillId = tonumber(payload.targetId)
+		local pump = drillId and state.drillsById[drillId]
+		if not pump then return false, "ERR_BAD_TARGET", "Pump not found.", nil end
+		local cost = tonumber(pump.placementCost) or 0
+		refundedAmount = math.floor(cost * 0.10)
+		state.drillsById[drillId] = nil
+		state.activeDrillCount = math.max(0, state.activeDrillCount - 1)
+
+	elseif kind == "pipe" then
+		local ck = tostring(payload.cellKey or "")
+		local pipe = state.pipesByCellKey[ck]
+		if not pipe then return false, "ERR_BAD_TARGET", "Pipe not found.", nil end
+		local cost = tonumber(pipe.placementCost) or tonumber(OilConfig.Pipes.Cost) or 0
+		refundedAmount = math.floor(cost * 0.10)
+		state.pipesByCellKey[ck] = nil
+
+	elseif kind == "drum" then
+		local drumId = tonumber(payload.targetId)
+		local drum = drumId and state.drumsById[drumId]
+		if not drum then return false, "ERR_BAD_TARGET", "Drum not found.", nil end
+		local cost = tonumber(drum.placementCost) or tonumber(OilConfig.Drums.Cost) or 0
+		refundedAmount = math.floor(cost * 0.10)
+		state.drumsById[drumId] = nil
+
+	elseif kind == "drill" then
+		-- Active (in-progress) drill — cancel the op, no refund for already-spent drill cost
+		local drillId = tonumber(payload.targetId)
+		local active = drillId and state.activeDrills[drillId]
+		if not active then return false, "ERR_BAD_TARGET", "Drill op not found.", nil end
+		local tierCfg = OilConfig.DrillTiers[active.tier]
+		refundedAmount = math.floor((tierCfg and tierCfg.cost or 0) * 0.10)
+		state.activeDrills[drillId] = nil
+
+	elseif kind == "prospector" then
+		local prospectId = tonumber(payload.targetId)
+		local active = prospectId and state.activeProspectors[prospectId]
+		if not active then return false, "ERR_BAD_TARGET", "Prospector not found.", nil end
+		local cost = tonumber((OilConfig.Prospecting or {}).cost) or 0
+		refundedAmount = math.floor(cost * 0.10)
+		state.activeProspectors[prospectId] = nil
+
+	else
+		return false, "ERR_BAD_KIND", "Unknown target kind.", nil
+	end
+
+	if refundedAmount > 0 then
+		state.cash = (state.cash or 0) + refundedAmount
+	end
+	self:_markDirty(userId)
+	return true, "OK", string.format("Destroyed — refunded $%d.", refundedAmount), { refunded = refundedAmount }
 end
 
 function OilStateService:GetActiveDrills(userId: number)
@@ -920,14 +1117,8 @@ function OilStateService:TryPlacePipe(userId: number, payload): (boolean, string
 		local sCol = (chunk.col - 1) * g.subTilesPerSide
 		local localR = row - sRow
 		local localC = col - sCol
-		local tileKey = string.format("T%d%d", localR, localC)
-		local tile = chunk.tiles[tileKey]
-		if tile and tile.hasObstacle then
-			if not BiomeConfig.IsPipesOnlyObstacle(tile.obstacleType or "") then
-				return false, "ERR_OBSTACLE", "Clear the obstacle first.", nil
-			end
-			-- Water tiles: pipes allowed, drills blocked
-		end
+		local _tileKey = string.format("T%d%d", localR, localC)
+		-- Obstacles removed: no per-tile blocking for pipes
 	end
 
 	if not self:TrySpendCash(userId, OilConfig.Pipes.Cost or 0) then
@@ -1180,15 +1371,19 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 				for tc = 1, subTiles do
 					local tileKey = string.format("T%d%d", tr, tc)
 					local tileType = BiomeConfig.RollTileType("DustyDesert", startRng)
+					-- Starter chunk uses the row-4 oil rate (90%)
+					local starterRate = (BiomeConfig.OilRatePerRow and BiomeConfig.OilRatePerRow[4]) or 0.9
+					local hasOil = (tileType.name == "SUPER TILE") or (startRng:NextNumber() < starterRate)
 					chunkData.tiles[tileKey] = {
-						oilType = tileType.oilType,
+						oilType = BiomeConfig.PickOilType(tileType, startRng),
+						hasOil = hasOil,
 						tileName = tileType.name,
 						tileMaterial = tileType.material.Name,
 						tileColorR = math.floor(tileType.color.R * 255),
 						tileColorG = math.floor(tileType.color.G * 255),
 						tileColorB = math.floor(tileType.color.B * 255),
-						hasObstacle = false,
-						obstacleType = nil,
+						drillSeconds = tileType.drillSeconds,
+						drilled = false,
 					}
 				end
 			end
@@ -1218,10 +1413,14 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		shipCapacityLevel = 1,
 		shipSkinId = "DefaultTanker",
 		chunksById = chunksById,
-		drillsById = {},
+		drillsById = {},         -- each record is now a PLACED PUMP (post-refactor)
+		activeDrills = {},       -- transient: in-progress drill operations { [drillId] = {...} }
+		activeProspectors = {},  -- transient: in-progress prospect operations { [prospectId] = {...} }
+		nextProspectId = 1,
 		pipesByCellKey = {},
 		drumsById = {},
 		nextDrillId = 1,
+		nextPumpId = 1,
 		nextPipeId = 1,
 		nextDrumId = 1,
 		activeDrillCount = 0,
@@ -1398,54 +1597,11 @@ function OilStateService:_applyPersistedIntoState(state, persisted)
 		end
 	end
 
+	-- Drill/pump refactor wipe: previously persisted "drills" are legacy pumps placed without
+	-- the new drill-then-pump flow. Discard on load; players start fresh with the new system.
+	-- (Tile.drilled state and new pump placements will accumulate from here on.)
 	if typeof(persisted.drills) == "table" then
-		local maxId = 0
-		for _, record in ipairs(persisted.drills) do
-			if typeof(record) == "table" and typeof(record.chunkId) == "string" and typeof(record.position) == "table" then
-				local chunk = state.chunksById[record.chunkId]
-				if chunk and chunk.unlocked then
-					local drillId = tonumber(record.drillId) or (maxId + 1)
-					if drillId > maxId then
-						maxId = drillId
-					end
-					local biomeConfig = OilConfig.Biomes[chunk.biome] or OilConfig.Biomes.Desert
-					local restoredScale = tonumber(record.scale) or 1
-					-- Restore local buffer
-					local restoredBuffer = emptyTierMap()
-					if typeof(record.localBuffer) == "table" then
-						local lb = record.localBuffer :: { [string]: any }
-						local legacyBufStd = floorPositive(tonumber(lb.StandardCrude) or 0)
-						for _, tier in ipairs(TIER_ORDER) do
-							restoredBuffer[tier] = floorPositive(tonumber(lb[tier]) or 0)
-						end
-						if legacyBufStd > 0 then
-							restoredBuffer.HeavyCrude += legacyBufStd
-						end
-					end
-					local drillX = tonumber(record.position.x) or chunk.worldX
-					local drillY = tonumber(record.position.y) or 6
-					local drillZ = tonumber(record.position.z) or chunk.worldZ
-					local cRow, cCol = worldToCell(drillX, drillZ)
-					state.drillsById[drillId] = {
-						drillId = drillId,
-						chunkId = record.chunkId,
-						biome = chunk.biome,
-						template = (typeof(record.template) == "string" and record.template) or OilConfig.DefaultDrillTemplate,
-						scale = restoredScale,
-						position = Vector3.new(drillX, drillY, drillZ),
-						flowBase = OilConfig.DrillBaseFlow * biomeConfig.flowMul * restoredScale,
-						tierMix = copyTierMap(biomeConfig.tierMix),
-						cellKey = cellKey(cRow, cCol),
-						cellRow = cRow,
-						cellCol = cCol,
-						localBuffer = restoredBuffer,
-						connected = false,
-					}
-					state.activeDrillCount += 1
-				end
-			end
-		end
-		state.nextDrillId = math.max(state.nextDrillId, maxId + 1)
+		-- intentionally skipped — records remain in DB but are not hydrated
 	end
 
 	if typeof(persisted.pipes) == "table" then

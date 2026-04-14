@@ -14,20 +14,53 @@ local OilConfig = {
 	ChunkUnlockBaseCost = 500,
 	ChunkUnlockDistanceMultiplier = 1.0,
 
-	-- Drill economy
-	DrillPlacementCost = 200,
+	-- Legacy drill economy (kept for now; pumps now inherit these values)
 	DrillBaseFlow = 0.2,
 	DrillMinSpacing = 6,
 	BaseMaxActiveDrills = 9999,
 	DrillsPerOwnedChunk = 0,
 	HardMaxActiveDrills = 9999,
-	GoldDrillChance = 0.05,
-	GoldDrillTemplate = "DrillGold",
-	RareDrillChance = 0.20,
-	RareDrillTemplate = "DrillRainbow",
-	DefaultDrillTemplate = "Drill",
 	DrillScaleMin = 0.5,
 	DrillScaleMax = 1.2,
+
+	-- Drill tiers. `timeDivisor` means: every 1 real second counts as N seconds of drill progress.
+	-- So effective drill duration = tile.drillSeconds / timeDivisor.
+	-- T1 = 1x (normal), T2 = 10x faster, T3 = 30x faster.
+	DrillTiers = {
+		T1 = { cost = 100,  timeDivisor = 1,  fallbackSeconds = 10, templateName = "Drill_T1", displayName = "Basic Drill" },
+		T2 = { cost = 400,  timeDivisor = 10, fallbackSeconds = 10, templateName = "Drill_T2", displayName = "Standard Drill" },
+		T3 = { cost = 1500, timeDivisor = 30, fallbackSeconds = 10, templateName = "Drill_T3", displayName = "Advanced Drill" },
+	},
+
+	-- Pump tiers (placed on drilled tiles; flow multiplier scales base production)
+	PumpTiers = {
+		T1 = { cost = 500,  flowMultiplier = 1.0, templateName = "Pump_T1", displayName = "Basic Pump" },
+		T2 = { cost = 2000, flowMultiplier = 2.5, templateName = "Pump_T2", displayName = "Standard Pump" },
+		T3 = { cost = 8000, flowMultiplier = 6.0, templateName = "Pump_T3", displayName = "Advanced Pump" },
+	},
+	-- Each placed pump gets a random visual scale.
+	PumpScaleMin = 0.36,
+	PumpScaleMax = 0.57,
+	-- Rare cosmetic variants: small chance a placed pump is "gold" or "rainbow" (tagged so the
+	-- renderer can apply a highlight/aura). Templates can be added later; nil = no override.
+	GoldPumpChance = 0.05,
+	GoldPumpHighlightColor = Color3.fromRGB(255, 215, 70),
+	RainbowPumpChance = 0.02,
+	RainbowPumpHighlightColor = Color3.fromRGB(180, 140, 255),
+
+	-- Prospecting: single-use tool that reveals ALL tiles' oil status in one 5x5 chunk.
+	Prospecting = {
+		durationSeconds = 5,   -- time from placement to reveal
+		cost = 0,              -- unlimited for dev; set > 0 once shop wires it up
+		templateName = "Prospector",
+	},
+
+	-- Colors for the oil spray VFX between drill completion and pump placement
+	OilSprayColors = {
+		HeavyCrude     = Color3.fromRGB(30, 30, 30),
+		LightSweet     = Color3.fromRGB(240, 200, 70),
+		PremiumRefined = Color3.fromRGB(180, 80, 255),
+	},
 
 	-- Pipe network
 	Pipes = {

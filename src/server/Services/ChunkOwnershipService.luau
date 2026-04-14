@@ -93,29 +93,43 @@ function ChunkOwnershipService:_applyChunkVisual(sectionModel: Model, chunk)
 			self:_setSignVisible(sign, false, nil)
 		end
 
-		-- Apply per-tile materials/colors from tile type data
+		-- Apply per-tile materials/colors from tile type data + decorations
 		if chunk.tiles then
 			for _, child in ipairs(sectionModel:GetChildren()) do
 				if child:IsA("BasePart") and child.Name:match("^T%d%d$") then
 					local tileData = chunk.tiles[child.Name]
 					if tileData then
-						-- Apply tile-specific material + color
-						local matName = tileData.tileMaterial
-						if matName and Enum.Material[matName] then
-							child.Material = Enum.Material[matName]
+						-- Drilled dry-hole tile → render as dirt patch (overrides normal visuals)
+						if tileData.drilled and tileData.hasOil == false then
+							child.Material = Enum.Material.Ground
+							child.Color = Color3.fromRGB(72, 50, 30)
+						else
+							local matName = tileData.tileMaterial
+							if matName and Enum.Material[matName] then
+								child.Material = Enum.Material[matName]
+							end
+							if tileData.tileColorR and tileData.tileColorG and tileData.tileColorB then
+								child.Color = Color3.fromRGB(tileData.tileColorR, tileData.tileColorG, tileData.tileColorB)
+							end
 						end
-						if tileData.tileColorR and tileData.tileColorG and tileData.tileColorB then
-							child.Color = Color3.fromRGB(tileData.tileColorR, tileData.tileColorG, tileData.tileColorB)
-						end
+						-- Tag attributes so the client tooltip can show HAS OIL / NO OIL once prospected
+						child:SetAttribute("TileName", tileData.tileName)
+						child:SetAttribute("OilType", tileData.oilType)
+						child:SetAttribute("Drilled", tileData.drilled == true)
+						child:SetAttribute("HasOil", tileData.hasOil ~= false)
+						child:SetAttribute("Prospected", chunk.prospected == true)
+						self:_applyTileDecorations(child, tileData)
+
+						-- Clean up any old highlight from earlier versions
+						local hl = child:FindFirstChild("OilHighlight")
+						if hl then hl:Destroy() end
 					end
 				end
 			end
 		end
 
-		-- Spawn obstacle models on tiles that have them
-		if chunk.tiles then
-			self:_syncObstacles(sectionModel, chunk)
-		end
+		-- Obstacle spawn removed; clean up any leftover obstacle models from earlier builds
+		self:_syncObstacles(sectionModel, chunk)
 
 	elseif not chunk.unlocked then
 		-- LOCKED: show dark fog + buy sign
@@ -163,16 +177,201 @@ function ChunkOwnershipService:_setSignVisible(sign: Instance, visible: boolean,
 	end
 end
 
-function ChunkOwnershipService:_syncObstacles(sectionModel: Model, chunk)
-	if not chunk.tiles then return end
+-- Obstacle system removed. Any lingering obstacle Parts left over from prior plots are
+-- cleaned up here so old worlds don't keep rocks/pillars stuck to tiles.
+-- Per-tile 3D decorations: flowers, tall grass, crack decals, magma bubbles, lake water.
+-- Decorations are children of the tile Part with Name = "TileDecoration" so we can purge
+-- them cleanly when the tile is drilled or the tile type changes.
+local TILE_DECO_NAME = "TileDecoration"
 
-	local assetsFolder = ReplicatedStorage:FindFirstChild("Assets")
-	if not assetsFolder then return end
+local function clearTileDecorations(tilePart: BasePart)
+	for _, child in ipairs(tilePart:GetChildren()) do
+		if child.Name == TILE_DECO_NAME then
+			child:Destroy()
+		end
+	end
+end
 
-	-- Remove existing obstacle models first and restore hidden water tiles
+local function buildFlower(pos: Vector3, rng: Random): Model
+	local m = Instance.new("Model")
+	m.Name = TILE_DECO_NAME
+	local stem = Instance.new("Part")
+	stem.Name = "Stem"
+	stem.Shape = Enum.PartType.Cylinder
+	stem.Size = Vector3.new(1.2, 0.18, 0.18)
+	stem.Material = Enum.Material.Grass
+	stem.Color = Color3.fromRGB(20, 130, 30)
+	stem.Anchored = true; stem.CanCollide = false; stem.CanQuery = false; stem.CanTouch = false; stem.CastShadow = false
+	stem.CFrame = CFrame.new(pos) * CFrame.Angles(0, 0, math.rad(90))
+	stem.Parent = m
+	local petal = Instance.new("Part")
+	petal.Name = "Petal"
+	petal.Shape = Enum.PartType.Ball
+	petal.Size = Vector3.new(0.65, 0.65, 0.65)
+	local flowerColors = {
+		Color3.fromRGB(255, 120, 180),
+		Color3.fromRGB(255, 230, 90),
+		Color3.fromRGB(230, 140, 255),
+		Color3.fromRGB(255, 160, 90),
+		Color3.fromRGB(255, 255, 255),
+	}
+	petal.Color = flowerColors[rng:NextInteger(1, #flowerColors)]
+	petal.Material = Enum.Material.Neon
+	petal.Anchored = true; petal.CanCollide = false; petal.CanQuery = false; petal.CanTouch = false; petal.CastShadow = false
+	petal.Position = pos + Vector3.new(0, 0.8, 0)
+	petal.Parent = m
+	m.Parent = nil
+	return m
+end
+
+local function buildTallGrassBlade(pos: Vector3, rng: Random): BasePart
+	local p = Instance.new("Part")
+	p.Name = TILE_DECO_NAME
+	p.Size = Vector3.new(0.25, 2.2 + rng:NextNumber() * 0.8, 0.25)
+	p.Material = Enum.Material.Grass
+	p.Color = Color3.fromRGB(25, 140, 20):Lerp(Color3.fromRGB(60, 180, 40), rng:NextNumber())
+	p.Anchored = true; p.CanCollide = false; p.CanQuery = false; p.CanTouch = false; p.CastShadow = false
+	p.CFrame = CFrame.new(pos + Vector3.new(0, p.Size.Y / 2, 0)) * CFrame.Angles(math.rad(rng:NextNumber(-10, 10)), math.rad(rng:NextNumber(0, 360)), math.rad(rng:NextNumber(-10, 10)))
+	return p
+end
+
+function ChunkOwnershipService:_applyTileDecorations(tilePart: BasePart, tileData: any)
+	-- Always clear first — idempotent (fresh chunk state)
+	clearTileDecorations(tilePart)
+	-- Only strip decorations for DRY HOLES (drilled + no oil = dirt patch).
+	-- Drilled tiles with oil keep their visual (sand textures, obsidian decals, etc.) because
+	-- the oil is spraying, not because the tile has become dirt.
+	if tileData.drilled and tileData.hasOil == false then return end
+
+	local tileName = tileData.tileName
+	if not tileName then return end
+	local topY = tilePart.Position.Y + tilePart.Size.Y / 2
+	local topC = Vector3.new(tilePart.Position.X, topY, tilePart.Position.Z)
+
+	-- Seed per-tile so decorations are stable between re-syncs
+	local rng = Random.new(math.floor(tilePart.Position.X * 7.31 + tilePart.Position.Z * 13.17))
+
+	if tileName == "Flower Patch Grass" then
+		local count = rng:NextInteger(3, 5)
+		for i = 1, count do
+			local off = Vector3.new(rng:NextNumber(-2.5, 2.5), 0, rng:NextNumber(-2.5, 2.5))
+			local m = buildFlower(topC + off, rng)
+			m.Parent = tilePart
+		end
+
+	elseif tileName == "Tall Grass" then
+		for _ = 1, rng:NextInteger(6, 10) do
+			local off = Vector3.new(rng:NextNumber(-3, 3), 0, rng:NextNumber(-3, 3))
+			local blade = buildTallGrassBlade(topC + off, rng)
+			blade.Parent = tilePart
+		end
+
+	elseif tileName == "Cracked Stone" then
+		local d = Instance.new("Decal")
+		d.Name = TILE_DECO_NAME
+		d.Face = Enum.NormalId.Top
+		d.Texture = "rbxasset://textures/terrain/Cracked.png"
+		d.Transparency = 0.25
+		d.Color3 = Color3.fromRGB(15, 15, 15)
+		d.Parent = tilePart
+
+	elseif tileName == "Smooth Sand" then
+		-- Material override for a smoother look regardless of config
+		tilePart.Material = Enum.Material.Sandstone
+		tilePart.Reflectance = 0.06
+
+	elseif tileName == "Magma" then
+		-- Replace tile visual with the workspace "lava" asset's look (Neon + lava texture on all faces),
+		-- keeping tile dimensions. Plus keep the bubbling particles + point light on top.
+		tilePart.Material = Enum.Material.Neon
+		tilePart.Color = Color3.fromRGB(255, 0, 0)
+		for _, face in ipairs({Enum.NormalId.Top, Enum.NormalId.Bottom, Enum.NormalId.Front, Enum.NormalId.Back, Enum.NormalId.Left, Enum.NormalId.Right}) do
+			local d = Instance.new("Decal")
+			d.Name = TILE_DECO_NAME
+			d.Face = face
+			d.Texture = "rbxassetid://4375276355"
+			d.Parent = tilePart
+		end
+
+		local att = Instance.new("Attachment")
+		att.Name = TILE_DECO_NAME
+		att.Position = Vector3.new(0, tilePart.Size.Y / 2 + 0.3, 0)
+		att.Parent = tilePart
+
+		local emit = Instance.new("ParticleEmitter")
+		emit.Texture = "rbxasset://textures/particles/fire_main.dds"
+		emit.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 180, 80)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 70, 20)),
+		})
+		emit.Rate = 40
+		emit.Speed = NumberRange.new(3, 6)
+		emit.Lifetime = NumberRange.new(0.6, 1.2)
+		emit.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.8),
+			NumberSequenceKeypoint.new(0.5, 1.6),
+			NumberSequenceKeypoint.new(1, 0),
+		})
+		emit.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.2),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+		emit.LightEmission = 0.8
+		emit.EmissionDirection = Enum.NormalId.Top
+		emit.Acceleration = Vector3.new(0, -4, 0)
+		emit.SpreadAngle = Vector2.new(12, 12)
+		emit.Parent = att
+
+		local light = Instance.new("PointLight")
+		light.Name = TILE_DECO_NAME
+		light.Color = Color3.fromRGB(255, 120, 40)
+		light.Brightness = 2.5
+		light.Range = 10
+		light.Parent = tilePart
+
+	elseif tileName == "Obsidian" then
+		-- Replace the flat tile visual with the ObsidianPillar's rock texture on all 6 faces,
+		-- keeping the tile's dimensions so the grid stays perfectly aligned.
+		tilePart.Material = Enum.Material.Plastic
+		tilePart.Color = Color3.fromRGB(163, 162, 165)
+		tilePart.Reflectance = 0
+		for _, face in ipairs({Enum.NormalId.Top, Enum.NormalId.Bottom, Enum.NormalId.Front, Enum.NormalId.Back, Enum.NormalId.Left, Enum.NormalId.Right}) do
+			local d = Instance.new("Decal")
+			d.Name = TILE_DECO_NAME
+			d.Face = face
+			d.Texture = "rbxassetid://146215703"
+			d.Parent = tilePart
+		end
+
+	elseif tileName == "Sand" then
+		-- Use SANDMC's tiling sand texture on all 6 faces
+		tilePart.Material = Enum.Material.Plastic
+		tilePart.Color = Color3.fromRGB(163, 162, 165)
+		for _, face in ipairs({Enum.NormalId.Top, Enum.NormalId.Bottom, Enum.NormalId.Front, Enum.NormalId.Back, Enum.NormalId.Left, Enum.NormalId.Right}) do
+			local t = Instance.new("Texture")
+			t.Name = TILE_DECO_NAME
+			t.Face = face
+			t.Texture = "rbxassetid://38349529"
+			t.StudsPerTileU = 4
+			t.StudsPerTileV = 4
+			t.Parent = tilePart
+		end
+
+	elseif tileName == "Forrest Lake" or tileName == "Mountain Lake" then
+		-- Real water material (ignore config color+material override)
+		tilePart.Material = Enum.Material.Water
+		tilePart.Transparency = 0.25
+		if tileName == "Mountain Lake" then
+			tilePart.Color = Color3.fromRGB(20, 90, 110)
+		else
+			tilePart.Color = Color3.fromRGB(40, 150, 200)
+		end
+	end
+end
+
+function ChunkOwnershipService:_syncObstacles(sectionModel: Model, _chunk)
 	for _, child in ipairs(sectionModel:GetChildren()) do
 		if child:GetAttribute("IsObstacle") then
-			-- If this was a water obstacle, restore the original tile visibility
 			local tk = child:GetAttribute("TileKey")
 			if tk then
 				local origTile = sectionModel:FindFirstChild(tk)
@@ -181,96 +380,6 @@ function ChunkOwnershipService:_syncObstacles(sectionModel: Model, chunk)
 				end
 			end
 			child:Destroy()
-		end
-	end
-
-	-- Spawn new obstacles
-	for tileKey, tile in pairs(chunk.tiles) do
-		if tile.hasObstacle and tile.obstacleType then
-			local templateName = BiomeConfig.ObstacleTemplates[tile.obstacleType]
-			local template = templateName and assetsFolder:FindFirstChild(templateName)
-
-			-- Find the tile BasePart to get its position
-			local tilePart = sectionModel:FindFirstChild(tileKey)
-			if tilePart and tilePart:IsA("BasePart") then
-				-- Water obstacles REPLACE the tile entirely instead of sitting on top
-				if BiomeConfig.IsPipesOnlyObstacle(tile.obstacleType) and template then
-					-- Hide the original tile
-					tilePart.Transparency = 1
-
-					-- Clone the water block(s) from template
-					local waterParts = {}
-					if template:IsA("Folder") or template:IsA("Model") then
-						for _, child in ipairs(template:GetChildren()) do
-							if child:IsA("BasePart") then
-								table.insert(waterParts, child)
-							end
-						end
-					elseif template:IsA("BasePart") then
-						table.insert(waterParts, template)
-					end
-
-					for _, waterTemplate in ipairs(waterParts) do
-						local waterClone = waterTemplate:Clone()
-						waterClone.Name = "Obstacle_" .. tileKey
-						waterClone.Anchored = true
-						waterClone.CanCollide = true
-						waterClone:SetAttribute("IsObstacle", true)
-						waterClone:SetAttribute("TileKey", tileKey)
-						waterClone:SetAttribute("ChunkId", chunk.chunkId)
-						waterClone:SetAttribute("ObstacleType", tile.obstacleType)
-						-- Position at tile level (replace, not on top)
-						waterClone.Size = Vector3.new(tilePart.Size.X, waterTemplate.Size.Y, tilePart.Size.Z)
-						waterClone.Position = tilePart.Position + Vector3.new(0, (waterTemplate.Size.Y - tilePart.Size.Y) / 2, 0)
-						waterClone.Parent = sectionModel
-					end
-				else
-					-- Normal obstacles: spawn on top of tile
-					local obstacle
-					if template then
-						obstacle = template:Clone()
-					else
-						-- Fallback: generic rock
-						obstacle = Instance.new("Part")
-						obstacle.Shape = Enum.PartType.Ball
-						obstacle.Size = Vector3.new(4, 3, 4)
-						obstacle.Material = Enum.Material.Rock
-						obstacle.Color = Color3.fromRGB(100, 95, 88)
-					end
-
-					obstacle.Name = "Obstacle_" .. tileKey
-					obstacle:SetAttribute("IsObstacle", true)
-					obstacle:SetAttribute("TileKey", tileKey)
-					obstacle:SetAttribute("ChunkId", chunk.chunkId)
-					obstacle:SetAttribute("ObstacleType", tile.obstacleType)
-
-					if obstacle:IsA("BasePart") then
-						obstacle.Anchored = true
-						obstacle.CanCollide = true
-						obstacle.CanQuery = true
-						obstacle.Position = tilePart.Position + Vector3.new(0, obstacle.Size.Y / 2 + tilePart.Size.Y / 2, 0)
-					elseif obstacle:IsA("Model") then
-						obstacle:PivotTo(CFrame.new(tilePart.Position + Vector3.new(0, 2, 0)))
-					end
-
-					-- Add clear prompt (not for water — water can't be cleared)
-					local promptHost = obstacle:IsA("BasePart") and obstacle or obstacle:FindFirstChildWhichIsA("BasePart")
-					if promptHost then
-						local biomeName = chunk.biome or "Dustlands"
-						local cost = BiomeConfig.GetObstacleCost(biomeName, tile.obstacleType)
-						local prompt = Instance.new("ProximityPrompt")
-						prompt.Name = "ClearPrompt"
-						prompt.ActionText = string.format("Clear ($%d)", cost)
-						prompt.ObjectText = tile.obstacleType
-						prompt.HoldDuration = 0.5
-						prompt.MaxActivationDistance = 12
-						prompt.RequiresLineOfSight = false
-						prompt.Parent = promptHost
-					end
-
-					obstacle.Parent = sectionModel
-				end
-			end
 		end
 	end
 end
