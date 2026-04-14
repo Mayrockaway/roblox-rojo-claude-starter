@@ -1,8 +1,10 @@
 --!strict
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local BiomeConfig = require(Shared:WaitForChild("Config"):WaitForChild("BiomeConfig"))
+local DevLog = require(Shared:WaitForChild("DevLog"))
 
 local ChunkOwnershipService = {}
 
@@ -32,6 +34,15 @@ function ChunkOwnershipService:Start()
 			self:_refreshAll(userId, plot)
 		end
 	end))
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		local plot = self._plotService:GetOwnedPlot(player.UserId)
+		if plot then
+			task.defer(function()
+				self:_refreshAll(player.UserId, plot)
+			end)
+		end
+	end
 end
 
 function ChunkOwnershipService:Stop()
@@ -55,9 +66,16 @@ end
 
 function ChunkOwnershipService:_refreshAll(userId: number, plot: Model)
 	local state = self._oilStateService:GetState(userId)
-	if not state then return end
+	if not state then
+		DevLog.log(string.format("[ChunkOwnership] _refreshAll user=%d plot=%s: no state", userId, plot.Name))
+		return
+	end
 	local ground = plot:FindFirstChild("PlotGround")
-	if not (ground and ground:IsA("Model")) then return end
+	if not (ground and ground:IsA("Model")) then
+		DevLog.log(string.format("[ChunkOwnership] _refreshAll user=%d plot=%s: no PlotGround", userId, plot.Name))
+		return
+	end
+	local applied, missed = 0, 0
 	for _, sectionModel in ipairs(ground:GetChildren()) do
 		if sectionModel:IsA("Model") then
 			local chunkId = sectionModel:GetAttribute("ChunkId")
@@ -65,10 +83,15 @@ function ChunkOwnershipService:_refreshAll(userId: number, plot: Model)
 				local chunk = state.chunksById[chunkId]
 				if chunk then
 					self:_applyChunkVisual(sectionModel, chunk)
+					applied += 1
+				else
+					missed += 1
 				end
 			end
 		end
 	end
+	DevLog.log(string.format("[ChunkOwnership] refreshed user=%d plot=%s applied=%d missed=%d",
+		userId, plot.Name, applied, missed))
 end
 
 function ChunkOwnershipService:_costFor(_state, chunk): number

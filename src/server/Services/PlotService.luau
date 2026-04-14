@@ -2,6 +2,8 @@
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local DevLog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("DevLog"))
 
 local PlotService = {}
 
@@ -37,6 +39,7 @@ end
 
 function PlotService:Init()
 	self._assignedByUserId = {}
+	self._characterAddedByUserId = {}
 	self._connections = {}
 	self._plotsFolder = nil
 	self._running = false
@@ -51,7 +54,6 @@ function PlotService:Start()
 	end
 	self._running = true
 
-	print("[PlotService] Start() begin")
 	local map = Workspace:WaitForChild("Map", 20)
 	if not map then
 		warn("[PlotService] Workspace.Map not found.")
@@ -62,20 +64,21 @@ function PlotService:Start()
 		warn("[PlotService] Map.Plots not found.")
 		return
 	end
-	print("[PlotService] Plots folder has "..#self._plotsFolder:GetChildren().." children before init")
 
 	self:_initializePlots()
 
-	-- Log final state of every plot after init
-	for _, p in ipairs(self._plotsFolder:GetChildren()) do
-		if p:IsA("Model") then
-			print(string.format("[PlotService] POST-INIT: %s PlotId=%s Owner=%s",
-				p.Name,
-				tostring(p:GetAttribute("PlotId")),
-				tostring(p:GetAttribute("OwnerUserId"))
-			))
-		end
+	-- Capacity guard: warn loudly if fewer plots than MaxPlayers. Players joining past
+	-- the plot count will be kicked with "Server full" at claim time.
+	local plotCount = #self:_getPlotsSorted()
+	if plotCount < Players.MaxPlayers then
+		warn(string.format("[PlotService] Authored plots (%d) < MaxPlayers (%d) — set MaxPlayers to %d in Game Settings.",
+			plotCount, Players.MaxPlayers, plotCount))
 	end
+
+	-- We drive character spawning manually: plot must be assigned BEFORE the character loads,
+	-- or Roblox's default spawn (world origin, mid-ocean on this map) briefly places them
+	-- there and subsequent PivotTo calls can be overridden by character-loading logic.
+	Players.CharacterAutoLoads = false
 
 	table.insert(self._connections, Players.PlayerAdded:Connect(function(player)
 		self:_onPlayerAdded(player)
@@ -88,8 +91,6 @@ function PlotService:Start()
 	for _, player in ipairs(Players:GetPlayers()) do
 		self:_onPlayerAdded(player)
 	end
-
-	print("[PlotService] Start() done — running")
 end
 
 function PlotService:Stop()
@@ -98,6 +99,10 @@ function PlotService:Stop()
 		connection:Disconnect()
 	end
 	self._connections = {}
+	for userId, connection in pairs(self._characterAddedByUserId) do
+		connection:Disconnect()
+		self._characterAddedByUserId[userId] = nil
+	end
 	if self._plotAssignedEvent then
 		self._plotAssignedEvent:Destroy()
 		self._plotAssignedEvent = nil
@@ -175,137 +180,28 @@ function PlotService:OnPlotReleased(callback)
 	return self._plotReleasedEvent.Event:Connect(callback)
 end
 
--- Target number of player plots. If the map only has 1 plot authored, we duplicate it on server
--- boot so every player (up to this count) can claim their own slot.
-local TARGET_PLOT_COUNT = 4
-
-function PlotService:_ensureEnoughPlots()
-	if not self._plotsFolder then return end
-	local existing = {}
-	for _, p in ipairs(self._plotsFolder:GetChildren()) do
-		if p:IsA("Model") then table.insert(existing, p) end
-	end
-	if #existing >= TARGET_PLOT_COUNT or #existing == 0 then return end
-
-	-- Use Plot_01 (or the first plot) as the template
-	local src = self._plotsFolder:FindFirstChild("Plot_01") or existing[1]
-	if not src then return end
-
-	local _, bbSize = src:GetBoundingBox()
-	local spacing = bbSize.X + 40
-
-	local function dup(newId, offsetX)
-		local name = string.format("Plot_%02d", newId)
-		if self._plotsFolder:FindFirstChild(name) then return end
-		local clone = src:Clone()
-		clone.Name = name
-		clone:SetAttribute("PlotId", newId)
-		clone:SetAttribute("OwnerUserId", 0)
-		-- Move every BasePart by offsetX (world-space positions)
-		for _, d in ipairs(clone:GetDescendants()) do
-			if d:IsA("BasePart") then
-				d.Position = d.Position + Vector3.new(offsetX, 0, 0)
-			end
-		end
-		-- CRITICAL: update CenterX / CenterZ attributes on chunk section Models.
-		-- OilStateService reads these as the chunk's world-space center; if we don't update
-		-- them, every drill/pump placement resolves to the ORIGINAL plot's coordinates.
-		for _, d in ipairs(clone:GetDescendants()) do
-			if d:IsA("Model") then
-				local cx = d:GetAttribute("CenterX")
-				if typeof(cx) == "number" then
-					d:SetAttribute("CenterX", cx + offsetX)
-				end
-				-- CenterZ is unchanged since we only shifted on X
-			end
-		end
-		clone.Parent = self._plotsFolder
-	end
-
-	for i = 2, TARGET_PLOT_COUNT do
-		dup(i, spacing * (i - 1))
-	end
-	print(string.format("[PlotService] Auto-duplicated plots to target %d (had %d)", TARGET_PLOT_COUNT, #existing))
-end
-
-function PlotService:_emergencyCreatePlot()
-	-- Count existing plots, find highest PlotId, and clone one more at the next offset.
-	if not self._plotsFolder then return end
-	local src = self._plotsFolder:FindFirstChild("Plot_01")
-	if not src then return end
-	local count = 0
-	local maxId = 0
-	for _, p in ipairs(self._plotsFolder:GetChildren()) do
-		if p:IsA("Model") then
-			count += 1
-			local id = p:GetAttribute("PlotId") or tonumber(p.Name:match("Plot_(%d+)")) or 0
-			if id > maxId then maxId = id end
-		end
-	end
-	local _, bbSize = src:GetBoundingBox()
-	local spacing = bbSize.X + 40
-	local newId = maxId + 1
-	local offsetX = spacing * (newId - 1)
-	local name = string.format("Plot_%02d", newId)
-	if self._plotsFolder:FindFirstChild(name) then return end
-
-	local clone = src:Clone()
-	clone.Name = name
-	clone:SetAttribute("PlotId", newId)
-	clone:SetAttribute("OwnerUserId", 0)
-	for _, d in ipairs(clone:GetDescendants()) do
-		if d:IsA("BasePart") then
-			d.Position = d.Position + Vector3.new(offsetX, 0, 0)
-		end
-	end
-	for _, d in ipairs(clone:GetDescendants()) do
-		if d:IsA("Model") then
-			local cx = d:GetAttribute("CenterX")
-			if typeof(cx) == "number" then
-				d:SetAttribute("CenterX", cx + offsetX)
-			end
-		end
-	end
-	clone.Parent = self._plotsFolder
-	self:_ensurePlotMarkers(clone)
-	self:_refreshPlotVisual(clone)
-	print(string.format("[PlotService] Emergency-created %s at offset +%d", name, offsetX))
-end
-
 function PlotService:_initializePlots()
-	self:_ensureEnoughPlots()
 	local plots = self:_getPlotsSorted()
 	local OilConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("OilConfig"))
+	local startingSectionId = string.format("S%02d_%02d", OilConfig.Chunks.StartingRow, OilConfig.Chunks.StartingCol)
+
 	for _, plot in ipairs(plots) do
+		-- Reset ownership on boot — prevents stale OwnerUserId from prior sessions blocking claims.
 		plot:SetAttribute("OwnerUserId", 0)
+
+		-- Warn-only validation; plot authoring in Studio should keep these correct.
 		if typeof(plot:GetAttribute("PlotId")) ~= "number" then
-			local parsed = tonumber(plot.Name:match("(%d+)")) or 1
-			plot:SetAttribute("PlotId", parsed)
+			warn(string.format("[PlotService] %s is missing PlotId attribute", plot.Name))
 		end
-		-- Guarantee every plot has ONE section tagged StartingChunk. Without this, OilStateService
-		-- never unlocks a starter chunk for the player → they spawn on a plot with nothing usable.
 		local ground = plot:FindFirstChild("PlotGround")
-		if ground and ground:IsA("Model") then
-			local startingSectionId = string.format("S%02d_%02d", OilConfig.Chunks.StartingRow, OilConfig.Chunks.StartingCol)
-			local anyMarked = false
-			for _, section in ipairs(ground:GetChildren()) do
-				if section:IsA("Model") then
-					if section.Name == startingSectionId then
-						section:SetAttribute("StartingChunk", true)
-						anyMarked = true
-					else
-						section:SetAttribute("StartingChunk", false)
-					end
-				end
-			end
-			if not anyMarked then
-				warn(string.format("[PlotService] %s: no section named %s — starter chunk couldn't be marked", plot.Name, startingSectionId))
-			end
+		local starterSection = ground and ground:FindFirstChild(startingSectionId)
+		if not (starterSection and starterSection:GetAttribute("StartingChunk") == true) then
+			warn(string.format("[PlotService] %s %s missing StartingChunk=true", plot.Name, startingSectionId))
 		end
+
 		self:_ensurePlotMarkers(plot)
 		self:_refreshPlotVisual(plot)
 	end
-	print(string.format("[PlotService] %d plots ready, all unowned", #plots))
 end
 
 function PlotService:_ensurePlotMarkers(plot: Model)
@@ -434,6 +330,27 @@ function PlotService:_claimRandomOpenPlot(userId: number): Model?
 	return selected
 end
 
+function PlotService:_findOwnedPlotByUserId(userId: number): Model?
+	for _, plot in ipairs(self:_getPlotsSorted()) do
+		local owner = plot:GetAttribute("OwnerUserId")
+		if typeof(owner) == "number" and owner == userId then
+			return plot
+		end
+	end
+	return nil
+end
+
+function PlotService:_ensureCharacterAddedConnection(player: Player)
+	local oldConn = self._characterAddedByUserId[player.UserId]
+	if oldConn then
+		oldConn:Disconnect()
+	end
+	self._characterAddedByUserId[player.UserId] = player.CharacterAdded:Connect(function(character)
+		DevLog.log(string.format("[PlotService] %s CharacterAdded", player.Name))
+		self:_teleportCharacterToOwnedPlot(player, character)
+	end)
+end
+
 function PlotService:_releasePlot(plot: Model?)
 	if not plot then
 		return
@@ -454,78 +371,110 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 		return
 	end
 
+	local hrp = character:WaitForChild("HumanoidRootPart", 5)
+	if not (hrp and hrp:IsA("BasePart")) then
+		warn(string.format("[PlotService] Teleport %s: HumanoidRootPart never appeared", player.Name))
+		return
+	end
+
 	local target = CFrame.new(
 		spawnPart.Position.X,
 		math.max(14, spawnPart.Position.Y + 8),
 		spawnPart.Position.Z
 	)
+	-- Set HRP CFrame directly — more reliable than PivotTo during character load.
+	hrp.CFrame = target
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	hrp.AssemblyAngularVelocity = Vector3.zero
 
-	print(string.format("[PlotService] Teleport %s to %s @ %s (spawnPart=%s)",
-		player.Name, plot.Name, tostring(target.Position), spawnPart.Name))
-
-	for _ = 1, 40 do
-		local hrp = character:FindFirstChild("HumanoidRootPart")
-		if hrp and hrp:IsA("BasePart") then
-			character:PivotTo(target)
-			hrp.AssemblyLinearVelocity = Vector3.zero
-			hrp.AssemblyAngularVelocity = Vector3.zero
-
-			-- Re-teleport repeatedly for the first 3s in case something pushes them back to spawn
-			for delay = 0.5, 3, 0.5 do
-				task.delay(delay, function()
-					if not (character.Parent and hrp.Parent and hrp:IsA("BasePart")) then return end
-					local cur = self._assignedByUserId[player.UserId]
-					if not cur then return end
-					local sp = getSpawnPart(cur)
-					if not sp then return end
-					local t = CFrame.new(sp.Position.X, math.max(14, sp.Position.Y + 8), sp.Position.Z)
-					if (hrp.Position - t.Position).Magnitude > 30 then
-						character:PivotTo(t)
-						hrp.AssemblyLinearVelocity = Vector3.zero
-						hrp.AssemblyAngularVelocity = Vector3.zero
-					end
-				end)
+	-- One safety re-teleport 0.3s later: absorbs character-load settle (default-spawn
+	-- logic, humanoid state transitions) that can clobber the initial CFrame.
+	task.delay(0.3, function()
+		if hrp.Parent and character.Parent then
+			if (hrp.Position - target.Position).Magnitude > 10 then
+				hrp.CFrame = target
+				hrp.AssemblyLinearVelocity = Vector3.zero
 			end
-			return
 		end
-		task.wait(0.1)
-	end
-	warn(string.format("[PlotService] Teleport %s: HRP never appeared after 40 retries", player.Name))
+	end)
 end
 
 function PlotService:_onPlayerAdded(player: Player)
-	local plot = self:_claimRandomOpenPlot(player.UserId)
+	local plot = self._assignedByUserId[player.UserId]
 	if not plot then
-		-- No open plots — emergency duplicate one more and claim it.
-		warn(string.format("[PlotService] No open plot for %s — auto-creating one", player.Name))
-		self:_emergencyCreatePlot()
+		plot = self:_findOwnedPlotByUserId(player.UserId)
+	end
+	if not plot then
 		plot = self:_claimRandomOpenPlot(player.UserId)
 	end
-	self._assignedByUserId[player.UserId] = plot
-	player:SetAttribute("PlotId", plot and getPlotId(plot) or 0)
-	if plot then
-		print(string.format("[PlotService] %s assigned to %s", player.Name, plot.Name))
-	else
-		warn(string.format("[PlotService] FAILED to assign a plot to %s", player.Name))
+	if not plot then
+		player:Kick("Server full - no open plots.")
+		return
 	end
-	if self._plotAssignedEvent and plot then
+
+	local wasAlreadyAssigned = self._assignedByUserId[player.UserId] == plot
+	self._assignedByUserId[player.UserId] = plot
+	player:SetAttribute("PlotId", getPlotId(plot))
+	self:_ensureCharacterAddedConnection(player)
+
+	if wasAlreadyAssigned then
+		DevLog.log(string.format("[PlotService] duplicate _onPlayerAdded for %s - reusing %s", player.Name, plot.Name))
+		if player.Character then
+			self:_teleportCharacterToOwnedPlot(player, player.Character)
+		else
+			player:LoadCharacter()
+		end
+		return
+	end
+
+	-- Snapshot of plot structure at assignment time
+	local ground = plot:FindFirstChild("PlotGround")
+	local sectionCount = 0
+	local tileCount = 0
+	if ground then
+		for _, s in ipairs(ground:GetChildren()) do
+			if s:IsA("Model") then
+				sectionCount += 1
+				for _, t in ipairs(s:GetChildren()) do
+					if t:IsA("BasePart") and t.Name:match("^T%d%d$") then
+						tileCount += 1
+					end
+				end
+			end
+		end
+	end
+	DevLog.log(string.format("[PlotService] %s -> %s ClaimPad.X=%.1f sections=%d tiles=%d",
+		player.Name, plot.Name,
+		plot.ClaimPad and plot.ClaimPad.Position.X or -999,
+		sectionCount, tileCount))
+
+	if self._plotAssignedEvent then
 		self._plotAssignedEvent:Fire(player.UserId, plot)
 	end
 
-	player.CharacterAdded:Connect(function(character)
-		self:_teleportCharacterToOwnedPlot(player, character)
-	end)
+	-- Load the character AFTER plot assignment so its first spawn is on the plot.
+	player:LoadCharacter()
 
-	if player.Character then
-		task.defer(function()
-			self:_teleportCharacterToOwnedPlot(player, player.Character :: Model)
-		end)
-	end
+	-- Sanity check 2s after join: do we still have state + plot?
+	task.delay(2, function()
+		local assignedPlot = self._assignedByUserId[player.UserId]
+		DevLog.log(string.format("[PlotService] 2s check %s: assignedPlot=%s",
+			player.Name, assignedPlot and assignedPlot.Name or "<NONE>"))
+	end)
 end
 
 function PlotService:_onPlayerRemoving(player: Player)
 	local plot = self._assignedByUserId[player.UserId]
+	DevLog.log(string.format("[PlotService] %s leaving - releasing %s",
+		player.Name, plot and plot.Name or "<none>"))
 	self:_releasePlot(plot)
+
+	local characterConn = self._characterAddedByUserId[player.UserId]
+	if characterConn then
+		characterConn:Disconnect()
+		self._characterAddedByUserId[player.UserId] = nil
+	end
+
 	if self._plotReleasedEvent and plot then
 		self._plotReleasedEvent:Fire(player.UserId, plot)
 	end

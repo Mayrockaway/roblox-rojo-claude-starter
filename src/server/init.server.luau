@@ -35,7 +35,15 @@ local EquipmentShopService = require(serviceFolder:WaitForChild("EquipmentShopSe
 local DrillingService = require(serviceFolder:WaitForChild("DrillingService"))
 local ProspectingService = require(serviceFolder:WaitForChild("ProspectingService"))
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local DevLog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("DevLog"))
+local RemoteNames = require(ReplicatedStorage.Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+
 RemoteService:Init()
+DevLog.SetBroadcaster(function(msg)
+	local ev = RemoteService:GetEvent(RemoteNames.DevLog)
+	ev:FireAllClients(msg)
+end)
 TelemetryService:Init()
 StraitStateService:Init(RemoteService, TelemetryService)
 PlotService:Init()

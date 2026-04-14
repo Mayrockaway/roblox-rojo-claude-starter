@@ -13,6 +13,7 @@ local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"
 local ShipUpgradeConfig = require(Shared:WaitForChild("Config"):WaitForChild("ShipUpgradeConfig"))
 local ShipProfileMigration = require(Shared:WaitForChild("Config"):WaitForChild("ShipProfileMigration"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local DevLog = require(Shared:WaitForChild("DevLog"))
 
 local OilStateService = {}
 
@@ -113,24 +114,41 @@ end
 
 local SUB_TILE_SIZE = 8
 
--- Computed once at runtime from actual plot position. Falls back to hardcoded if plot not found.
-local _cachedGridConstants = nil
+-- Grid math split into two parts:
+--   * static parts (subTilesPerSide, global rows/cols, section dims) come from OilConfig
+--   * per-plot origin (cellOriginX/Z) is cached per PlotId since each plot has its own
+--     world-space center. Without this, placements on Plot_02+ resolve to Plot_01's grid.
+local _staticGrid = nil
+local _gridOriginByPlotId: { [number]: { cellOriginX: number, cellOriginZ: number } } = {}
 
-local function plotGridConstants()
-	if _cachedGridConstants then return _cachedGridConstants end
-
+local function staticGridConstants()
+	if _staticGrid then return _staticGrid end
 	local sectionCols = OilConfig.Chunks.GridCols -- 3
 	local sectionRows = OilConfig.Chunks.GridRows -- 4
 	local sectionSize = OilConfig.Chunks.Size     -- 40
 	local subTilesPerSide = math.floor(sectionSize / SUB_TILE_SIZE) -- 5
+	_staticGrid = {
+		sectionCols = sectionCols,
+		sectionRows = sectionRows,
+		sectionSize = sectionSize,
+		subTilesPerSide = subTilesPerSide,
+		globalCols = sectionCols * subTilesPerSide,
+		globalRows = sectionRows * subTilesPerSide,
+	}
+	return _staticGrid
+end
 
-	-- Derive center from actual Plot_01 section attributes instead of hardcoding
-	local centerX, centerZ = -840, -1020
-	local Workspace = game:GetService("Workspace")
-	local map = Workspace:FindFirstChild("Map")
-	local plots = map and map:FindFirstChild("Plots")
-	local plot = plots and plots:FindFirstChild("Plot_01")
-	local ground = plot and plot:FindFirstChild("PlotGround")
+local function plotGridOrigin(plot: Model): { cellOriginX: number, cellOriginZ: number }
+	local plotId = plot:GetAttribute("PlotId")
+	if typeof(plotId) ~= "number" then
+		plotId = tonumber(string.match(plot.Name, "(%d+)")) or 0
+	end
+	local cached = _gridOriginByPlotId[plotId]
+	if cached then return cached end
+
+	local s = staticGridConstants()
+	local centerX, centerZ = 0, 0
+	local ground = plot:FindFirstChild("PlotGround")
 	if ground then
 		local totalX, totalZ, count = 0, 0, 0
 		for _, section in ipairs(ground:GetChildren()) do
@@ -147,57 +165,49 @@ local function plotGridConstants()
 		if count > 0 then
 			centerX = totalX / count
 			centerZ = totalZ / count
+		else
+			warn(string.format("[OilStateService] %s has no CenterX/CenterZ attributes on PlotGround sections", plot.Name))
 		end
 	end
 
-	local startX = centerX - ((sectionCols - 1) / 2) * sectionSize
-	local startZ = centerZ - ((sectionRows - 1) / 2) * sectionSize
-	local cellOriginX = startX - ((subTilesPerSide - 1) / 2) * SUB_TILE_SIZE
-	local cellOriginZ = startZ - ((subTilesPerSide - 1) / 2) * SUB_TILE_SIZE
-	local globalCols = sectionCols * subTilesPerSide
-	local globalRows = sectionRows * subTilesPerSide
+	local startX = centerX - ((s.sectionCols - 1) / 2) * s.sectionSize
+	local startZ = centerZ - ((s.sectionRows - 1) / 2) * s.sectionSize
+	local cellOriginX = startX - ((s.subTilesPerSide - 1) / 2) * SUB_TILE_SIZE
+	local cellOriginZ = startZ - ((s.subTilesPerSide - 1) / 2) * SUB_TILE_SIZE
 
-	_cachedGridConstants = {
-		sectionCols = sectionCols,
-		sectionRows = sectionRows,
-		sectionSize = sectionSize,
-		subTilesPerSide = subTilesPerSide,
-		cellOriginX = cellOriginX,
-		cellOriginZ = cellOriginZ,
-		globalCols = globalCols,
-		globalRows = globalRows,
-	}
-	return _cachedGridConstants
+	local origin = { cellOriginX = cellOriginX, cellOriginZ = cellOriginZ }
+	_gridOriginByPlotId[plotId] = origin
+	return origin
 end
 
 local function cellKey(globalRow: number, globalCol: number): string
 	return string.format("R%dC%d", globalRow, globalCol)
 end
 
-local function worldToCell(x: number, z: number): (number, number)
-	local g = plotGridConstants()
-	local col = math.floor((x - g.cellOriginX) / SUB_TILE_SIZE + 0.5) + 1
-	local row = math.floor((z - g.cellOriginZ) / SUB_TILE_SIZE + 0.5) + 1
+local function worldToCell(plot: Model, x: number, z: number): (number, number)
+	local o = plotGridOrigin(plot)
+	local col = math.floor((x - o.cellOriginX) / SUB_TILE_SIZE + 0.5) + 1
+	local row = math.floor((z - o.cellOriginZ) / SUB_TILE_SIZE + 0.5) + 1
 	return row, col
 end
 
-local function cellToWorld(row: number, col: number): (number, number)
-	local g = plotGridConstants()
-	local x = g.cellOriginX + (col - 1) * SUB_TILE_SIZE
-	local z = g.cellOriginZ + (row - 1) * SUB_TILE_SIZE
+local function cellToWorld(plot: Model, row: number, col: number): (number, number)
+	local o = plotGridOrigin(plot)
+	local x = o.cellOriginX + (col - 1) * SUB_TILE_SIZE
+	local z = o.cellOriginZ + (row - 1) * SUB_TILE_SIZE
 	return x, z
 end
 
 local function cellToSectionId(row: number, col: number): string
-	local g = plotGridConstants()
-	local sRow = math.floor((row - 1) / g.subTilesPerSide) + 1
-	local sCol = math.floor((col - 1) / g.subTilesPerSide) + 1
+	local s = staticGridConstants()
+	local sRow = math.floor((row - 1) / s.subTilesPerSide) + 1
+	local sCol = math.floor((col - 1) / s.subTilesPerSide) + 1
 	return string.format("S%02d_%02d", sRow, sCol)
 end
 
 local function cellInBounds(row: number, col: number): boolean
-	local g = plotGridConstants()
-	return row >= 1 and row <= g.globalRows and col >= 1 and col <= g.globalCols
+	local s = staticGridConstants()
+	return row >= 1 and row <= s.globalRows and col >= 1 and col <= s.globalCols
 end
 
 local function tierMapIsFull(map, capacity: number): boolean
@@ -574,8 +584,7 @@ function OilStateService:TryBuyChunk(userId: number, chunkId: string): (boolean,
 	chunk.revealed = false -- stays hidden until slot machine animation finishes
 
 	-- Generate per-tile oil types + obstacles for the 5x5 sub-tiles
-	local g = plotGridConstants()
-	local subTiles = g.subTilesPerSide
+	local subTiles = staticGridConstants().subTilesPerSide
 	chunk.tiles = {}
 
 	-- Assign tile types + bake in one oilType per tile. Then roll hasOil per tile based on row rate:
@@ -645,15 +654,15 @@ end
 
 -- Resolve which "Trr" / "Tcc" tile in a chunk contains world position (x, z).
 -- Returns (tileKey, tile) or (nil, nil) if out of range or tiles not generated yet.
-local function resolveTileAt(chunk, x: number, z: number): (string?, any?)
+local function resolveTileAt(plot: Model, chunk, x: number, z: number): (string?, any?)
 	if not chunk or not chunk.tiles then return nil, nil end
-	local cellR, cellC = worldToCell(x, z)
-	local g = plotGridConstants()
-	local sRow = (chunk.row - 1) * g.subTilesPerSide
-	local sCol = (chunk.col - 1) * g.subTilesPerSide
+	local cellR, cellC = worldToCell(plot, x, z)
+	local s = staticGridConstants()
+	local sRow = (chunk.row - 1) * s.subTilesPerSide
+	local sCol = (chunk.col - 1) * s.subTilesPerSide
 	local localR = cellR - sRow
 	local localC = cellC - sCol
-	if localR < 1 or localR > g.subTilesPerSide or localC < 1 or localC > g.subTilesPerSide then
+	if localR < 1 or localR > s.subTilesPerSide or localC < 1 or localC > s.subTilesPerSide then
 		return nil, nil
 	end
 	local key = string.format("T%d%d", localR, localC)
@@ -686,10 +695,13 @@ function OilStateService:_validateTilePlacement(userId: number, payload)
 		return false, "ERR_OUT_OF_CHUNK", "Position is not on the targeted chunk."
 	end
 
-	local cellR, cellC = worldToCell(x, z)
+	local plot = state.plot or self._plotService:GetOwnedPlot(userId)
+	if not plot then return false, "ERR_NO_PLOT", "No plot owned." end
+
+	local cellR, cellC = worldToCell(plot, x, z)
 	local ck = cellKey(cellR, cellC)
 
-	local tileKey, _tile = resolveTileAt(chunk, x, z)
+	local tileKey, _tile = resolveTileAt(plot, chunk, x, z)
 	if state.pipesByCellKey and state.pipesByCellKey[ck] then
 		return false, "ERR_PIPE_HERE", "Remove the pipe first."
 	end
@@ -703,8 +715,7 @@ function OilStateService:_validateTilePlacement(userId: number, payload)
 	end
 
 	-- Snap Y to the tile's top surface
-	local plot = self._plotService:GetOwnedPlot(userId)
-	local sectionModel = plot and self._plotService:GetChunkModel(plot, chunkId)
+	local sectionModel = self._plotService:GetChunkModel(plot, chunkId)
 	if sectionModel then
 		local topY: number? = nil
 		for _, d in ipairs(sectionModel:GetChildren()) do
@@ -716,7 +727,7 @@ function OilStateService:_validateTilePlacement(userId: number, payload)
 		if topY then y = topY end
 	end
 
-	local snappedX, snappedZ = cellToWorld(cellR, cellC)
+	local snappedX, snappedZ = cellToWorld(plot, cellR, cellC)
 	return true, "OK", "", chunk, tileKey, snappedX, y, snappedZ, cellR, cellC
 end
 
@@ -1074,6 +1085,9 @@ function OilStateService:TryPlacePipe(userId: number, payload): (boolean, string
 		return false, "ERR_BAD_PAYLOAD", "Missing payload.", nil
 	end
 
+	local plot = state.plot or self._plotService:GetOwnedPlot(userId)
+	if not plot then return false, "ERR_NO_PLOT", "No plot owned.", nil end
+
 	local row = tonumber(payload.row)
 	local col = tonumber(payload.col)
 	if not row or not col then
@@ -1083,7 +1097,7 @@ function OilStateService:TryPlacePipe(userId: number, payload): (boolean, string
 		if not x or not z then
 			return false, "ERR_BAD_PAYLOAD", "Bad pipe payload.", nil
 		end
-		row, col = worldToCell(x, z)
+		row, col = worldToCell(plot, x, z)
 	end
 
 	if not cellInBounds(row, col) then
@@ -1110,24 +1124,13 @@ function OilStateService:TryPlacePipe(userId: number, payload): (boolean, string
 		end
 	end
 
-	-- Obstacle check: can't place pipe on a tile with an obstacle UNLESS it's a pipes-only obstacle (Water)
-	if chunk and chunk.tiles then
-		local g = plotGridConstants()
-		local sRow = (chunk.row - 1) * g.subTilesPerSide
-		local sCol = (chunk.col - 1) * g.subTilesPerSide
-		local localR = row - sRow
-		local localC = col - sCol
-		local _tileKey = string.format("T%d%d", localR, localC)
-		-- Obstacles removed: no per-tile blocking for pipes
-	end
-
 	if not self:TrySpendCash(userId, OilConfig.Pipes.Cost or 0) then
 		return false, "ERR_NOT_ENOUGH_CASH", "Not enough cash for pipe.", nil
 	end
 
 	local pipeId = state.nextPipeId
 	state.nextPipeId += 1
-	local x, z = cellToWorld(row, col)
+	local x, z = cellToWorld(plot, row, col)
 
 	state.pipesByCellKey[key] = {
 		pipeId = pipeId,
@@ -1158,7 +1161,9 @@ function OilStateService:TryRemovePipe(userId: number, payload): (boolean, strin
 			if row and col then
 				key = cellKey(row, col)
 			elseif tonumber(payload.x) and tonumber(payload.z) then
-				row, col = worldToCell(tonumber(payload.x), tonumber(payload.z))
+				local plot = state.plot or self._plotService:GetOwnedPlot(userId)
+				if not plot then return false, "ERR_NO_PLOT", "No plot owned." end
+				row, col = worldToCell(plot, tonumber(payload.x), tonumber(payload.z))
 				key = cellKey(row, col)
 			end
 		end
@@ -1338,13 +1343,96 @@ function OilStateService:GetAllStates()
 	return self._statesByUserId
 end
 
+function OilStateService:_rebindExistingStateToPlot(state, plot: Model)
+	local newPlotId = getPlotId(plot)
+	local chunkDefs = self._plotService:GetPlotChunkDefinitions(plot)
+	local defsById = {}
+	for _, def in ipairs(chunkDefs) do
+		defsById[def.chunkId] = def
+	end
+
+	for chunkId, chunk in pairs(state.chunksById or {}) do
+		local def = defsById[chunkId]
+		if def then
+			chunk.row = def.row
+			chunk.col = def.col
+			chunk.worldX = def.worldX
+			chunk.worldZ = def.worldZ
+		end
+	end
+
+	for _, pipe in pairs(state.pipesByCellKey or {}) do
+		if typeof(pipe.row) == "number" and typeof(pipe.col) == "number" then
+			local x, z = cellToWorld(plot, pipe.row, pipe.col)
+			pipe.cellKey = cellKey(pipe.row, pipe.col)
+			pipe.sectionId = cellToSectionId(pipe.row, pipe.col)
+			local y = (typeof(pipe.position) == "Vector3" and pipe.position.Y) or 6
+			pipe.position = Vector3.new(x, y, z)
+		end
+	end
+
+	for _, drum in pairs(state.drumsById or {}) do
+		if typeof(drum.row) == "number" and typeof(drum.col) == "number" then
+			local x, z = cellToWorld(plot, drum.row, drum.col)
+			drum.cellKey = cellKey(drum.row, drum.col)
+			local y = (typeof(drum.position) == "Vector3" and drum.position.Y) or 6
+			drum.position = Vector3.new(x, y, z)
+		end
+	end
+
+	for _, drill in pairs(state.drillsById or {}) do
+		local row = drill.cellRow
+		local col = drill.cellCol
+		if typeof(row) ~= "number" or typeof(col) ~= "number" then
+			local key = drill.cellKey
+			if typeof(key) == "string" then
+				row = tonumber(key:match("^R(%d+)C%d+$"))
+				col = tonumber(key:match("^R%d+C(%d+)$"))
+			end
+		end
+		if typeof(row) == "number" and typeof(col) == "number" and cellInBounds(row, col) then
+			local x, z = cellToWorld(plot, row, col)
+			local y = (typeof(drill.position) == "Vector3" and drill.position.Y) or 6
+			drill.cellRow = row
+			drill.cellCol = col
+			drill.cellKey = cellKey(row, col)
+			drill.chunkId = cellToSectionId(row, col)
+			drill.position = Vector3.new(x, y, z)
+		end
+	end
+
+	state.plot = plot
+	state.plotId = newPlotId
+	self:_markDirty(state.ownerUserId)
+end
 function OilStateService:_ensurePlayerState(userId: number, plot: Model)
-	if self._statesByUserId[userId] then
+	local existing = self._statesByUserId[userId]
+	if existing then
+		local newPlotId = getPlotId(plot)
+		if existing.plotId ~= newPlotId then
+			DevLog.log(string.format(
+				"[OilState] user=%d state/plot mismatch oldPlotId=%s newPlotId=%d - rebinding state",
+				userId,
+				tostring(existing.plotId),
+				newPlotId
+			))
+			self:_rebindExistingStateToPlot(existing, plot)
+		else
+			DevLog.log(string.format("[OilState] _ensurePlayerState user=%d plot=%s: state already exists - reusing", userId, plot.Name))
+		end
 		return
 	end
 
 	local plotId = getPlotId(plot)
 	local chunkDefs = self._plotService:GetPlotChunkDefinitions(plot)
+
+	-- Diagnostic: show exactly what definitions we got from this plot
+	local starterCount = 0
+	for _, d in ipairs(chunkDefs) do
+		if d.startingChunk then starterCount += 1 end
+	end
+	DevLog.log(string.format("[OilState] user=%d plot=%s plotId=%d chunks=%d starters=%d",
+		userId, plot.Name, plotId, #chunkDefs, starterCount))
 
 	local chunksById = {}
 	local startRng = Random.new(userId * 12345 + plotId)
@@ -1365,8 +1453,7 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 			chunkData.biome = "DustyDesert"
 			chunkData.revealed = true
 			chunkData.tiles = {}
-			local g = plotGridConstants()
-			local subTiles = g.subTilesPerSide
+			local subTiles = staticGridConstants().subTilesPerSide
 			for tr = 1, subTiles do
 				for tc = 1, subTiles do
 					local tileKey = string.format("T%d%d", tr, tc)
@@ -1395,6 +1482,7 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 	local state = {
 		ownerUserId = userId,
 		plotId = plotId,
+		plot = plot,
 		cash = OilConfig.StartingCash,
 		storageCapacity = OilConfig.StartingStorageCapacity,
 		totalOil = 0,
@@ -1428,11 +1516,11 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 
 	local persisted = self:_loadPersistedProfile(userId)
 	if persisted then
-		self:_applyPersistedIntoState(state, persisted)
+		self:_applyPersistedIntoState(state, persisted, plot)
 	end
 
 	self:_ensureDefaultDrumForPlayer(state, plot)
-	self:_ensureDefaultPipesForPlayer(state)
+	self:_ensureDefaultPipesForPlayer(state, plot)
 
 	self._statesByUserId[userId] = state
 
@@ -1442,7 +1530,7 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 	end)
 end
 
-function OilStateService:_ensureDefaultPipesForPlayer(state)
+function OilStateService:_ensureDefaultPipesForPlayer(state, plot: Model)
 	-- Only place default pipes if the player has none
 	for _, _ in pairs(state.pipesByCellKey) do
 		return
@@ -1482,7 +1570,7 @@ function OilStateService:_ensureDefaultPipesForPlayer(state)
 				local sectionId = cellToSectionId(row, col)
 				local chunk = state.chunksById[sectionId]
 				if chunk and chunk.unlocked then
-					local x, z = cellToWorld(row, col)
+					local x, z = cellToWorld(plot, row, col)
 					state.pipesByCellKey[key] = {
 						pipeId = state.nextPipeId,
 						cellKey = key,
@@ -1509,11 +1597,11 @@ function OilStateService:_ensureDefaultDrumForPlayer(state, plot: Model)
 	-- starting section's bottom row, slightly outside the section if there's room.
 	local startSectionRow = OilConfig.Chunks.StartingRow
 	local startSectionCol = OilConfig.Chunks.StartingCol
-	local g = plotGridConstants()
+	local s = staticGridConstants()
 	-- Bottom-center sub-tile of the starting section
-	local row = (startSectionRow - 1) * g.subTilesPerSide + g.subTilesPerSide
-	local col = (startSectionCol - 1) * g.subTilesPerSide + math.ceil(g.subTilesPerSide / 2)
-	local x, z = cellToWorld(row, col)
+	local row = (startSectionRow - 1) * s.subTilesPerSide + s.subTilesPerSide
+	local col = (startSectionCol - 1) * s.subTilesPerSide + math.ceil(s.subTilesPerSide / 2)
+	local x, z = cellToWorld(plot, row, col)
 	local drumPos = Vector3.new(x, 6, z)
 
 	local drumId = state.nextDrumId
@@ -1528,7 +1616,7 @@ function OilStateService:_ensureDefaultDrumForPlayer(state, plot: Model)
 	}
 end
 
-function OilStateService:_applyPersistedIntoState(state, persisted)
+function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 	if typeof(persisted) ~= "table" then
 		return
 	end
@@ -1614,7 +1702,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted)
 					local pipeId = tonumber(record.pipeId) or (maxPipeId + 1)
 					if pipeId > maxPipeId then maxPipeId = pipeId end
 					local sectionId = cellToSectionId(row, col)
-					local x, z = cellToWorld(row, col)
+					local x, z = cellToWorld(plot, row, col)
 					state.pipesByCellKey[cellKey(row, col)] = {
 						pipeId = pipeId,
 						cellKey = cellKey(row, col),
@@ -1641,7 +1729,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted)
 				local row = tonumber(record.row)
 				local col = tonumber(record.col)
 				if not row or not col then
-					row, col = worldToCell(px, pz)
+					row, col = worldToCell(plot, px, pz)
 				end
 				state.drumsById[drumId] = {
 					drumId = drumId,

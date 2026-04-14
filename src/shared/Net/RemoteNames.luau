@@ -53,6 +53,9 @@ local RemoteNames = {
 	-- One-shot equipment shop (Tools cloned into `Player.Backpack`; cash via `OilStateService`).
 	RequestPurchaseEquipment = "RequestPurchaseEquipment",
 	RequestEquipmentShopCatalog = "RequestEquipmentShopCatalog",
+
+	-- Dev-only: server-side diagnostic line shipped to all client consoles.
+	DevLog = "DevLog",
 }
 
 return RemoteNames

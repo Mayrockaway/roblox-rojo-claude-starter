@@ -119,6 +119,13 @@ local shipmentVisualEvent = remotesFolder:WaitForChild(RemoteNames.ShipmentVisua
 local requestDevSetStraitBracket = remotesFolder:WaitForChild(RemoteNames.RequestDevSetStraitBracket) :: RemoteEvent
 local globalStateUpdate = remotesFolder:WaitForChild(RemoteNames.GlobalStateUpdate) :: RemoteEvent
 
+-- Dev diagnostic: mirror server-side [PlotService]/[OilState]/[ChunkOwnership] prints
+-- to this client's Output so the user doesn't have to hunt the Server Studio process.
+local devLogEvent = remotesFolder:WaitForChild(RemoteNames.DevLog) :: RemoteEvent
+devLogEvent.OnClientEvent:Connect(function(msg)
+	print("[SRV] " .. tostring(msg))
+end)
+
 local function requireStraitDevPanel(): { mount: (PlayerGui, RemoteEvent, RemoteEvent) -> (), shouldShow: () -> boolean }?
 	local modScript: ModuleScript? = nil
 	-- Rojo: LocalScript under PlayerScripts.Client, UI sibling
@@ -307,36 +314,22 @@ end
 
 local function getOwnedPlotByAttribute(): Model?
 	local plotId = player:GetAttribute("PlotId")
-	print(string.format("[Client] getOwnedPlotByAttribute — my PlotId=%s", tostring(plotId)))
-	if typeof(plotId) ~= "number" or plotId <= 0 then
-		print("[Client] PlotId is nil/zero — skipping lookup")
-		return nil
-	end
+	if typeof(plotId) ~= "number" or plotId <= 0 then return nil end
 	local map = Workspace:FindFirstChild("Map")
-	if not map then
-		print("[Client] Workspace.Map missing")
-		return nil
-	end
+	if not map then return nil end
 	local plots = map:FindFirstChild("Plots")
-	if not plots then
-		print("[Client] Workspace.Map.Plots missing")
-		return nil
-	end
-	local seen = {}
+	if not plots then return nil end
 	for _, item in ipairs(plots:GetChildren()) do
 		if item:IsA("Model") then
 			local id = item:GetAttribute("PlotId")
 			if typeof(id) ~= "number" then
 				id = tonumber(item.Name:match("(%d+)"))
 			end
-			table.insert(seen, string.format("%s(id=%s)", item.Name, tostring(id)))
 			if typeof(id) == "number" and id == plotId then
-				print(string.format("[Client] MATCHED %s for PlotId=%d", item.Name, plotId))
 				return item
 			end
 		end
 	end
-	print(string.format("[Client] No plot matched PlotId=%d. Plots seen: [%s]", plotId, table.concat(seen, ", ")))
 	return nil
 end
 
@@ -405,24 +398,35 @@ end
 
 local function bindOwnedPlot()
 	chunkPartById = {}
+	local prevOwned = ownedPlot
 	ownedPlot = getOwnedPlotByAttribute()
+	_clientGridCache = nil
 	if not ownedPlot then
+		warn(string.format("[Client] bindOwnedPlot: ownedPlot=nil (PlotId attr=%s, prev=%s, plots-folder-exists=%s, plots-count=%s)",
+			tostring(player:GetAttribute("PlotId")),
+			prevOwned and prevOwned.Name or "nil",
+			tostring(Workspace.Map and Workspace.Map:FindFirstChild("Plots") ~= nil),
+			(Workspace.Map and Workspace.Map:FindFirstChild("Plots")) and tostring(#Workspace.Map.Plots:GetChildren()) or "?"))
 		return
 	end
 
 	local ground = ownedPlot:FindFirstChild("PlotGround")
 	if not (ground and ground:IsA("Model")) then
+		warn(string.format("[Client] bindOwnedPlot: %s has no PlotGround", ownedPlot.Name))
 		return
 	end
 
+	local count = 0
 	for _, item in ipairs(ground:GetChildren()) do
 		if item:IsA("Model") then
 			local chunkId = item:GetAttribute("ChunkId")
 			if typeof(chunkId) == "string" then
 				chunkPartById[chunkId] = item
+				count += 1
 			end
 		end
 	end
+	print(string.format("[Client] bindOwnedPlot: %s bound, %d chunks found", ownedPlot.Name, count))
 
 	bindPromptsForOwnedPlot()
 end
@@ -1089,28 +1093,6 @@ local function tryPrimaryAction()
 
 	if kind ~= "Drill" and kind ~= "Pump" and kind ~= "Prospector" then return end
 
-	-- DIAGNOSTIC: log each click so we can see why placement fails
-	local _h, _hp, _c = getTargetedChunkHit()
-	local myPlotId = player:GetAttribute("PlotId")
-	local plotsInWorkspace = {}
-	local map = Workspace:FindFirstChild("Map")
-	local plotsFolder = map and map:FindFirstChild("Plots")
-	if plotsFolder then
-		for _, p in ipairs(plotsFolder:GetChildren()) do
-			if p:IsA("Model") then
-				table.insert(plotsInWorkspace, p.Name .. "(id=" .. tostring(p:GetAttribute("PlotId")) .. ")")
-			end
-		end
-	end
-	print(string.format("[PlaceClick] myPlotId=%s ownedPlot=%s plots=[%s] kind=%s tier=%s target=%s chunkId=%s",
-		tostring(myPlotId),
-		ownedPlot and ownedPlot.Name or "nil",
-		table.concat(plotsInWorkspace, ","),
-		tostring(kind), tostring(tier),
-		mouse.Target and mouse.Target:GetFullName() or "nil",
-		tostring(_c)
-	))
-
 	local _, hitPos, chunkId = getTargetedChunkHit()
 	if not (hitPos and chunkId) then return end
 	if not isChunkUnlocked(chunkId) then
@@ -1139,53 +1121,62 @@ local function clearRemoveHold()
 	removeHoldDrillId = nil
 end
 
+-- If the server hasn't set PlotId yet, wait for the attribute to replicate once.
+-- After this, the GetAttributeChangedSignal listener below keeps us in sync.
+if not player:GetAttribute("PlotId") then
+	player:GetAttributeChangedSignal("PlotId"):Wait()
+end
 bindOwnedPlot()
 
--- Retry bindOwnedPlot for up to 10s in case plot replication lags behind the PlotId attribute
-task.spawn(function()
-	for i = 1, 20 do
-		if ownedPlot then break end
-		task.wait(0.5)
-		print("[Client] Retry bindOwnedPlot attempt "..i)
-		bindOwnedPlot()
+local function applySnapshot(snapshot: any): boolean
+	if typeof(snapshot) ~= "table" then
+		return false
 	end
-	if ownedPlot then
-		print("[Client] ownedPlot resolved to "..ownedPlot.Name)
-	else
-		print("[Client] FAILED to resolve ownedPlot after 10s")
+	if typeof(snapshot.state) == "table" then
+		state = snapshot.state
 	end
-end)
-
--- Re-bind whenever a new plot model shows up (server-side auto-dup replicated late)
-do
-	local map = Workspace:FindFirstChild("Map") or Workspace:WaitForChild("Map", 10)
-	local plots = map and (map:FindFirstChild("Plots") or map:WaitForChild("Plots", 10))
-	if plots then
-		plots.ChildAdded:Connect(function(child)
-			if child:IsA("Model") then
-				print("[Client] Plots folder got new child: "..child.Name.." — re-binding")
-				task.wait(0.1) -- let the model's children + attributes finish replicating
-				bindOwnedPlot()
-			end
-		end)
-	end
-end
-
-local initial = requestOilSnapshot:InvokeServer()
-if typeof(initial) == "table" then
-	state = initial.state
-	if typeof(initial.config) == "table" then
-		for k, v in pairs(initial.config) do
+	if typeof(snapshot.config) == "table" then
+		for k, v in pairs(snapshot.config) do
 			config[k] = v
 		end
 	end
+	rebuildStateMaps()
+	updateUi()
+	return typeof(state) == "table" and next(chunkStateById) ~= nil
 end
-rebuildStateMaps()
-updateUi()
+
+local function requestSnapshotWithRetry(attempts: number, delaySeconds: number)
+	for attempt = 1, attempts do
+		local ok, snapshot = pcall(function()
+			return requestOilSnapshot:InvokeServer()
+		end)
+		if ok and applySnapshot(snapshot) then
+			if attempt > 1 then
+				print(string.format("[Client] snapshot recovered on retry %d", attempt))
+			end
+			return
+		end
+		task.wait(delaySeconds)
+	end
+	warn("[Client] snapshot retries exhausted (state missing or empty chunks).")
+end
+
+local initialOk, initialSnapshot = pcall(function()
+	return requestOilSnapshot:InvokeServer()
+end)
+local hasInitialState = initialOk and applySnapshot(initialSnapshot)
+if not hasInitialState then
+	task.spawn(function()
+		requestSnapshotWithRetry(10, 0.25)
+	end)
+end
 
 player:GetAttributeChangedSignal("PlotId"):Connect(function()
 	bindOwnedPlot()
 	updateUi()
+	task.spawn(function()
+		requestSnapshotWithRetry(6, 0.2)
+	end)
 end)
 
 playerGui.ChildAdded:Connect(function(child)
@@ -1868,3 +1859,71 @@ task.spawn(function()
 end)
 
 print("[Client] Chunked plot mode active.")
+
+-- /diag chat command: dumps client-side plot state so we can see what the player's
+-- client thinks the world looks like. Must live here (end of file) so it closes
+-- over the ACTUAL local `ownedPlot` / `state` — putting it earlier captured globals.
+player.Chatted:Connect(function(message)
+	local cmd = message:lower():gsub("^%s+", ""):gsub("%s+$", "")
+	if cmd ~= "/diag" then return end
+
+	local myPlotId = player:GetAttribute("PlotId")
+	print(string.format("[DIAG] PlotId attr=%s ownedPlot=%s",
+		tostring(myPlotId),
+		ownedPlot and ownedPlot.Name or "<NIL>"))
+
+	if ownedPlot then
+		local ground = ownedPlot:FindFirstChild("PlotGround")
+		if ground then
+			local visible, invisible = 0, 0
+			for _, section in ipairs(ground:GetChildren()) do
+				if section:IsA("Model") then
+					for _, child in ipairs(section:GetChildren()) do
+						if child:IsA("BasePart") and child.Name:match("^T%d%d$") then
+							if child.Transparency >= 1 then
+								invisible += 1
+							else
+								visible += 1
+							end
+						end
+					end
+				end
+			end
+			print(string.format("[DIAG] Tiles: visible=%d invisible=%d (expect 300 visible)",
+				visible, invisible))
+
+			local starter = ground:FindFirstChild("S04_02")
+			if starter then
+				local t11 = starter:FindFirstChild("T11")
+				if t11 and t11:IsA("BasePart") then
+					print(string.format("[DIAG] S04_02.T11: Pos=%s Mat=%s Color=%s Trans=%.2f",
+						tostring(t11.Position),
+						t11.Material.Name,
+						tostring(t11.Color),
+						t11.Transparency))
+				end
+				local overlay = starter:FindFirstChild("LockOverlay")
+				if overlay and overlay:IsA("BasePart") then
+					print(string.format("[DIAG] S04_02.LockOverlay: Trans=%.2f Color=%s",
+						overlay.Transparency, tostring(overlay.Color)))
+				end
+			end
+		end
+
+		local ch = player.Character
+		local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			print(string.format("[DIAG] HRP.Pos=%s", tostring(hrp.Position)))
+		end
+	end
+
+	if state and state.chunks then
+		local unlocked, locked = 0, 0
+		for _, c in ipairs(state.chunks) do
+			if c.unlocked then unlocked += 1 else locked += 1 end
+		end
+		print(string.format("[DIAG] State: %d unlocked + %d locked chunks", unlocked, locked))
+	else
+		print("[DIAG] state is nil or missing chunks")
+	end
+end)
