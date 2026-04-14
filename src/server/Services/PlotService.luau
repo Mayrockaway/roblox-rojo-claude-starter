@@ -445,10 +445,12 @@ end
 function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Model)
 	local plot = self._assignedByUserId[player.UserId]
 	if not plot then
+		warn(string.format("[PlotService] Teleport %s: no assigned plot", player.Name))
 		return
 	end
 	local spawnPart = getSpawnPart(plot)
 	if not spawnPart then
+		warn(string.format("[PlotService] Teleport %s: no spawn part on %s", player.Name, plot.Name))
 		return
 	end
 
@@ -458,6 +460,9 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 		spawnPart.Position.Z
 	)
 
+	print(string.format("[PlotService] Teleport %s to %s @ %s (spawnPart=%s)",
+		player.Name, plot.Name, tostring(target.Position), spawnPart.Name))
+
 	for _ = 1, 40 do
 		local hrp = character:FindFirstChild("HumanoidRootPart")
 		if hrp and hrp:IsA("BasePart") then
@@ -465,19 +470,27 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 			hrp.AssemblyLinearVelocity = Vector3.zero
 			hrp.AssemblyAngularVelocity = Vector3.zero
 
-			task.delay(0.8, function()
-				if character.Parent and hrp.Parent then
-					if (hrp.Position - target.Position).Magnitude > 30 then
-						character:PivotTo(target)
+			-- Re-teleport repeatedly for the first 3s in case something pushes them back to spawn
+			for delay = 0.5, 3, 0.5 do
+				task.delay(delay, function()
+					if not (character.Parent and hrp.Parent and hrp:IsA("BasePart")) then return end
+					local cur = self._assignedByUserId[player.UserId]
+					if not cur then return end
+					local sp = getSpawnPart(cur)
+					if not sp then return end
+					local t = CFrame.new(sp.Position.X, math.max(14, sp.Position.Y + 8), sp.Position.Z)
+					if (hrp.Position - t.Position).Magnitude > 30 then
+						character:PivotTo(t)
 						hrp.AssemblyLinearVelocity = Vector3.zero
 						hrp.AssemblyAngularVelocity = Vector3.zero
 					end
-				end
-			end)
+				end)
+			end
 			return
 		end
 		task.wait(0.1)
 	end
+	warn(string.format("[PlotService] Teleport %s: HRP never appeared after 40 retries", player.Name))
 end
 
 function PlotService:_onPlayerAdded(player: Player)
