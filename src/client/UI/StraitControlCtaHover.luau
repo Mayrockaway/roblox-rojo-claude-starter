@@ -44,8 +44,8 @@ local function findStraitControlCta(playerGui: PlayerGui): GuiButton?
 	if not panel then
 		return nil
 	end
-	local a = panel:FindFirstChild("StraitControlCta")
-	local b = panel:FindFirstChild("StraitControlCTA")
+	local a = panel:FindFirstChild("StraitControlCta", true)
+	local b = panel:FindFirstChild("StraitControlCTA", true)
 	local c = a or b
 	if c and c:IsA("GuiButton") then
 		return c

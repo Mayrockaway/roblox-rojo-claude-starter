@@ -17,6 +17,7 @@ local PhysicsService = game:GetService("PhysicsService")
 local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
 
 local BoatDockService = {}
@@ -400,6 +401,7 @@ function BoatDockService:TeleportOwnerToSeat(player: Player): (boolean, string?)
 	end
 	local character = player.Character
 	if not character then return false, "NO_CHARACTER" end
+	CharacterTeleport.unseatIfSitting(character)
 	character:PivotTo(seat.CFrame + Vector3.new(0, 3, 0))
 	local hum = character:FindFirstChildOfClass("Humanoid")
 	if hum then

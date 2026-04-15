@@ -254,6 +254,14 @@ function PlotResourceService:_handlePlacePipeRequest(player: Player, payload)
 	end
 
 	local ok, code, message, data = self._oilStateService:TryPlacePipe(player.UserId, payload)
+	if ok and typeof(data) == "table" and typeof(data.cellKey) == "string" then
+		-- Pipe model exists after PushState; broadcast before OilActionResult so clients can attach spatial SFX.
+		self._oilStateService:PushState(player.UserId)
+		self._remoteService:GetEvent(RemoteNames.PipePlacedFx):FireAllClients({
+			ownerUserId = player.UserId,
+			cellKey = data.cellKey,
+		})
+	end
 	self:_sendResult(player, ok, code, message, data)
 	if ok then
 		local consumed, itemId = ConsumeShopEquipmentTool.consumeMatching(player, "Pipe", nil)

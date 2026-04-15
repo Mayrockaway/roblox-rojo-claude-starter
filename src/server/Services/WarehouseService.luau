@@ -6,6 +6,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 local DataStoreWriteGate = require(script.Parent.Parent.Utils.DataStoreWriteGate)
 local WarehouseConfig = require(Shared:WaitForChild("Config"):WaitForChild("WarehouseConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
@@ -192,7 +193,11 @@ end
 
 function WarehouseService:_onPlayerRemoving(player: Player)
 	local userId = player.UserId
-	self:_saveProfile(userId, true)
+	-- Same as oil: persist latest warehouse row on leave even if last autosave cleared dirty.
+	-- Brief delay: `PlotService` `PlayerRemoving` runs first and oil may `SetAsync` the same second;
+	-- spacing warehouse writes reduces "Key (x2)" DataStore queue pairing in Studio (still not an error).
+	task.wait(0.12)
+	self:_saveProfile(userId, true, true)
 
 	-- Release slot
 	local slotId = self._slotByUserId[userId]
@@ -574,6 +579,7 @@ function WarehouseService:TryTeleportPlayerToWarehouse(player: Player): boolean
 	if not character then
 		return false
 	end
+	CharacterTeleport.unseatIfSitting(character)
 	character:PivotTo(CFrame.new(spawn.Position + Vector3.new(0, 3, 0)))
 	return true
 end
@@ -613,8 +619,9 @@ function WarehouseService:_loadProfile(userId: number)
 	return nil
 end
 
-function WarehouseService:_saveProfile(userId: number, force: boolean?)
-	if not self._dirtyByUserId[userId] then
+--- @param persistRegardlessOfDirty When true (e.g. PlayerRemoving), write even if not dirty.
+function WarehouseService:_saveProfile(userId: number, force: boolean?, persistRegardlessOfDirty: boolean?)
+	if not persistRegardlessOfDirty and not self._dirtyByUserId[userId] then
 		return
 	end
 	local state = self._stateByUserId[userId]
@@ -644,28 +651,38 @@ function WarehouseService:_saveProfile(userId: number, force: boolean?)
 		DataStoreWriteGate.waitForWriteBudget(2.8)
 	end
 
-	local ok, err = pcall(function()
-		self._dataStore:SetAsync(key, payload)
-	end)
-	if ok then
-		self._lastWarehouseDataStoreSaveClock[userId] = os.clock()
-		self._dirtyByUserId[userId] = nil
-		return
-	end
-	if self._dataStore ~= nil and isDatastoreStudioAccessError(err) then
-		if not self._dataStoreStudioFallbackWarned then
-			self._dataStoreStudioFallbackWarned = true
-			warn(
-				"[WarehouseService] Studio cannot access DataStores (Game Settings → Security → Enable Studio Access to API Services). "
-					.. "Using in-session memory for warehouse profiles for this server run — no cross-session persistence in Studio until enabled."
-			)
+	local maxAttempts = if persistRegardlessOfDirty then 4 else 1
+	local lastErr: any = nil
+	for attempt = 1, maxAttempts do
+		if attempt > 1 and self._dataStore then
+			DataStoreWriteGate.waitForWriteBudget(2.8)
+			task.wait(0.45)
 		end
-		self._dataStore = nil
-		self._memoryStore[key] = payload
-		self._dirtyByUserId[userId] = nil
-		return
+
+		local ok, err = pcall(function()
+			self._dataStore:SetAsync(key, payload)
+		end)
+		lastErr = err
+		if ok then
+			self._lastWarehouseDataStoreSaveClock[userId] = os.clock()
+			self._dirtyByUserId[userId] = nil
+			return
+		end
+		if self._dataStore ~= nil and isDatastoreStudioAccessError(err) then
+			if not self._dataStoreStudioFallbackWarned then
+				self._dataStoreStudioFallbackWarned = true
+				warn(
+					"[WarehouseService] Studio cannot access DataStores (Game Settings → Security → Enable Studio Access to API Services). "
+						.. "Using in-session memory for warehouse profiles for this server run — no cross-session persistence in Studio until enabled."
+				)
+			end
+			self._dataStore = nil
+			self._memoryStore[key] = payload
+			self._dirtyByUserId[userId] = nil
+			return
+		end
 	end
-	warn(string.format("[WarehouseService] Save failed for user %d: %s", userId, tostring(err)))
+	warn(string.format("[WarehouseService] Save failed for user %d after %d attempt(s): %s", userId, maxAttempts, tostring(lastErr)))
 end
 
 function WarehouseService:_flushDirty(force: boolean?)

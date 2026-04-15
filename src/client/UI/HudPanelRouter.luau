@@ -13,9 +13,12 @@ local StraitInfoPanel = require(script.Parent.HudPanels.StraitInfoPanel)
 local HudPanelTypes = require(script.Parent.HudPanelTypes)
 local HudTriggerHover = require(script.Parent.HudTriggerHover)
 
+local STRAIT_CONTROL_CTA_ALIASES = { "StraitControlCta", "StraitControlCTA" }
+
 local BUTTON_TO_SCREEN: { [string]: string } = {
 	OilPriceButton = OilPriceInfoPanel.screenName(),
 	StraitStatusButton = StraitInfoPanel.screenName(),
+	StraitControlCta = StraitControlPanel.screenName(),
 	ShopButton = EquipmentShopPanel.screenName(),
 	ShipOilButton = ShipOilPanel.screenName(),
 	ManageShipButton = ShipManagementPanel.screenName(),
@@ -135,17 +138,20 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 			end
 
 			local function findHudModalButton(name: string): GuiButton?
-				local b = topRow:FindFirstChild(name, true)
-				if b and b:IsA("GuiButton") then
-					return b
-				end
-				b = leftStack:FindFirstChild(name, true)
-				if b and b:IsA("GuiButton") then
-					return b
-				end
-				b = hud:FindFirstChild(name, true)
-				if b and b:IsA("GuiButton") then
-					return b
+				local names = if name == "StraitControlCta" then STRAIT_CONTROL_CTA_ALIASES else { name }
+				for _, tryName in ipairs(names) do
+					local b = topRow:FindFirstChild(tryName, true)
+					if b and b:IsA("GuiButton") then
+						return b
+					end
+					b = leftStack:FindFirstChild(tryName, true)
+					if b and b:IsA("GuiButton") then
+						return b
+					end
+					b = hud:FindFirstChild(tryName, true)
+					if b and b:IsA("GuiButton") then
+						return b
+					end
 				end
 				return nil
 			end

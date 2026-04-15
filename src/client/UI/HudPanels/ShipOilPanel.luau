@@ -13,6 +13,7 @@ local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
+local UiSfx = require(script.Parent.Parent.Parent:WaitForChild("UiSfx")) :: { playSetSail: () -> (), playKaching: () -> () }
 
 local SCREEN_NAME = "ShipOilPanelGui"
 
@@ -361,6 +362,7 @@ local function tryDispatch()
 	end
 	local ev = requestDispatchShipmentEvent
 	if ev then
+		UiSfx.playSetSail()
 		ev:FireServer({
 			manifest = manifest,
 		})

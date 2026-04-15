@@ -1,6 +1,6 @@
 --!strict
 -- Robux strait control shell (`StarterGui.StraitControlPanelGui` → `PlayerGui`).
--- Open/close from `StraitControlCta` later; `HudPanelBase` + `ModalPanelShell` wire **`CloseButton`** only.
+-- Open from **`StraitControlCta`** (`HudPanelRouter`; accepts `StraitControlCTA` spelling); `ModalPanelShell` wires **`CloseButton`** (any casing).
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)

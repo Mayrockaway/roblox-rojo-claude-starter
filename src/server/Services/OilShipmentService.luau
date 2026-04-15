@@ -6,6 +6,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
@@ -19,6 +20,7 @@ local ManifestIncidentTitle = require(Shared:WaitForChild("Config"):WaitForChild
 local StraitEventConfig = require(Shared:WaitForChild("Config"):WaitForChild("StraitEventConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local ParticleFxScale = require(Shared:WaitForChild("ParticleFxScale"))
+local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 
 local OilShipmentService = {}
 
@@ -323,12 +325,7 @@ function OilShipmentService:_handleTeleportHome(player: Player)
 	local character = player.Character
 	if not character then return end
 
-	-- Unseat if sitting
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if humanoid and humanoid.SeatPart then
-		humanoid.SeatPart:Sit(nil)
-		task.wait(0.1)
-	end
+	CharacterTeleport.unseatIfSitting(character)
 
 	local plot = self._plotService:GetOwnedPlot(player.UserId)
 	if not plot then return end
@@ -338,17 +335,42 @@ function OilShipmentService:_handleTeleportHome(player: Player)
 	end
 end
 
---- Plot dock / boat load marker (`BoatSpawn`), not the active ship seat.
+--- `Workspace.DocksShop.DocksTeleportTarget` (or `Workspace.DocksTeleportTarget`): Attachment / BasePart / Model pivot.
+--- Falls back to plot `BoatSpawn` if the authored target is missing.
+local function getDocksTeleportCFrame(): CFrame?
+	local docksShop = Workspace:FindFirstChild("DocksShop")
+	local target: Instance? = if docksShop then docksShop:FindFirstChild("DocksTeleportTarget", true) else nil
+	if not target then
+		target = Workspace:FindFirstChild("DocksTeleportTarget", true)
+	end
+	if not target then
+		return nil
+	end
+	if target:IsA("Attachment") then
+		return target.WorldCFrame
+	end
+	if target:IsA("BasePart") then
+		return target:GetPivot()
+	end
+	if target:IsA("Model") then
+		return target:GetPivot()
+	end
+	return nil
+end
+
 function OilShipmentService:_handleTeleportToDocks(player: Player)
 	local character = player.Character
 	if not character then
 		return
 	end
 
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if humanoid and humanoid.SeatPart then
-		humanoid.SeatPart:Sit(nil)
-		task.wait(0.1)
+	CharacterTeleport.unseatIfSitting(character)
+
+	local cf = getDocksTeleportCFrame()
+	if cf then
+		-- Face away from the authored forward (e.g. into the shop) — 180° yaw in target-local space.
+		character:PivotTo(cf * CFrame.Angles(0, math.pi, 0))
+		return
 	end
 
 	local plot = self._plotService:GetOwnedPlot(player.UserId)
@@ -753,12 +775,9 @@ function OilShipmentService:_handleOwnerAfterSuccessfulShipmentFinish(boat: Inst
 	end
 	local samplePos = hrp.Position
 
-	local wasSeatedOnThisBoat = false
 	local hum = character:FindFirstChildOfClass("Humanoid")
-	if hum and hum.SeatPart and hum.SeatPart:IsDescendantOf(boat) then
-		wasSeatedOnThisBoat = true
-		hum.SeatPart:Sit(nil)
-	end
+	local wasSeatedOnThisBoat = hum ~= nil and hum.SeatPart ~= nil and hum.SeatPart:IsDescendantOf(boat)
+	CharacterTeleport.unseatIfSitting(character)
 
 	if self._warehouseService and self:_postStraitWarehouseTeleportByMapPosition(samplePos) then
 		if self._warehouseService:TryTeleportPlayerToWarehouse(player) then
@@ -788,6 +807,7 @@ function OilShipmentService:_unseatPlayersFromBoat(boat: Instance)
 	end
 
 	seat:Sit(nil)
+	task.wait(0.1)
 	local character = occupant.Parent
 	if not character then
 		return

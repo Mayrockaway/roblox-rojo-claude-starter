@@ -510,21 +510,10 @@ local function rebuild(player: Player)
 		if clickTarget then
 			clickTarget.MouseButton1Click:Connect(function()
 				local t = slotToTool[clone]
-				if not t or t.Parent == nil then
+				if not t then
 					return
 				end
-				local char = player.Character
-				local hum = char and char:FindFirstChildOfClass("Humanoid")
-				if not hum then
-					return
-				end
-				if getEquippedTool(char) == t then
-					return
-				end
-				pcall(function()
-					hum:EquipTool(t)
-				end)
-				updateEquippedHighlight(char)
+				equipOrToggleHotbarTool(player, t)
 			end)
 		end
 
@@ -577,6 +566,28 @@ local function scheduleFullRebuild(player: Player)
 	end)
 end
 
+--- Same slot / key again while that tool is equipped → unequip (default backpack-style toggle).
+local function equipOrToggleHotbarTool(player: Player, tool: Tool)
+	if tool.Parent == nil then
+		return
+	end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum then
+		return
+	end
+	if getEquippedTool(char) == tool then
+		pcall(function()
+			hum:UnequipTools()
+		end)
+	else
+		pcall(function()
+			hum:EquipTool(tool)
+		end)
+	end
+	updateEquippedHighlight(char)
+end
+
 local function equipSlotIndex(player: Player, index: number)
 	local strip = hotbarStrip
 	if not strip then
@@ -587,21 +598,10 @@ local function equipSlotIndex(player: Player, index: number)
 		return
 	end
 	local tool = slotToTool[slot]
-	if not tool or tool.Parent == nil then
+	if not tool then
 		return
 	end
-	local char = player.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	if not hum then
-		return
-	end
-	if getEquippedTool(char) == tool then
-		return
-	end
-	pcall(function()
-		hum:EquipTool(tool)
-	end)
-	updateEquippedHighlight(char)
+	equipOrToggleHotbarTool(player, tool)
 end
 
 local KEY_TO_INDEX: { [Enum.KeyCode]: number } = {

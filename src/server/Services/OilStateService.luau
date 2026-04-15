@@ -2112,7 +2112,9 @@ function OilStateService:_markDirty(userId: number)
 end
 
 function OilStateService:_flushAndDropUser(userId: number)
-	self:_saveUser(userId, true)
+	-- Always persist latest state when removing session data (PlayerRemoving / plot release),
+	-- even if `_markDirty` never ran after the last successful autosave.
+	self:_saveUser(userId, true, true)
 	self._statesByUserId[userId] = nil
 	self._dirtyByUserId[userId] = nil
 end
@@ -2131,8 +2133,9 @@ function OilStateService:_flushDirtyUsers(force: boolean?)
 	end
 end
 
-function OilStateService:_saveUser(userId: number, force: boolean?)
-	if not self._dirtyByUserId[userId] then
+--- @param persistRegardlessOfDirty When true (player drop / plot release), write current state even if not marked dirty.
+function OilStateService:_saveUser(userId: number, force: boolean?, persistRegardlessOfDirty: boolean?)
+	if not persistRegardlessOfDirty and not self._dirtyByUserId[userId] then
 		return
 	end
 
@@ -2159,28 +2162,38 @@ function OilStateService:_saveUser(userId: number, force: boolean?)
 		DataStoreWriteGate.waitForWriteBudget(2.8)
 	end
 
-	local ok, err = pcall(function()
-		self._dataStore:SetAsync(key, payload)
-	end)
-	if ok then
-		self._lastOilDataStoreSaveClock[userId] = os.clock()
-		self._dirtyByUserId[userId] = nil
-		return
-	end
-	if self._dataStore ~= nil and isDatastoreStudioAccessError(err) then
-		if not self._dataStoreStudioFallbackWarned then
-			self._dataStoreStudioFallbackWarned = true
-			warn(
-				"[OilStateService] Studio cannot access DataStores (Game Settings → Security → Enable Studio Access to API Services). "
-					.. "Using in-session memory for oil profiles for this server run — no cross-session persistence in Studio until enabled."
-			)
+	local maxAttempts = if persistRegardlessOfDirty then 4 else 1
+	local lastErr: any = nil
+	for attempt = 1, maxAttempts do
+		if attempt > 1 and self._dataStore then
+			DataStoreWriteGate.waitForWriteBudget(2.8)
+			task.wait(0.45)
 		end
-		self._dataStore = nil
-		self._memoryStore[key] = payload
-		self._dirtyByUserId[userId] = nil
-		return
+
+		local ok, err = pcall(function()
+			self._dataStore:SetAsync(key, payload)
+		end)
+		lastErr = err
+		if ok then
+			self._lastOilDataStoreSaveClock[userId] = os.clock()
+			self._dirtyByUserId[userId] = nil
+			return
+		end
+		if self._dataStore ~= nil and isDatastoreStudioAccessError(err) then
+			if not self._dataStoreStudioFallbackWarned then
+				self._dataStoreStudioFallbackWarned = true
+				warn(
+					"[OilStateService] Studio cannot access DataStores (Game Settings → Security → Enable Studio Access to API Services). "
+						.. "Using in-session memory for oil profiles for this server run — no cross-session persistence in Studio until enabled."
+				)
+			end
+			self._dataStore = nil
+			self._memoryStore[key] = payload
+			self._dirtyByUserId[userId] = nil
+			return
+		end
 	end
-	warn(string.format("[OilStateService] Save failed for user %d: %s", userId, tostring(err)))
+	warn(string.format("[OilStateService] Save failed for user %d after %d attempt(s): %s", userId, maxAttempts, tostring(lastErr)))
 end
 
 function OilStateService:_loadPersistedProfile(userId: number)

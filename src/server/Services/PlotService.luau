@@ -4,6 +4,7 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local DevLog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("DevLog"))
+local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 
 local PlotService = {}
 
@@ -394,6 +395,8 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 		warn(string.format("[PlotService] Teleport %s: HumanoidRootPart never appeared", player.Name))
 		return
 	end
+
+	CharacterTeleport.unseatIfSitting(character)
 
 	local target = CFrame.new(
 		spawnPart.Position.X,

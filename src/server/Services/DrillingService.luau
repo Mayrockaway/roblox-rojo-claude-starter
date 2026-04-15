@@ -76,8 +76,12 @@ function DrillingService:_handleStartDrill(player: Player, payload: any)
 		return
 	end
 
-	-- Broadcast "drill started" so all clients play the sink animation
+	-- Push state first so ActiveDrill visuals exist before clients handle DrillProgressUpdate
+	-- (spatial SFX, sink animation, etc.).
+	self._oilStateService:PushState(userId)
+
 	local duration = data.duration
+	-- Broadcast "drill started" so all clients play the sink animation
 	self._progressEvent:FireAllClients({
 		kind = "started",
 		ownerUserId = userId,
@@ -104,7 +108,7 @@ function DrillingService:_handleStartDrill(player: Player, payload: any)
 		NotifyShopToolConsumedSafe.tryCall(self._oilStateService, userId, itemId, "DrillingService:StartDrill")
 	end
 
-	-- Push state so activeDrills + cash reflect in the client's inventory right away
+	-- Push again so backpack reflects consumed drill tool after TryStartDrill snapshot.
 	self._oilStateService:PushState(userId)
 
 	-- Schedule the completion
@@ -148,7 +152,8 @@ function DrillingService:_handlePlacePump(player: Player, payload: any)
 		end
 	end
 	if ok and self._progressEvent then
-		-- Broadcast pump-placed so clients stop the oil spray on that tile
+		-- Pump model exists after PushState; broadcast before second push so spatial SFX can attach.
+		self._oilStateService:PushState(userId)
 		self._progressEvent:FireAllClients({
 			kind = "pumpPlaced",
 			ownerUserId = userId,

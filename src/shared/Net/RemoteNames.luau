@@ -24,6 +24,7 @@ local RemoteNames = {
 	BiomeRevealEvent = "BiomeRevealEvent",
 	RequestPlacePipe = "RequestPlacePipe",
 	RequestRemovePipe = "RequestRemovePipe",
+	PipePlacedFx = "PipePlacedFx", -- server -> all clients: one-shot spatial pipe place SFX
 	RequestPlaceDrum = "RequestPlaceDrum",
 	RequestRemoveDrum = "RequestRemoveDrum",
 	RequestPickupBarrel = "RequestPickupBarrel",

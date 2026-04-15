@@ -45,6 +45,7 @@ local RemoteNames = require(ReplicatedStorage.Shared:WaitForChild("Net"):WaitFor
 
 -- Strait waypoint VFX templates live under RS; if any Sound is saved with Playing=true it is audible
 -- to everyone from join. Storm/tornado audio is started only from cloned sounds on StormEvent/TornadoEvent.
+-- Legacy Workspace.SFX.BGM must stay off: BGM is cloned per-client from ReplicatedStorage.Assets.SFX.BGM.
 do
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	local straitFx = assets and assets:FindFirstChild("StraitWaypointsFx")
@@ -54,6 +55,29 @@ do
 				d.Playing = false
 				d:Stop()
 			end
+		end
+	end
+	local sfx = workspace:FindFirstChild("SFX")
+	local legacyBgm = sfx and sfx:FindFirstChild("BGM")
+	if legacyBgm and legacyBgm:IsA("Sound") then
+		legacyBgm.Playing = false
+		legacyBgm:Stop()
+	end
+	local legacyDrill = sfx and sfx:FindFirstChild("Drilling")
+	if legacyDrill and legacyDrill:IsA("Sound") then
+		legacyDrill.Playing = false
+		legacyDrill:Stop()
+	end
+	local legacyPipe = sfx and sfx:FindFirstChild("Pipe")
+	if legacyPipe and legacyPipe:IsA("Sound") then
+		legacyPipe.Playing = false
+		legacyPipe:Stop()
+	end
+	for _, sfxName in ipairs({ "SetSail", "Kaching", "CollectorBuild", "OceanWaves" }) do
+		local s = sfx and sfx:FindFirstChild(sfxName)
+		if s and s:IsA("Sound") then
+			s.Playing = false
+			s:Stop()
 		end
 	end
 end

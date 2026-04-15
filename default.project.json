@@ -11,6 +11,72 @@
       "Assets": {
         "$className": "Folder",
         "$ignoreUnknownInstances": true,
+        "SFX": {
+          "$className": "Folder",
+          "BGM": {
+            "$className": "Sound",
+            "$properties": {
+              "SoundId": "rbxassetid://101298336573639",
+              "Volume": 0.07,
+              "Looped": true,
+              "Playing": false
+            }
+          },
+          "Drilling": {
+            "$className": "Sound",
+            "$properties": {
+              "SoundId": "rbxassetid://94129377542768",
+              "Volume": 0.6,
+              "Looped": false,
+              "Playing": false
+            }
+          },
+          "Pipe": {
+            "$className": "Sound",
+            "$properties": {
+              "SoundId": "rbxassetid://77633277687606",
+              "Volume": 0.65,
+              "Looped": false,
+              "Playing": false
+            }
+          },
+          "SetSail": {
+            "$className": "Sound",
+            "$properties": {
+              "SoundId": "rbxassetid://140054396408425",
+              "Volume": 0.55,
+              "Looped": false,
+              "Playing": false
+            }
+          },
+          "Kaching": {
+            "$className": "Sound",
+            "$properties": {
+              "SoundId": "rbxassetid://139342880771688",
+              "Volume": 0.55,
+              "Looped": false,
+              "Playing": false
+            }
+          },
+          "CollectorBuild": {
+            "$className": "Sound",
+            "$properties": {
+              "SoundId": "rbxassetid://119451923672402",
+              "Volume": 0.65,
+              "Looped": false,
+              "Playing": false
+            }
+          },
+          "OceanWaves": {
+            "$className": "Sound",
+            "$properties": {
+              "SoundId": "rbxassetid://116152132715555",
+              "Volume": 0.55,
+              "Looped": false,
+              "Playing": false
+            }
+          }
+        },
         "StraitWaypointsFx": {
           "$className": "Folder",
           "$ignoreUnknownInstances": true,

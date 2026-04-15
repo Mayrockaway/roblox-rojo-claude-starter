@@ -11,6 +11,7 @@ local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
+local UiSfx = require(script.Parent.Parent.Parent:WaitForChild("UiSfx")) :: { playSetSail: () -> (), playKaching: () -> () }
 
 local SCREEN_NAME = "SellOilPanelGui"
 
@@ -315,6 +316,7 @@ local function trySell()
 	end
 	local ev = requestSellWarehouseBarrels
 	if ev then
+		UiSfx.playKaching()
 		ev:FireServer({
 			HeavyCrude = h,
 			LightSweet = ls,

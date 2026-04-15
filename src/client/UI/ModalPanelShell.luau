@@ -22,8 +22,9 @@ function ModalPanelShell.bindCloseControls(screen: ScreenGui)
 		if not inst:IsA("GuiButton") then
 			continue
 		end
+		local ln = string.lower(inst.Name)
 		for _, n in ipairs(CLOSE_BUTTON_NAMES) do
-			if inst.Name == n then
+			if ln == string.lower(n) then
 				inst.Activated:Connect(closeSelf)
 				break
 			end
