@@ -107,6 +107,22 @@ function ChunkOwnershipService:_costFor(_state, chunk): number
 	return math.max(0, math.floor(OilConfig.ChunkUnlockBaseCost * (1 + (dist - 1) * OilConfig.ChunkUnlockDistanceMultiplier)))
 end
 
+-- Idempotent property setters: writing the same value still triggers engine repaint
+-- and network replication, which caused the "grass texture pop" every PushState.
+-- These helpers skip the assignment when the value is unchanged.
+local function setPartMaterial(part: BasePart, mat: Enum.Material)
+	if part.Material ~= mat then part.Material = mat end
+end
+local function setPartColor(part: BasePart, color: Color3)
+	if part.Color ~= color then part.Color = color end
+end
+local function setPartTransparency(part: BasePart, t: number)
+	if part.Transparency ~= t then part.Transparency = t end
+end
+local function setAttrIfDiff(inst: Instance, name: string, value: any)
+	if inst:GetAttribute(name) ~= value then inst:SetAttribute(name, value) end
+end
+
 function ChunkOwnershipService:_applyChunkVisual(sectionModel: Model, chunk)
 	local overlay = sectionModel:FindFirstChild("LockOverlay")
 	local sign = sectionModel:FindFirstChild("Sign")
@@ -114,7 +130,7 @@ function ChunkOwnershipService:_applyChunkVisual(sectionModel: Model, chunk)
 	if chunk.unlocked and chunk.revealed then
 		-- REVEALED: apply biome materials/colors to tiles + spawn obstacles
 		if overlay and overlay:IsA("BasePart") then
-			overlay.Transparency = 1 -- hide overlay
+			setPartTransparency(overlay, 1) -- hide overlay
 		end
 		if sign then
 			self:_setSignVisible(sign, false, nil)
@@ -128,23 +144,23 @@ function ChunkOwnershipService:_applyChunkVisual(sectionModel: Model, chunk)
 					if tileData then
 						-- Drilled dry-hole tile → render as dirt patch (overrides normal visuals)
 						if tileData.drilled and tileData.hasOil == false then
-							child.Material = Enum.Material.Ground
-							child.Color = Color3.fromRGB(72, 50, 30)
+							setPartMaterial(child, Enum.Material.Ground)
+							setPartColor(child, Color3.fromRGB(72, 50, 30))
 						else
 							local matName = tileData.tileMaterial
 							if matName and Enum.Material[matName] then
-								child.Material = Enum.Material[matName]
+								setPartMaterial(child, Enum.Material[matName])
 							end
 							if tileData.tileColorR and tileData.tileColorG and tileData.tileColorB then
-								child.Color = Color3.fromRGB(tileData.tileColorR, tileData.tileColorG, tileData.tileColorB)
+								setPartColor(child, Color3.fromRGB(tileData.tileColorR, tileData.tileColorG, tileData.tileColorB))
 							end
 						end
 						-- Tag attributes so the client tooltip can show HAS OIL / NO OIL once prospected
-						child:SetAttribute("TileName", tileData.tileName)
-						child:SetAttribute("OilType", tileData.oilType)
-						child:SetAttribute("Drilled", tileData.drilled == true)
-						child:SetAttribute("HasOil", tileData.hasOil ~= false)
-						child:SetAttribute("Prospected", chunk.prospected == true)
+						setAttrIfDiff(child, "TileName", tileData.tileName)
+						setAttrIfDiff(child, "OilType", tileData.oilType)
+						setAttrIfDiff(child, "Drilled", tileData.drilled == true)
+						setAttrIfDiff(child, "HasOil", tileData.hasOil ~= false)
+						setAttrIfDiff(child, "Prospected", chunk.prospected == true)
 						self:_applyTileDecorations(child, tileData)
 
 						-- Clean up any old highlight from earlier versions
@@ -161,15 +177,15 @@ function ChunkOwnershipService:_applyChunkVisual(sectionModel: Model, chunk)
 	elseif not chunk.unlocked then
 		-- LOCKED: show dark fog + buy sign
 		if overlay and overlay:IsA("BasePart") then
-			overlay.Transparency = FOG_TRANSPARENCY
-			overlay.Color = FOG_COLOR
-			overlay.Material = Enum.Material.Neon
+			setPartTransparency(overlay, FOG_TRANSPARENCY)
+			setPartColor(overlay, FOG_COLOR)
+			setPartMaterial(overlay, Enum.Material.Neon)
 		end
 		-- Make all tiles dark/hidden under the fog
 		for _, child in ipairs(sectionModel:GetChildren()) do
 			if child:IsA("BasePart") and child.Name:match("^T%d%d$") then
-				child.Material = Enum.Material.SmoothPlastic
-				child.Color = Color3.fromRGB(30, 30, 38)
+				setPartMaterial(child, Enum.Material.SmoothPlastic)
+				setPartColor(child, Color3.fromRGB(30, 30, 38))
 			end
 		end
 		if sign then

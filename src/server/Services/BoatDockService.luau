@@ -19,6 +19,7 @@ local RunService = game:GetService("RunService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
+local ShipRig = require(Shared:WaitForChild("Utils"):WaitForChild("ShipRig"))
 
 local BoatDockService = {}
 
@@ -26,6 +27,7 @@ local SLOT_COUNT = 8
 local DESTROY_COOLDOWN_SECONDS = 10
 local SKIN_SWAP_COOLDOWN_SECONDS = 3
 local IDLE_Y_OFFSET = 0 -- DockAnchor lands exactly on the slot part's red square
+local DEBUG_DOCK_SPAWN = true
 
 export type BoatState = "idle" | "sailing" | "cooldown" | "swapping"
 
@@ -79,16 +81,59 @@ function BoatDockService:_findFreeSlot(): number?
 	return nil
 end
 
-function BoatDockService:_resolveTemplate(skinId: string): Instance?
+local function rigForBoatModel(boat: Model): ShipRig.RigDef
+	local templateName = boat:GetAttribute("ShipTemplateName")
+	if typeof(templateName) == "string" and templateName ~= "" then
+		return ShipSkinCatalog.GetRigForTemplate(templateName)
+	end
+	local skinId = boat:GetAttribute("ShipSkinId")
+	if typeof(skinId) == "string" and skinId ~= "" then
+		return ShipSkinCatalog.GetRigForSkin(skinId)
+	end
+	return ShipSkinCatalog.GetRigForTemplate("Tanker")
+end
+
+local function findSeatForBoat(boat: Model): Seat?
+	local rig = rigForBoatModel(boat)
+	local seat = ShipRig.FindSeat(boat, rig.deckSeatName)
+	if seat then
+		return seat
+	end
+	return ShipRig.FindSeat(boat, "DeckSeat")
+end
+
+local function getDockWaterSurfaceY(): number?
+	local map = Workspace:FindFirstChild("Map")
+	local oceanRoot = map and map:FindFirstChild("Ocean")
+	local strait = oceanRoot and oceanRoot:FindFirstChild("StraitHormuz")
+	local ocean = strait and strait:FindFirstChild("Ocean")
+	if ocean and ocean:IsA("BasePart") then
+		return ocean.Position.Y + ocean.Size.Y * 0.5
+	end
+	return nil
+end
+
+function BoatDockService:_resolveTemplate(skinId: string): (Instance?, string, ShipRig.RigDef)
 	local assetsFolder = ReplicatedStorage:FindFirstChild("Assets")
-	if not assetsFolder then return nil end
+	local fallbackRig = ShipSkinCatalog.GetRigForTemplate("Tanker")
+	if not assetsFolder then
+		return nil, "Tanker", fallbackRig
+	end
 	local skin = ShipSkinCatalog.GetSkin(skinId)
-	local templateName = skin and skin.templateName or nil
+	local templateName = skin and skin.templateName or "Tanker"
+	local rig = ShipSkinCatalog.GetRigForTemplate(templateName)
 	local tpl = templateName and assetsFolder:FindFirstChild(templateName)
 	if not (tpl and (tpl:IsA("Model") or tpl:IsA("BasePart"))) then
+		warn(string.format(
+			"[BoatDockService] Missing template '%s' for skin=%s; falling back to Tanker.",
+			tostring(templateName),
+			tostring(skinId)
+		))
+		templateName = "Tanker"
+		rig = ShipSkinCatalog.GetRigForTemplate(templateName)
 		tpl = assetsFolder:FindFirstChild("Tanker") -- fallback
 	end
-	return tpl
+	return tpl, templateName, rig
 end
 
 function BoatDockService:_ensureBoatsFolder(): Folder
@@ -131,23 +176,89 @@ end
 function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinId: string): Model?
 	local slotPart = self._slotsByIndex[slotIndex]
 	if not slotPart then return nil end
-	local tpl = self:_resolveTemplate(skinId)
+	local tpl, templateName, rig = self:_resolveTemplate(skinId)
 	if not tpl then
 		warn(string.format("[BoatDockService] No boat template resolvable for user=%d skin=%s", userId, tostring(skinId)))
 		return nil
 	end
 
-	local boat = (tpl :: Instance):Clone()
-	if not boat:IsA("Model") then
-		-- Wrap a lone Part into a Model for uniformity.
+	local function cloneTemplateAsModel(templateInst: Instance): Model
+		local clone = templateInst:Clone()
+		if clone:IsA("Model") then
+			return clone
+		end
 		local wrap = Instance.new("Model")
-		wrap.Name = tpl.Name
-		boat.Parent = wrap
-		boat = wrap
+		wrap.Name = templateInst.Name
+		clone.Parent = wrap
+		return wrap
 	end
-	boat.Name = "IdleBoat_" .. tostring(userId)
 
-	-- Anchor every BasePart (static idle — no constraints, no welds, no collision-group).
+	local boat = cloneTemplateAsModel(tpl :: Instance)
+	boat.Name = "IdleBoat_" .. tostring(userId)
+	boat:SetAttribute("ShipSkinId", skinId)
+	boat:SetAttribute("ShipTemplateName", templateName)
+
+	local rigOk, rigErrors, rigWarnings = ShipRig.ValidateCore(boat, rig)
+	for _, warningMsg in ipairs(rigWarnings) do
+		warn(string.format(
+			"[BoatDockService] Rig warning user=%d skin=%s template=%s: %s",
+			userId,
+			tostring(skinId),
+			tostring(templateName),
+			warningMsg
+		))
+	end
+	if not rigOk then
+		warn(string.format(
+			"[BoatDockService] Rig invalid user=%d skin=%s template=%s: %s",
+			userId,
+			tostring(skinId),
+			tostring(templateName),
+			table.concat(rigErrors, " | ")
+		))
+
+		if templateName ~= "Tanker" then
+			local assetsFolder = ReplicatedStorage:FindFirstChild("Assets")
+			local tankerTemplate = assetsFolder and assetsFolder:FindFirstChild("Tanker")
+			if tankerTemplate and (tankerTemplate:IsA("Model") or tankerTemplate:IsA("BasePart")) then
+				pcall(function()
+					boat:Destroy()
+				end)
+				templateName = "Tanker"
+				rig = ShipSkinCatalog.GetRigForTemplate(templateName)
+				boat = cloneTemplateAsModel(tankerTemplate)
+				boat.Name = "IdleBoat_" .. tostring(userId)
+				boat:SetAttribute("ShipSkinId", skinId)
+				boat:SetAttribute("ShipTemplateName", templateName)
+
+				rigOk, rigErrors, rigWarnings = ShipRig.ValidateCore(boat, rig)
+				for _, warningMsg in ipairs(rigWarnings) do
+					warn(string.format(
+						"[BoatDockService] Rig warning (fallback) user=%d skin=%s template=%s: %s",
+						userId,
+						tostring(skinId),
+						tostring(templateName),
+						warningMsg
+					))
+				end
+			end
+		end
+
+		if not rigOk then
+			warn(string.format(
+				"[BoatDockService] Cannot spawn idle boat user=%d skin=%s; rig errors after fallback: %s",
+				userId,
+				tostring(skinId),
+				table.concat(rigErrors, " | ")
+			))
+			pcall(function()
+				boat:Destroy()
+			end)
+			return nil
+		end
+	end
+
+	-- Anchor every BasePart (static idle; no constraints, no welds, no collision-group).
 	for _, d in ipairs(boat:GetDescendants()) do
 		if d:IsA("BasePart") then
 			d.Anchored = true
@@ -158,19 +269,10 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 	-- Pose the ship so:
 	--   (a) DockAnchor Attachment lands on the slot's red square (+ IDLE_Y_OFFSET),
 	--   (b) FRONT_MARKER direction aligns with the slot's LookVec (out to sea).
-	-- Each skin's internal axes can be arbitrary — we infer ship-forward from
-	-- (FRONT_MARKER.pos - DockAnchor.pos) rather than hardcoding a rotation.
 	boat:PivotTo(CFrame.new())
 
-	local dockAnchor: Attachment? = nil
-	local frontMarker: BasePart? = nil
-	for _, d in ipairs(boat:GetDescendants()) do
-		if d:IsA("Attachment") and d.Name == "DockAnchor" then
-			dockAnchor = d
-		elseif d:IsA("BasePart") and d.Name == "FRONT_MARKER" then
-			frontMarker = d
-		end
-	end
+	local dockAnchor = ShipRig.FindAttachment(boat, rig.dockAnchorName)
+	local frontMarker = ShipRig.FindBasePart(boat, rig.frontMarkerName)
 
 	local anchorLocal: Vector3 = dockAnchor and dockAnchor.WorldPosition or Vector3.zero
 	local slotForward = slotPart.CFrame.LookVector
@@ -190,8 +292,6 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 		else
 			shipForwardLocal = shipForwardLocal.Unit
 		end
-		-- Yaw that rotates shipForwardLocal onto slotForward, plus 180° flip so the
-		-- DockAnchor (stern) sits at the slot with the bow pointing AWAY from the dock.
 		local currentYaw = math.atan2(shipForwardLocal.X, shipForwardLocal.Z)
 		local targetYaw = math.atan2(slotForward.X, slotForward.Z) + math.pi
 		local yawDelta = targetYaw - currentYaw
@@ -201,7 +301,6 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 		local shipOriginPos = targetPos - Vector3.new(rotatedAnchor.X, rotatedAnchor.Y, rotatedAnchor.Z)
 		baseCFrame = CFrame.new(shipOriginPos) * rotation
 	else
-		-- Fallback: fixed 90° yaw (Tanker-only behavior) + translate so anchor ~ slot center.
 		local rotation = CFrame.Angles(0, math.pi / 2, 0)
 		local rotatedAnchor = rotation * anchorLocal
 		local targetPos = slotPart.Position + Vector3.new(0, IDLE_Y_OFFSET, 0)
@@ -211,15 +310,54 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 
 	boat:PivotTo(baseCFrame)
 
+	-- Normalize docked vertical placement: align authored WaterlineAnchor to ocean surface.
+	local waterlinePart = boat:FindFirstChild("WaterlineAnchor", true)
+	local waterSurfaceY = getDockWaterSurfaceY()
+	if waterlinePart and waterlinePart:IsA("BasePart") and waterSurfaceY then
+		local deltaY = waterSurfaceY - waterlinePart.Position.Y
+		if math.abs(deltaY) > 0.001 then
+			baseCFrame += Vector3.new(0, deltaY, 0)
+			boat:PivotTo(baseCFrame)
+		end
+	end
+
+	if DEBUG_DOCK_SPAWN then
+		local dockAfter = ShipRig.FindAttachment(boat, rig.dockAnchorName)
+		local wl = boat:FindFirstChild("WaterlineAnchor", true)
+		local waterlinePart = if wl and wl:IsA("BasePart") then wl else nil
+		local seatAfter = ShipRig.FindSeat(boat, rig.deckSeatName)
+		local pivotPos = boat:GetPivot().Position
+		local dockY = if dockAfter then dockAfter.WorldPosition.Y else math.huge
+		local slotY = slotPart.Position.Y + IDLE_Y_OFFSET
+		local wlY = if waterlinePart then waterlinePart.Position.Y else math.huge
+		local seatY = if seatAfter then seatAfter.Position.Y else math.huge
+		local waterSurfaceYDebug = getDockWaterSurfaceY()
+		warn(string.format(
+			"[BoatDockService][DockDebug] user=%d slot=%d skin=%s template=%s pivotY=%.2f slotY=%.2f dockY=%.2f dockDelta=%.2f wlY=%s wlToSlot=%s wlToWater=%s waterY=%s seatY=%s",
+			userId,
+			slotIndex,
+			tostring(skinId),
+			tostring(templateName),
+			pivotPos.Y,
+			slotY,
+			dockY,
+			dockY - slotY,
+			if waterlinePart then string.format("%.2f", wlY) else "nil",
+			if waterlinePart then string.format("%.2f", wlY - slotY) else "nil",
+			if waterlinePart and waterSurfaceYDebug then string.format("%.2f", wlY - waterSurfaceYDebug) else "nil",
+			if waterSurfaceYDebug then string.format("%.2f", waterSurfaceYDebug) else "nil",
+			if seatAfter then string.format("%.2f", seatY) else "nil"
+		))
+	end
+
 	-- Attributes the client rocking script + voyage handoff read.
 	boat:SetAttribute("OwnerUserId", userId)
 	boat:SetAttribute("SlotIndex", slotIndex)
 	boat:SetAttribute("IsIdleBob", true)
 	boat:SetAttribute("DockCFrame", baseCFrame)
 
-	-- Find DeckSeat and enforce owner-only.
-	local seat = boat:FindFirstChild("DeckSeat", true)
-	if seat and seat:IsA("Seat") then
+	local seat = findSeatForBoat(boat)
+	if seat then
 		self:_enforceOwnerOnlySeat(seat, userId)
 	end
 
@@ -395,8 +533,8 @@ function BoatDockService:TeleportOwnerToSeat(player: Player): (boolean, string?)
 	if not boat then
 		return false, "BOAT_MISSING"
 	end
-	local seat = boat:FindFirstChild("DeckSeat", true)
-	if not (seat and seat:IsA("Seat")) then
+	local seat = findSeatForBoat(boat)
+	if not seat then
 		return false, "SEAT_MISSING"
 	end
 	local character = player.Character

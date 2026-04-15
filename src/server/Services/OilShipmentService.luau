@@ -20,6 +20,7 @@ local ManifestIncidentTitle = require(Shared:WaitForChild("Config"):WaitForChild
 local StraitEventConfig = require(Shared:WaitForChild("Config"):WaitForChild("StraitEventConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local ParticleFxScale = require(Shared:WaitForChild("ParticleFxScale"))
+local ShipRig = require(Shared:WaitForChild("Utils"):WaitForChild("ShipRig"))
 local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 
 local OilShipmentService = {}
@@ -93,6 +94,44 @@ local function setInstanceCFrame(instance: Instance, cf: CFrame)
 	elseif instance:IsA("BasePart") then
 		instance.CFrame = cf
 	end
+end
+
+local function resolveRigForBoatInstance(boat: Instance): ShipRig.RigDef
+	if boat:IsA("Model") then
+		local templateName = boat:GetAttribute("ShipTemplateName")
+		if typeof(templateName) == "string" and templateName ~= "" then
+			return ShipSkinCatalog.GetRigForTemplate(templateName)
+		end
+		local skinId = boat:GetAttribute("ShipSkinId")
+		if typeof(skinId) == "string" and skinId ~= "" then
+			return ShipSkinCatalog.GetRigForSkin(skinId)
+		end
+	end
+	return ShipSkinCatalog.GetRigForTemplate("Tanker")
+end
+
+local function findBoatSeat(boat: Instance): Seat?
+	if not boat:IsA("Model") then
+		return nil
+	end
+	local rig = resolveRigForBoatInstance(boat)
+	return ShipRig.FindSeat(boat, rig.deckSeatName) or ShipRig.FindSeat(boat, "DeckSeat")
+end
+
+local function findBarrelStackRoot(boat: Instance): BasePart?
+	if not boat:IsA("Model") then
+		return nil
+	end
+	local rig = resolveRigForBoatInstance(boat)
+	return ShipRig.FindBasePart(boat, rig.barrelStackRootName) or ShipRig.FindBasePart(boat, "BarrelStackRoot")
+end
+
+local function findPlayerFlagPart(boat: Instance): BasePart?
+	if not boat:IsA("Model") then
+		return nil
+	end
+	local rig = resolveRigForBoatInstance(boat)
+	return ShipRig.FindBasePart(boat, rig.playerFlagName) or ShipRig.FindBasePart(boat, "PlayerFlag")
 end
 
 -- World-space axis-aligned bounds for a rotated box (BasePart / Model:GetBoundingBox).
@@ -552,6 +591,7 @@ function OilShipmentService:_runShipment(shipment)
 	if boat:IsA("Model") then
 		boat:SetAttribute("ShipmentId", shipment.shipmentId)
 		boat:SetAttribute("OwnerUserId", ownerUserId)
+		boat:SetAttribute("ShipSkinId", shipment.shipSkinId)
 		-- HUD progress bar: distance along dock→lane→finish polyline (0..1), not wall-clock.
 		boat:SetAttribute("RouteProgress01", 0)
 	end
@@ -790,8 +830,8 @@ end
 
 --- Strait total loss, etc.: unseat from **DeckSeat** and send rider to home **ClaimPad**.
 function OilShipmentService:_unseatPlayersFromBoat(boat: Instance)
-	local seat = boat:FindFirstChild("DeckSeat", true)
-	if not (seat and seat:IsA("Seat")) then
+	local seat = findBoatSeat(boat)
+	if not seat then
 		return
 	end
 
@@ -838,7 +878,7 @@ function OilShipmentService:_postStraitWarehouseTeleportByMapPosition(worldPos: 
 end
 
 function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
-	local stackRoot = boat:FindFirstChild("BarrelStackRoot", true)
+	local stackRoot = findBarrelStackRoot(boat)
 	if not stackRoot then return end
 
 	local assetsFolder = ReplicatedStorage:FindFirstChild("Assets")
@@ -957,7 +997,7 @@ end
 function OilShipmentService:_addPlayerFlag(boat: Instance, ownerUserId: number)
 	-- Find the pre-placed PlayerFlag in the cloned template and apply the player's face to it.
 	-- No new parts created — the flag + pole are already positioned in the template by the user.
-	local flag = boat:FindFirstChild("PlayerFlag", true)
+	local flag = findPlayerFlagPart(boat)
 	if not flag then return end
 
 	-- Scale flag 3x (flag only, not pole)
@@ -1856,16 +1896,11 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 
 	-- Default bow direction: prefer the skin's FRONT_MARKER (bow) + DockAnchor (stern).
 	-- Falls back to legacy "bow at local -X" heuristic if markers missing.
-	local frontMarker: BasePart? = boatModel:FindFirstChild("FRONT_MARKER", true) :: any
-	local dockAnchor: Attachment? = nil
-	for _, d in ipairs(boatModel:GetDescendants()) do
-		if d:IsA("Attachment") and d.Name == "DockAnchor" then
-			dockAnchor = d
-			break
-		end
-	end
+	local rig = resolveRigForBoatInstance(boatModel)
+	local frontMarker = ShipRig.FindBasePart(boatModel, rig.frontMarkerName)
+	local dockAnchor = ShipRig.FindAttachment(boatModel, rig.dockAnchorName)
 	local defaultYaw: number
-	if frontMarker and frontMarker:IsA("BasePart") and dockAnchor then
+	if frontMarker and dockAnchor then
 		local bowWorld = frontMarker.Position - dockAnchor.WorldPosition
 		bowWorld = Vector3.new(bowWorld.X, 0, bowWorld.Z)
 		if bowWorld.Magnitude < 0.01 then

@@ -480,10 +480,8 @@ end
 -- `state.plot` can point at a destroyed/stale Model after Studio rejoin while PlotService already
 -- references the live plot; fall back to GetOwnedPlot for grid math.
 local function activeDrillWorldFromStateEntry(plotForGrid: Model?, e: { [string]: any }): (number?, number?, number?)
-	local px, py, pz = worldXYZFromPersistedPosition(e.position)
-	if px and py and pz then
-		return px, py, pz
-	end
+	-- Fall back to stored position only if we can't derive from cell/tile, since
+	-- stored coords may be stale (different plot from previous session).
 	if typeof(plotForGrid) == "Instance" and plotForGrid:IsA("Model") then
 		local row = tonumber(e.cellRow)
 		local col = tonumber(e.cellCol)
@@ -494,6 +492,10 @@ local function activeDrillWorldFromStateEntry(plotForGrid: Model?, e: { [string]
 			local wx, wz = cellToWorld(plotForGrid :: Model, row, col)
 			return wx, 6, wz
 		end
+	end
+	local px, py, pz = worldXYZFromPersistedPosition(e.position)
+	if px and py and pz then
+		return px, py, pz
 	end
 	return nil, nil, nil
 end
@@ -621,9 +623,15 @@ function OilStateService:GetStateForClient(userId: number)
 			local e = entry :: { [string]: any }
 			local drillId = typeof(e.drillId) == "number" and e.drillId or tonumber(e.drillId) or tonumber(key)
 			if typeof(drillId) == "number" then
-				local px, py, pz = activeDrillWorldFromStateEntry(plotForGrid, e)
-				if not (px and py and pz) and plotForGrid then
+				-- Prefer authoritative tile-part position over stored/formula coords — the
+				-- formula drifts on authored 8.26-stud tile spacing and stored coords are
+				-- stale across cross-plot rejoins.
+				local px, py, pz = nil, nil, nil
+				if plotForGrid then
 					px, py, pz = activeDrillWorldFromChunkTile(self._plotService, plotForGrid, e.chunkId, e.tileKey)
+				end
+				if not (px and py and pz) then
+					px, py, pz = activeDrillWorldFromStateEntry(plotForGrid, e)
 				end
 				if px and py and pz then
 					local st = tonumber(e.startTime) or nowT
@@ -913,6 +921,36 @@ function OilStateService:TryClearObstacle(_userId: number, _chunkId: string, _ti
 	return false, "ERR_OBSTACLES_REMOVED", "Obstacles are no longer a thing."
 end
 
+-- Returns true if (x,z) is on any tile whose parent section matches this chunk,
+-- by locating the nearest tile Instance on the plot. Authoritative (uses actual
+-- authored tile positions, not formula-assumed 8-stud spacing).
+local function pointInsideChunkOnPlot(plot: Model?, chunk, x: number, z: number): boolean
+	if not plot then return false end
+	local ground = plot:FindFirstChild("PlotGround")
+	if not ground then return false end
+	local nearest, nearestDist = nil, math.huge
+	for _, sect in ipairs(ground:GetChildren()) do
+		if sect:IsA("Model") then
+			for _, t in ipairs(sect:GetChildren()) do
+				if t:IsA("BasePart") and t.Name:match("^T%d%d$") then
+					local dx = t.Position.X - x
+					local dz = t.Position.Z - z
+					local d2 = dx*dx + dz*dz
+					if d2 < nearestDist then
+						nearestDist = d2
+						nearest = t
+					end
+				end
+			end
+		end
+	end
+	if not nearest then return false end
+	-- Nearest tile must be inside a section whose ChunkId matches this chunk.
+	local sect = nearest.Parent
+	return sect ~= nil and sect:GetAttribute("ChunkId") == chunk.chunkId
+end
+
+-- Back-compat signature shim (some callers only have chunk info, no plot).
 local function pointInsideChunk(chunk, x: number, z: number): boolean
 	local size = OilConfig.Chunks.Size
 	local half = size / 2
@@ -923,6 +961,29 @@ end
 -- Returns (tileKey, tile) or (nil, nil) if out of range or tiles not generated yet.
 local function resolveTileAt(plot: Model, chunk, x: number, z: number): (string?, any?)
 	if not chunk or not chunk.tiles then return nil, nil end
+	-- Authoritative: find the nearest T## BasePart inside THIS chunk's section model.
+	-- Beats the formula-based worldToCell for plots with non-8-stud tile spacing.
+	local ground = plot and plot:FindFirstChild("PlotGround")
+	local section = ground and ground:FindFirstChild(chunk.chunkId)
+	if section then
+		local nearest, nearestDist = nil, math.huge
+		for _, t in ipairs(section:GetChildren()) do
+			if t:IsA("BasePart") and t.Name:match("^T%d%d$") then
+				local dx = t.Position.X - x
+				local dz = t.Position.Z - z
+				local d2 = dx*dx + dz*dz
+				if d2 < nearestDist then
+					nearestDist = d2
+					nearest = t
+				end
+			end
+		end
+		if nearest then
+			local key = nearest.Name
+			return key, chunk.tiles[key]
+		end
+	end
+	-- Fallback to formula (legacy paths).
 	local cellR, cellC = worldToCell(plot, x, z)
 	local s = staticGridConstants()
 	local sRow = (chunk.row - 1) * s.subTilesPerSide
@@ -958,12 +1019,12 @@ function OilStateService:_validateTilePlacement(userId: number, payload)
 	local chunk = state.chunksById[chunkId]
 	if not chunk then return false, "ERR_BAD_CHUNK", "Chunk does not exist." end
 	if not chunk.unlocked then return false, "ERR_LOCKED_CHUNK", "Chunk is not unlocked." end
-	if not pointInsideChunk(chunk, x, z) then
-		return false, "ERR_OUT_OF_CHUNK", "Position is not on the targeted chunk."
-	end
 
 	local plot = state.plot or self._plotService:GetOwnedPlot(userId)
 	if not plot then return false, "ERR_NO_PLOT", "No plot owned." end
+	if not pointInsideChunkOnPlot(plot, chunk, x, z) then
+		return false, "ERR_OUT_OF_CHUNK", "Position is not on the targeted chunk."
+	end
 
 	local cellR, cellC = worldToCell(plot, x, z)
 	local ck = cellKey(cellR, cellC)
@@ -2240,8 +2301,19 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 						-- restore solely on `drilled`, or the drill model never reclones and timers look "wrong".
 						if chunk and chunk.unlocked == true and tile then
 							local ck = if typeof(r.cellKey) == "string" and r.cellKey ~= "" then r.cellKey :: string else cellKey(cellR, cellC)
-							local pos = positionVectorFromStateEntry(r.position)
-							if not pos then
+							-- ALWAYS re-derive position from the CURRENT plot's tile Instance.
+							-- Stored absolute coords would be wrong on cross-plot rejoin (same fix
+							-- we applied to pumps). Makes restored active drills appear where they
+							-- should, not 250+ studs away at an invisible position.
+							local pos: Vector3
+							local groundNow = plot:FindFirstChild("PlotGround")
+							local sectionNow = groundNow and groundNow:FindFirstChild(chunk.chunkId)
+							local tileKeyForLookup = tileKeyResolved or tileKeyFromCell
+							local tileInstNow = sectionNow and sectionNow:FindFirstChild(tileKeyForLookup)
+							if tileInstNow and tileInstNow:IsA("BasePart") then
+								local topY = tileInstNow.Position.Y + tileInstNow.Size.Y / 2
+								pos = Vector3.new(tileInstNow.Position.X, topY, tileInstNow.Position.Z)
+							else
 								local wx, wz = cellToWorld(plot, cellR, cellC)
 								pos = Vector3.new(wx, 6, wz)
 							end

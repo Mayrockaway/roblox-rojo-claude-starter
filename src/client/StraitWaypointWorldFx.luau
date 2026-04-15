@@ -18,6 +18,28 @@ local ParticleFxScale: {
 	ApplyToEmitter = function() end,
 	ApplyToDescendants = function() end,
 }
+type ShipRigDef = {
+	dockAnchorName: string,
+	frontMarkerName: string,
+	deckAnchorName: string,
+	deckYOffsetFallback: number,
+	deckSeatName: string,
+	barrelStackRootName: string,
+	playerFlagName: string,
+}
+
+local DEFAULT_SHIP_RIG: ShipRigDef = {
+	dockAnchorName = "DockAnchor",
+	frontMarkerName = "FRONT_MARKER",
+	deckAnchorName = "DeckAnchor",
+	deckYOffsetFallback = 15,
+	deckSeatName = "DeckSeat",
+	barrelStackRootName = "BarrelStackRoot",
+	playerFlagName = "PlayerFlag",
+}
+
+local ShipSkinCatalog: any = nil
+local ShipRigUtil: any = nil
 local sharedFolder = ReplicatedStorage:WaitForChild("Shared", 45)
 local StraitAssetManifest = nil
 if sharedFolder then
@@ -29,12 +51,27 @@ if sharedFolder then
 		end
 	end
 	local configFolder = sharedFolder:FindFirstChild("Config")
+	local skinCatalogMod = configFolder and configFolder:FindFirstChild("ShipSkinCatalog")
+	if skinCatalogMod and skinCatalogMod:IsA("ModuleScript") then
+		local okSkinCatalog, loadedSkinCatalog = pcall(require, skinCatalogMod)
+		if okSkinCatalog and typeof(loadedSkinCatalog) == "table" then
+			ShipSkinCatalog = loadedSkinCatalog
+		end
+	end
 	local straitEventsFolder = configFolder and configFolder:FindFirstChild("StraitEvents")
 	local manifestMod = straitEventsFolder and straitEventsFolder:FindFirstChild("AssetManifest")
 	if manifestMod and manifestMod:IsA("ModuleScript") then
 		local okManifest, loadedManifest = pcall(require, manifestMod)
 		if okManifest and typeof(loadedManifest) == "table" then
 			StraitAssetManifest = loadedManifest
+		end
+	end
+	local utilsFolder = sharedFolder:FindFirstChild("Utils")
+	local shipRigMod = utilsFolder and utilsFolder:FindFirstChild("ShipRig")
+	if shipRigMod and shipRigMod:IsA("ModuleScript") then
+		local okShipRig, loadedShipRig = pcall(require, shipRigMod)
+		if okShipRig and typeof(loadedShipRig) == "table" then
+			ShipRigUtil = loadedShipRig
 		end
 	end
 end
@@ -270,6 +307,74 @@ local function getBoatAttachmentPart(boat: Model): BasePart?
 		end
 	end
 	return best
+end
+
+local function getBoatRigDef(boat: Model): ShipRigDef
+	if ShipSkinCatalog then
+		local templateName = boat:GetAttribute("ShipTemplateName")
+		if typeof(templateName) == "string" and templateName ~= "" and typeof(ShipSkinCatalog.GetRigForTemplate) == "function" then
+			local okTemplateRig, rigTemplate = pcall(ShipSkinCatalog.GetRigForTemplate, templateName)
+			if okTemplateRig and typeof(rigTemplate) == "table" then
+				return rigTemplate :: ShipRigDef
+			end
+		end
+		local skinId = boat:GetAttribute("ShipSkinId")
+		if typeof(skinId) == "string" and skinId ~= "" and typeof(ShipSkinCatalog.GetRigForSkin) == "function" then
+			local okSkinRig, rigSkin = pcall(ShipSkinCatalog.GetRigForSkin, skinId)
+			if okSkinRig and typeof(rigSkin) == "table" then
+				return rigSkin :: ShipRigDef
+			end
+		end
+	end
+	return DEFAULT_SHIP_RIG
+end
+
+local function findRigAttachment(boat: Model, name: string): Attachment?
+	if ShipRigUtil and typeof(ShipRigUtil.FindAttachment) == "function" then
+		local okFind, found = pcall(ShipRigUtil.FindAttachment, boat, name)
+		if okFind and found and found:IsA("Attachment") then
+			return found
+		end
+	end
+	local fallback = boat:FindFirstChild(name, true)
+	if fallback and fallback:IsA("Attachment") then
+		return fallback
+	end
+	return nil
+end
+
+local function findRigBasePart(boat: Model, name: string): BasePart?
+	if ShipRigUtil and typeof(ShipRigUtil.FindBasePart) == "function" then
+		local okFind, found = pcall(ShipRigUtil.FindBasePart, boat, name)
+		if okFind and found and found:IsA("BasePart") then
+			return found
+		end
+	end
+	local fallback = boat:FindFirstChild(name, true)
+	if fallback and fallback:IsA("BasePart") then
+		return fallback
+	end
+	return nil
+end
+
+local function getBoatForwardMarker(boat: Model): BasePart?
+	local rig = getBoatRigDef(boat)
+	return findRigBasePart(boat, rig.frontMarkerName) or findRigBasePart(boat, "FRONT_MARKER")
+end
+
+local function getBoatDeckY(boat: Model, waterlineY: number): number
+	local rig = getBoatRigDef(boat)
+	if ShipRigUtil and typeof(ShipRigUtil.ResolveDeckWorldY) == "function" then
+		local okResolve, y = pcall(ShipRigUtil.ResolveDeckWorldY, boat, rig, waterlineY)
+		if okResolve and typeof(y) == "number" then
+			return y
+		end
+	end
+	local deckAnchor = findRigAttachment(boat, rig.deckAnchorName)
+	if deckAnchor then
+		return deckAnchor.WorldPosition.Y
+	end
+	return waterlineY + rig.deckYOffsetFallback
 end
 
 local function getInstanceWorldCFrame(inst: Instance): CFrame?
@@ -2225,7 +2330,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		-- Travel direction: prefer FRONT_MARKER, fall back to velocity sample (same pattern as CoastGuard/USShip)
 		local bbCF0, _ = playerBoat:GetBoundingBox()
 		local rootPos = bbCF0.Position
-		local frontMarker = playerBoat:FindFirstChild("FRONT_MARKER", true)
+		local frontMarker = getBoatForwardMarker(playerBoat)
 		local fwd: Vector3
 		if frontMarker and frontMarker:IsA("BasePart") then
 			local dir = Vector3.new(frontMarker.Position.X - rootPos.X, 0, frontMarker.Position.Z - rootPos.Z)
@@ -2340,7 +2445,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		local PHASE_ESCAPE = 4.0
 		local PIRATE_COUNT = 5
 		local PIRATE_SPACING = 1.5
-		local TANKER_DECK_Y = 15
+		local deckY = getBoatDeckY(playerBoat, boatRoot.Position.Y)
 		local PIRATE_BOAT_DECK_Y = 4
 		local GAP = 20
 		local PIRATE_HALF_LEN = 9
@@ -2388,6 +2493,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		animateMove(pirateBoat, pirateBoat:GetPivot(), uprightLookAt(parkPos, rootPos), PHASE_APPROACH, 0)
 
 		rootPos = boatRoot.Position
+		deckY = getBoatDeckY(playerBoat, boatRoot.Position.Y)
 		parkPos = Vector3.new(rootPos.X, rootPos.Y, rootPos.Z) + fwd * parkDist
 		pirateBoat:PivotTo(uprightLookAt(parkPos, rootPos))
 
@@ -2395,7 +2501,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		local zipFromBase = Vector3.new(pirateBoatPos.X, pirateBoatPos.Y + PIRATE_BOAT_DECK_Y, pirateBoatPos.Z) + perp * ZIP_SIDE_OFFSET
 		-- Tanker landing: bbox center for XZ + calibrated offsets (match CoastGuard)
 		local tankerBBCF, _ = playerBoat:GetBoundingBox()
-		local tankerDeckCtr = Vector3.new(tankerBBCF.Position.X, boatRoot.Position.Y + TANKER_DECK_Y, tankerBBCF.Position.Z)
+		local tankerDeckCtr = Vector3.new(tankerBBCF.Position.X, deckY, tankerBBCF.Position.Z)
 		local zipToBase = tankerDeckCtr + perp * LAND_LATERAL + fwd * LAND_FWD
 		local ropeStart = zipFromBase + Vector3.new(0, ZIP_ATTACH_UP, 0)
 		local ropeEnd = zipToBase + Vector3.new(0, ZIP_ATTACH_UP, 0)
@@ -2443,7 +2549,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		rope.Color = ColorSequence.new(Color3.fromRGB(90, 70, 45))
 		rope.Parent = zipA
 
-		local landingBase = Vector3.new(zipToBase.X, boatRoot.Position.Y + TANKER_DECK_Y, zipToBase.Z) - fwd * LANDING_BACK_OFFSET
+		local landingBase = Vector3.new(zipToBase.X, deckY, zipToBase.Z) - fwd * LANDING_BACK_OFFSET
 		local landingPositions = {}
 		for i = 1, PIRATE_COUNT do
 			landingPositions[i] = landingBase + perp * ((i - pirateMid) * 1.6)
@@ -2504,7 +2610,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 				-- === STEAL: walk to barrel, grab, walk to edge, toss ===
 				if myBarrel and myBarrel.Parent then
 					local barrelPos = if myBarrel:IsA("Model") then myBarrel:GetPivot().Position else myBarrel.Position
-					local standPos = Vector3.new(barrelPos.X, boatRoot.Position.Y + TANKER_DECK_Y, barrelPos.Z) + perp * BARREL_SIDE_OFFSET
+					local standPos = Vector3.new(barrelPos.X, deckY, barrelPos.Z) + perp * BARREL_SIDE_OFFSET
 					walkPirate(pirateData, uprightLookAt(standPos, barrelPos))
 					if myBarrel.Parent then
 						myBarrel:Destroy()
@@ -2526,7 +2632,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 
 						local edgeDir = Vector3.new(zipFromBase.X - standPos.X, 0, zipFromBase.Z - standPos.Z)
 						edgeDir = if edgeDir.Magnitude > 0.001 then edgeDir.Unit else fwd
-						local edgePos = Vector3.new(standPos.X + edgeDir.X * 8, boatRoot.Position.Y + TANKER_DECK_Y, standPos.Z + edgeDir.Z * 8)
+						local edgePos = Vector3.new(standPos.X + edgeDir.X * 8, deckY, standPos.Z + edgeDir.Z * 8)
 						walkPirate(pirateData, uprightLookAt(edgePos, zipFromBase), nil, carry)
 
 						local tossTarget = pirateBoat:GetPivot().Position
@@ -2604,7 +2710,7 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 		local rootPos   = bbCF0.Position
 
 		-- Travel direction from FRONT_MARKER if present, else velocity sample
-		local frontMarker = playerBoat:FindFirstChild("FRONT_MARKER", true)
+		local frontMarker = getBoatForwardMarker(playerBoat)
 		local fwd: Vector3
 		if frontMarker and frontMarker:IsA("BasePart") then
 			local dir = Vector3.new(frontMarker.Position.X - rootPos.X, 0, frontMarker.Position.Z - rootPos.Z)
@@ -2621,9 +2727,8 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 		local perp  = right * (if approachSide >= 0 then 1 else -1)
 
 		-- Deck Y: same formula as PirateRaid — boatRoot (Union hull) sits at sea surface, +15 = deck
-		local TANKER_DECK_Y   = 15
 		local bbCF, bbSize    = playerBoat:GetBoundingBox()
-		local deckY           = boatRoot.Position.Y + TANKER_DECK_Y
+		local deckY           = getBoatDeckY(playerBoat, boatRoot.Position.Y)
 		local waterY          = boatRoot.Position.Y  -- CG boat placed at hull Y = sea surface
 		local boatLenHalf     = math.max(bbSize.X, bbSize.Z) / 2 * 0.72
 		local boatWidthHalf   = math.min(bbSize.X, bbSize.Z) / 2 * 0.45
@@ -2748,7 +2853,8 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 		rootPos = snapBbCF.Position
 		right   = Vector3.new(-fwd.Z, 0, fwd.X)
 		perp    = right * (if approachSide >= 0 then 1 else -1)
-		deckCtr = Vector3.new(rootPos.X, boatRoot.Position.Y + TANKER_DECK_Y, rootPos.Z)
+		deckY = getBoatDeckY(playerBoat, boatRoot.Position.Y)
+		deckCtr = Vector3.new(rootPos.X, deckY, rootPos.Z)
 
 		local snappedPark = Vector3.new(rootPos.X, boatRoot.Position.Y, rootPos.Z) + perp * parkLateral
 		cgBoat:PivotTo(flatLookAt(snappedPark, snappedPark - perp))
@@ -2929,9 +3035,8 @@ function StraitWaypointWorldFx.OnUSShipSlapPayload(data: { [string]: any })
 
 		local bbCF, _ = playerBoat:GetBoundingBox()
 		local rootPos   = bbCF.Position
-		local TANKER_DECK_Y = 15
 
-		local frontMarker = playerBoat:FindFirstChild("FRONT_MARKER", true)
+		local frontMarker = getBoatForwardMarker(playerBoat)
 		local fwd: Vector3
 		if frontMarker and frontMarker:IsA("BasePart") then
 			local dir = Vector3.new(frontMarker.Position.X - rootPos.X, 0, frontMarker.Position.Z - rootPos.Z)
@@ -2947,7 +3052,7 @@ function StraitWaypointWorldFx.OnUSShipSlapPayload(data: { [string]: any })
 		local perp  = right * (if approachSide >= 0 then 1 else -1)
 
 		local waterY = boatRoot.Position.Y
-		local deckY  = boatRoot.Position.Y + TANKER_DECK_Y
+		local deckY  = getBoatDeckY(playerBoat, boatRoot.Position.Y)
 
 		local function flatLookAt(pos: Vector3, toward: Vector3): CFrame
 			local dx, dz = toward.X - pos.X, toward.Z - pos.Z
@@ -2985,6 +3090,7 @@ function StraitWaypointWorldFx.OnUSShipSlapPayload(data: { [string]: any })
 		-- Snap to tanker's current position after approach
 		local snapCF, _ = playerBoat:GetBoundingBox()
 		rootPos = snapCF.Position
+		deckY = getBoatDeckY(playerBoat, boatRoot.Position.Y)
 		local snappedPark = Vector3.new(rootPos.X, shipY, rootPos.Z) + perp * PARK_LATERAL
 		usShip:PivotTo(flatLookAt(snappedPark, snappedPark - perp))
 		local usShipPos = usShip:GetPivot().Position
