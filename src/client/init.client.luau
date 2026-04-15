@@ -454,34 +454,58 @@ local function disconnectPromptConnections()
 	promptConnections = {}
 end
 
+local _wiredPromptSet: { [ProximityPrompt]: true } = {}
+
+local function wireBuyPrompt(prompt: ProximityPrompt)
+	if _wiredPromptSet[prompt] then return end
+	_wiredPromptSet[prompt] = true
+	local conn = prompt.Triggered:Connect(function(triggeringPlayer)
+		print(string.format("[Client] BuyPrompt Triggered by %s on %s",
+			triggeringPlayer and triggeringPlayer.Name or "?", prompt:GetFullName()))
+		if triggeringPlayer ~= player then
+			return
+		end
+		local cursor: Instance? = prompt
+		while cursor and cursor.Parent do
+			cursor = cursor.Parent
+			if cursor and typeof(cursor:GetAttribute("ChunkId")) == "string" then
+				local chunkId = cursor:GetAttribute("ChunkId")
+				print(string.format("[Client] firing RequestBuyChunk chunkId=%s", chunkId))
+				requestBuyChunk:FireServer({ chunkId = chunkId })
+				return
+			end
+		end
+		print("[Client] BuyPrompt: no ChunkId ancestor")
+	end)
+	table.insert(promptConnections, conn)
+end
+
 local function bindPromptsForOwnedPlot()
 	disconnectPromptConnections()
-	if not ownedPlot then
-		return
-	end
+	_wiredPromptSet = {}
+	if not ownedPlot then return end
 	local ground = ownedPlot:FindFirstChild("PlotGround")
-	if not (ground and ground:IsA("Model")) then
-		return
-	end
+	if not (ground and ground:IsA("Model")) then return end
+
+	local wired = 0
 	for _, descendant in ipairs(ground:GetDescendants()) do
 		if descendant:IsA("ProximityPrompt") and descendant.Name == "BuyPrompt" then
-			local conn = descendant.Triggered:Connect(function(triggeringPlayer)
-				if triggeringPlayer ~= player then
-					return
-				end
-				-- Walk up to find the section model carrying ChunkId
-				local cursor: Instance? = descendant
-				while cursor and cursor.Parent do
-					cursor = cursor.Parent
-					if cursor and typeof(cursor:GetAttribute("ChunkId")) == "string" then
-						requestBuyChunk:FireServer({ chunkId = cursor:GetAttribute("ChunkId") })
-						return
-					end
-				end
-			end)
-			table.insert(promptConnections, conn)
+			wireBuyPrompt(descendant)
+			wired += 1
 		end
 	end
+	print(string.format("[Client] bindPromptsForOwnedPlot: wired %d BuyPrompts on %s (initial)", wired, ownedPlot.Name))
+
+	-- Streaming-resilient: catch BuyPrompts that replicate in later.
+	local boundPlot = ownedPlot
+	local streamConn = ground.DescendantAdded:Connect(function(d)
+		if boundPlot ~= ownedPlot then return end
+		if d:IsA("ProximityPrompt") and d.Name == "BuyPrompt" then
+			wireBuyPrompt(d)
+			print(string.format("[Client] BuyPrompt wired late via DescendantAdded: %s", d:GetFullName()))
+		end
+	end)
+	table.insert(promptConnections, streamConn)
 end
 
 local function bindOwnedPlot()
@@ -1802,10 +1826,33 @@ local function animateActiveDrill(model: Instance)
 	end
 end
 
--- Walk the whole workspace tree for ActiveDrills folders (plots might be nested in containers)
+-- PERF: per-frame lookups used to call workspace:GetDescendants() (14k-instance walk).
+-- Cached sets, maintained via DescendantAdded/Removing — O(1) instead of O(workspace).
+local _activeDrillsFolders: { [Folder]: true } = {}
+local _activeProspectorsFolders: { [Folder]: true } = {}
+local _superTileSet: { [BasePart]: true } = {}
+do
+	local function consider(d: Instance)
+		if d:IsA("Folder") then
+			if d.Name == "ActiveDrills" then _activeDrillsFolders[d] = true
+			elseif d.Name == "ActiveProspectors" then _activeProspectorsFolders[d] = true
+			end
+		elseif d:IsA("BasePart") and d:GetAttribute("TileName") == "SUPER TILE" then
+			_superTileSet[d] = true
+		end
+	end
+	for _, d in ipairs(workspace:GetDescendants()) do consider(d) end
+	workspace.DescendantAdded:Connect(consider)
+	workspace.DescendantRemoving:Connect(function(d)
+		_activeDrillsFolders[d] = nil
+		_activeProspectorsFolders[d] = nil
+		_superTileSet[d] = nil
+	end)
+end
+
 local function forEachActiveDrill(fn)
-	for _, folder in ipairs(workspace:GetDescendants()) do
-		if folder:IsA("Folder") and folder.Name == "ActiveDrills" then
+	for folder in pairs(_activeDrillsFolders) do
+		if folder.Parent then
 			for _, m in ipairs(folder:GetChildren()) do
 				if m.Name:match("^ActiveDrill_") then
 					fn(m)
@@ -1818,8 +1865,8 @@ end
 -- Update the text on every drill's static timer billboard
 local function updateDrillTimers()
 	local now = workspace:GetServerTimeNow()
-	for _, folder in ipairs(workspace:GetDescendants()) do
-		if folder:IsA("Folder") and folder.Name == "ActiveDrills" then
+	for folder in pairs(_activeDrillsFolders) do
+		if folder.Parent then
 			for _, anchor in ipairs(folder:GetChildren()) do
 				if anchor.Name:match("^DrillTimer_") and anchor:IsA("BasePart") then
 					local bb = anchor:FindFirstChild("TimerGui")
@@ -1840,8 +1887,8 @@ local function updateDrillTimers()
 end
 
 local function forEachActiveProspector(fn)
-	for _, folder in ipairs(workspace:GetDescendants()) do
-		if folder:IsA("Folder") and folder.Name == "ActiveProspectors" then
+	for folder in pairs(_activeProspectorsFolders) do
+		if folder.Parent then
 			for _, m in ipairs(folder:GetChildren()) do
 				fn(m)
 			end
@@ -1880,11 +1927,12 @@ RunService.RenderStepped:Connect(function()
 	-- Countdown timers on each drill's static anchor billboard
 	updateDrillTimers()
 
-	-- SUPER TILE: pulse HSV rainbow on every tile tagged with TileName = "SUPER TILE"
-	-- (plot is nested several levels deep, so scan all descendants)
+	-- SUPER TILE: pulse HSV rainbow on every tile tagged with TileName = "SUPER TILE".
+	-- Use cached set built once + maintained by attribute change listener — was scanning the
+	-- entire workspace tree every frame which dominated frame time.
 	local t = workspace:GetServerTimeNow()
-	for _, tilePart in ipairs(workspace:GetDescendants()) do
-		if tilePart:IsA("BasePart") and tilePart:GetAttribute("TileName") == "SUPER TILE" then
+	for tilePart in pairs(_superTileSet) do
+		if tilePart.Parent then
 			local hue = (t * 0.6 + tilePart.Position.X * 0.02 + tilePart.Position.Z * 0.02) % 1
 			tilePart.Color = Color3.fromHSV(hue, 1, 1)
 		end

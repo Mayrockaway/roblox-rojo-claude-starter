@@ -512,13 +512,21 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			local px = tonumber(entry.position.x) or 0
 			local py = tonumber(entry.position.y) or 0
 			local pz = tonumber(entry.position.z) or 0
-			-- Compute pivot→bottom offset so the model's actual bbox bottom sits on the surface,
-			-- regardless of where the model's pivot is authored (fixes hovering assets).
+			-- Compute pivot→LOWEST-PART offset so the drill's visible bottom sits on the tile surface.
+			-- Using iterated lowest part (not GetBoundingBox) because models can have invisible
+			-- attachments/helper parts that skew bbox — we want the visible mesh bottom.
 			local pivotToBottom = 0
 			if model:IsA("Model") then
-				local bbCF, bbSize = model:GetBoundingBox()
 				local pivotY = model:GetPivot().Position.Y
-				pivotToBottom = pivotY - (bbCF.Position.Y - bbSize.Y / 2)
+				local lowestY = math.huge
+				for _, d in ipairs(model:GetDescendants()) do
+					if d:IsA("BasePart") then
+						local bot = d.Position.Y - d.Size.Y / 2
+						if bot < lowestY then lowestY = bot end
+					end
+				end
+				if lowestY == math.huge then lowestY = pivotY end
+				pivotToBottom = pivotY - lowestY
 			elseif model:IsA("BasePart") then
 				pivotToBottom = (model :: BasePart).Size.Y / 2
 			end
@@ -728,27 +736,46 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 			local pz = tonumber(drill.position.z) or 0
 			local scale = tonumber(drill.scale) or 1
 
-			-- Apply target scale. On FIRST creation, start at ~0 then tween up for the fill-up animation.
-			if model:IsA("Model") and model:GetAttribute("AppliedScale") ~= scale then
-				if justCreated then
-					model:ScaleTo(0.01)
-				else
-					model:ScaleTo(scale)
-					model:SetAttribute("AppliedScale", scale)
+			-- Measure pivot→true-visible-bottom at unit scale and cache it.
+			-- If attribute is missing (restored pump, older data), we measure now and
+			-- divide out the current AppliedScale so the stored value is always unit-scale.
+			if model:IsA("Model") and typeof(model:GetAttribute("PivotToBottomUnit")) ~= "number" then
+				local pivotY = model:GetPivot().Position.Y
+				local lowestY = math.huge
+				for _, d in ipairs(model:GetDescendants()) do
+					if d:IsA("BasePart") then
+						local cf, sz = d.CFrame, d.Size
+						local hx, hy, hz = sz.X/2, sz.Y/2, sz.Z/2
+						for _, o in ipairs({
+							Vector3.new( hx,  hy,  hz), Vector3.new(-hx,  hy,  hz),
+							Vector3.new( hx, -hy,  hz), Vector3.new(-hx, -hy,  hz),
+							Vector3.new( hx,  hy, -hz), Vector3.new(-hx,  hy, -hz),
+							Vector3.new( hx, -hy, -hz), Vector3.new(-hx, -hy, -hz),
+						}) do
+							local wy = (cf * o).Y
+							if wy < lowestY then lowestY = wy end
+						end
+					end
 				end
+				if lowestY == math.huge then lowestY = pivotY end
+				local curScale = tonumber(model:GetAttribute("AppliedScale")) or 1
+				if curScale <= 0 then curScale = 1 end
+				model:SetAttribute("PivotToBottomUnit", (pivotY - lowestY) / curScale)
+			end
+			local pivotToBottomUnit = tonumber(model:GetAttribute("PivotToBottomUnit")) or 0
+			local pivotToBottom
+			if model:IsA("BasePart") then
+				pivotToBottom = (model :: BasePart).Size.Y / 2 * scale
+			else
+				pivotToBottom = pivotToBottomUnit * scale
 			end
 
-			-- Compute the pivot→bottom Y offset so the pump's actual bbox bottom sits on the ground,
-			-- regardless of where the model's pivot is authored. Fixes pumps hovering above tiles.
-			local pivotToBottom = 0
-			if model:IsA("Model") then
-				local bbCF, bbSize = model:GetBoundingBox()
-				local pivotY = model:GetPivot().Position.Y
-				local bbBottomY = bbCF.Position.Y - bbSize.Y / 2
-				pivotToBottom = pivotY - bbBottomY
-			elseif model:IsA("BasePart") then
-				pivotToBottom = (model :: BasePart).Size.Y / 2
+			-- Apply target scale immediately.
+			if model:IsA("Model") and model:GetAttribute("AppliedScale") ~= scale then
+				model:ScaleTo(scale)
+				model:SetAttribute("AppliedScale", scale)
 			end
+
 			local targetCf = CFrame.new(px, py + DRILL_HEIGHT_OFFSET + pivotToBottom, pz)
 			if model:IsA("Model") then
 				model:PivotTo(targetCf)
@@ -756,30 +783,6 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				model.CFrame = targetCf
 			end
 			anchorAllBaseParts(model)
-
-			-- Fill-up animation for fresh placements: tween scale 0.01 → target over ~0.7s
-			if justCreated and model:IsA("Model") then
-				local currentScale = 0.01
-				local targetScale = scale
-				local startT = os.clock()
-				local DUR = 0.7
-				local animModel = model
-				task.spawn(function()
-					while animModel and animModel.Parent do
-						local a = math.min((os.clock() - startT) / DUR, 1)
-						-- Ease: backout — pop past target then settle
-						local eased = 1 - (1 - a) * (1 - a) * (1 - a)
-						local sc = currentScale + (targetScale - currentScale) * eased
-						animModel:ScaleTo(sc)
-						animModel:PivotTo(targetCf)
-						if a >= 1 then break end
-						task.wait()
-					end
-					if animModel and animModel.Parent then
-						animModel:SetAttribute("AppliedScale", targetScale)
-					end
-				end)
-			end
 
 			-- Write Connected attribute so the OilBurstSpawner script can pause emission
 			model:SetAttribute("Connected", drill.connected == true)
@@ -911,18 +914,30 @@ function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, d
 			local py = tonumber(pipe.position.y) or 6
 			local pz = tonumber(pipe.position.z) or 0
 
-			-- Lookup ACTUAL tile top Y — pipe.position.y is often stale/default(6) and makes
-			-- the pipe float above the real tile. Find the tile part by sectionId+row/col.
-			if pipe.sectionId then
-				local sectionModel = self._plotService:GetChunkModel(_plot, pipe.sectionId)
-				if sectionModel then
-					-- Convert global row/col to local tile name "T<localR><localC>"
-					local localR = ((pipe.row - 1) % 5) + 1
-					local localC = ((pipe.col - 1) % 5) + 1
-					local tilePart = sectionModel:FindFirstChild(string.format("T%d%d", localR, localC))
-					if tilePart and tilePart:IsA("BasePart") then
-						py = tilePart.Position.Y + tilePart.Size.Y / 2
+			-- Snap to the nearest tile on this plot (XZ + tile-top Y). Robust against
+			-- missing/stale sectionId and authored tile spacing drift.
+			local ground = _plot:FindFirstChild("PlotGround")
+			if ground then
+				local nearestTile, nearestDist = nil, math.huge
+				for _, sect in ipairs(ground:GetChildren()) do
+					if sect:IsA("Model") then
+						for _, t in ipairs(sect:GetChildren()) do
+							if t:IsA("BasePart") and t.Name:match("^T%d%d$") then
+								local dx = t.Position.X - px
+								local dz = t.Position.Z - pz
+								local d2 = dx*dx + dz*dz
+								if d2 < nearestDist then
+									nearestDist = d2
+									nearestTile = t
+								end
+							end
+						end
 					end
+				end
+				if nearestTile then
+					px = nearestTile.Position.X
+					pz = nearestTile.Position.Z
+					py = nearestTile.Position.Y + nearestTile.Size.Y / 2
 				end
 			end
 

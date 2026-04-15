@@ -634,24 +634,39 @@ function OilStateService:AddCash(userId: number, amount: number): boolean
 end
 
 function OilStateService:TryBuyChunk(userId: number, chunkId: string): (boolean, string, string)
+	DevLog.log(string.format("[TryBuyChunk] user=%d chunkId=%s", userId, tostring(chunkId)))
 	local state = self._statesByUserId[userId]
 	if not state then
+		DevLog.log("[TryBuyChunk] FAIL: no state")
 		return false, "ERR_NO_STATE", "State unavailable."
 	end
 	local chunk = state.chunksById[chunkId]
 	if not chunk then
+		DevLog.log(string.format("[TryBuyChunk] FAIL: chunk not in state. Known=%d",
+			(function() local n=0; for _ in pairs(state.chunksById) do n+=1 end; return n end)()))
 		return false, "ERR_BAD_CHUNK", "Chunk does not exist."
 	end
 	if chunk.unlocked then
+		DevLog.log(string.format("[TryBuyChunk] FAIL: already unlocked row=%d col=%d", chunk.row, chunk.col))
 		return false, "ERR_ALREADY_UNLOCKED", "Chunk already unlocked."
 	end
 	if not hasUnlockedNeighbor(state, chunk.row, chunk.col) then
+		-- Dump current unlocked chunks for diagnosis
+		local unlockedList = {}
+		for _, c in pairs(state.chunksById) do
+			if c.unlocked then table.insert(unlockedList, string.format("%s(r=%d,c=%d)", c.chunkId, c.row, c.col)) end
+		end
+		DevLog.log(string.format("[TryBuyChunk] FAIL not adjacent. want neighbor of row=%d col=%d. Unlocked=[%s]",
+			chunk.row, chunk.col, table.concat(unlockedList, ",")))
 		return false, "ERR_NOT_ADJACENT", "You can only buy a chunk next to one you already own."
 	end
 	local cost = chunkUnlockCost(chunk.row, chunk.col)
 	if not self:TrySpendCash(userId, cost) then
+		DevLog.log(string.format("[TryBuyChunk] FAIL not enough cash. need=%d have=%d", cost, state.cash or -1))
 		return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to buy this chunk.", cost)
 	end
+	DevLog.log(string.format("[TryBuyChunk] OK user=%d chunkId=%s row=%d col=%d cost=%d",
+		userId, chunkId, chunk.row, chunk.col, cost))
 
 	-- Roll a biome from this chunk's row pool, excluding biomes already taken by siblings in the same row.
 	local rng = Random.new(userId * 97 + chunk.row * 31 + chunk.col * 17 + math.floor(workspace:GetServerTimeNow() * 1000))
@@ -797,20 +812,29 @@ function OilStateService:_validateTilePlacement(userId: number, payload)
 		return false, "ERR_CELL_BLOCKED", "This cell is occupied by refinery infrastructure."
 	end
 
-	-- Snap Y to the tile's top surface
+	-- Snap XYZ to the actual tile instance. Using the tile's authored position directly
+	-- beats the formula-based cellToWorld when tiles were authored at a spacing that
+	-- drifts from the hardcoded SUB_TILE_SIZE. Y is top surface, XZ is tile center.
 	local sectionModel = self._plotService:GetChunkModel(plot, chunkId)
+	local snappedX, snappedZ = x, z
 	if sectionModel then
 		local topY: number? = nil
-		for _, d in ipairs(sectionModel:GetChildren()) do
-			if d:IsA("BasePart") and d.Name:match("^T%d%d$") then
-				local surface = d.Position.Y + d.Size.Y / 2
-				if topY == nil or surface > topY then topY = surface end
+		local tileInstance = sectionModel:FindFirstChild(tileKey)
+		if tileInstance and tileInstance:IsA("BasePart") then
+			snappedX = tileInstance.Position.X
+			snappedZ = tileInstance.Position.Z
+			topY = tileInstance.Position.Y + tileInstance.Size.Y / 2
+		else
+			for _, d in ipairs(sectionModel:GetChildren()) do
+				if d:IsA("BasePart") and d.Name:match("^T%d%d$") then
+					local surface = d.Position.Y + d.Size.Y / 2
+					if topY == nil or surface > topY then topY = surface end
+				end
 			end
 		end
 		if topY then y = topY end
 	end
 
-	local snappedX, snappedZ = cellToWorld(plot, cellR, cellC)
 	return true, "OK", "", chunk, tileKey, snappedX, y, snappedZ, cellR, cellC
 end
 
@@ -1507,22 +1531,32 @@ end
 -- Upgrade one tank one tier. Charges `OilTankConfig.GetUpgradeCost(currentTier)` on success.
 -- Returns (ok, code, message, payload).
 function OilStateService:TryUpgradeTank(userId: number, oilType: string): (boolean, string, string, any)
+	DevLog.log(string.format("[TryUpgradeTank] user=%d oilType=%s", userId, tostring(oilType)))
 	local state = self._statesByUserId[userId]
-	if not state then return false, "ERR_NO_STATE", "State unavailable.", nil end
+	if not state then
+		DevLog.log("[TryUpgradeTank] FAIL: no state")
+		return false, "ERR_NO_STATE", "State unavailable.", nil
+	end
 	if OilTankConfig.OilColors[oilType] == nil then
+		DevLog.log(string.format("[TryUpgradeTank] FAIL: bad oil type %s", tostring(oilType)))
 		return false, "ERR_BAD_OIL_TYPE", "Unknown oil type.", nil
 	end
 	local currentTier = OilTankConfig.ClampTier(state.tankTiers[oilType] or 1)
 	if currentTier >= OilTankConfig.MaxTier then
+		DevLog.log(string.format("[TryUpgradeTank] FAIL: max tier %s at %d", oilType, currentTier))
 		return false, "ERR_MAX_TIER", "Tank already at max tier.", nil
 	end
 	local cost = OilTankConfig.GetUpgradeCost(currentTier)
 	if not cost then
+		DevLog.log(string.format("[TryUpgradeTank] FAIL: no cost for tier %d", currentTier))
 		return false, "ERR_MAX_TIER", "No further upgrade available.", nil
 	end
 	if not self:TrySpendCash(userId, cost) then
+		DevLog.log(string.format("[TryUpgradeTank] FAIL: not enough cash. need=%d have=%d", cost, state.cash or -1))
 		return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to upgrade.", cost), nil
 	end
+	DevLog.log(string.format("[TryUpgradeTank] OK user=%d oilType=%s newTier=%d cost=%d",
+		userId, oilType, currentTier + 1, cost))
 	state.tankTiers[oilType] = currentTier + 1
 	state.storageCapacity = totalTankCapacity(state)
 	self:_markDirty(userId)
@@ -1926,6 +1960,8 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 	-- Restore placed pumps (requires `tileKey` + cell coords or position — v5+ saves).
 	if typeof(persisted.drills) == "table" then
 		local maxDrillId = 0
+		local restored, dropped = 0, 0
+		DevLog.log(string.format("[RestoreDrills] incoming=%d", #persisted.drills))
 		for _, record in ipairs(persisted.drills) do
 			if typeof(record) == "table" then
 				local rec = record :: { [string]: any }
@@ -1936,6 +1972,17 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 					if typeof(chunkId) == "string" then
 						local chunk = state.chunksById[chunkId]
 						local tileKey = if typeof(rec.tileKey) == "string" then rec.tileKey :: string else nil
+						local reason
+						if not chunk then reason = "no chunk in state"
+						elseif not chunk.tiles then reason = "chunk.tiles=nil (not unlocked?)"
+						elseif not tileKey then reason = "no tileKey in record"
+						elseif not chunk.tiles[tileKey] then reason = string.format("chunk.tiles[%s]=nil", tileKey)
+						end
+						if reason then
+							DevLog.log(string.format("[RestoreDrills] DROP drillId=%d chunkId=%s: %s",
+								drillId, tostring(chunkId), reason))
+							dropped += 1
+						end
 						if chunk and tileKey and chunk.tiles and chunk.tiles[tileKey] then
 							local cellR = tonumber(rec.cellRow)
 							local cellC = tonumber(rec.cellCol)
@@ -1963,8 +2010,17 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 									end
 									local biome = if typeof(rec.biome) == "string" then rec.biome :: string else chunk.biome
 									local biomeConfig = OilConfig.Biomes[biome] or OilConfig.Biomes.Desert
-									local pos = positionVectorFromStateEntry(rec.position)
-									if not pos then
+									-- ALWAYS re-derive world position from the CURRENT plot's tile.
+									-- Stored absolute world coords would be wrong if the player was assigned
+									-- a different plot than last session (each plot has its own worldspace).
+									local pos: Vector3
+									local ground = plot:FindFirstChild("PlotGround")
+									local sectionModel = ground and ground:FindFirstChild(chunkId)
+									local tileInst = sectionModel and sectionModel:FindFirstChild(tileKey)
+									if tileInst and tileInst:IsA("BasePart") then
+										local topY = tileInst.Position.Y + tileInst.Size.Y / 2
+										pos = Vector3.new(tileInst.Position.X, topY, tileInst.Position.Z)
+									else
 										local wx, wz = cellToWorld(plot, cellR, cellC)
 										pos = Vector3.new(wx, 6, wz)
 									end
@@ -2018,6 +2074,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 										intakeAttachmentId = rec.intakeAttachmentId,
 									}
 									state.activeDrillCount += 1
+									restored += 1
 								end
 							end
 						end
@@ -2025,6 +2082,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 				end
 			end
 		end
+		DevLog.log(string.format("[RestoreDrills] restored=%d dropped=%d", restored, dropped))
 		state.nextDrillId = math.max(state.nextDrillId, maxDrillId + 1)
 	end
 

@@ -523,9 +523,6 @@ function OilShipmentService:_runShipment(shipment)
 		self:_finishShipmentWithoutPayout(shipment, "Boat unavailable: " .. tostring(checkoutErr))
 		return
 	end
-	local loadPoint = plot:FindFirstChild("ShipLoadPoint")
-	local stackRoot = plot:FindFirstChild("BarrelStackRoot")
-
 	-- Pick a lane and build the full path: dock (boat's current slot) → lane waypoints
 	local seed = math.floor(workspace:GetServerTimeNow() * 1000) + ownerUserId
 	local lane = self:_pickLane(seed)
@@ -577,9 +574,6 @@ function OilShipmentService:_runShipment(shipment)
 		voyageEndTime = tNow + dockHoldBeforeVoyage + shipment.travelSeconds,
 	})
 	self:_emitManifestHudSnapshot(shipment, nil)
-
-	-- Load animation at the dock
-	self:_playLoadAnimation(stackRoot, loadPoint, shipment.totalLoaded)
 
 	-- Stack loaded barrels visually on the ship deck
 	self:_loadBarrelsOnDeck(boat, shipment.manifest)
@@ -1998,47 +1992,6 @@ function OilShipmentService:_createFallbackBoat(): Model
 
 	model.PrimaryPart = body
 	return model
-end
-
-function OilShipmentService:_playLoadAnimation(stackRoot: Instance?, loadPoint: Instance?, totalLoaded: number)
-	if not (stackRoot and stackRoot:IsA("BasePart")) then
-		return
-	end
-	if not (loadPoint and loadPoint:IsA("BasePart")) then
-		return
-	end
-
-	local visuals = math.min(totalLoaded, 18)
-	for i = 1, visuals do
-		task.delay(i * 0.05, function()
-			local part = Instance.new("Part")
-			part.Name = "LoadBarrelFX"
-			part.Shape = Enum.PartType.Cylinder
-			part.Size = Vector3.new(1.4, 1.8, 1.4)
-			part.Material = Enum.Material.Metal
-			part.Color = Color3.fromRGB(162, 120, 50)
-			part.Anchored = true
-			part.CanCollide = false
-			part.CanTouch = false
-			part.CanQuery = false
-			part.Orientation = Vector3.new(0, 0, 90)
-
-			local jitter = Vector3.new(math.random(-2, 2), math.random(0, 3), math.random(-2, 2))
-			part.CFrame = stackRoot.CFrame * CFrame.new(jitter)
-			part.Parent = stackRoot.Parent
-
-			local tween = TweenService:Create(part, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-				CFrame = loadPoint.CFrame * CFrame.new(0, 2, 0),
-				Transparency = 0.1,
-			})
-			tween:Play()
-			tween.Completed:Connect(function()
-				if part.Parent then
-					part:Destroy()
-				end
-			end)
-		end)
-	end
 end
 
 function OilShipmentService:_emitShipmentEvent(kind: string, payload)
