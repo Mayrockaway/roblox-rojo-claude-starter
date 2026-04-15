@@ -1,6 +1,13 @@
 --!strict
--- Removes one **shop** tool (`EquipmentShopConsumable`) after a successful placement / drill / prospect.
+-- Removes one **shop** tool use (`EquipmentShopConsumable`) after a successful placement / drill / prospect.
 -- Prefers the equipped tool on `Character`, then `Backpack`.
+-- Decrements **`EquipmentStackCount`** when present; destroys the `Tool` when count reaches **0** (legacy tools without the attribute behave as a single use).
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Constants = require(Shared:WaitForChild("Constants"))
+
+local STACK_ATTR = Constants.EquipmentStackCountAttribute
 
 local ConsumeShopEquipmentTool = {}
 
@@ -19,7 +26,24 @@ local function toolMatches(tool: Tool, toolKind: string, tierFilter: string?): b
 	return true
 end
 
---- Destroy the first matching shop tool (character first, then backpack). Returns **removed**, **`EquipmentItemId`** if any.
+local function consumeOneStackUnit(tool: Tool): (boolean, string?)
+	local itemId = tool:GetAttribute("EquipmentItemId")
+	local idStr = if typeof(itemId) == "string" and itemId ~= "" then itemId :: string else nil
+	local raw = tool:GetAttribute(STACK_ATTR)
+	if typeof(raw) == "number" and raw == raw and raw > 1 then
+		tool:SetAttribute(STACK_ATTR, math.floor(raw) - 1)
+		return true, idStr
+	end
+	if typeof(raw) == "number" and raw == 1 then
+		tool:Destroy()
+		return true, idStr
+	end
+	-- Legacy: no stack attribute → one physical tool = one use
+	tool:Destroy()
+	return true, idStr
+end
+
+--- Consume one matching shop stack unit (character first, then backpack). Returns **consumed**, **`EquipmentItemId`** if any.
 function ConsumeShopEquipmentTool.consumeMatching(player: Player, toolKind: string, tierFilter: string?): (boolean, string?)
 	local function tryContainer(container: Instance?): (boolean, string?)
 		if not container then
@@ -27,10 +51,7 @@ function ConsumeShopEquipmentTool.consumeMatching(player: Player, toolKind: stri
 		end
 		for _, child in ipairs(container:GetChildren()) do
 			if child:IsA("Tool") and toolMatches(child, toolKind, tierFilter) then
-				local itemId = child:GetAttribute("EquipmentItemId")
-				local idStr = if typeof(itemId) == "string" and itemId ~= "" then itemId :: string else nil
-				child:Destroy()
-				return true, idStr
+				return consumeOneStackUnit(child :: Tool)
 			end
 		end
 		return false, nil

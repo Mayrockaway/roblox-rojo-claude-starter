@@ -47,6 +47,15 @@ HUD [ScreenGui]
    │  ├─ ShopButton
    │  ├─ ShipOilButton
    │  └─ SellOilButton
+   ├─ EquipmentHotbar [Frame] *(**must** be a **direct** child of `Canvas` — not under `LeftStack`; otherwise the strip anchors in the left column. **`EquipmentHotbarController`** clones slots into `SlotStrip`.)*
+   │  ├─ SlotStrip [Frame] — optional authored **`UIListLayout`** (Horizontal) for Edit preview; **Play** removes it and **centers slot clones** in Lua. Child slots are **runtime clones** only (`HotbarSlot_*`).
+   │  └─ SlotTemplate [Frame] — **`Visible = false`**; **do not** parent under `SlotStrip`. Names below are **required** for wiring.
+   │     ├─ **`UIAspectRatioConstraint`** — `AspectType = FitWithinMaxSize`, `AspectRatio = 1`, `DominantAxis = Height` (or Width per device test).
+   │     ├─ **EquipStroke** (`UIStroke`) — `Enabled = false` default; controller enables for equipped slot.
+   │     ├─ **Icon** (`ImageLabel`) — `BackgroundTransparency = 1`, `ScaleType = Fit`, image from `Tool.TextureId`.
+   │     ├─ **HotkeyLabel** (`TextLabel`) — `TextScaled = true`, `BackgroundTransparency = 1`; shows `1`–`9`, `0` for first ten slots.
+   │     ├─ **StackBadge** (`TextLabel`) — visible when shop stack **count > 1**; `TextScaled = true`, **`UITextSizeConstraint`** min **8** max **18**.
+   │     └─ **Hit** (`ImageButton`) — `AutoButtonColor = false`, `BackgroundTransparency = 1`, **full slot** (`Size` scale `1,1`); equips bound tool on click.
    └─ TeleportStack [Frame]
       ├─ UIListLayout (Vertical)
       ├─ TeleportHomeButton
@@ -87,6 +96,17 @@ Author this block **in Studio** (not via `ShipmentProgressHud` creating instance
 | `TopRow` | Top strip | `Size` `(1,0), (0.092,0)`, under `Canvas` after padding |
 | `LeftStack` | Cash + shop + sell/ship | **`AnchorPoint (0.5, 0.5)`**, **`Position` scale `(0.25, 0.5)`** — vertically centered, centered in **left half**; **`Size` scale `(0.22, 0.46)`** |
 | `TeleportStack` | Teleports | **`AnchorPoint (1, 1)`**, **`Position` scale `(1, 1)`** (offset `0,0`) — bottom-right of **Canvas**; **`Size` scale `(0.13, 0.32)`** — taller frame for **four** rows without shrinking row **`0.3`** scale; list **`Padding`** `UDim.new(0.012, 3)`; each **`GuiButton`** row height **`0.3`**; `UITextSizeConstraint` max **13** on teleports |
+| `EquipmentHotbar` | Custom toolbar (replaces Core backpack strip) | **`AnchorPoint (0.5, 1)`**, **`Position` scale `(0.5, 1)`**, **`Size` scale `(0.92, 0.10)`** — sits in bottom safe band above `Canvas.UIPadding` bottom inset; **`BackgroundTransparency = 1`** or a **very high** transparency (e.g. `0.92`) so the strip is barely visible in **Edit** mode |
+| `EquipmentHotbar.SlotStrip` | Row host | **`Size` scale `(1, 1)`**, **`BackgroundTransparency = 1`**; horizontal **`UIListLayout`** |
+
+### EquipmentHotbar (Studio)
+
+- **Edit vs Play:** Slot clones are created only by **`EquipmentHotbarController`** (a **LocalScript** chain under **Play**). In **Edit** mode you will see the empty strip (or a faint bar if authored with transparency); that is expected until you press **Play**.
+- **Centered row (default-toolbar feel):** At runtime the controller **removes** `SlotStrip`’s `UIListLayout` (if present) and **positions each `HotbarSlot_*` clone** so the row is **horizontally centered** in `SlotStrip`: one slot sits in the **middle**; each added slot **grows the row** with the **visual midpoint** between adjacent slots (same idea as the default Roblox hotbar strip).
+- **`EquipmentHotbarController`** (`src/client/UI/EquipmentHotbarController.luau`) resolves **`HUD` → `Canvas` → `EquipmentHotbar` → `SlotStrip` + `SlotTemplate`** using **recursive** `FindFirstChild` where needed (nested `Canvas` is OK; direct `Canvas` is still preferred).
+- **`SlotTemplate` slot size:** Prefer **offset-based** width/height (or rely on the controller’s post-clone pixel sizing). A template using **only `UDim2` scale width** under a horizontal **`UIListLayout`** often renders as **0px wide** in Roblox.
+- Server sets shop tool attribute **`EquipmentStackCount`** (see `Constants.EquipmentStackCountAttribute`); badge reads that sum per `EquipmentItemId` when multiple instances exist transiently.
+- After this block exists in Studio, **`StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)`** runs from client bootstrap **only** when the controller binds successfully.
 
 ## Placeholder copy (scripts will replace later)
 

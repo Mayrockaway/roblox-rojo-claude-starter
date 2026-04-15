@@ -4,6 +4,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
 local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
@@ -987,6 +988,30 @@ local function getHudUiFolder(): Instance?
 	return nil
 end
 
+local function tryBindEquipmentHotbarAsync()
+	task.spawn(function()
+		local uiFolder = getHudUiFolder()
+		if not uiFolder then
+			return
+		end
+		local hbMod = uiFolder:WaitForChild("EquipmentHotbarController", 30)
+		if not (hbMod and hbMod:IsA("ModuleScript")) then
+			warn("[Client] EquipmentHotbar: `EquipmentHotbarController` ModuleScript missing under Client/UI (sync Rojo).")
+			return
+		end
+		local EquipmentHotbarController = require(hbMod) :: { tryStart: (PlayerGui) -> boolean }
+		local ok = EquipmentHotbarController.tryStart(playerGui)
+		if ok then
+			local okHide, errHide = pcall(function()
+				StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+			end)
+			if not okHide then
+				warn("[Client] EquipmentHotbar: SetCoreGuiEnabled(Backpack) failed: ", errHide)
+			end
+		end
+	end)
+end
+
 local function startHudModalWiring()
 	local ok, err = pcall(function()
 		local uiFolder = getHudUiFolder()
@@ -1020,6 +1045,8 @@ local function startHudModalWiring()
 		else
 			warn("[Client] HUD wiring: HudTeleportRouter ModuleScript missing under UI folder.")
 		end
+
+		tryBindEquipmentHotbarAsync()
 	end)
 	if not ok then
 		warn("[Client] HUD wiring bootstrap failed: ", err)
@@ -1315,6 +1342,9 @@ playerGui.ChildAdded:Connect(function(child)
 	if child.Name == "HUD" then
 		cashTextLabel = nil
 		updateCashHud()
+		if child:IsA("ScreenGui") then
+			tryBindEquipmentHotbarAsync()
+		end
 	end
 end)
 

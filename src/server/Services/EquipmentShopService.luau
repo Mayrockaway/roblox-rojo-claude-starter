@@ -1,6 +1,7 @@
 --!strict
 -- Server-authoritative consumable equipment: spend plot cash (`OilStateService`), clone `Tool`
 -- templates from **ServerStorage → `EquipmentShopConfig.TemplateFolderName`**, parent to **Backpack**.
+-- Shop tools stack in **one** `Tool` per `EquipmentItemId` with replicated **`EquipmentStackCount`**.
 -- Client shop UI: call `RequestEquipmentShopCatalog` then `RequestPurchaseEquipment` with `{ itemId, quantity? }`.
 -- Results mirror other oil flows via **`OilActionResult`** (`ok`, `code`, `message`, optional `data`).
 -- **Owned counts** persist in `OilMiningProfiles_v3` (`equipmentOwned`); backpack is reconciled on load / plot assign.
@@ -11,14 +12,32 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Constants = require(Shared:WaitForChild("Constants"))
 local EquipmentShopConfig = require(Shared:WaitForChild("Config"):WaitForChild("EquipmentShopConfig"))
 local ErrorCodes = require(Shared:WaitForChild("Net"):WaitForChild("ErrorCodes"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+
+local STACK_ATTR = Constants.EquipmentStackCountAttribute
 
 local EquipmentShopService = {}
 
 local function floorPositive(n: number): number
 	return math.max(0, math.floor(n))
+end
+
+local function stackUnitsOnTool(tool: Tool): number
+	if tool:GetAttribute("EquipmentShopConsumable") ~= true then
+		return 0
+	end
+	local v = tool:GetAttribute(STACK_ATTR)
+	if typeof(v) == "number" and v == v and v > 0 then
+		return floorPositive(v)
+	end
+	return 1
+end
+
+local function isShopToolForItem(tool: Tool, itemId: string): boolean
+	return tool:GetAttribute("EquipmentShopConsumable") == true and tool:GetAttribute("EquipmentItemId") == itemId
 end
 
 function EquipmentShopService:Init(remoteService, oilStateService, plotService)
@@ -100,24 +119,57 @@ function EquipmentShopService:Stop()
 	table.clear(self._connections)
 end
 
-function EquipmentShopService:_countShopTools(player: Player, itemId: string): number
-	local n = 0
-	local function scan(container: Instance?)
-		if not container then
-			return
-		end
-		for _, ch in ipairs(container:GetChildren()) do
-			if ch:IsA("Tool") and ch:GetAttribute("EquipmentShopConsumable") == true and ch:GetAttribute("EquipmentItemId") == itemId then
-				n += 1
+function EquipmentShopService:_collectShopToolsOrdered(player: Player, itemId: string): { Tool }
+	local list: { Tool } = {}
+	local bp = player:FindFirstChild("Backpack")
+	if bp and bp:IsA("Backpack") then
+		for _, ch in ipairs(bp:GetChildren()) do
+			if ch:IsA("Tool") and isShopToolForItem(ch, itemId) then
+				table.insert(list, ch)
 			end
 		end
 	end
-	scan(player.Character)
+	local char = player.Character
+	if char then
+		for _, ch in ipairs(char:GetChildren()) do
+			if ch:IsA("Tool") and isShopToolForItem(ch, itemId) then
+				table.insert(list, ch)
+			end
+		end
+	end
+	return list
+end
+
+function EquipmentShopService:_applyShopToolAttrs(clone: Tool, item: any, stackCount: number)
+	clone:SetAttribute("EquipmentItemId", item.id)
+	clone:SetAttribute("EquipmentShopConsumable", true)
+	clone:SetAttribute("ToolKind", item.toolKind)
+	if item.tier ~= nil then
+		clone:SetAttribute("Tier", item.tier)
+	else
+		clone:SetAttribute("Tier", nil)
+	end
+	clone:SetAttribute(STACK_ATTR, math.max(1, floorPositive(stackCount)))
+end
+
+function EquipmentShopService:_findExistingShopToolForMerge(player: Player, itemId: string): Tool?
+	local char = player.Character
+	if char then
+		for _, ch in ipairs(char:GetChildren()) do
+			if ch:IsA("Tool") and isShopToolForItem(ch, itemId) then
+				return ch
+			end
+		end
+	end
 	local bp = player:FindFirstChild("Backpack")
 	if bp and bp:IsA("Backpack") then
-		scan(bp)
+		for _, ch in ipairs(bp:GetChildren()) do
+			if ch:IsA("Tool") and isShopToolForItem(ch, itemId) then
+				return ch
+			end
+		end
 	end
-	return n
+	return nil
 end
 
 function EquipmentShopService:_seedingCountsFromInventory(player: Player)
@@ -134,7 +186,7 @@ function EquipmentShopService:_seedingCountsFromInventory(player: Player)
 			if ch:IsA("Tool") and ch:GetAttribute("EquipmentShopConsumable") == true then
 				local id = ch:GetAttribute("EquipmentItemId")
 				if typeof(id) == "string" and id ~= "" then
-					found[id] = (found[id] or 0) + 1
+					found[id] = (found[id] or 0) + stackUnitsOnTool(ch :: Tool)
 				end
 			end
 		end
@@ -150,32 +202,6 @@ function EquipmentShopService:_seedingCountsFromInventory(player: Player)
 	self._oilStateService:MarkEquipmentInventoryBackfillComplete(player.UserId)
 end
 
-function EquipmentShopService:_destroyExcessShopTools(player: Player, itemId: string, excess: number)
-	local toRemove = excess
-	local function strip(container: Instance?): boolean
-		if not container or toRemove <= 0 then
-			return false
-		end
-		for _, ch in ipairs(container:GetChildren()) do
-			if ch:IsA("Tool") and ch:GetAttribute("EquipmentShopConsumable") == true and ch:GetAttribute("EquipmentItemId") == itemId then
-				ch:Destroy()
-				toRemove -= 1
-				if toRemove <= 0 then
-					return true
-				end
-			end
-		end
-		return false
-	end
-	local bp = player:FindFirstChild("Backpack")
-	if bp and bp:IsA("Backpack") then
-		strip(bp)
-	end
-	if toRemove > 0 then
-		strip(player.Character)
-	end
-end
-
 function EquipmentShopService:_reconcileOwnedShopTools(player: Player)
 	if not self._running then
 		return
@@ -189,28 +215,38 @@ function EquipmentShopService:_reconcileOwnedShopTools(player: Player)
 	for _, item in ipairs(EquipmentShopConfig.Items) do
 		local id = item.id
 		local target = state.equipmentOwnedByItemId[id] or 0
-		local have = self:_countShopTools(player, id)
-		if have < target and folder then
-			local template = folder:FindFirstChild(item.toolTemplateName)
-			if template and template:IsA("Tool") then
-				local backpack = player:FindFirstChild("Backpack") or player:WaitForChild("Backpack", 8)
-				if backpack and backpack:IsA("Backpack") then
-					for _ = 1, target - have do
-						local clone = template:Clone()
-						clone:SetAttribute("EquipmentItemId", item.id)
-						clone:SetAttribute("EquipmentShopConsumable", true)
-						clone:SetAttribute("ToolKind", item.toolKind)
-						if item.tier ~= nil then
-							clone:SetAttribute("Tier", item.tier)
-						else
-							clone:SetAttribute("Tier", nil)
-						end
-						clone.Parent = backpack
-					end
-				end
+		local tools = self:_collectShopToolsOrdered(player, id)
+
+		if target <= 0 then
+			for _, t in ipairs(tools) do
+				t:Destroy()
 			end
-		elseif have > target then
-			self:_destroyExcessShopTools(player, id, have - target)
+			continue
+		end
+
+		if not folder then
+			continue
+		end
+		local template = folder:FindFirstChild(item.toolTemplateName)
+		if not template or not template:IsA("Tool") then
+			continue
+		end
+
+		local backpack = player:FindFirstChild("Backpack") or player:WaitForChild("Backpack", 8)
+		if not backpack or not backpack:IsA("Backpack") then
+			continue
+		end
+
+		if #tools == 0 then
+			local clone = template:Clone()
+			self:_applyShopToolAttrs(clone, item, target)
+			clone.Parent = backpack
+		else
+			local survivor = tools[1]
+			for i = 2, #tools do
+				tools[i]:Destroy()
+			end
+			survivor:SetAttribute(STACK_ATTR, target)
 		end
 	end
 end
@@ -317,7 +353,6 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 		return
 	end
 
-	-- `Player.Backpack` is class `Backpack`, not `Folder` — `IsA("Folder")` was always false in play.
 	local backpack = player:FindFirstChild("Backpack") or player:WaitForChild("Backpack", 5)
 	if not backpack or not backpack:IsA("Backpack") then
 		self._oilStateService:AddCash(player.UserId, totalCost)
@@ -325,30 +360,26 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 		return
 	end
 
-	local granted = 0
-	for _ = 1, qty do
+	self._oilStateService:AddShopEquipmentOwned(player.UserId, item.id, qty)
+
+	local existing = self:_findExistingShopToolForMerge(player, item.id)
+	if existing then
+		local cur = stackUnitsOnTool(existing)
+		existing:SetAttribute(STACK_ATTR, cur + qty)
+	else
 		local clone = template:Clone()
-		clone:SetAttribute("EquipmentItemId", item.id)
-		clone:SetAttribute("EquipmentShopConsumable", true)
-		clone:SetAttribute("ToolKind", item.toolKind)
-		if item.tier ~= nil then
-			clone:SetAttribute("Tier", item.tier)
-		else
-			clone:SetAttribute("Tier", nil)
-		end
+		self:_applyShopToolAttrs(clone, item, qty)
 		clone.Parent = backpack
-		granted += 1
 	end
 
-	self._oilStateService:AddShopEquipmentOwned(player.UserId, item.id, granted)
 	self._oilStateService:PushState(player.UserId)
 
 	if RunService:IsStudio() then
-		print("[EquipmentShopService] bought ", granted, "×", item.displayName, " for ", player.Name, " ($", totalCost, ")")
+		print("[EquipmentShopService] bought ", qty, "×", item.displayName, " for ", player.Name, " ($", totalCost, ")")
 	end
-	self:_sendOilAction(player, true, ErrorCodes.Ok, string.format("Bought %d × %s.", granted, item.displayName), {
+	self:_sendOilAction(player, true, ErrorCodes.Ok, string.format("Bought %d × %s.", qty, item.displayName), {
 		itemId = item.id,
-		quantity = granted,
+		quantity = qty,
 		totalCost = totalCost,
 	})
 end

@@ -44,6 +44,9 @@ local Constants = {
 		VerboseStraitWaypointLogsInStudio = true,
 	},
 
+	-- Replicated on shop `Tool` instances: stack size / uses in one slot (`EquipmentShopService`, hotbar UI).
+	EquipmentStackCountAttribute = "EquipmentStackCount",
+
 	-- FTUE: set on `Player` while onboarding. Global plot cell key, same format as server (`R{row}C{col}`).
 	-- Empty / unset = no restriction. Server + client enforce drill / pump placement to that cell only.
 	FtueRestrictDrillCellKeyAttribute = "FtueRestrictDrillCellKey",
