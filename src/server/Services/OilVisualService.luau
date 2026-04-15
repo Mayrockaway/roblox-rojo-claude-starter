@@ -330,14 +330,24 @@ function OilVisualService:_syncUserVisuals(userId: number, snapshot)
 	local pipesFolder = ensureFolder(visualRoot, "Pipes")
 	local drumsFolder = ensureFolder(visualRoot, "Drums")
 
-	self:_syncDrills(plot, drillsFolder, snapshot.drills or {}, userId)
-	self:_syncActiveDrills(plot, activeDrillsFolder, snapshot.activeDrills or {}, userId)
-	self:_syncActiveProspectors(plot, activeProspectorsFolder, snapshot.activeProspectors or {}, userId)
-	self:_syncOilSprays(plot, spraysFolder, snapshot)
-	self:_syncPipes(plot, pipesFolder, snapshot.pipes or {}, snapshot.drills or {}, snapshot.drums or {}, userId)
-	self:_syncDrums(plot, drumsFolder, snapshot.drums or {}, userId)
-	self:_syncBarrels(plot, barrelsFolder, snapshot)
-	self:_syncOilTanks(plot, snapshot)
+	local perf = _G.Perf
+	local function run(label, fn)
+		if perf then
+			local h = perf:OpenSpan(label)
+			fn()
+			perf:CloseSpan(label, h)
+		else
+			fn()
+		end
+	end
+	run("Visual.syncDrills", function() self:_syncDrills(plot, drillsFolder, snapshot.drills or {}, userId) end)
+	run("Visual.syncActiveDrills", function() self:_syncActiveDrills(plot, activeDrillsFolder, snapshot.activeDrills or {}, userId) end)
+	run("Visual.syncActiveProspectors", function() self:_syncActiveProspectors(plot, activeProspectorsFolder, snapshot.activeProspectors or {}, userId) end)
+	run("Visual.syncOilSprays", function() self:_syncOilSprays(plot, spraysFolder, snapshot) end)
+	run("Visual.syncPipes", function() self:_syncPipes(plot, pipesFolder, snapshot.pipes or {}, snapshot.drills or {}, snapshot.drums or {}, userId) end)
+	run("Visual.syncDrums", function() self:_syncDrums(plot, drumsFolder, snapshot.drums or {}, userId) end)
+	run("Visual.syncBarrels", function() self:_syncBarrels(plot, barrelsFolder, snapshot) end)
+	run("Visual.syncOilTanks", function() self:_syncOilTanks(plot, snapshot) end)
 end
 
 function OilVisualService:_ensureVisualRoot(plot: Model): Folder
@@ -1130,12 +1140,6 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 		return
 	end
 	local oilByTier = snapshot.oilByTier or {}
-	local totalOilDebug = (oilByTier.HeavyCrude or 0) + (oilByTier.LightSweet or 0) + (oilByTier.PremiumRefined or 0)
-	if totalOilDebug > 0 then
-		print(string.format("[_syncBarrels] called. HC=%d LS=%d PR=%d total=%d",
-			oilByTier.HeavyCrude or 0,
-			oilByTier.LightSweet or 0, oilByTier.PremiumRefined or 0, totalOilDebug))
-	end
 	local barrelConfig = OilConfig.Barrels or {}
 	local perBarrel = math.max(1, barrelConfig.PerBarrelOil or 10)
 	local maxPerTier = math.max(1, barrelConfig.MaxVisualPerTier or 20)
@@ -1184,10 +1188,6 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 	for _, tier in ipairs(TIER_ORDER) do
 		local oil = oilByTier[tier] or 0
 		local desired = clamp(math.floor(oil / perBarrel), 0, maxPerTier)
-
-		if desired > 0 then
-			print(string.format("[Barrels] %s oil=%d desired=%d", tier, oil, desired))
-		end
 
 		-- Count existing piled + conveyor barrels for this tier
 		local piledCount = 0

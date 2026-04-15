@@ -1837,10 +1837,33 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 	-- Only adjust YAW on top of that base rotation.
 	boatModel:PivotTo(CFrame.new(startPosition))
 
-	-- Capture the root's "upright" rotation and its default bow direction
+	-- Capture the root's "upright" rotation.
 	local baseRotation = root.CFrame - root.CFrame.Position -- rotation-only CFrame
-	local defaultBowDir = root.CFrame.RightVector -- +X in world after PivotTo
-	local defaultYaw = math.atan2(-defaultBowDir.Z, defaultBowDir.X)
+
+	-- Default bow direction: prefer the skin's FRONT_MARKER (bow) + DockAnchor (stern).
+	-- Falls back to legacy "bow at local -X" heuristic if markers missing.
+	local frontMarker: BasePart? = boatModel:FindFirstChild("FRONT_MARKER", true) :: any
+	local dockAnchor: Attachment? = nil
+	for _, d in ipairs(boatModel:GetDescendants()) do
+		if d:IsA("Attachment") and d.Name == "DockAnchor" then
+			dockAnchor = d
+			break
+		end
+	end
+	local defaultYaw: number
+	if frontMarker and frontMarker:IsA("BasePart") and dockAnchor then
+		local bowWorld = frontMarker.Position - dockAnchor.WorldPosition
+		bowWorld = Vector3.new(bowWorld.X, 0, bowWorld.Z)
+		if bowWorld.Magnitude < 0.01 then
+			defaultYaw = math.atan2(-root.CFrame.RightVector.Z, root.CFrame.RightVector.X)
+		else
+			bowWorld = bowWorld.Unit
+			defaultYaw = math.atan2(bowWorld.X, bowWorld.Z)
+		end
+	else
+		local defaultBowDir = root.CFrame.RightVector -- legacy: +X after PivotTo
+		defaultYaw = math.atan2(-defaultBowDir.Z, defaultBowDir.X)
+	end
 
 	-- Compute desired yaw from look direction
 	local flatDir = Vector3.new(lookDirection.X, 0, lookDirection.Z)
@@ -1848,8 +1871,15 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 		flatDir = Vector3.new(0, 0, -1)
 	end
 	local bowDir = flatDir.Unit
-	-- Bow is at -X, so flip 180° to point -X toward travel direction
-	local targetYaw = math.atan2(-bowDir.Z, bowDir.X) + math.pi
+	-- Target yaw: bow points along travel direction. Formula matches the atan2 convention
+	-- used above for defaultYaw (atan2(X, Z) for FRONT_MARKER path,
+	-- atan2(-Z, X)+pi for legacy path → compensated below).
+	local targetYaw: number
+	if frontMarker and dockAnchor then
+		targetYaw = math.atan2(bowDir.X, bowDir.Z)
+	else
+		targetYaw = math.atan2(-bowDir.Z, bowDir.X) + math.pi
+	end
 	local yawDelta = targetYaw - defaultYaw
 
 	-- Apply: base upright rotation + yaw delta
@@ -1857,8 +1887,9 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 	root.CFrame = CFrame.new(startPosition) * initRotation
 	alignOri.CFrame = initRotation
 
-	-- Store default yaw for update function
+	-- Store default yaw + bow-convention mode so _updateShipPosition matches.
 	boatModel:SetAttribute("DefaultYaw", defaultYaw)
+	boatModel:SetAttribute("BowAtan2Mode", (frontMarker and dockAnchor) and "xz" or "legacy")
 
 	boatModel.PrimaryPart = root
 
@@ -1886,10 +1917,16 @@ function OilShipmentService:_updateShipPosition(shipmentId: string, boatModel: M
 	end
 	state.lastForward = flatDir
 
-	-- Compute yaw delta from the ship's default orientation
+	-- Compute yaw delta from the ship's default orientation.
+	-- Match the bow convention captured at setup: FRONT_MARKER-driven ("xz") vs legacy.
 	local defaultYaw = boatModel:GetAttribute("DefaultYaw") or 0
-	-- Bow is at -X, flip 180°
-	local targetYaw = math.atan2(-flatDir.Z, flatDir.X) + math.pi
+	local mode = boatModel:GetAttribute("BowAtan2Mode") or "legacy"
+	local targetYaw: number
+	if mode == "xz" then
+		targetYaw = math.atan2(flatDir.X, flatDir.Z) + math.pi
+	else
+		targetYaw = math.atan2(-flatDir.Z, flatDir.X) + math.pi
+	end
 	local yawDelta = targetYaw - defaultYaw
 
 	-- Capture the base upright rotation (stored at setup, preserved in root's natural orientation)

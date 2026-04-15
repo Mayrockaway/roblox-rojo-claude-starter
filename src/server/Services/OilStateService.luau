@@ -3,6 +3,7 @@
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
@@ -583,7 +584,10 @@ function OilStateService:GetStateForClient(userId: number)
 end
 
 function OilStateService:PushState(userId: number)
+	local perf = _G.Perf
+	local hBuild = perf and perf:OpenSpan("PushState.build")
 	local snapshot = self:GetStateForClient(userId)
+	if hBuild then perf:CloseSpan("PushState.build", hBuild) end
 	if self._stateChangedEvent and snapshot then
 		self._stateChangedEvent:Fire(userId, snapshot)
 	end
@@ -593,7 +597,12 @@ function OilStateService:PushState(userId: number)
 		return
 	end
 	local event = self._remoteService:GetEvent(RemoteNames.OilStateUpdate)
+	local hFire = perf and perf:OpenSpan("PushState.fire")
 	event:FireClient(player, snapshot)
+	if hFire then perf:CloseSpan("PushState.fire", hFire) end
+	if perf then
+		perf:Count("PushState")
+	end
 end
 
 function OilStateService:TrySpendCash(userId: number, amount: number): boolean

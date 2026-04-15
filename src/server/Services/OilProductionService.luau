@@ -36,7 +36,14 @@ function OilProductionService:Start()
 	task.spawn(function()
 		while self._running do
 			task.wait(OilConfig.ProductionTickSeconds)
-			self:_runTick(OilConfig.ProductionTickSeconds)
+			local perf = _G.Perf
+			if perf then
+				local h = perf:OpenSpan("OilProduction.runTick")
+				self:_runTick(OilConfig.ProductionTickSeconds)
+				perf:CloseSpan("OilProduction.runTick", h)
+			else
+				self:_runTick(OilConfig.ProductionTickSeconds)
+			end
 		end
 	end)
 end
@@ -46,6 +53,7 @@ function OilProductionService:Stop()
 end
 
 function OilProductionService:_runTick(deltaSeconds: number)
+	local perf = _G.Perf
 	for userId, state in pairs(self._oilStateService:GetAllStates()) do
 		if state.activeDrillCount <= 0 then
 			continue
@@ -53,11 +61,14 @@ function OilProductionService:_runTick(deltaSeconds: number)
 
 		-- Recompute connectivity for this player's network
 		if self._pipeNetworkService then
+			local h = perf and perf:OpenSpan("Production.connectivity")
 			self._pipeNetworkService:MarkConnectivityForTick(state)
+			if h then perf:CloseSpan("Production.connectivity", h) end
 		end
 
 		local connectedAdditions = emptyTierFloats()
 		local pushNeeded = false
+		local hDrills = perf and perf:OpenSpan("Production.drillLoop")
 		local drills = self._oilStateService:GetActiveDrills(userId)
 
 		for _, drill in ipairs(drills) do
@@ -101,9 +112,15 @@ function OilProductionService:_runTick(deltaSeconds: number)
 			end
 		end
 
+		if hDrills then perf:CloseSpan("Production.drillLoop", hDrills) end
+
+		local hApply = perf and perf:OpenSpan("Production.apply")
 		local added = self._oilStateService:ApplyProduction(userId, connectedAdditions)
+		if hApply then perf:CloseSpan("Production.apply", hApply) end
 		if added > 0 or pushNeeded then
+			local hPush = perf and perf:OpenSpan("Production.push")
 			self._oilStateService:PushState(userId)
+			if hPush then perf:CloseSpan("Production.push", hPush) end
 		end
 	end
 end
