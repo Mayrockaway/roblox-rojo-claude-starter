@@ -1,17 +1,35 @@
 --!strict
--- OilTankService: wires the upgrade path for per-plot OilTanks rigs.
--- Two entry points:
---   * RemoteEvent RequestUpgradeOilTank — for future HUD panels.
---   * ProximityPrompt "TankUpgradePrompt" authored on each tube's Union — player walks up
---     to their own tank and presses E.
--- Both route to OilStateService:TryUpgradeTank, which enforces ownership/cost/tier cap.
+-- OilTankService: upgrade interactions for plot OilTanks.
+-- Runtime source of truth is the authored wood sign part:
+--   <plot>.OilTanks."Minecraft Wood Sign".Sign
+-- Sign clicks/taps upgrade the mapped oil tank.
+-- Legacy ProximityPrompt / union click paths are disabled.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local OilTankService = {}
+
+local function debugLog(msg: string)
+	if RunService:IsStudio() then
+		print("[OilTankService] " .. msg)
+	end
+end
+
+local function findOilTypeOnAncestors(instance: Instance?): string?
+	local cur = instance
+	while cur do
+		local t = cur:GetAttribute("OilType")
+		if typeof(t) == "string" and t ~= "" then
+			return t
+		end
+		cur = cur.Parent
+	end
+	return nil
+end
 
 local function plotOwnerOf(instance: Instance): number?
 	local cur: Instance? = instance
@@ -26,11 +44,80 @@ local function plotOwnerOf(instance: Instance): number?
 	return nil
 end
 
-local function oilTypeOfPrompt(prompt: ProximityPrompt): string?
-	local tube = prompt.Parent and prompt.Parent.Parent
-	if tube and tube:IsA("Model") then
-		local t = tube:GetAttribute("OilType")
-		if typeof(t) == "string" then return t end
+local function isWoodSignPart(part: BasePart): boolean
+	if part.Name ~= "Sign" then
+		return false
+	end
+	local mdl = part.Parent
+	if not (mdl and mdl:IsA("Model") and mdl.Name == "Minecraft Wood Sign") then
+		return false
+	end
+	return true
+end
+
+local function resolveOilTypeForWoodSign(signPart: BasePart): string?
+	local direct = findOilTypeOnAncestors(signPart)
+	if direct then
+		return direct
+	end
+	local cur: Instance? = signPart
+	local tanksModel: Model? = nil
+	while cur do
+		if cur:IsA("Model") and cur.Name == "OilTanks" then
+			tanksModel = cur
+			break
+		end
+		cur = cur.Parent
+	end
+	if not tanksModel then
+		return nil
+	end
+	local bestOilType: string? = nil
+	local bestDist = math.huge
+	for _, child in ipairs(tanksModel:GetChildren()) do
+		if child:IsA("Model") and child.Name ~= "Minecraft Wood Sign" then
+			local oilType = child:GetAttribute("OilType")
+			if typeof(oilType) == "string" and oilType ~= "" then
+				local testTube = child:FindFirstChild("test tube")
+				local union = testTube and testTube:FindFirstChild("Union")
+				if union and union:IsA("BasePart") then
+					local d = (union.Position - signPart.Position).Magnitude
+					if d < bestDist then
+						bestDist = d
+						bestOilType = oilType
+					end
+				end
+			end
+		end
+	end
+	return bestOilType
+end
+
+local function oilTypeFromPayload(payload: any): string?
+	if typeof(payload) ~= "table" then
+		return nil
+	end
+	local source = payload.source
+	if typeof(source) == "Instance" and source:IsA("Instance") and source:IsDescendantOf(workspace) then
+		local t = findOilTypeOnAncestors(source)
+		if t then
+			return t
+		end
+	end
+	local raw = payload.oilType
+	if typeof(raw) == "string" and raw ~= "" then
+		return raw
+	end
+	return nil
+end
+
+local function ownerFromPayload(payload: any): number?
+	if typeof(payload) ~= "table" then
+		return nil
+	end
+	local source = payload.source
+	if typeof(source) == "Instance" and source:IsA("Instance") and source:IsDescendantOf(workspace) then
+		return plotOwnerOf(source)
 	end
 	return nil
 end
@@ -39,6 +126,8 @@ function OilTankService:Init(remoteService, oilStateService)
 	self._remoteService = remoteService
 	self._oilStateService = oilStateService
 	self._connections = {}
+	self._hookedSignParts = {}
+	self._hookedClickDetectors = {}
 end
 
 function OilTankService:_upgrade(player: Player, oilType: string)
@@ -52,11 +141,74 @@ function OilTankService:_upgrade(player: Player, oilType: string)
 	})
 end
 
+function OilTankService:_hookSignPart(signPart: BasePart)
+	if self._hookedSignParts[signPart] then
+		return
+	end
+	self._hookedSignParts[signPart] = true
+
+	-- Ensure this part remains mouse-targetable for ClickDetector and hover affordance.
+	signPart.CanQuery = true
+	signPart.CanTouch = false
+	signPart.CanCollide = false
+	signPart.Anchored = true
+
+	local click = signPart:FindFirstChild("TankUpgradeSignClick")
+	if click and not click:IsA("ClickDetector") then
+		click:Destroy()
+		click = nil
+	end
+	if not click then
+		local cd = Instance.new("ClickDetector")
+		cd.Name = "TankUpgradeSignClick"
+		cd.MaxActivationDistance = 22
+		cd.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
+		cd.Parent = signPart
+		click = cd
+	end
+	if click and click:IsA("ClickDetector") then
+		click.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
+		click.MaxActivationDistance = math.max(22, click.MaxActivationDistance)
+	end
+	if click and click:IsA("ClickDetector") and not self._hookedClickDetectors[click] then
+		self._hookedClickDetectors[click] = true
+		table.insert(self._connections, click.MouseClick:Connect(function(player)
+			local oilType = resolveOilTypeForWoodSign(signPart)
+			if not oilType then
+				debugLog(string.format("click ignored: no oil type for %s", signPart:GetFullName()))
+				return
+			end
+			local ownerUserId = plotOwnerOf(signPart)
+			debugLog(string.format(
+				"click user=%d oilType=%s owner=%s part=%s",
+				player.UserId,
+				tostring(oilType),
+				tostring(ownerUserId),
+				signPart:GetFullName()
+			))
+			if ownerUserId and ownerUserId ~= player.UserId then
+				self._remoteService:GetEvent(RemoteNames.OilActionResult):FireClient(player, {
+					action = "UpgradeOilTank",
+					ok = false,
+					code = "NOT_OWNER",
+					message = "This is not your plot.",
+				})
+				return
+			end
+			self:_upgrade(player, oilType)
+		end))
+	end
+end
+
 function OilTankService:_hookPrompt(prompt: ProximityPrompt)
-	table.insert(self._connections, prompt.Triggered:Connect(function(player)
-		local oilType = oilTypeOfPrompt(prompt)
-		if not oilType then return end
-		local ownerUserId = plotOwnerOf(prompt)
+	-- Prompt path removed; keep disabled so no hold-E UI appears.
+	prompt.Enabled = false
+end
+
+function OilTankService:Start()
+	local upgradeEvent = self._remoteService:GetEvent(RemoteNames.RequestUpgradeOilTank)
+	table.insert(self._connections, upgradeEvent.OnServerEvent:Connect(function(player, payload)
+		local ownerUserId = ownerFromPayload(payload)
 		if ownerUserId and ownerUserId ~= player.UserId then
 			self._remoteService:GetEvent(RemoteNames.OilActionResult):FireClient(player, {
 				action = "UpgradeOilTank",
@@ -66,14 +218,7 @@ function OilTankService:_hookPrompt(prompt: ProximityPrompt)
 			})
 			return
 		end
-		self:_upgrade(player, oilType)
-	end))
-end
-
-function OilTankService:Start()
-	local upgradeEvent = self._remoteService:GetEvent(RemoteNames.RequestUpgradeOilTank)
-	table.insert(self._connections, upgradeEvent.OnServerEvent:Connect(function(player, payload)
-		local oilType = typeof(payload) == "table" and tostring(payload.oilType) or nil
+		local oilType = oilTypeFromPayload(payload)
 		if not oilType then return end
 		self:_upgrade(player, oilType)
 	end))
@@ -81,14 +226,18 @@ function OilTankService:Start()
 	-- Hook all existing TankUpgradePrompts + any added later (plot clones, re-spawns).
 	local function scan(root: Instance)
 		for _, d in ipairs(root:GetDescendants()) do
-			if d:IsA("ProximityPrompt") and d.Name == "TankUpgradePrompt" then
+			if d:IsA("BasePart") and isWoodSignPart(d) then
+				self:_hookSignPart(d)
+			elseif d:IsA("ProximityPrompt") and d.Name == "TankUpgradePrompt" then
 				self:_hookPrompt(d)
-			end
+			end 
 		end
 	end
 	scan(workspace)
 	table.insert(self._connections, workspace.DescendantAdded:Connect(function(d)
-		if d:IsA("ProximityPrompt") and d.Name == "TankUpgradePrompt" then
+		if d:IsA("BasePart") and isWoodSignPart(d) then
+			self:_hookSignPart(d)
+		elseif d:IsA("ProximityPrompt") and d.Name == "TankUpgradePrompt" then
 			self:_hookPrompt(d)
 		end
 	end))
@@ -97,6 +246,8 @@ end
 function OilTankService:Stop()
 	for _, c in ipairs(self._connections) do c:Disconnect() end
 	self._connections = {}
+	self._hookedSignParts = {}
+	self._hookedClickDetectors = {}
 end
 
 return OilTankService

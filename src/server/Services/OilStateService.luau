@@ -277,9 +277,140 @@ local function globalCellToLocalTileKey(row: number, col: number): string
 	return string.format("T%d%d", localR, localC)
 end
 
-local function cellInBounds(row: number, col: number): boolean
+local function inBoundsCell(row: number, col: number): boolean
 	local s = staticGridConstants()
 	return row >= 1 and row <= s.globalRows and col >= 1 and col <= s.globalCols
+end
+
+local function localTileToGlobalCell(sectionId: string, tileKey: string): (number?, number?)
+	local sRowStr, sColStr = string.match(sectionId, "^S(%d+)_(%d+)$")
+	local tRowStr, tColStr = string.match(tileKey, "^T(%d)(%d)$")
+	local sRow = tonumber(sRowStr)
+	local sCol = tonumber(sColStr)
+	local tRow = tonumber(tRowStr)
+	local tCol = tonumber(tColStr)
+	if not sRow or not sCol or not tRow or not tCol then
+		return nil, nil
+	end
+	local s = staticGridConstants()
+	local row = (sRow - 1) * s.subTilesPerSide + tRow
+	local col = (sCol - 1) * s.subTilesPerSide + tCol
+	return row, col
+end
+
+local function findTilePartForCell(plot: Model, row: number, col: number): BasePart?
+	if not inBoundsCell(row, col) then
+		return nil
+	end
+	local ground = plot:FindFirstChild("PlotGround")
+	if not (ground and ground:IsA("Model")) then
+		return nil
+	end
+	local sectionId = cellToSectionId(row, col)
+	local section = ground:FindFirstChild(sectionId)
+	if not (section and section:IsA("Model")) then
+		return nil
+	end
+	local tileKey = globalCellToLocalTileKey(row, col)
+	local inst = section:FindFirstChild(tileKey, true)
+	if inst and inst:IsA("BasePart") then
+		return inst
+	end
+	if inst and inst:IsA("Model") then
+		if inst.PrimaryPart and inst.PrimaryPart:IsA("BasePart") then
+			return inst.PrimaryPart
+		end
+		for _, d in ipairs(inst:GetDescendants()) do
+			if d:IsA("BasePart") then
+				return d
+			end
+		end
+	end
+	for _, d in ipairs(section:GetDescendants()) do
+		if d:IsA("BasePart") and d.Name == tileKey then
+			return d
+		end
+	end
+	return nil
+end
+
+local function findNearestPlotTileCell(plot: Model, worldPos: Vector3): (number?, number?, BasePart?)
+	local ground = plot:FindFirstChild("PlotGround")
+	if not (ground and ground:IsA("Model")) then
+		return nil, nil, nil
+	end
+	local nearestTile: BasePart? = nil
+	local nearestDist = math.huge
+	for _, d in ipairs(ground:GetDescendants()) do
+		if d:IsA("BasePart") and d.Name:match("^T%d%d$") then
+			local dx = d.Position.X - worldPos.X
+			local dz = d.Position.Z - worldPos.Z
+			local dist2 = dx * dx + dz * dz
+			if dist2 < nearestDist then
+				nearestDist = dist2
+				nearestTile = d
+			end
+		end
+	end
+	if not nearestTile then
+		return nil, nil, nil
+	end
+	local tileKey = nearestTile.Name
+	local sectionId = nil :: string?
+	local node: Instance? = nearestTile
+	while node and node.Parent and node.Parent ~= ground do
+		node = node.Parent
+	end
+	if node and node:IsA("Model") then
+		sectionId = node.Name
+	end
+	if not sectionId then
+		return nil, nil, nearestTile
+	end
+	local row, col = localTileToGlobalCell(sectionId, tileKey)
+	return row, col, nearestTile
+end
+
+local function pickNeighborCellByDirection(plot: Model, row: number, col: number, dir: Vector3): (number?, number?)
+	local dirXZ = Vector3.new(dir.X, 0, dir.Z)
+	if dirXZ.Magnitude < 0.001 then
+		return nil, nil
+	end
+	local originTile = findTilePartForCell(plot, row, col)
+	if not originTile then
+		return nil, nil
+	end
+	local originPos = originTile.Position
+	local bestRow, bestCol = nil, nil
+	local bestScore = -math.huge
+	local candidates = {
+		{ row - 1, col },
+		{ row + 1, col },
+		{ row, col - 1 },
+		{ row, col + 1 },
+	}
+	for _, rc in ipairs(candidates) do
+		local rr, cc = rc[1], rc[2]
+		if inBoundsCell(rr, cc) then
+			local tile = findTilePartForCell(plot, rr, cc)
+			if tile then
+				local dv = Vector3.new(tile.Position.X - originPos.X, 0, tile.Position.Z - originPos.Z)
+				if dv.Magnitude > 0.001 then
+					local score = dv.Unit:Dot(dirXZ.Unit)
+					if score > bestScore then
+						bestScore = score
+						bestRow = rr
+						bestCol = cc
+					end
+				end
+			end
+		end
+	end
+	return bestRow, bestCol
+end
+
+local function cellInBounds(row: number, col: number): boolean
+	return inBoundsCell(row, col)
 end
 
 local function tierMapIsFull(map, capacity: number): boolean
@@ -674,6 +805,7 @@ function OilStateService:GetStateForClient(userId: number)
 			col = pipe.col,
 			sectionId = pipe.sectionId,
 			position = { x = pipe.position.X, y = pipe.position.Y, z = pipe.position.Z },
+			isCorePipe = pipe.isCorePipe == true,
 		})
 	end
 
@@ -685,6 +817,7 @@ function OilStateService:GetStateForClient(userId: number)
 			cellKey = drum.cellKey,
 			row = drum.row,
 			col = drum.col,
+			isCoreDrum = drum.isCoreDrum == true,
 		})
 	end
 
@@ -931,7 +1064,7 @@ local function pointInsideChunkOnPlot(plot: Model?, chunk, x: number, z: number)
 	local nearest, nearestDist = nil, math.huge
 	for _, sect in ipairs(ground:GetChildren()) do
 		if sect:IsA("Model") then
-			for _, t in ipairs(sect:GetChildren()) do
+			for _, t in ipairs(sect:GetDescendants()) do
 				if t:IsA("BasePart") and t.Name:match("^T%d%d$") then
 					local dx = t.Position.X - x
 					local dz = t.Position.Z - z
@@ -967,7 +1100,7 @@ local function resolveTileAt(plot: Model, chunk, x: number, z: number): (string?
 	local section = ground and ground:FindFirstChild(chunk.chunkId)
 	if section then
 		local nearest, nearestDist = nil, math.huge
-		for _, t in ipairs(section:GetChildren()) do
+		for _, t in ipairs(section:GetDescendants()) do
 			if t:IsA("BasePart") and t.Name:match("^T%d%d$") then
 				local dx = t.Position.X - x
 				local dz = t.Position.Z - z
@@ -995,6 +1128,16 @@ local function resolveTileAt(plot: Model, chunk, x: number, z: number): (string?
 	end
 	local key = string.format("T%d%d", localR, localC)
 	return key, chunk.tiles[key]
+end
+
+local function tileKeyToLocalRowCol(tileKey: string): (number?, number?)
+	local a, b = string.match(tileKey, "^T(%d)(%d)$")
+	local r = tonumber(a)
+	local c = tonumber(b)
+	if not r or not c then
+		return nil, nil
+	end
+	return r, c
 end
 
 local function distanceXZ(x1, z1, x2, z2): number
@@ -1026,10 +1169,20 @@ function OilStateService:_validateTilePlacement(userId: number, payload)
 		return false, "ERR_OUT_OF_CHUNK", "Position is not on the targeted chunk."
 	end
 
-	local cellR, cellC = worldToCell(plot, x, z)
-	local ck = cellKey(cellR, cellC)
-
 	local tileKey, _tile = resolveTileAt(plot, chunk, x, z)
+	local cellR, cellC
+	if typeof(tileKey) == "string" then
+		local localR, localC = tileKeyToLocalRowCol(tileKey)
+		local s = staticGridConstants()
+		if localR and localC and typeof(chunk.row) == "number" and typeof(chunk.col) == "number" then
+			cellR = (chunk.row - 1) * s.subTilesPerSide + localR
+			cellC = (chunk.col - 1) * s.subTilesPerSide + localC
+		end
+	end
+	if typeof(cellR) ~= "number" or typeof(cellC) ~= "number" then
+		cellR, cellC = worldToCell(plot, x, z)
+	end
+	local ck = cellKey(cellR, cellC)
 	if state.pipesByCellKey and state.pipesByCellKey[ck] then
 		return false, "ERR_PIPE_HERE", "Remove the pipe first."
 	end
@@ -1465,6 +1618,9 @@ function OilStateService:TryHammerDestroy(userId: number, payload: any): (boolea
 		local ck = tostring(payload.cellKey or "")
 		local pipe = state.pipesByCellKey[ck]
 		if not pipe then return false, "ERR_BAD_TARGET", "Pipe not found.", nil end
+		if pipe.isCorePipe == true then
+			return false, "ERR_PROTECTED_PIPE", "Core pipe cannot be removed.", nil
+		end
 		local cost = tonumber(pipe.placementCost) or tonumber(OilConfig.Pipes.Cost) or 0
 		refundedAmount = math.floor(cost * 0.10)
 		state.pipesByCellKey[ck] = nil
@@ -1531,22 +1687,55 @@ function OilStateService:TryPlacePipe(userId: number, payload): (boolean, string
 
 	local row = tonumber(payload.row)
 	local col = tonumber(payload.col)
-	if not row or not col then
-		-- Allow client to send world position; server snaps to grid
-		local x = tonumber(payload.x)
-		local z = tonumber(payload.z)
-		if not x or not z then
-			return false, "ERR_BAD_PAYLOAD", "Bad pipe payload.", nil
+	local sectionId = nil :: string?
+	local snappedX = nil :: number?
+	local snappedY = nil :: number?
+	local snappedZ = nil :: number?
+
+	-- Preferred path: authoritative tile resolution from chunk + world hit.
+	local chunkId = payload.chunkId
+	local x = tonumber(payload.x)
+	local z = tonumber(payload.z)
+	if typeof(chunkId) == "string" and x and z then
+		local ok, code, message, chunk, _tileKey, sx, sy, sz, cellR, cellC = self:_validateTilePlacement(userId, {
+			chunkId = chunkId,
+			x = x,
+			y = tonumber(payload.y) or 0,
+			z = z,
+		})
+		if not ok then
+			return false, code, message, nil
 		end
-		row, col = worldToCell(plot, x, z)
+		row, col = cellR, cellC
+		sectionId = chunk.chunkId
+		snappedX, snappedY, snappedZ = sx, sy, sz
+	end
+
+	-- Legacy fallback for older clients sending only row/col or x/z.
+	if not row or not col then
+		if x and z then
+			row, col = worldToCell(plot, x, z)
+		end
+	end
+	if not row or not col then
+		return false, "ERR_BAD_PAYLOAD", "Bad pipe payload.", nil
 	end
 
 	if not cellInBounds(row, col) then
+		DevLog.log(string.format(
+			"[PipePlace] OOB user=%d chunkId=%s row=%s col=%s x=%s z=%s",
+			userId,
+			tostring(payload.chunkId),
+			tostring(row),
+			tostring(col),
+			tostring(payload.x),
+			tostring(payload.z)
+		))
 		return false, "ERR_OUT_OF_PLOT", "Pipe cell out of bounds.", nil
 	end
 
 	-- Section / chunk ownership
-	local sectionId = cellToSectionId(row, col)
+	sectionId = sectionId or cellToSectionId(row, col)
 	local chunk = state.chunksById[sectionId]
 	if not chunk or not chunk.unlocked then
 		return false, "ERR_LOCKED_CHUNK", "Cell is on a locked section.", nil
@@ -1571,7 +1760,11 @@ function OilStateService:TryPlacePipe(userId: number, payload): (boolean, string
 
 	local pipeId = state.nextPipeId
 	state.nextPipeId += 1
-	local x, z = cellToWorld(plot, row, col)
+	local wx, wz = cellToWorld(plot, row, col)
+	if typeof(snappedX) == "number" and typeof(snappedZ) == "number" then
+		wx, wz = snappedX, snappedZ
+	end
+	local wy = if typeof(snappedY) == "number" then snappedY else 6
 
 	state.pipesByCellKey[key] = {
 		pipeId = pipeId,
@@ -1579,7 +1772,7 @@ function OilStateService:TryPlacePipe(userId: number, payload): (boolean, string
 		row = row,
 		col = col,
 		sectionId = sectionId,
-		position = Vector3.new(x, 6, z),
+		position = Vector3.new(wx, wy, wz),
 	}
 
 	self:_markDirty(userId)
@@ -1601,6 +1794,22 @@ function OilStateService:TryRemovePipe(userId: number, payload): (boolean, strin
 			col = tonumber(payload.col)
 			if row and col then
 				key = cellKey(row, col)
+			elseif typeof(payload.chunkId) == "string" and tonumber(payload.x) and tonumber(payload.z) then
+				local chunk = state.chunksById[payload.chunkId]
+				local plot = state.plot or self._plotService:GetOwnedPlot(userId)
+				if not plot then return false, "ERR_NO_PLOT", "No plot owned." end
+				if chunk then
+					local tileKey = select(1, resolveTileAt(plot, chunk, tonumber(payload.x), tonumber(payload.z)))
+					if typeof(tileKey) == "string" then
+						local localR, localC = tileKeyToLocalRowCol(tileKey)
+						if localR and localC and typeof(chunk.row) == "number" and typeof(chunk.col) == "number" then
+							local s = staticGridConstants()
+							row = (chunk.row - 1) * s.subTilesPerSide + localR
+							col = (chunk.col - 1) * s.subTilesPerSide + localC
+							key = cellKey(row, col)
+						end
+					end
+				end
 			elseif tonumber(payload.x) and tonumber(payload.z) then
 				local plot = state.plot or self._plotService:GetOwnedPlot(userId)
 				if not plot then return false, "ERR_NO_PLOT", "No plot owned." end
@@ -1614,6 +1823,9 @@ function OilStateService:TryRemovePipe(userId: number, payload): (boolean, strin
 	end
 	if not state.pipesByCellKey[key] then
 		return false, "ERR_BAD_PIPE", "Pipe does not exist."
+	end
+	if state.pipesByCellKey[key].isCorePipe == true then
+		return false, "ERR_PROTECTED_PIPE", "Core pipe cannot be removed."
 	end
 	state.pipesByCellKey[key] = nil
 	self:_markDirty(userId)
@@ -1917,6 +2129,9 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		end
 		-- Always bind the current Workspace plot Model (same plotId can be a new instance after rejoin).
 		existing.plot = plot
+		-- Keep starter infrastructure intact for migrated/legacy profiles.
+		self:_ensureDefaultDrumForPlayer(existing, plot)
+		self:_ensureDefaultPipesForPlayer(existing, plot)
 		self:_invokeStateTimersReady(userId)
 		return
 	end
@@ -2038,89 +2253,203 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 end
 
 function OilStateService:_ensureDefaultPipesForPlayer(state, plot: Model)
-	-- Only place default pipes if the player has none
-	for _, _ in pairs(state.pipesByCellKey) do
+	local drumRow: number? = nil
+	local drumCol: number? = nil
+	local labPivot: CFrame? = nil
+	local coreDrum = nil
+	for _, drum in pairs(state.drumsById) do
+		if drum.isCoreDrum == true then
+			coreDrum = drum
+			break
+		end
+	end
+	if not coreDrum then
+		local firstId = nil :: number?
+		for drumId, _ in pairs(state.drumsById) do
+			if not firstId or drumId < firstId then
+				firstId = drumId
+			end
+		end
+		if firstId then
+			coreDrum = state.drumsById[firstId]
+		end
+	end
+	if coreDrum then
+		drumRow = tonumber(coreDrum.row)
+		drumCol = tonumber(coreDrum.col)
+	end
+	local labModel = plot:FindFirstChild("Lab Machine")
+	if labModel and labModel:IsA("Model") then
+		labPivot = labModel:GetPivot()
+	end
+	if not drumRow or not drumCol then
 		return
 	end
 
-	-- The drum occupies cell (20, 8) = center of front 3 tiles.
-	-- Block cells (20,7), (20,8), (20,9) for drill placement (Lab Machine footprint).
-	-- Pre-place pipes in a ring around the machine: row 19 cols 7-9 (behind/north)
-	-- and row 20 cols 6 and 10 (flanking east/west).
-	local drumRow = state.drumsById and nil
-	local drumCol = nil
-	for _, drum in pairs(state.drumsById) do
-		drumRow = drum.row
-		drumCol = drum.col
-		break
+	local leftRow, leftCol = nil :: number?, nil :: number?
+	local rightRow, rightCol = nil :: number?, nil :: number?
+	local frontRow, frontCol = nil :: number?, nil :: number?
+	if labPivot then
+		leftRow, leftCol = pickNeighborCellByDirection(plot, drumRow, drumCol, -labPivot.RightVector)
+		rightRow, rightCol = pickNeighborCellByDirection(plot, drumRow, drumCol, labPivot.RightVector)
+		frontRow, frontCol = pickNeighborCellByDirection(plot, drumRow, drumCol, labPivot.LookVector)
 	end
-	if not drumRow then return end
+	-- Fallback to Plot_01-authored layout if machine vectors cannot be resolved.
+	if not leftRow or not leftCol then
+		leftRow, leftCol = drumRow, drumCol - 1
+	end
+	if not rightRow or not rightCol then
+		rightRow, rightCol = drumRow, drumCol + 1
+	end
+	if not frontRow or not frontCol then
+		frontRow, frontCol = drumRow - 1, drumCol
+	end
 
-	-- Blocked cells = the 3 tiles the Lab Machine occupies
 	state._blockedCells = {}
-	for dc = -1, 1 do
-		state._blockedCells[cellKey(drumRow, drumCol + dc)] = true
-	end
+	state._blockedCells[cellKey(drumRow, drumCol)] = true
 
-	-- Pre-place 3 pipes:  P1(left) XXX P2(right)  with P3(center above)
 	local pipeCells = {
-		{ drumRow, drumCol - 2 },      -- P1: left of machine
-		{ drumRow, drumCol + 2 },      -- P2: right of machine
-		{ drumRow - 1, drumCol },       -- P3: center above machine
+		{ leftRow, leftCol },
+		{ rightRow, rightCol },
+		{ frontRow, frontCol },
 	}
+	local targetCoreByCellKey = {}
+	for _, coords in ipairs(pipeCells) do
+		local row, col = coords[1], coords[2]
+		if cellInBounds(row, col) then
+			targetCoreByCellKey[cellKey(row, col)] = true
+		end
+	end
+	for key, pipe in pairs(state.pipesByCellKey) do
+		if pipe.isCorePipe == true and not targetCoreByCellKey[key] then
+			state.pipesByCellKey[key] = nil
+		end
+	end
+	for _, legacyKey in ipairs({
+		cellKey(drumRow, drumCol - 2),
+		cellKey(drumRow, drumCol + 2),
+	}) do
+		if not targetCoreByCellKey[legacyKey] then
+			local p = state.pipesByCellKey[legacyKey]
+			if p and p.isCorePipe ~= true then
+				state.pipesByCellKey[legacyKey] = nil
+			end
+		end
+	end
+	local added = 0
 
 	for _, coords in ipairs(pipeCells) do
 		local row, col = coords[1], coords[2]
 		if cellInBounds(row, col) then
 			local key = cellKey(row, col)
-			if not state.pipesByCellKey[key] then
+			local existing = state.pipesByCellKey[key]
+			if not existing then
 				local sectionId = cellToSectionId(row, col)
 				local chunk = state.chunksById[sectionId]
 				if chunk and chunk.unlocked then
+					local tilePart = findTilePartForCell(plot, row, col)
 					local x, z = cellToWorld(plot, row, col)
+					local y = 6
+					if tilePart then
+						x = tilePart.Position.X
+						z = tilePart.Position.Z
+						y = tilePart.Position.Y + tilePart.Size.Y / 2
+					end
 					state.pipesByCellKey[key] = {
 						pipeId = state.nextPipeId,
 						cellKey = key,
 						row = row,
 						col = col,
 						sectionId = sectionId,
-						position = Vector3.new(x, 6, z),
+						position = Vector3.new(x, y, z),
+						isCorePipe = true,
+						placementCost = 0,
 					}
 					state.nextPipeId += 1
+					added += 1
 				end
+			else
+				existing.isCorePipe = true
+				existing.placementCost = 0
 			end
 		end
 	end
+	local total = 0
+	for _, _ in pairs(state.pipesByCellKey) do
+		total += 1
+	end
+	DevLog.log(string.format(
+		"[StarterPipes] user=%d drum=R%dC%d added=%d total=%d",
+		state.ownerUserId,
+		drumRow,
+		drumCol,
+		added,
+		total
+	))
 end
 
 function OilStateService:_ensureDefaultDrumForPlayer(state, plot: Model)
-	-- Only create one default drum if the player has none
-	for _, _ in pairs(state.drumsById) do
-		return
+	local coreDrumId = nil :: number?
+	for drumId, drum in pairs(state.drumsById) do
+		if drum.isCoreDrum == true then
+			coreDrumId = drumId
+			break
+		end
+	end
+	if not coreDrumId then
+		for drumId, _ in pairs(state.drumsById) do
+			if not coreDrumId or drumId < coreDrumId then
+				coreDrumId = drumId
+			end
+		end
 	end
 
-	-- Pick a sub-tile cell in the starting section's south edge as the drum's grid cell.
-	-- Starting section = (StartingRow, StartingCol). Drum sits in the south-edge cell of the
-	-- starting section's bottom row, slightly outside the section if there's room.
-	local startSectionRow = OilConfig.Chunks.StartingRow
-	local startSectionCol = OilConfig.Chunks.StartingCol
-	local s = staticGridConstants()
-	-- Bottom-center sub-tile of the starting section
-	local row = (startSectionRow - 1) * s.subTilesPerSide + s.subTilesPerSide
-	local col = (startSectionCol - 1) * s.subTilesPerSide + math.ceil(s.subTilesPerSide / 2)
+	local row, col, tilePart = nil :: number?, nil :: number?, nil :: BasePart?
+	local labModel = plot:FindFirstChild("Lab Machine")
+	if labModel and labModel:IsA("Model") then
+		row, col, tilePart = findNearestPlotTileCell(plot, labModel:GetPivot().Position)
+	end
+	if not row or not col then
+		local startSectionRow = OilConfig.Chunks.StartingRow
+		local startSectionCol = OilConfig.Chunks.StartingCol
+		local s = staticGridConstants()
+		row = (startSectionRow - 1) * s.subTilesPerSide + s.subTilesPerSide
+		col = (startSectionCol - 1) * s.subTilesPerSide + math.ceil(s.subTilesPerSide / 2)
+		tilePart = findTilePartForCell(plot, row, col)
+	end
+	if not row or not col then
+		return
+	end
 	local x, z = cellToWorld(plot, row, col)
-	local drumPos = Vector3.new(x, 6, z)
-
-	local drumId = state.nextDrumId
-	state.nextDrumId += 1
+	local y = 6
+	if tilePart then
+		x = tilePart.Position.X
+		z = tilePart.Position.Z
+		y = tilePart.Position.Y + tilePart.Size.Y / 2
+	end
+	local drumPos = Vector3.new(x, y, z)
 	local key = cellKey(row, col)
-	state.drumsById[drumId] = {
-		drumId = drumId,
-		position = drumPos,
-		cellKey = key,
-		row = row,
-		col = col,
-	}
+	if coreDrumId and state.drumsById[coreDrumId] then
+		local drum = state.drumsById[coreDrumId]
+		drum.position = drumPos
+		drum.cellKey = key
+		drum.row = row
+		drum.col = col
+		drum.isCoreDrum = true
+		drum.placementCost = 0
+	else
+		local drumId = state.nextDrumId
+		state.nextDrumId += 1
+		state.drumsById[drumId] = {
+			drumId = drumId,
+			position = drumPos,
+			cellKey = key,
+			row = row,
+			col = col,
+			isCoreDrum = true,
+			placementCost = 0,
+		}
+	end
 end
 
 function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
@@ -2561,6 +2890,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 						col = col,
 						sectionId = sectionId,
 						position = Vector3.new(x, 6, z),
+						isCorePipe = record.isCorePipe == true,
 					}
 				end
 			end
@@ -2588,6 +2918,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 					cellKey = cellKey(row, col),
 					row = row,
 					col = col,
+					isCoreDrum = record.isCoreDrum == true,
 				}
 			end
 		end
@@ -2804,6 +3135,7 @@ function OilStateService:_serializeState(state)
 			row = pipe.row,
 			col = pipe.col,
 			sectionId = pipe.sectionId,
+			isCorePipe = pipe.isCorePipe == true,
 		})
 	end
 
@@ -2815,6 +3147,7 @@ function OilStateService:_serializeState(state)
 			cellKey = drum.cellKey,
 			row = drum.row,
 			col = drum.col,
+			isCoreDrum = drum.isCoreDrum == true,
 		})
 	end
 

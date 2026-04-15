@@ -23,6 +23,14 @@ local function emptyBarrelMap()
 	return { HeavyCrude = 0, LightSweet = 0, PremiumRefined = 0 }
 end
 
+local function copyBarrelMap(src)
+	local out = emptyBarrelMap()
+	for _, tier in ipairs(TIER_ORDER) do
+		out[tier] = math.max(0, math.floor(tonumber(src and src[tier]) or 0))
+	end
+	return out
+end
+
 local function isDatastoreStudioAccessError(err: any): boolean
 	local s = tostring(err)
 	return string.find(s, "StudioAccessToApisNotAllowed", 1, true) ~= nil
@@ -37,6 +45,10 @@ local function totalBarrels(barrels)
 		t += barrels[tier] or 0
 	end
 	return t
+end
+
+local function totalBarrelsCombined(baseBarrels, overflowBarrels)
+	return totalBarrels(baseBarrels) + totalBarrels(overflowBarrels)
 end
 
 function WarehouseService:Init(remoteService, oilStateService)
@@ -154,6 +166,7 @@ function WarehouseService:_onPlayerAdded(player: Player)
 	local state = {
 		tier = 1,
 		barrels = emptyBarrelMap(),
+		hitOverflowBarrels = emptyBarrelMap(),
 		slotId = nil,
 	}
 
@@ -167,6 +180,12 @@ function WarehouseService:_onPlayerAdded(player: Player)
 			end
 			if legacyStandard > 0 then
 				state.barrels.HeavyCrude = (state.barrels.HeavyCrude or 0) + legacyStandard
+			end
+		end
+		if typeof((persisted :: any).hitOverflowBarrels) == "table" then
+			local ob = (persisted :: any).hitOverflowBarrels :: { [string]: any }
+			for _, tier in ipairs(TIER_ORDER) do
+				state.hitOverflowBarrels[tier] = math.max(0, math.floor(tonumber(ob[tier]) or 0))
 			end
 		end
 		state.slotId = persisted.slotId
@@ -295,7 +314,7 @@ end
 function WarehouseService:GetTotalBarrels(userId: number): number
 	local state = self._stateByUserId[userId]
 	if not state then return 0 end
-	return totalBarrels(state.barrels)
+	return totalBarrelsCombined(state.barrels, state.hitOverflowBarrels)
 end
 
 function WarehouseService:CanShip(userId: number, barrelCount: number): boolean
@@ -322,6 +341,49 @@ function WarehouseService:DeliverBarrels(userId: number, manifest): boolean
 
 	for _, tier in ipairs(TIER_ORDER) do
 		state.barrels[tier] = (state.barrels[tier] or 0) + (manifest[tier] or 0)
+	end
+
+	self._dirtyByUserId[userId] = true
+	self:_syncBarrelVisuals(userId)
+	self:_updateSign(userId)
+	self:PushState(userId)
+	return true
+end
+
+function WarehouseService:DeliverHitBarrels(userId: number, manifest): boolean
+	local state = self._stateByUserId[userId]
+	if not state then return false end
+
+	local cap = WarehouseConfig.GetCapacity(state.tier)
+	local currentBase = totalBarrels(state.barrels)
+	local manifestIn = copyBarrelMap(manifest)
+	local remainingRoom = math.max(0, cap - currentBase)
+
+	local toBase = emptyBarrelMap()
+	local toOverflow = emptyBarrelMap()
+
+	for _, tier in ipairs(TIER_ORDER) do
+		local want = manifestIn[tier] or 0
+		if want > 0 and remainingRoom > 0 then
+			local take = math.min(want, remainingRoom)
+			toBase[tier] = take
+			want -= take
+			remainingRoom -= take
+		end
+		if want > 0 then
+			toOverflow[tier] = want
+		end
+	end
+
+	for _, tier in ipairs(TIER_ORDER) do
+		local addBase = toBase[tier] or 0
+		if addBase > 0 then
+			state.barrels[tier] = (state.barrels[tier] or 0) + addBase
+		end
+		local addOverflow = toOverflow[tier] or 0
+		if addOverflow > 0 then
+			state.hitOverflowBarrels[tier] = (state.hitOverflowBarrels[tier] or 0) + addOverflow
+		end
 	end
 
 	self._dirtyByUserId[userId] = true
@@ -362,17 +424,23 @@ end
 function WarehouseService:GetBarrelsByType(userId: number, oilType: string): number
 	local state = self._stateByUserId[userId]
 	if not state then return 0 end
-	return state.barrels[oilType] or 0
+	return (state.barrels[oilType] or 0) + (state.hitOverflowBarrels[oilType] or 0)
 end
 
 function WarehouseService:GetAllBarrels(userId: number)
 	local state = self._stateByUserId[userId]
 	if not state then return emptyBarrelMap() end
 	return {
-		HeavyCrude = state.barrels.HeavyCrude or 0,
-		LightSweet = state.barrels.LightSweet or 0,
-		PremiumRefined = state.barrels.PremiumRefined or 0,
+		HeavyCrude = (state.barrels.HeavyCrude or 0) + (state.hitOverflowBarrels.HeavyCrude or 0),
+		LightSweet = (state.barrels.LightSweet or 0) + (state.hitOverflowBarrels.LightSweet or 0),
+		PremiumRefined = (state.barrels.PremiumRefined or 0) + (state.hitOverflowBarrels.PremiumRefined or 0),
 	}
+end
+
+function WarehouseService:GetHitOverflowBarrels(userId: number)
+	local state = self._stateByUserId[userId]
+	if not state then return emptyBarrelMap() end
+	return copyBarrelMap(state.hitOverflowBarrels)
 end
 
 -- Remove up to `removals[tier]` whole barrels per tier (market partial sell).
@@ -386,13 +454,23 @@ function WarehouseService:TryRemoveBarrelsByCounts(userId: number, removals: { [
 		need[tier] = math.max(0, math.floor(removals[tier] or 0))
 	end
 	for _, tier in ipairs(TIER_ORDER) do
-		local have = state.barrels[tier] or 0
+		local have = (state.barrels[tier] or 0) + (state.hitOverflowBarrels[tier] or 0)
 		if have < need[tier] then
 			return false
 		end
 	end
 	for _, tier in ipairs(TIER_ORDER) do
-		state.barrels[tier] = math.max(0, (state.barrels[tier] or 0) - need[tier])
+		local left = need[tier]
+		local baseHave = state.barrels[tier] or 0
+		local takeBase = math.min(baseHave, left)
+		state.barrels[tier] = math.max(0, baseHave - takeBase)
+		left -= takeBase
+		if left > 0 then
+			local overflowHave = state.hitOverflowBarrels[tier] or 0
+			local takeOverflow = math.min(overflowHave, left)
+			state.hitOverflowBarrels[tier] = math.max(0, overflowHave - takeOverflow)
+			left -= takeOverflow
+		end
 	end
 	self._dirtyByUserId[userId] = true
 	self:_syncBarrelVisuals(userId)
@@ -404,9 +482,10 @@ end
 function WarehouseService:RemoveBarrelsByType(userId: number, oilType: string): number
 	local state = self._stateByUserId[userId]
 	if not state then return 0 end
-	local count = state.barrels[oilType] or 0
+	local count = (state.barrels[oilType] or 0) + (state.hitOverflowBarrels[oilType] or 0)
 	if count <= 0 then return 0 end
 	state.barrels[oilType] = 0
+	state.hitOverflowBarrels[oilType] = 0
 	self._dirtyByUserId[userId] = true
 	self:_syncBarrelVisuals(userId)
 	self:_updateSign(userId)
@@ -419,8 +498,9 @@ function WarehouseService:RemoveAllBarrels(userId: number)
 	if not state then return emptyBarrelMap() end
 	local removed = {}
 	for _, tier in ipairs(TIER_ORDER) do
-		removed[tier] = state.barrels[tier] or 0
+		removed[tier] = (state.barrels[tier] or 0) + (state.hitOverflowBarrels[tier] or 0)
 		state.barrels[tier] = 0
+		state.hitOverflowBarrels[tier] = 0
 	end
 	self._dirtyByUserId[userId] = true
 	self:_syncBarrelVisuals(userId)
@@ -436,12 +516,13 @@ function WarehouseService:GetWarehouseForClient(userId: number)
 	return {
 		tier = state.tier,
 		barrels = {
-			HeavyCrude = state.barrels.HeavyCrude or 0,
-			LightSweet = state.barrels.LightSweet or 0,
-			PremiumRefined = state.barrels.PremiumRefined or 0,
+			HeavyCrude = (state.barrels.HeavyCrude or 0) + (state.hitOverflowBarrels.HeavyCrude or 0),
+			LightSweet = (state.barrels.LightSweet or 0) + (state.hitOverflowBarrels.LightSweet or 0),
+			PremiumRefined = (state.barrels.PremiumRefined or 0) + (state.hitOverflowBarrels.PremiumRefined or 0),
 		},
+		hitOverflowBarrels = copyBarrelMap(state.hitOverflowBarrels),
 		capacity = WarehouseConfig.GetCapacity(state.tier),
-		totalBarrels = totalBarrels(state.barrels),
+		totalBarrels = totalBarrelsCombined(state.barrels, state.hitOverflowBarrels),
 		slotId = state.slotId,
 		upgradeCost = WarehouseConfig.GetUpgradeCost(state.tier),
 	}
@@ -633,6 +714,7 @@ function WarehouseService:_saveProfile(userId: number, force: boolean?, persistR
 	local payload = {
 		tier = state.tier,
 		barrels = state.barrels,
+		hitOverflowBarrels = state.hitOverflowBarrels,
 		slotId = state.slotId,
 	}
 

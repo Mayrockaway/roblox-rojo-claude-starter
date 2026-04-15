@@ -24,6 +24,7 @@ local ShipRig = require(Shared:WaitForChild("Utils"):WaitForChild("ShipRig"))
 local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 
 local OilShipmentService = {}
+local FORCED_CONTRACT_PIRATE_LOSS_FRACTION = 0.50
 
 local TIER_ORDER = {
 	"PremiumRefined",
@@ -230,6 +231,9 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 	local assetsFolder = ReplicatedStorage:FindFirstChild("Assets")
 	self._boatTemplate = assetsFolder and assetsFolder:FindFirstChild("Tanker") or nil
 	self._activeShips = {} -- per-ship runtime state keyed by shipmentId
+	self._activeShipmentByOwner = {} :: { [number]: string }
+	self._shipmentContexts = {} :: { [string]: { [string]: any } }
+	self._hitContractService = nil
 
 	-- Collision group: ships don't collide with each other
 	local ok, _ = pcall(function()
@@ -243,6 +247,10 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 
 	-- Discover strait lane waypoints
 	self:_discoverLanes()
+end
+
+function OilShipmentService:SetHitContractService(hitContractService)
+	self._hitContractService = hitContractService
 end
 
 function OilShipmentService:_discoverLanes()
@@ -427,6 +435,29 @@ function OilShipmentService:Stop()
 		connection:Disconnect()
 	end
 	self._connections = {}
+	self._activeShipmentByOwner = {}
+	self._shipmentContexts = {}
+end
+
+function OilShipmentService:QueueOrTriggerForcedPirateHit(victimUserId: number, contractorUserId: number, contractId: string): (boolean, string, string?)
+	local shipmentId = self._activeShipmentByOwner[victimUserId]
+	if not shipmentId then
+		return false, "NOT_SAILING", nil
+	end
+	local ctx = self._shipmentContexts[shipmentId]
+	if not ctx then
+		return false, "NOT_SAILING", nil
+	end
+	ctx.pendingForcedPirateHit = {
+		contractId = contractId,
+		contractorUserId = contractorUserId,
+		requestedAt = workspace:GetServerTimeNow(),
+	}
+	return true, if ctx.eventInProgress then "QUEUED_AFTER_EVENT" else "INJECT_NOW", shipmentId
+end
+
+function OilShipmentService:QueueOrInjectForActiveShipment(victimUserId: number, contractorUserId: number, contractId: string): (boolean, string, string?)
+	return self:QueueOrTriggerForcedPirateHit(victimUserId, contractorUserId, contractId)
 end
 
 function OilShipmentService:GetShipSkinCatalogForClient()
@@ -587,6 +618,15 @@ function OilShipmentService:_runShipment(shipment)
 
 	-- Setup physics-driven ship
 	self:_setupShip(shipment.shipmentId, boat, startRaised, initDir)
+	self._activeShipmentByOwner[ownerUserId] = shipment.shipmentId
+	self._shipmentContexts[shipment.shipmentId] = {
+		ownerUserId = ownerUserId,
+		shipmentId = shipment.shipmentId,
+		boat = boat,
+		eventInProgress = false,
+		lastWorldPosition = path[1],
+		pendingForcedPirateHit = nil,
+	}
 
 	if boat:IsA("Model") then
 		boat:SetAttribute("ShipmentId", shipment.shipmentId)
@@ -632,6 +672,24 @@ function OilShipmentService:_runShipment(shipment)
 	-- Voyage: follow the polyline path over travelSeconds
 	local voyageTime = shipment.travelSeconds
 	local voyageClock = { startTime = workspace:GetServerTimeNow() }
+	local ctx = self._shipmentContexts[shipment.shipmentId]
+	if ctx then
+		ctx.voyageClock = voyageClock
+	end
+
+	if self._hitContractService and typeof(self._hitContractService.ConsumePendingForVictim) == "function" then
+		local pendingContract = self._hitContractService:ConsumePendingForVictim(ownerUserId)
+		if pendingContract and ctx then
+			ctx.pendingForcedPirateHit = {
+				contractId = pendingContract.contractId,
+				contractorUserId = pendingContract.contractorUserId,
+				requestedAt = workspace:GetServerTimeNow(),
+			}
+			if typeof(self._hitContractService.MarkContractAttached) == "function" then
+				self._hitContractService:MarkContractAttached(pendingContract.contractId, shipment.shipmentId)
+			end
+		end
+	end
 
 	-- Pre-compute cumulative segment distances for the polyline
 	local segDists = { 0 }
@@ -670,68 +728,84 @@ function OilShipmentService:_runShipment(shipment)
 	end
 
 	while true do
-		local elapsed = workspace:GetServerTimeNow() - voyageClock.startTime
-		local alpha = clamp01(elapsed / voyageTime)
+		local voyageAborted = false
 
-		-- Map alpha (0..1) to a position along the polyline
-		local targetDist = alpha * totalPathLen
-		if boat:IsA("Model") then
-			boat:SetAttribute("RouteProgress01", clamp01(targetDist / totalPathLen))
-		end
-		local currentPos = path[#path]
-		local nextPos = path[#path]
-		for i = 2, #path do
-			if segDists[i] >= targetDist then
-				local segStart = path[i - 1]
-				local segEnd = path[i]
-				local segLen = segDists[i] - segDists[i - 1]
-				local segAlpha = if segLen > 0 then (targetDist - segDists[i - 1]) / segLen else 0
-				currentPos = segStart:Lerp(segEnd, clamp01(segAlpha))
-				nextPos = segEnd
-				break
+		if ctx then
+			local forcedLost = self:_maybeProcessForcedPirateHit(shipment, ownerUserId, voyageClock, boat, ctx)
+			if forcedLost then
+				voyageAborted = true
 			end
 		end
 
-		local raisedPos = Vector3.new(currentPos.X, currentPos.Y + SHIP_Y_OFFSET, currentPos.Z)
-		local flatDir = Vector3.new(nextPos.X - currentPos.X, 0, nextPos.Z - currentPos.Z)
+		local alpha = 0
+		if not voyageAborted then
+			local elapsed = workspace:GetServerTimeNow() - voyageClock.startTime
+			alpha = clamp01(elapsed / voyageTime)
 
-		self:_updateShipPosition(shipment.shipmentId, boat, raisedPos, flatDir)
-
-		local voyageAborted = false
-		for _, slot in ipairs(triggerSlots) do
-			local laneN = slot.laneWaypointIndex
-			if not firedAtLaneWaypoint[laneN] and prevTargetDist < slot.distance and targetDist >= slot.distance then
-				firedAtLaneWaypoint[laneN] = true
-				if self:_straitDebugLogEnabled() then
-					print(
-						string.format(
-							"[StraitShipment DEBUG] ── CROSSING lane waypoint %d (path vertex ~%d) shipment=%s distAlongPath=%.1f engineState=%s ──",
-							laneN,
-							1 + laneN,
-							shipment.shipmentId,
-							slot.distance,
-							self:_getStraitEngineState()
-						)
-					)
-				end
-				local lost = self:_handleStraitWaypointTrigger(
-					shipment,
-					ownerUserId,
-					laneN,
-					currentPos,
-					voyageClock,
-					boat
-				)
-				if lost then
-					voyageAborted = true
+			-- Map alpha (0..1) to a position along the polyline
+			local targetDist = alpha * totalPathLen
+			if boat:IsA("Model") then
+				boat:SetAttribute("RouteProgress01", clamp01(targetDist / totalPathLen))
+			end
+			local currentPos = path[#path]
+			local nextPos = path[#path]
+			for i = 2, #path do
+				if segDists[i] >= targetDist then
+					local segStart = path[i - 1]
+					local segEnd = path[i]
+					local segLen = segDists[i] - segDists[i - 1]
+					local segAlpha = if segLen > 0 then (targetDist - segDists[i - 1]) / segLen else 0
+					currentPos = segStart:Lerp(segEnd, clamp01(segAlpha))
+					nextPos = segEnd
 					break
 				end
 			end
+
+			local raisedPos = Vector3.new(currentPos.X, currentPos.Y + SHIP_Y_OFFSET, currentPos.Z)
+			local flatDir = Vector3.new(nextPos.X - currentPos.X, 0, nextPos.Z - currentPos.Z)
+			if ctx then
+				ctx.lastWorldPosition = currentPos
+			end
+
+			self:_updateShipPosition(shipment.shipmentId, boat, raisedPos, flatDir)
+
+			for _, slot in ipairs(triggerSlots) do
+				local laneN = slot.laneWaypointIndex
+				if not firedAtLaneWaypoint[laneN] and prevTargetDist < slot.distance and targetDist >= slot.distance then
+					firedAtLaneWaypoint[laneN] = true
+					if self:_straitDebugLogEnabled() then
+						print(
+							string.format(
+								"[StraitShipment DEBUG] crossing lane waypoint %d (path vertex ~%d) shipment=%s distAlongPath=%.1f engineState=%s",
+								laneN,
+								1 + laneN,
+								shipment.shipmentId,
+								slot.distance,
+								self:_getStraitEngineState()
+							)
+						)
+					end
+					if ctx then
+						ctx.eventInProgress = true
+					end
+					local lost = self:_handleStraitWaypointTrigger(shipment, ownerUserId, laneN, currentPos, voyageClock, boat)
+					if ctx then
+						ctx.eventInProgress = false
+					end
+					if lost then
+						voyageAborted = true
+						break
+					end
+				end
+			end
+
+			prevTargetDist = targetDist
 		end
 
-		prevTargetDist = targetDist
-
 		if voyageAborted then
+			if ctx and ctx.pendingForcedPirateHit and self._hitContractService and typeof(self._hitContractService.RefundContract) == "function" then
+				self._hitContractService:RefundContract(ctx.pendingForcedPirateHit.contractId, "victim_destroyed_before_raid")
+			end
 			if boardConnection then
 				boardConnection:Disconnect()
 			end
@@ -739,6 +813,8 @@ function OilShipmentService:_runShipment(shipment)
 			self:_teardownShip(shipment.shipmentId)
 			self._boatDockService:CheckinBoat(ownerUserId, { destroyed = true })
 			self:_finishShipmentWithoutPayout(shipment, "Strait event: total loss")
+			self._activeShipmentByOwner[ownerUserId] = nil
+			self._shipmentContexts[shipment.shipmentId] = nil
 			return
 		end
 
@@ -762,7 +838,7 @@ function OilShipmentService:_runShipment(shipment)
 		totalDelivered += deliveredTier
 	end
 
-	-- Deliver barrels to warehouse (no auto-payout — player sells via Market UI)
+	-- Deliver barrels to warehouse (no auto-payout - player sells via Market UI)
 	if self._warehouseService then
 		self._warehouseService:DeliverBarrels(ownerUserId, deliveredManifest)
 	end
@@ -784,13 +860,18 @@ function OilShipmentService:_runShipment(shipment)
 		deliveredByTier = deliveredManifest,
 	})
 
-	-- Owner on strait / ocean → warehouse spawn; on StartBeach / FinishBeach footprint → stay; at home plot → no-op
+	-- Owner on strait / ocean -> warehouse spawn; on StartBeach / FinishBeach footprint -> stay; at home plot -> no-op
 	if boardConnection then
 		boardConnection:Disconnect()
 	end
 	self:_handleOwnerAfterSuccessfulShipmentFinish(boat, ownerUserId)
 	self:_teardownShip(shipment.shipmentId)
 	self._boatDockService:CheckinBoat(ownerUserId, { destroyed = false })
+	if ctx and ctx.pendingForcedPirateHit and self._hitContractService and typeof(self._hitContractService.RefundContract) == "function" then
+		self._hitContractService:RefundContract(ctx.pendingForcedPirateHit.contractId, "victim_completed_before_raid")
+	end
+	self._activeShipmentByOwner[ownerUserId] = nil
+	self._shipmentContexts[shipment.shipmentId] = nil
 end
 
 --- Successful voyage: sample **HumanoidRootPart** before unseat. Warehouse if over **`Map.Ocean`** footprint (not over **`StartBeach`** / **`FinishBeach`** anywhere under **`Map`**). Seated-on-ship fallback: **ClaimPad** if warehouse unavailable.
@@ -1190,6 +1271,128 @@ function OilShipmentService:_buildStraitTriggerSlots(path: { Vector3 }, segDists
 		return a.distance < b.distance
 	end)
 	return slots
+end
+
+function OilShipmentService:_emitPirateHitAlert(userId: number, message: string)
+	local player = Players:GetPlayerByUserId(userId)
+	if not player then
+		return
+	end
+	local ev = self._remoteService:GetEvent(RemoteNames.PirateHitAlert)
+	ev:FireClient(player, { message = message })
+end
+
+function OilShipmentService:_deliverContractStolenOil(contractorUserId: number, stolenByTier: { [string]: number })
+	if not self._warehouseService then
+		return
+	end
+	if typeof(self._warehouseService.DeliverHitBarrels) == "function" then
+		self._warehouseService:DeliverHitBarrels(contractorUserId, stolenByTier)
+	else
+		self._warehouseService:DeliverBarrels(contractorUserId, stolenByTier)
+	end
+	if self._warehouseService.PushState then
+		self._warehouseService:PushState(contractorUserId)
+	end
+end
+
+function OilShipmentService:_executeForcedContractPirateRaid(
+	shipment,
+	ownerUserId: number,
+	worldPosition: Vector3,
+	voyageClock: { startTime: number },
+	boat: Instance,
+	contractorUserId: number,
+	contractId: string
+): boolean
+	local pc = StraitEventCatalog.PirateRaidConfig
+	local log = self:_straitDebugLogEnabled()
+	local skinFx = ShipSkinCatalog.GetSkin(shipment.shipSkinId).fxParticleScale
+	local particleFxScale = ParticleFxScale.ComputePayloadScale(boat, skinFx)
+
+	local barrelsStolen, stolenByTier = self:_applyLooseBarrelLoss(shipment, FORCED_CONTRACT_PIRATE_LOSS_FRACTION)
+	if barrelsStolen > 0 then
+		self:_emitManifestHudSnapshot(shipment, {
+			title = "Contract hit: pirates raided your ship",
+			eventId = "ContractPirateHit",
+			totalLoss = false,
+			lossOilByTier = stolenByTier,
+		})
+	end
+
+	local approachSide = Random.new():NextNumber() < 0.5 and 1 or -1
+	self:_emitShipmentEvent("PirateRaidEvent", {
+		ownerUserId = ownerUserId,
+		shipmentId = shipment.shipmentId,
+		eventId = "ContractPirateHit",
+		displayName = "Contract Hit: Pirate Boarding",
+		playtestTitle = "Contract Pirate Hit",
+		severity = "High",
+		barrelsStolen = barrelsStolen,
+		approachSide = approachSide,
+		worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+		particleFxScale = particleFxScale,
+		contractorUserId = contractorUserId,
+		isContractHit = true,
+	})
+
+	self:_emitPirateHitAlert(ownerUserId, string.format("BOUNTY RAID! Pirates stole %d barrels.", barrelsStolen))
+	self:_emitPirateHitAlert(contractorUserId, string.format("Your hit landed. Pirates stole %d barrels.", barrelsStolen))
+
+	if barrelsStolen > 0 then
+		self:_deliverContractStolenOil(contractorUserId, stolenByTier)
+	end
+
+	if self._hitContractService and typeof(self._hitContractService.MarkContractExecuted) == "function" then
+		self._hitContractService:MarkContractExecuted(contractId)
+	end
+
+	if log then
+		print(string.format(
+			"[StraitShipment DEBUG] CONTRACT PIRATE RAID shipment=%s victim=%d contractor=%d stolen=%d",
+			tostring(shipment.shipmentId),
+			ownerUserId,
+			contractorUserId,
+			barrelsStolen
+		))
+	end
+
+	task.wait(pc.SequenceDuration)
+	voyageClock.startTime += pc.SequenceDuration
+	return false
+end
+
+function OilShipmentService:_maybeProcessForcedPirateHit(
+	shipment,
+	ownerUserId: number,
+	voyageClock: { startTime: number },
+	boat: Instance,
+	ctx: { [string]: any }
+): boolean
+	local pending = ctx.pendingForcedPirateHit
+	if not pending then
+		return false
+	end
+	if ctx.eventInProgress then
+		return false
+	end
+	ctx.pendingForcedPirateHit = nil
+	ctx.eventInProgress = true
+	local pos = ctx.lastWorldPosition
+	if typeof(pos) ~= "Vector3" then
+		pos = boat:GetPivot().Position
+	end
+	local didTotalLoss = self:_executeForcedContractPirateRaid(
+		shipment,
+		ownerUserId,
+		pos,
+		voyageClock,
+		boat,
+		pending.contractorUserId,
+		pending.contractId
+	)
+	ctx.eventInProgress = false
+	return didTotalLoss
 end
 
 -- Returns true if shipment is a total loss (caller must cleanup boat and exit _runShipment).

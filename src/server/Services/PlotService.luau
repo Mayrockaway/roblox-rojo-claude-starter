@@ -236,8 +236,40 @@ function PlotService:_initializePlots()
 			warn(string.format("[PlotService] %s %s missing StartingChunk=true", plot.Name, startingSectionId))
 		end
 
+		self:_ensureCoreMachineAnchorsAndSnap(plot)
 		self:_ensurePlotMarkers(plot)
 		self:_refreshPlotVisual(plot)
+	end
+end
+
+function PlotService:_ensureCoreMachineAnchorsAndSnap(plot: Model)
+	local specs = {
+		{ modelName = "Lab Machine", anchorName = "LabMachineAnchor" },
+		{ modelName = "BarrelStagingArea", anchorName = "BarrelStagingAnchor" },
+	}
+	for _, spec in ipairs(specs) do
+		local model = plot:FindFirstChild(spec.modelName)
+		if model and model:IsA("Model") then
+			local anchor = plot:FindFirstChild(spec.anchorName)
+			if anchor and not anchor:IsA("BasePart") then
+				anchor:Destroy()
+				anchor = nil
+			end
+			if not anchor then
+				local a = Instance.new("Part")
+				a.Name = spec.anchorName
+				a.Size = Vector3.new(1, 1, 1)
+				a.Anchored = true
+				a.CanCollide = false
+				a.CanQuery = false
+				a.CanTouch = false
+				a.Transparency = 1
+				a.CFrame = model:GetPivot()
+				a.Parent = plot
+				anchor = a
+			end
+			model:PivotTo(anchor.CFrame)
+		end
 	end
 end
 
@@ -267,6 +299,8 @@ function PlotService:_ensurePlotMarkers(plot: Model)
 		barrelRoot.Parent = plot
 		barrelRoot.CFrame = anchor.CFrame * CFrame.new(0, 1, -12)
 	end
+	-- Keep runtime anchor helper fully hidden in-game.
+	barrelRoot.Transparency = 1
 
 	local stackPad = plot:FindFirstChild("BarrelStackPad")
 	if stackPad and not stackPad:IsA("Part") then
@@ -283,10 +317,12 @@ function PlotService:_ensurePlotMarkers(plot: Model)
 		stackPad.CanTouch = false
 		stackPad.Material = Enum.Material.Neon
 		stackPad.Color = Color3.fromRGB(56, 126, 186)
-		stackPad.Transparency = 0.65
+		stackPad.Transparency = 1
 		stackPad.Parent = plot
 		stackPad.CFrame = barrelRoot.CFrame * CFrame.new(0, -0.65, 0)
 	end
+	-- Keep helper pad non-visible in runtime.
+	stackPad.Transparency = 1
 
 	local function ensureMarker(name: string, offset: Vector3, color: Color3)
 		local marker = plot:FindFirstChild(name)
@@ -310,12 +346,27 @@ function PlotService:_ensurePlotMarkers(plot: Model)
 			created = true
 		end
 
+		-- Markers are logical anchors, not player-facing visuals.
+		marker.Transparency = 1
+
 		if created then
 			marker.CFrame = anchor.CFrame * CFrame.new(offset)
 		end
 	end
 
+	local function hideLegacyMarker(name: string)
+		local marker = plot:FindFirstChild(name)
+		if marker and marker:IsA("BasePart") then
+			marker.Transparency = 1
+			marker.CanCollide = false
+			marker.CanQuery = false
+			marker.CanTouch = false
+		end
+	end
+
 	ensureMarker("ShipLoadPoint", Vector3.new(0, 3, 20), Color3.fromRGB(80, 160, 220))
+	hideLegacyMarker("BoatSpawn")
+	hideLegacyMarker("BoatExit")
 	-- BoatSpawn / BoatExit per-plot markers are no longer used: boats live at
 	-- workspace.dOCKS.BoatSpawn{1..8} managed by BoatDockService.
 

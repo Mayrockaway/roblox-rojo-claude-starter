@@ -124,6 +124,11 @@ local shipmentVisualEvent = remotesFolder:WaitForChild(RemoteNames.ShipmentVisua
 local requestDevSetStraitBracket = remotesFolder:WaitForChild(RemoteNames.RequestDevSetStraitBracket) :: RemoteEvent
 local globalStateUpdate = remotesFolder:WaitForChild(RemoteNames.GlobalStateUpdate) :: RemoteEvent
 local fighterFlyoverEvent = remotesFolder:WaitForChild(RemoteNames.FighterFlyoverEvent) :: RemoteEvent
+local requestPirateHireTargets = remotesFolder:WaitForChild(RemoteNames.RequestPirateHireTargets) :: RemoteFunction
+local requestPirateHireAction = remotesFolder:WaitForChild(RemoteNames.RequestPirateHireAction) :: RemoteEvent
+local pirateHireOpenEvent = remotesFolder:WaitForChild(RemoteNames.PirateHireOpen) :: RemoteEvent
+local pirateHireResultEvent = remotesFolder:WaitForChild(RemoteNames.PirateHireResult) :: RemoteEvent
+local pirateHitAlertEvent = remotesFolder:WaitForChild(RemoteNames.PirateHitAlert) :: RemoteEvent
 
 -- Dev diagnostic: mirror server-side [PlotService]/[OilState]/[ChunkOwnership] prints
 -- to this client's Output so the user doesn't have to hunt the Server Studio process.
@@ -251,6 +256,19 @@ local promptConnections = {}
 
 -- Pipe ghost (cell-grid)
 local pipeGhost: Model? = nil
+local lastPipeDebugAt = 0
+
+local function pipeDebugLog(msg: string)
+	if not RunService:IsStudio() then
+		return
+	end
+	local now = os.clock()
+	if now - lastPipeDebugAt < 0.12 then
+		return
+	end
+	lastPipeDebugAt = now
+	print("[PipeDebug] " .. msg)
+end
 
 -- =================== CLIENT CELL-GRID HELPERS ===================
 local SUB_TILE_SIZE = 8
@@ -372,6 +390,241 @@ local function setStatus(message: string, ok: boolean?)
 	if RunService:IsStudio() then
 		print("[Client] status:", message, " ok=", ok)
 	end
+end
+
+local pirateHireUiState = {
+	screen = nil :: ScreenGui?,
+	targetList = nil :: ScrollingFrame?,
+	infoLabel = nil :: TextLabel?,
+	confirmButton = nil :: TextButton?,
+	selectedVictimUserId = nil :: number?,
+	hitCost = 5000,
+	freeHitTokens = 0,
+}
+
+local function closePirateHireUi()
+	local s = pirateHireUiState.screen
+	if s and s.Parent then
+		s:Destroy()
+	end
+	pirateHireUiState.screen = nil
+	pirateHireUiState.targetList = nil
+	pirateHireUiState.infoLabel = nil
+	pirateHireUiState.confirmButton = nil
+	pirateHireUiState.selectedVictimUserId = nil
+end
+
+local function updatePirateHireInfo(text: string)
+	local label = pirateHireUiState.infoLabel
+	if label then
+		label.Text = text
+	end
+end
+
+local function refreshPirateHireTargets()
+	local targetList = pirateHireUiState.targetList
+	if not targetList then
+		return
+	end
+
+	for _, child in ipairs(targetList:GetChildren()) do
+		if child:IsA("GuiObject") then
+			child:Destroy()
+		end
+	end
+
+	local ok, payload = pcall(function()
+		return requestPirateHireTargets:InvokeServer()
+	end)
+	if not ok or typeof(payload) ~= "table" then
+		updatePirateHireInfo("Could not fetch targets.")
+		return
+	end
+
+	pirateHireUiState.freeHitTokens = math.max(0, math.floor(tonumber((payload :: any).freeHitTokens) or 0))
+	pirateHireUiState.hitCost = math.max(0, math.floor(tonumber((payload :: any).hitCost) or pirateHireUiState.hitCost))
+
+	local y = 0
+	local targets = (payload :: any).targets
+	if typeof(targets) == "table" then
+		for _, target in ipairs(targets) do
+			if typeof(target) == "table" then
+				local userId = tonumber(target.userId)
+				if userId then
+					local btn = Instance.new("TextButton")
+					btn.Name = "Target_" .. tostring(userId)
+					btn.Size = UDim2.new(1, -6, 0, 32)
+					btn.Position = UDim2.new(0, 3, 0, y)
+					btn.BackgroundColor3 = Color3.fromRGB(35, 42, 54)
+					btn.TextColor3 = Color3.fromRGB(239, 244, 255)
+					btn.TextXAlignment = Enum.TextXAlignment.Left
+					btn.Font = Enum.Font.Gotham
+					btn.TextSize = 14
+					local dn = tostring(target.displayName or target.name or ("User " .. tostring(userId)))
+					local un = tostring(target.name or "")
+					btn.Text = string.format("  %s (%s)", dn, un)
+					btn.Parent = targetList
+					btn.MouseButton1Click:Connect(function()
+						pirateHireUiState.selectedVictimUserId = userId
+						updatePirateHireInfo(string.format(
+							"Selected: %s | Cost: $%d%s",
+							dn,
+							pirateHireUiState.hitCost,
+							pirateHireUiState.freeHitTokens > 0 and string.format(" (or 1 free token, you have %d)", pirateHireUiState.freeHitTokens) or ""
+						))
+					end)
+					y += 35
+				end
+			end
+		end
+	end
+
+	targetList.CanvasSize = UDim2.new(0, 0, 0, math.max(y, 1))
+	if y <= 0 then
+		updatePirateHireInfo("No valid targets online right now.")
+	else
+		updatePirateHireInfo(string.format(
+			"Pick a target. Cost: $%d%s",
+			pirateHireUiState.hitCost,
+			pirateHireUiState.freeHitTokens > 0 and string.format(" | Free tokens: %d", pirateHireUiState.freeHitTokens) or ""
+		))
+	end
+end
+
+local function openPirateHireUi(payload: any)
+	closePirateHireUi()
+
+	if typeof(payload) == "table" then
+		pirateHireUiState.hitCost = math.max(0, math.floor(tonumber(payload.hitCost) or pirateHireUiState.hitCost))
+		pirateHireUiState.freeHitTokens = math.max(0, math.floor(tonumber(payload.freeHitTokens) or 0))
+	end
+
+	local screen = Instance.new("ScreenGui")
+	screen.Name = "PirateHireGui"
+	screen.ResetOnSpawn = false
+	screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screen.Parent = playerGui
+	pirateHireUiState.screen = screen
+
+	local dim = Instance.new("Frame")
+	dim.Name = "Dim"
+	dim.Size = UDim2.fromScale(1, 1)
+	dim.BackgroundColor3 = Color3.new(0, 0, 0)
+	dim.BackgroundTransparency = 0.35
+	dim.BorderSizePixel = 0
+	dim.Parent = screen
+
+	local panel = Instance.new("Frame")
+	panel.Name = "Panel"
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.Position = UDim2.fromScale(0.5, 0.5)
+	panel.Size = UDim2.fromOffset(520, 420)
+	panel.BackgroundColor3 = Color3.fromRGB(20, 25, 34)
+	panel.BorderSizePixel = 0
+	panel.Parent = dim
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.BackgroundTransparency = 1
+	title.Size = UDim2.new(1, -16, 0, 34)
+	title.Position = UDim2.fromOffset(8, 8)
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 20
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextColor3 = Color3.fromRGB(248, 234, 146)
+	title.Text = "Pirate Broker"
+	title.Parent = panel
+
+	local info = Instance.new("TextLabel")
+	info.Name = "Info"
+	info.BackgroundTransparency = 1
+	info.Size = UDim2.new(1, -16, 0, 48)
+	info.Position = UDim2.fromOffset(8, 44)
+	info.Font = Enum.Font.Gotham
+	info.TextWrapped = true
+	info.TextXAlignment = Enum.TextXAlignment.Left
+	info.TextYAlignment = Enum.TextYAlignment.Top
+	info.TextSize = 14
+	info.TextColor3 = Color3.fromRGB(223, 232, 244)
+	info.Text = "Ask a question or hire a hit."
+	info.Parent = panel
+	pirateHireUiState.infoLabel = info
+
+	local askButton = Instance.new("TextButton")
+	askButton.Name = "AskButton"
+	askButton.Size = UDim2.fromOffset(150, 34)
+	askButton.Position = UDim2.fromOffset(8, 98)
+	askButton.BackgroundColor3 = Color3.fromRGB(56, 70, 92)
+	askButton.TextColor3 = Color3.fromRGB(245, 249, 255)
+	askButton.Font = Enum.Font.Gotham
+	askButton.TextSize = 14
+	askButton.Text = "Ask a question"
+	askButton.Parent = panel
+	askButton.MouseButton1Click:Connect(function()
+		requestPirateHireAction:FireServer({ action = "ask" })
+	end)
+
+	local refreshButton = Instance.new("TextButton")
+	refreshButton.Name = "RefreshButton"
+	refreshButton.Size = UDim2.fromOffset(110, 34)
+	refreshButton.Position = UDim2.fromOffset(166, 98)
+	refreshButton.BackgroundColor3 = Color3.fromRGB(56, 70, 92)
+	refreshButton.TextColor3 = Color3.fromRGB(245, 249, 255)
+	refreshButton.Font = Enum.Font.Gotham
+	refreshButton.TextSize = 14
+	refreshButton.Text = "Refresh list"
+	refreshButton.Parent = panel
+	refreshButton.MouseButton1Click:Connect(function()
+		refreshPirateHireTargets()
+	end)
+
+	local targetList = Instance.new("ScrollingFrame")
+	targetList.Name = "TargetList"
+	targetList.Size = UDim2.new(1, -16, 1, -196)
+	targetList.Position = UDim2.fromOffset(8, 140)
+	targetList.BackgroundColor3 = Color3.fromRGB(28, 34, 46)
+	targetList.BorderSizePixel = 0
+	targetList.AutomaticCanvasSize = Enum.AutomaticSize.None
+	targetList.ScrollBarThickness = 8
+	targetList.Parent = panel
+	pirateHireUiState.targetList = targetList
+
+	local confirmButton = Instance.new("TextButton")
+	confirmButton.Name = "ConfirmButton"
+	confirmButton.Size = UDim2.fromOffset(150, 36)
+	confirmButton.Position = UDim2.new(1, -314, 1, -44)
+	confirmButton.BackgroundColor3 = Color3.fromRGB(158, 53, 53)
+	confirmButton.TextColor3 = Color3.fromRGB(253, 242, 242)
+	confirmButton.Font = Enum.Font.GothamBold
+	confirmButton.TextSize = 14
+	confirmButton.Text = "Hire a hit"
+	confirmButton.Parent = panel
+	pirateHireUiState.confirmButton = confirmButton
+	confirmButton.MouseButton1Click:Connect(function()
+		local victimUserId = pirateHireUiState.selectedVictimUserId
+		if not victimUserId then
+			updatePirateHireInfo("Select a target first.")
+			return
+		end
+		requestPirateHireAction:FireServer({
+			action = "hire",
+			victimUserId = victimUserId,
+		})
+	end)
+
+	local closeButton = Instance.new("TextButton")
+	closeButton.Name = "CloseButton"
+	closeButton.Size = UDim2.fromOffset(150, 36)
+	closeButton.Position = UDim2.new(1, -158, 1, -44)
+	closeButton.BackgroundColor3 = Color3.fromRGB(48, 56, 70)
+	closeButton.TextColor3 = Color3.fromRGB(238, 244, 251)
+	closeButton.Font = Enum.Font.Gotham
+	closeButton.TextSize = 14
+	closeButton.Text = "Close"
+	closeButton.Parent = panel
+	closeButton.MouseButton1Click:Connect(closePirateHireUi)
+
+	refreshPirateHireTargets()
 end
 
 local function getEquippedToolName(): string?
@@ -540,6 +793,7 @@ local function bindOwnedPlot()
 			end
 		end
 	end
+
 	print(string.format("[Client] bindOwnedPlot: %s bound, %d chunks found", ownedPlot.Name, count))
 
 	bindPromptsForOwnedPlot()
@@ -767,20 +1021,17 @@ end
 
 -- =================== CELL-GRID PIPE PLACEMENT ===================
 
-local function getPipeCellHit(): (number?, number?)
-	local target = mouse.Target
-	if not (target and target:IsA("BasePart")) then
+local function getPipeHit(): (Vector3?, string?)
+	local _chunkInst, hitPos, chunkId = getTargetedChunkHit()
+	if not hitPos or not chunkId then
+		pipeDebugLog("no valid chunk hit")
 		return nil, nil
 	end
-	local _, hitPos, _chunkId = getTargetedChunkHit()
-	if not hitPos then
+	if not isChunkUnlocked(chunkId) then
+		pipeDebugLog("chunk locked: " .. tostring(chunkId))
 		return nil, nil
 	end
-	local row, col = clientWorldToCell(hitPos.X, hitPos.Z)
-	if not clientCellInBounds(row, col) then
-		return nil, nil
-	end
-	return row, col
+	return hitPos, chunkId
 end
 
 local function ensurePipeGhost(): Model
@@ -814,23 +1065,15 @@ local function hidePipeGhost()
 	end
 end
 
-local function pipeCellValid(row: number, col: number): (boolean, string?)
-	if not clientCellInBounds(row, col) then
-		return false, "Out of bounds"
+local function pipeHitValid(chunkId: string?): (boolean, string?)
+	if not chunkId or chunkId == "" then
+		return false, "No chunk"
 	end
-	local _, _, _, _, subTilesPerSide = plotGridConstants()
-	local sRow = math.floor((row - 1) / subTilesPerSide) + 1
-	local sCol = math.floor((col - 1) / subTilesPerSide) + 1
-	local sectionId = string.format("S%02d_%02d", sRow, sCol)
-	local section = chunkStateById[sectionId]
-	if not section or not section.unlocked then
+	local section = chunkStateById[chunkId]
+	if not section or section.unlocked ~= true then
 		return false, "Locked section"
 	end
-	local key = cellKeyOf(row, col)
-	if pipeStateByCellKey[key] then
-		return false, "Cell already has a pipe"
-	end
-	return true
+	return true, nil
 end
 
 local function updatePipeGhost()
@@ -839,17 +1082,18 @@ local function updatePipeGhost()
 		hidePipeGhost()
 		return
 	end
-	local row, col = getPipeCellHit()
-	if not row then
+	local worldPos, chunkId = getPipeHit()
+	if not worldPos then
+		pipeDebugLog("ghost hidden: no valid pipe cell")
 		hidePipeGhost()
 		return
 	end
-	local x, z = clientCellToWorld(row, col)
-	local valid = pipeCellValid(row, col)
+	local valid = pipeHitValid(chunkId)
 	local g = ensurePipeGhost()
 	local body = g:FindFirstChild("Body")
 	if body and body:IsA("BasePart") then
-		body.Position = Vector3.new(x, 6.5, z)
+		local y = (chunkId and (surfaceYFromRayTarget() or getChunkSurfaceY(chunkId) or worldPos.Y)) or worldPos.Y
+		body.Position = Vector3.new(worldPos.X, y + 0.75, worldPos.Z)
 		body.Color = valid and Color3.fromRGB(80, 220, 120) or Color3.fromRGB(220, 70, 70)
 	end
 end
@@ -858,17 +1102,20 @@ local function tryPipeAction()
 	if getEquippedToolName() ~= TOOL_PIPE then
 		return
 	end
-	local row, col = getPipeCellHit()
-	if not row then
+	local worldPos, chunkId = getPipeHit()
+	if not worldPos then
+		pipeDebugLog("place failed: no valid owned tile under cursor")
 		setStatus("Click on an owned chunk.", false)
 		return
 	end
-	local valid, reason = pipeCellValid(row, col)
+	local valid, reason = pipeHitValid(chunkId)
 	if not valid then
+		pipeDebugLog(string.format("place blocked chunk=%s reason=%s", tostring(chunkId), tostring(reason)))
 		setStatus(reason or "Cannot place pipe here.", false)
 		return
 	end
-	requestPlacePipe:FireServer({ row = row, col = col })
+	requestPlacePipe:FireServer({ x = worldPos.X, z = worldPos.Z, chunkId = chunkId })
+	pipeDebugLog(string.format("place request chunk=%s x=%.2f z=%.2f", tostring(chunkId), worldPos.X, worldPos.Z))
 end
 
 local function ensureFocusBillboard()
@@ -1430,16 +1677,19 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		return
 	end
 
-	-- Otherwise try pipe removal by cell: take cursor world position, snap to cell
-	local _, hitPos, _hitChunk = getTargetedChunkHit()
-	if hitPos then
-		local row, col = clientWorldToCell(hitPos.X, hitPos.Z)
-		if clientCellInBounds(row, col) and pipeStateByCellKey[cellKeyOf(row, col)] then
-			requestRemovePipe:FireServer({ row = row, col = col })
-			setStatus("Removed pipe.", true)
-			return
-		end
+	-- Otherwise try pipe removal by targeted chunk tile
+	local pos, chunkId = getPipeHit()
+	if pos then
+		requestRemovePipe:FireServer({
+			x = pos.X,
+			z = pos.Z,
+			chunkId = chunkId,
+		})
+		setStatus("Removed pipe.", true)
+		pipeDebugLog(string.format("remove request chunk=%s x=%.2f z=%.2f", tostring(chunkId), pos.X, pos.Z))
+		return
 	end
+	pipeDebugLog("remove: no valid owned chunk hit")
 end)
 
 UserInputService.InputEnded:Connect(function(input)
@@ -1612,6 +1862,38 @@ globalStateUpdate.OnClientEvent:Connect(function(snapshot)
 			end
 		end
 	end
+end)
+
+pirateHireOpenEvent.OnClientEvent:Connect(function(payload)
+	openPirateHireUi(payload)
+end)
+
+pirateHireResultEvent.OnClientEvent:Connect(function(payload)
+	if typeof(payload) ~= "table" then
+		return
+	end
+	local ok = payload.ok == true
+	local message = tostring(payload.message or "")
+	if message ~= "" then
+		setStatus(message, ok)
+		updatePirateHireInfo(message)
+	end
+	local data = payload.data
+	if typeof(data) == "table" then
+		local tokens = tonumber((data :: any).freeHitTokens)
+		if tokens then
+			pirateHireUiState.freeHitTokens = math.max(0, math.floor(tokens))
+		end
+	end
+end)
+
+pirateHitAlertEvent.OnClientEvent:Connect(function(payload)
+	if typeof(payload) ~= "table" then
+		return
+	end
+	local message = tostring(payload.message or "Pirate hit event.")
+	setStatus(message, false)
+	StraitEventPlaytestBanner.show(playerGui, "Pirate Hit")
 end)
 
 local STRAIT_PLAYTEST_BANNER_KINDS: { [string]: boolean } = {

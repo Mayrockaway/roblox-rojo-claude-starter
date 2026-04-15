@@ -868,6 +868,19 @@ function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, d
 		return string.format("R%dC%d", row + dRow, col + dCol)
 	end
 
+	local subTilesPerSide = math.max(1, math.floor((tonumber(((OilConfig.Chunks or {}).Size)) or 40) / 8))
+	local function rowColToChunkId(row: number, col: number): string
+		local chunkRow = math.floor((row - 1) / subTilesPerSide) + 1
+		local chunkCol = math.floor((col - 1) / subTilesPerSide) + 1
+		return string.format("S%02d_%02d", chunkRow, chunkCol)
+	end
+
+	local function rowColToTileKey(row: number, col: number): string
+		local tileRow = ((row - 1) % subTilesPerSide) + 1
+		local tileCol = ((col - 1) % subTilesPerSide) + 1
+		return string.format("T%d%d", tileRow, tileCol)
+	end
+
 	local wanted = {}
 	for _, pipe in ipairs(pipes) do
 		if pipe.cellKey and pipe.row and pipe.col then
@@ -942,30 +955,45 @@ function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, d
 			local py = tonumber(pipe.position.y) or 6
 			local pz = tonumber(pipe.position.z) or 0
 
-			-- Snap to the nearest tile on this plot (XZ + tile-top Y). Robust against
-			-- missing/stale sectionId and authored tile spacing drift.
-			local ground = _plot:FindFirstChild("PlotGround")
-			if ground then
-				local nearestTile, nearestDist = nil, math.huge
-				for _, sect in ipairs(ground:GetChildren()) do
-					if sect:IsA("Model") then
-						for _, t in ipairs(sect:GetChildren()) do
-							if t:IsA("BasePart") and t.Name:match("^T%d%d$") then
-								local dx = t.Position.X - px
-								local dz = t.Position.Z - pz
-								local d2 = dx*dx + dz*dz
-								if d2 < nearestDist then
-									nearestDist = d2
-									nearestTile = t
-								end
+			local snappedToTile = false
+			if typeof(pipe.row) == "number" and typeof(pipe.col) == "number" then
+				local chunkId = if typeof(pipe.sectionId) == "string" and #pipe.sectionId > 0
+					then pipe.sectionId
+					else rowColToChunkId(pipe.row, pipe.col)
+				local tileKey = rowColToTileKey(pipe.row, pipe.col)
+				local sectionModel = self._plotService:GetChunkModel(_plot, chunkId)
+				if sectionModel then
+					local tilePart = self._plotService:FindChunkTileBasePart(sectionModel, tileKey)
+					if tilePart then
+						px = tilePart.Position.X
+						pz = tilePart.Position.Z
+						py = tilePart.Position.Y + tilePart.Size.Y / 2
+						snappedToTile = true
+					end
+				end
+			end
+
+			-- Fallback: nearest tile search for old/bad records with missing cell metadata.
+			if not snappedToTile then
+				local ground = _plot:FindFirstChild("PlotGround")
+				if ground then
+					local nearestTile, nearestDist = nil, math.huge
+					for _, t in ipairs(ground:GetDescendants()) do
+						if t:IsA("BasePart") and t.Name:match("^T%d%d$") then
+							local dx = t.Position.X - px
+							local dz = t.Position.Z - pz
+							local d2 = dx*dx + dz*dz
+							if d2 < nearestDist then
+								nearestDist = d2
+								nearestTile = t
 							end
 						end
 					end
-				end
-				if nearestTile then
-					px = nearestTile.Position.X
-					pz = nearestTile.Position.Z
-					py = nearestTile.Position.Y + nearestTile.Size.Y / 2
+					if nearestTile then
+						px = nearestTile.Position.X
+						pz = nearestTile.Position.Z
+						py = nearestTile.Position.Y + nearestTile.Size.Y / 2
+					end
 				end
 			end
 
@@ -1020,7 +1048,15 @@ function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, d
 			setArm(armE, eType, Vector3.new(1, 0,  0))
 			setArm(armW, wType, Vector3.new(-1, 0, 0))
 
-			ensureSellBackPromptOnHost(self, model, { ownerUserId = ownerUserId, hammerKind = "pipe", cellKey = pipe.cellKey })
+			if pipe.isCorePipe == true then
+				local prompt = model:FindFirstChild(SELL_BACK_PROMPT, true)
+				if prompt and prompt:IsA("ProximityPrompt") then
+					disconnectSellBackPrompt(prompt)
+					prompt:Destroy()
+				end
+			else
+				ensureSellBackPromptOnHost(self, model, { ownerUserId = ownerUserId, hammerKind = "pipe", cellKey = pipe.cellKey })
+			end
 		end
 	end
 
@@ -1092,8 +1128,27 @@ function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, d
 end
 
 function OilVisualService:_syncDrums(_plot: Model, drumsFolder: Folder, drums, ownerUserId: number)
+	-- Plot art already contains the authored lab machine; avoid spawning duplicate drum rigs on top.
+	if _plot:FindFirstChild("Lab Machine") then
+		for _, child in ipairs(drumsFolder:GetChildren()) do
+			child:Destroy()
+		end
+		return
+	end
+
 	local wanted = {}
 	local drumTemplate = self._assetsFolder and self._assetsFolder:FindFirstChild("Drum")
+	local subTilesPerSide = math.max(1, math.floor((tonumber(((OilConfig.Chunks or {}).Size)) or 40) / 8))
+	local function rowColToChunkId(row: number, col: number): string
+		local chunkRow = math.floor((row - 1) / subTilesPerSide) + 1
+		local chunkCol = math.floor((col - 1) / subTilesPerSide) + 1
+		return string.format("S%02d_%02d", chunkRow, chunkCol)
+	end
+	local function rowColToTileKey(row: number, col: number): string
+		local tileRow = ((row - 1) % subTilesPerSide) + 1
+		local tileCol = ((col - 1) % subTilesPerSide) + 1
+		return string.format("T%d%d", tileRow, tileCol)
+	end
 
 	for _, drum in ipairs(drums) do
 		local drumId = drum.drumId
@@ -1122,10 +1177,28 @@ function OilVisualService:_syncDrums(_plot: Model, drumsFolder: Folder, drums, o
 			local px = tonumber(drum.position.x) or 0
 			local py = tonumber(drum.position.y) or 0
 			local pz = tonumber(drum.position.z) or 0
+			local targetRotation: CFrame? = nil
+			if typeof(drum.row) == "number" and typeof(drum.col) == "number" then
+				local chunkId = rowColToChunkId(drum.row, drum.col)
+				local tileKey = rowColToTileKey(drum.row, drum.col)
+				local sectionModel = self._plotService:GetChunkModel(_plot, chunkId)
+				if sectionModel then
+					local tilePart = self._plotService:FindChunkTileBasePart(sectionModel, tileKey)
+					if tilePart then
+						px = tilePart.Position.X
+						pz = tilePart.Position.Z
+						targetRotation = tilePart.CFrame - tilePart.Position
+					end
+				end
+			end
+			local targetCf = CFrame.new(px, py, pz)
+			if targetRotation then
+				targetCf = targetCf * targetRotation
+			end
 			if model:IsA("Model") then
-				model:PivotTo(CFrame.new(px, py, pz))
+				model:PivotTo(targetCf)
 			elseif model:IsA("BasePart") then
-				model.CFrame = CFrame.new(px, py, pz)
+				model.CFrame = targetCf
 			end
 			anchorAllBaseParts(model)
 			ensureSellBackPromptOnHost(self, model, { ownerUserId = ownerUserId, hammerKind = "drum", drumId = drumId })
@@ -1451,6 +1524,47 @@ function OilVisualService:_syncOilTanks(plot: Model, snapshot)
 	local tankTiers = snapshot.tankTiers or {}
 	local tankCapacities = snapshot.tankCapacities or {}
 	local tankUpgradeCosts = snapshot.tankUpgradeCosts or {}
+	local woodSignParts: { BasePart } = {}
+	for _, child in ipairs(tanks:GetChildren()) do
+		if child:IsA("Model") and child.Name == "Minecraft Wood Sign" then
+			local signPart = child:FindFirstChild("Sign")
+			if signPart and signPart:IsA("BasePart") then
+				table.insert(woodSignParts, signPart)
+			end
+		end
+	end
+	local signByTube = {}
+	local usedSigns = {}
+	local tubeEntries = {}
+	for _, tube in ipairs(tanks:GetChildren()) do
+		local oilType = tube:GetAttribute("OilType")
+		if typeof(oilType) ~= "string" then
+			continue
+		end
+		local testTube = tube:FindFirstChild("test tube")
+		local union = testTube and testTube:FindFirstChild("Union")
+		local liquid = testTube and testTube:FindFirstChild("liquid")
+		if union and union:IsA("BasePart") and liquid and liquid:IsA("BasePart") then
+			table.insert(tubeEntries, { tube = tube, union = union })
+		end
+	end
+	for _, entry in ipairs(tubeEntries) do
+		local bestIdx = nil
+		local bestDist = math.huge
+		for idx, signPart in ipairs(woodSignParts) do
+			if not usedSigns[idx] then
+				local d = (signPart.Position - entry.union.Position).Magnitude
+				if d < bestDist then
+					bestDist = d
+					bestIdx = idx
+				end
+			end
+		end
+		if bestIdx then
+			usedSigns[bestIdx] = true
+			signByTube[entry.tube] = woodSignParts[bestIdx]
+		end
+	end
 
 	for _, tube in ipairs(tanks:GetChildren()) do
 		local oilType = tube:GetAttribute("OilType")
@@ -1467,6 +1581,12 @@ function OilVisualService:_syncOilTanks(plot: Model, snapshot)
 		local capacity = tankCapacities[oilType] or OilTankConfig.GetCapacity(tier)
 		local amount = oilByTier[oilType] or 0
 		local pct = capacity > 0 and math.clamp(amount / capacity, 0, 1) or 0
+		-- High-capacity tanks can change by tiny percentages; keep a minimum visible
+		-- fill whenever there's any oil so players can see it react.
+		local visualPct = pct
+		if amount > 0 then
+			visualPct = math.max(visualPct, 0.04)
+		end
 
 		-- Resolve the shell's bottom Y in world: prefer authored attribute, else compute once from current state.
 		local bottomY = tube:GetAttribute("UnionBottomY")
@@ -1481,7 +1601,7 @@ function OilVisualService:_syncOilTanks(plot: Model, snapshot)
 		end
 
 		-- Fill: liquid world-vertical extent = shell's * pct, bottom at shell bottom.
-		local liquidY = targetShellY * pct
+		local liquidY = targetShellY * visualPct
 		if liquidY < 0.01 then liquidY = 0.01 end -- tiny sliver so Part stays visible
 		setVerticalSize(liquid, liquidY, bottomY)
 
@@ -1490,8 +1610,13 @@ function OilVisualService:_syncOilTanks(plot: Model, snapshot)
 			liquid.Color = col
 		end
 
-		-- Update BillboardGui sign (authored in OilTanksTemplate).
+		-- Legacy floating sign: keep data updated but hide it from gameplay UI.
 		local sign = union:FindFirstChild("TankSign")
+		if sign and sign:IsA("BillboardGui") then
+			sign.Enabled = false
+			sign.AlwaysOnTop = true
+			sign.LightInfluence = 0
+		end
 		local bg = sign and sign:FindFirstChild("Bg")
 		if bg then
 			local titleLabel = bg:FindFirstChild("Title")
@@ -1507,16 +1632,94 @@ function OilVisualService:_syncOilTanks(plot: Model, snapshot)
 					costLabel.Text = "MAXED"
 					costLabel.TextColor3 = Color3.fromRGB(255, 180, 80)
 				else
-					costLabel.Text = string.format("E: Upgrade $%d", cost)
+					costLabel.Text = string.format("Click to Upgrade $%d", cost)
 					costLabel.TextColor3 = Color3.fromRGB(120, 220, 140)
 				end
 			end
 		end
 
-		-- Hide/show the prompt at max tier.
-		local prompt = union:FindFirstChild("TankUpgradePrompt")
+		-- Authoritative upgrade sign is the wood sign part near this tube.
+		local woodSignPart = signByTube[tube]
+		if woodSignPart and woodSignPart:IsA("BasePart") then
+			-- Keep wood signs pinned to the refinery; never let physics drop them.
+			woodSignPart.Anchored = true
+			woodSignPart.CanCollide = false
+			-- Must stay queryable so ClickDetector hover/click works.
+			woodSignPart.CanQuery = true
+			woodSignPart.CanTouch = false
+			woodSignPart.Massless = true
+			woodSignPart:SetAttribute("OilType", oilType)
+			local signModel = woodSignPart.Parent
+			if signModel and signModel:IsA("Model") then
+				signModel:SetAttribute("OilType", oilType)
+				for _, d in ipairs(signModel:GetDescendants()) do
+					if d:IsA("BasePart") then
+						d.Anchored = true
+						d.CanCollide = false
+						-- Keep all sign parts targetable for hover/click affordance.
+						d.CanQuery = true
+						d.CanTouch = false
+						d.Massless = true
+					end
+				end
+			end
+
+			local signClick = woodSignPart:FindFirstChild("TankUpgradeSignClick")
+			if signClick and not signClick:IsA("ClickDetector") then
+				signClick:Destroy()
+				signClick = nil
+			end
+			if not signClick then
+				local cd = Instance.new("ClickDetector")
+				cd.Name = "TankUpgradeSignClick"
+				cd.MaxActivationDistance = 22
+				cd.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
+				cd.Parent = woodSignPart
+			elseif signClick:IsA("ClickDetector") then
+				signClick.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
+				signClick.MaxActivationDistance = math.max(22, signClick.MaxActivationDistance)
+			end
+
+			local surfaceGui = woodSignPart:FindFirstChildOfClass("SurfaceGui")
+			if surfaceGui then
+				-- Let ClickDetector handle click; sign text does not need GUI input.
+				surfaceGui.Active = false
+				local signLabel = surfaceGui:FindFirstChild("SIGN")
+				if not (signLabel and signLabel:IsA("TextLabel")) then
+					for _, ui in ipairs(surfaceGui:GetDescendants()) do
+						if ui:IsA("TextLabel") then
+							signLabel = ui
+							break
+						end
+					end
+				end
+				if signLabel and signLabel:IsA("TextLabel") then
+					local cost = tankUpgradeCosts[oilType]
+					if tier >= OilTankConfig.MaxTier or cost == nil then
+						signLabel.Text = string.format("%s\n%d/%d\nMAXED", oilType, math.floor(amount), math.floor(capacity))
+					else
+						signLabel.Text = string.format(
+							"%s\n%d/%d\nClick to Upgrade\n$%d",
+							oilType,
+							math.floor(amount),
+							math.floor(capacity),
+							cost
+						)
+					end
+				end
+			end
+		end
+
+		-- Legacy union click path removed.
+		local unionClick = union:FindFirstChild("TankUpgradeClick")
+		if unionClick and unionClick:IsA("ClickDetector") then
+			unionClick:Destroy()
+		end
+
+		-- Prompt path fully removed; upgrades are sign click/tap only.
+		local prompt = union:FindFirstChild("TankUpgradePrompt", true)
 		if prompt and prompt:IsA("ProximityPrompt") then
-			prompt.Enabled = tier < OilTankConfig.MaxTier
+			prompt:Destroy()
 		end
 	end
 end
