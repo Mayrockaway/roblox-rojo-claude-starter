@@ -28,6 +28,7 @@ local ToolService = require(serviceFolder:WaitForChild("ToolService"))
 local OilVisualService = require(serviceFolder:WaitForChild("OilVisualService"))
 local BoatDockService = require(serviceFolder:WaitForChild("BoatDockService"))
 local OilShipmentService = require(serviceFolder:WaitForChild("OilShipmentService"))
+local PerfService = require(serviceFolder:WaitForChild("PerfService"))
 local ChunkOwnershipService = require(serviceFolder:WaitForChild("ChunkOwnershipService"))
 local PipeNetworkService = require(serviceFolder:WaitForChild("PipeNetworkService"))
 local WarehouseService = require(serviceFolder:WaitForChild("WarehouseService"))
@@ -57,6 +58,8 @@ do
 	end
 end
 
+PerfService:Init()
+_G.Perf = PerfService   -- global hook so any service can call PerfService:OpenSpan/CloseSpan without wiring
 RemoteService:Init()
 DevLog.SetBroadcaster(function(msg)
 	local ev = RemoteService:GetEvent(RemoteNames.DevLog)
@@ -82,6 +85,7 @@ OilTankService:Init(RemoteService, OilStateService)
 ToolService:Init()
 FighterPlaneWaveService:Init(RemoteService)
 
+PerfService:Start()
 RemoteService:Start()
 StraitStateService:Start()
 PlotService:Start()
@@ -103,6 +107,7 @@ ToolService:Start()
 FighterPlaneWaveService:Start()
 
 game:BindToClose(function()
+	PerfService:Stop()
 	ToolService:Stop()
 	OilTankService:Stop()
 	ProspectingService:Stop()

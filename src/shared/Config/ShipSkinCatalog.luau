@@ -34,6 +34,24 @@ local ShipSkinCatalog = {
 			fxParticleScale = 1.05,
 			rarityDisplay = "Rare",
 		},
+		Ship3Skin = {
+			displayName = "Ship 3",
+			templateName = "Ship3",
+			fxParticleScale = 1,
+			rarityDisplay = "Uncommon",
+		},
+		Ship4Skin = {
+			displayName = "Ship 4",
+			templateName = "Ship4",
+			fxParticleScale = 1,
+			rarityDisplay = "Rare",
+		},
+		Ship5Skin = {
+			displayName = "Ship 5",
+			templateName = "Ship5",
+			fxParticleScale = 1,
+			rarityDisplay = "Epic",
+		},
 	} :: { [string]: SkinDef },
 }
 

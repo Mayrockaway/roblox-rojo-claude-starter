@@ -24,7 +24,7 @@ local BoatDockService = {}
 local SLOT_COUNT = 8
 local DESTROY_COOLDOWN_SECONDS = 10
 local SKIN_SWAP_COOLDOWN_SECONDS = 3
-local IDLE_Y_OFFSET = 8 -- raise hull above the slot part so it sits on the water
+local IDLE_Y_OFFSET = 0 -- DockAnchor lands exactly on the slot part's red square
 
 export type BoatState = "idle" | "sailing" | "cooldown" | "swapping"
 
@@ -146,10 +146,6 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 	end
 	boat.Name = "IdleBoat_" .. tostring(userId)
 
-	-- Pivot onto the slot with the idle-Y offset (hull sits on water).
-	local baseCFrame = slotPart.CFrame + Vector3.new(0, IDLE_Y_OFFSET, 0)
-	boat:PivotTo(baseCFrame)
-
 	-- Anchor every BasePart (static idle — no constraints, no welds, no collision-group).
 	for _, d in ipairs(boat:GetDescendants()) do
 		if d:IsA("BasePart") then
@@ -157,6 +153,62 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 			d.CanCollide = true
 		end
 	end
+
+	-- Pose the ship so:
+	--   (a) DockAnchor Attachment lands on the slot's red square (+ IDLE_Y_OFFSET),
+	--   (b) FRONT_MARKER direction aligns with the slot's LookVec (out to sea).
+	-- Each skin's internal axes can be arbitrary — we infer ship-forward from
+	-- (FRONT_MARKER.pos - DockAnchor.pos) rather than hardcoding a rotation.
+	boat:PivotTo(CFrame.new())
+
+	local dockAnchor: Attachment? = nil
+	local frontMarker: BasePart? = nil
+	for _, d in ipairs(boat:GetDescendants()) do
+		if d:IsA("Attachment") and d.Name == "DockAnchor" then
+			dockAnchor = d
+		elseif d:IsA("BasePart") and d.Name == "FRONT_MARKER" then
+			frontMarker = d
+		end
+	end
+
+	local anchorLocal: Vector3 = dockAnchor and dockAnchor.WorldPosition or Vector3.zero
+	local slotForward = slotPart.CFrame.LookVector
+	slotForward = Vector3.new(slotForward.X, 0, slotForward.Z)
+	if slotForward.Magnitude < 0.01 then
+		slotForward = Vector3.new(0, 0, -1)
+	else
+		slotForward = slotForward.Unit
+	end
+
+	local baseCFrame: CFrame
+	if frontMarker then
+		local fmLocal = frontMarker.Position
+		local shipForwardLocal = Vector3.new(fmLocal.X - anchorLocal.X, 0, fmLocal.Z - anchorLocal.Z)
+		if shipForwardLocal.Magnitude < 0.01 then
+			shipForwardLocal = Vector3.new(0, 0, -1)
+		else
+			shipForwardLocal = shipForwardLocal.Unit
+		end
+		-- Yaw that rotates shipForwardLocal onto slotForward, plus 180° flip so the
+		-- DockAnchor (stern) sits at the slot with the bow pointing AWAY from the dock.
+		local currentYaw = math.atan2(shipForwardLocal.X, shipForwardLocal.Z)
+		local targetYaw = math.atan2(slotForward.X, slotForward.Z) + math.pi
+		local yawDelta = targetYaw - currentYaw
+		local rotation = CFrame.Angles(0, yawDelta, 0)
+		local rotatedAnchor = rotation * anchorLocal
+		local targetPos = slotPart.Position + Vector3.new(0, IDLE_Y_OFFSET, 0)
+		local shipOriginPos = targetPos - Vector3.new(rotatedAnchor.X, rotatedAnchor.Y, rotatedAnchor.Z)
+		baseCFrame = CFrame.new(shipOriginPos) * rotation
+	else
+		-- Fallback: fixed 90° yaw (Tanker-only behavior) + translate so anchor ~ slot center.
+		local rotation = CFrame.Angles(0, math.pi / 2, 0)
+		local rotatedAnchor = rotation * anchorLocal
+		local targetPos = slotPart.Position + Vector3.new(0, IDLE_Y_OFFSET, 0)
+		local shipOriginPos = targetPos - Vector3.new(rotatedAnchor.X, rotatedAnchor.Y, rotatedAnchor.Z)
+		baseCFrame = CFrame.new(shipOriginPos) * rotation
+	end
+
+	boat:PivotTo(baseCFrame)
 
 	-- Attributes the client rocking script + voyage handoff read.
 	boat:SetAttribute("OwnerUserId", userId)

@@ -90,8 +90,12 @@ function ChunkOwnershipService:_refreshAll(userId: number, plot: Model)
 			end
 		end
 	end
-	DevLog.log(string.format("[ChunkOwnership] refreshed user=%d plot=%s applied=%d missed=%d",
-		userId, plot.Name, applied, missed))
+	-- High-frequency log removed: was firing every snapshot tick and drowning the output.
+	-- If you need to debug chunk ownership, wrap this in a dev flag.
+	if missed > 0 then
+		DevLog.log(string.format("[ChunkOwnership] user=%d plot=%s applied=%d missed=%d (has misses)",
+			userId, plot.Name, applied, missed))
+	end
 end
 
 function ChunkOwnershipService:_costFor(_state, chunk): number
