@@ -95,44 +95,59 @@ while remotesFolder == nil do
 	remotesFolder = Shared:FindFirstChild("Remotes")
 end
 
-local requestOilSnapshot = remotesFolder:WaitForChild(RemoteNames.RequestOilSnapshot) :: RemoteFunction
-local requestPlaceDrill = remotesFolder:WaitForChild(RemoteNames.RequestPlaceDrill) :: RemoteEvent
-local requestStartDrill = remotesFolder:WaitForChild(RemoteNames.RequestStartDrill) :: RemoteEvent
-local requestPlacePump = remotesFolder:WaitForChild(RemoteNames.RequestPlacePump) :: RemoteEvent
-local drillProgressUpdate = remotesFolder:WaitForChild(RemoteNames.DrillProgressUpdate) :: RemoteEvent
-local requestProspect = remotesFolder:WaitForChild(RemoteNames.RequestProspect) :: RemoteEvent
-local prospectProgressUpdate = remotesFolder:WaitForChild(RemoteNames.ProspectProgressUpdate) :: RemoteEvent
-local requestHammerDestroy = remotesFolder:WaitForChild(RemoteNames.RequestHammerDestroy) :: RemoteEvent
-local requestRemoveDrill = remotesFolder:WaitForChild(RemoteNames.RequestRemoveDrill) :: RemoteEvent
-local requestBuyChunk = remotesFolder:WaitForChild(RemoteNames.RequestBuyChunk) :: RemoteEvent
-local requestPlacePipe = remotesFolder:WaitForChild(RemoteNames.RequestPlacePipe) :: RemoteEvent
-local requestRemovePipe = remotesFolder:WaitForChild(RemoteNames.RequestRemovePipe) :: RemoteEvent
-local requestPickupBarrel = remotesFolder:WaitForChild(RemoteNames.RequestPickupBarrel) :: RemoteEvent
-local requestTeleportToShip = remotesFolder:WaitForChild(RemoteNames.RequestTeleportToShip) :: RemoteEvent
-local requestTeleportHome = remotesFolder:WaitForChild(RemoteNames.RequestTeleportHome) :: RemoteEvent
-local requestUpgradeWarehouse = remotesFolder:WaitForChild(RemoteNames.RequestUpgradeWarehouse) :: RemoteEvent
-local requestSellAllWarehouse = remotesFolder:WaitForChild(RemoteNames.RequestSellAllWarehouse) :: RemoteEvent
-local requestTeleportToWarehouse = remotesFolder:WaitForChild(RemoteNames.RequestTeleportToWarehouse) :: RemoteEvent
-local warehouseStateUpdate = remotesFolder:WaitForChild(RemoteNames.WarehouseStateUpdate) :: RemoteEvent
-local requestWarehouseSnapshot = remotesFolder:WaitForChild(RemoteNames.RequestWarehouseSnapshot) :: RemoteFunction
+local REMOTE_WAIT_SECS = 60
+local function waitRemote(name: string): Instance
+	local child = remotesFolder:WaitForChild(name, REMOTE_WAIT_SECS)
+	if not child then
+		error(
+			string.format(
+				"[Client] Timed out waiting for Remotes.%s — is Server running RemoteService:Init()?",
+				name
+			),
+			0
+		)
+	end
+	return child
+end
+
+local requestOilSnapshot = waitRemote(RemoteNames.RequestOilSnapshot) :: RemoteFunction
+local requestPlaceDrill = waitRemote(RemoteNames.RequestPlaceDrill) :: RemoteEvent
+local requestStartDrill = waitRemote(RemoteNames.RequestStartDrill) :: RemoteEvent
+local requestPlacePump = waitRemote(RemoteNames.RequestPlacePump) :: RemoteEvent
+local drillProgressUpdate = waitRemote(RemoteNames.DrillProgressUpdate) :: RemoteEvent
+local requestProspect = waitRemote(RemoteNames.RequestProspect) :: RemoteEvent
+local prospectProgressUpdate = waitRemote(RemoteNames.ProspectProgressUpdate) :: RemoteEvent
+local requestHammerDestroy = waitRemote(RemoteNames.RequestHammerDestroy) :: RemoteEvent
+local requestRemoveDrill = waitRemote(RemoteNames.RequestRemoveDrill) :: RemoteEvent
+local requestBuyChunk = waitRemote(RemoteNames.RequestBuyChunk) :: RemoteEvent
+local requestPlacePipe = waitRemote(RemoteNames.RequestPlacePipe) :: RemoteEvent
+local requestRemovePipe = waitRemote(RemoteNames.RequestRemovePipe) :: RemoteEvent
+local requestPickupBarrel = waitRemote(RemoteNames.RequestPickupBarrel) :: RemoteEvent
+local requestTeleportToShip = waitRemote(RemoteNames.RequestTeleportToShip) :: RemoteEvent
+local requestTeleportHome = waitRemote(RemoteNames.RequestTeleportHome) :: RemoteEvent
+local requestUpgradeWarehouse = waitRemote(RemoteNames.RequestUpgradeWarehouse) :: RemoteEvent
+local requestSellAllWarehouse = waitRemote(RemoteNames.RequestSellAllWarehouse) :: RemoteEvent
+local requestTeleportToWarehouse = waitRemote(RemoteNames.RequestTeleportToWarehouse) :: RemoteEvent
+local warehouseStateUpdate = waitRemote(RemoteNames.WarehouseStateUpdate) :: RemoteEvent
+local requestWarehouseSnapshot = waitRemote(RemoteNames.RequestWarehouseSnapshot) :: RemoteFunction
 -- RequestClearObstacle remote no longer bound (obstacle system removed)
-local biomeRevealEvent = remotesFolder:WaitForChild(RemoteNames.BiomeRevealEvent) :: RemoteEvent
-local requestDispatchShipment = remotesFolder:WaitForChild(RemoteNames.RequestDispatchShipment) :: RemoteEvent
-local oilStateUpdate = remotesFolder:WaitForChild(RemoteNames.OilStateUpdate) :: RemoteEvent
-local oilActionResult = remotesFolder:WaitForChild(RemoteNames.OilActionResult) :: RemoteEvent
-local shipmentVisualEvent = remotesFolder:WaitForChild(RemoteNames.ShipmentVisualEvent) :: RemoteEvent
-local requestDevSetStraitBracket = remotesFolder:WaitForChild(RemoteNames.RequestDevSetStraitBracket) :: RemoteEvent
-local globalStateUpdate = remotesFolder:WaitForChild(RemoteNames.GlobalStateUpdate) :: RemoteEvent
-local fighterFlyoverEvent = remotesFolder:WaitForChild(RemoteNames.FighterFlyoverEvent) :: RemoteEvent
-local requestPirateHireTargets = remotesFolder:WaitForChild(RemoteNames.RequestPirateHireTargets) :: RemoteFunction
-local requestPirateHireAction = remotesFolder:WaitForChild(RemoteNames.RequestPirateHireAction) :: RemoteEvent
-local pirateHireOpenEvent = remotesFolder:WaitForChild(RemoteNames.PirateHireOpen) :: RemoteEvent
-local pirateHireResultEvent = remotesFolder:WaitForChild(RemoteNames.PirateHireResult) :: RemoteEvent
-local pirateHitAlertEvent = remotesFolder:WaitForChild(RemoteNames.PirateHitAlert) :: RemoteEvent
+local biomeRevealEvent = waitRemote(RemoteNames.BiomeRevealEvent) :: RemoteEvent
+local requestDispatchShipment = waitRemote(RemoteNames.RequestDispatchShipment) :: RemoteEvent
+local oilStateUpdate = waitRemote(RemoteNames.OilStateUpdate) :: RemoteEvent
+local oilActionResult = waitRemote(RemoteNames.OilActionResult) :: RemoteEvent
+local shipmentVisualEvent = waitRemote(RemoteNames.ShipmentVisualEvent) :: RemoteEvent
+local requestDevSetStraitBracket = waitRemote(RemoteNames.RequestDevSetStraitBracket) :: RemoteEvent
+local globalStateUpdate = waitRemote(RemoteNames.GlobalStateUpdate) :: RemoteEvent
+local fighterFlyoverEvent = waitRemote(RemoteNames.FighterFlyoverEvent) :: RemoteEvent
+local requestPirateHireTargets = waitRemote(RemoteNames.RequestPirateHireTargets) :: RemoteFunction
+local requestPirateHireAction = waitRemote(RemoteNames.RequestPirateHireAction) :: RemoteEvent
+local pirateHireOpenEvent = waitRemote(RemoteNames.PirateHireOpen) :: RemoteEvent
+local pirateHireResultEvent = waitRemote(RemoteNames.PirateHireResult) :: RemoteEvent
+local pirateHitAlertEvent = waitRemote(RemoteNames.PirateHitAlert) :: RemoteEvent
 
 -- Dev diagnostic: mirror server-side [PlotService]/[OilState]/[ChunkOwnership] prints
 -- to this client's Output so the user doesn't have to hunt the Server Studio process.
-local devLogEvent = remotesFolder:WaitForChild(RemoteNames.DevLog) :: RemoteEvent
+local devLogEvent = waitRemote(RemoteNames.DevLog) :: RemoteEvent
 devLogEvent.OnClientEvent:Connect(function(msg)
 	print("[SRV] " .. tostring(msg))
 end)
@@ -218,9 +233,9 @@ local straitDevPanel = requireStraitDevPanel()
 if straitDevPanel then
 	straitDevPanel.mount(playerGui, requestDevSetStraitBracket, globalStateUpdate)
 end
-local marketPriceUpdate = remotesFolder:WaitForChild(RemoteNames.MarketPriceUpdate) :: RemoteEvent
-local requestSellWarehouseType = remotesFolder:WaitForChild(RemoteNames.RequestSellWarehouseType) :: RemoteEvent
-local requestMarketSnapshot = remotesFolder:WaitForChild(RemoteNames.RequestMarketSnapshot) :: RemoteFunction
+local marketPriceUpdate = waitRemote(RemoteNames.MarketPriceUpdate) :: RemoteEvent
+local requestSellWarehouseType = waitRemote(RemoteNames.RequestSellWarehouseType) :: RemoteEvent
+local requestMarketSnapshot = waitRemote(RemoteNames.RequestMarketSnapshot) :: RemoteFunction
 
 local TOOL_DRILL = "Drill"
 local TOOL_PIPE = "Pipe"

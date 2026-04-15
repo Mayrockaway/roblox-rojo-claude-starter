@@ -23,6 +23,31 @@ local function firstBasePart(inst: Instance): BasePart?
 	return nil
 end
 
+--- Prefer the **`Pirate`** character model under `PirateHire` (not props / flag): prompt sits on the body.
+local function promptHostForPirateHire(npc: Instance): BasePart?
+	local pirate = npc:FindFirstChild("Pirate")
+	if pirate and pirate:IsA("Model") then
+		local hrp = pirate:FindFirstChild("HumanoidRootPart")
+		if hrp and hrp:IsA("BasePart") then
+			return hrp
+		end
+		local upper = pirate:FindFirstChild("UpperTorso")
+		if upper and upper:IsA("BasePart") then
+			return upper
+		end
+		local torso = pirate:FindFirstChild("Torso")
+		if torso and torso:IsA("BasePart") then
+			return torso
+		end
+		local head = pirate:FindFirstChild("Head")
+		if head and head:IsA("BasePart") then
+			return head
+		end
+		return firstBasePart(pirate)
+	end
+	return firstBasePart(npc)
+end
+
 function HitContractService:Init(remoteService, oilStateService, oilShipmentService)
 	self._remoteService = remoteService
 	self._oilStateService = oilStateService
@@ -213,16 +238,18 @@ function HitContractService:_ensurePrompt()
 	if not npc then
 		return
 	end
-	local host = firstBasePart(npc)
+	local host = promptHostForPirateHire(npc)
 	if not host then
 		return
 	end
-	local prompt = host:FindFirstChild("PirateHirePrompt")
+	local prompt = npc:FindFirstChild("PirateHirePrompt", true)
 	if prompt and not prompt:IsA("ProximityPrompt") then
 		prompt:Destroy()
 		prompt = nil
 	end
-	if not prompt then
+	if prompt then
+		prompt.Parent = host
+	else
 		local p = Instance.new("ProximityPrompt")
 		p.Name = "PirateHirePrompt"
 		p.ActionText = "Talk"

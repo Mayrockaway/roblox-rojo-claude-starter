@@ -17,7 +17,14 @@ end
 
 local serviceFolder = script:WaitForChild("Services")
 
+-- Create `Shared.Remotes` + all RemoteEvent/RemoteFunctions before any other server work so
+-- clients never sit on infinite WaitForChild (Studio "Infinite yield possible" / race with LocalScripts).
 local RemoteService = require(serviceFolder:WaitForChild("RemoteService"))
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+RemoteService:Init()
+
 local TelemetryService = require(serviceFolder:WaitForChild("TelemetryService"))
 local StraitStateService = require(serviceFolder:WaitForChild("StraitStateService"))
 local PlotService = require(serviceFolder:WaitForChild("PlotService"))
@@ -40,9 +47,7 @@ local OilTankService = require(serviceFolder:WaitForChild("OilTankService"))
 local FighterPlaneWaveService = require(serviceFolder:WaitForChild("FighterPlaneWaveService"))
 local HitContractService = require(serviceFolder:WaitForChild("HitContractService"))
 
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local DevLog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("DevLog"))
-local RemoteNames = require(ReplicatedStorage.Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local DevLog = require(Shared:WaitForChild("DevLog"))
 
 -- Strait waypoint VFX templates live under RS; if any Sound is saved with Playing=true it is audible
 -- to everyone from join. Storm/tornado audio is started only from cloned sounds on StormEvent/TornadoEvent.
@@ -85,7 +90,6 @@ end
 
 PerfService:Init()
 _G.Perf = PerfService   -- global hook so any service can call PerfService:OpenSpan/CloseSpan without wiring
-RemoteService:Init()
 DevLog.SetBroadcaster(function(msg)
 	local ev = RemoteService:GetEvent(RemoteNames.DevLog)
 	ev:FireAllClients(msg)
@@ -185,6 +189,22 @@ if RunService:IsStudio() then
 	-- Studio command bar: `_G.__OTS_DEV_GRANT_ALL_CASH(500)`
 	_G.__OTS_DEV_GRANT_ALL_CASH = grantAllPlayersCash
 
+	local function devWipePersistedForUser(userId: number)
+		OilStateService:MarkDevSkipSaveOnNextDrop(userId)
+		WarehouseService:MarkDevSkipSaveOnNextDrop(userId)
+		OilStateService:DevRemovePersistedOilProfile(userId)
+		WarehouseService:DevRemovePersistedWarehouseProfile(userId)
+	end
+
+	-- Studio: wipe DataStore keys + skip leave-save so old state does not re-write after `RemoveAsync`.
+	_G.__OTS_DEV_WIPE_PLAYER = function(userId: number)
+		devWipePersistedForUser(userId)
+		local p = Players:GetPlayerByUserId(userId)
+		if p then
+			p:Kick("[Dev] Persisted data wiped — rejoin for a fresh profile.")
+		end
+	end
+
 	local function onDebugChat(player: Player, message: string)
 		local cmd = message:lower():gsub("^%s+", ""):gsub("%s+$", "")
 		if cmd == "/missile" then
@@ -209,6 +229,14 @@ if RunService:IsStudio() then
 			FighterPlaneWaveService:DebugRetargetTemplate(player.Name)
 		elseif cmd == "/grant500" then
 			grantAllPlayersCash(500)
+		elseif cmd == "/wipedata" or cmd == "/dev_wipeme" then
+			devWipePersistedForUser(player.UserId)
+			player:Kick("[Dev] Persisted data wiped — rejoin for a fresh profile.")
+		elseif cmd == "/wipealldata" or cmd == "/dev_wipeall" then
+			for _, p in ipairs(Players:GetPlayers()) do
+				devWipePersistedForUser(p.UserId)
+				p:Kick("[Dev] Persisted data wiped — rejoin for a fresh profile.")
+			end
 		else
 			local grantN = string.match(cmd, "^/giveall%s+(%d+)$")
 			if grantN then

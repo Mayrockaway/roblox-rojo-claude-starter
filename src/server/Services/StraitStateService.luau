@@ -3,6 +3,7 @@
 local HttpService = game:GetService("HttpService")
 local MemoryStoreService = game:GetService("MemoryStoreService")
 local MessagingService = game:GetService("MessagingService")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
@@ -72,6 +73,24 @@ function StraitStateService:Start()
 	self:_forceStraitOpenAtLaunch()
 
 	self:_subscribeMessaging()
+
+	-- `FireAllClients` during boot often runs before any client exists; push authoritative snapshot per joiner.
+	table.insert(self._connections, Players.PlayerAdded:Connect(function(player)
+		task.defer(function()
+			if not self._running or not player.Parent then
+				return
+			end
+			self:_pushSnapshotToPlayer(player)
+		end)
+	end))
+	for _, p in ipairs(Players:GetPlayers()) do
+		task.defer(function()
+			if not self._running or not p.Parent then
+				return
+			end
+			self:_pushSnapshotToPlayer(p)
+		end)
+	end
 
 	task.spawn(function()
 		while self._running do
@@ -280,6 +299,11 @@ function StraitStateService:_rollState()
 	local order = StraitConfig.StateOrder
 	local idx = self._rng:NextInteger(1, #order)
 	self._state = order[idx]
+end
+
+function StraitStateService:_pushSnapshotToPlayer(player: Player)
+	local event = self._remoteService:GetEvent(RemoteNames.GlobalStateUpdate)
+	event:FireClient(player, self:GetSnapshot())
 end
 
 function StraitStateService:_broadcast()

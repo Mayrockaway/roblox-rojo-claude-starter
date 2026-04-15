@@ -79,6 +79,14 @@ end
 -- ReplicatedStorage.Assets.StraitWaypointsFx.<CatalogEventId>/ — Models or Parts as direct children; Sounds play when cloned.
 local STRAIT_FX_ASSETS_FOLDER = "StraitWaypointsFx"
 
+-- Missile barrage: one-shot when a cloned missile impacts the ship (hit / smallHit, not clean miss).
+local MISSILE_IMPACT_HIT_SFX_ID = "rbxassetid://111630360891423"
+local MISSILE_IMPACT_HIT_VOLUME = 0.2
+
+-- Mine field: one-shot when `didHit` — the surfacing mine detonates on the ship.
+local MINE_IMPACT_HIT_SFX_ID = "rbxassetid://102050572129572"
+local MINE_IMPACT_HIT_VOLUME = 0.2
+
 local function getStraitFxRoot(): Instance?
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	return assets and assets:FindFirstChild(STRAIT_FX_ASSETS_FOLDER)
@@ -1362,6 +1370,26 @@ function StraitWaypointWorldFx.OnMissileStrikePayload(data: { [string]: any })
 			explosion.Transparency = 1
 			explosion.Parent = Workspace
 
+			-- Impact SFX: once per cloned missile that lands a hit (direct or partial); not on splash misses.
+			-- Parent to a short-lived world anchor so playback isn't cut when the explosion part cleans up.
+			local sfxAnchor = Instance.new("Part")
+			sfxAnchor.Name = "MissileImpactHitSfx"
+			sfxAnchor.Size = Vector3.new(0.15, 0.15, 0.15)
+			sfxAnchor.Transparency = 1
+			sfxAnchor.Anchored = true
+			sfxAnchor.CanCollide = false
+			sfxAnchor.CanQuery = false
+			sfxAnchor.Position = targetPos
+			sfxAnchor.Parent = Workspace
+			local impactHitSfx = Instance.new("Sound")
+			impactHitSfx.SoundId = MISSILE_IMPACT_HIT_SFX_ID
+			impactHitSfx.Volume = MISSILE_IMPACT_HIT_VOLUME
+			impactHitSfx.RollOffMode = Enum.RollOffMode.InverseTapered
+			impactHitSfx.RollOffMaxDistance = 2000
+			impactHitSfx.Parent = sfxAnchor
+			impactHitSfx:Play()
+			Debris:AddItem(sfxAnchor, 30)
+
 			-- Roblox shockwave ring on direct hit
 			if isDirectHit then
 				local rx = Instance.new("Explosion")
@@ -2133,6 +2161,25 @@ function StraitWaypointWorldFx.OnMineStrikePayload(data: { [string]: any })
 			explosion.CanCollide = false
 			explosion.Transparency = 1
 			explosion.Parent = Workspace
+
+			-- Impact SFX: once per successful mine detonation (didHit); not when the ship clears the field.
+			local mineSfxAnchor = Instance.new("Part")
+			mineSfxAnchor.Name = "MineImpactHitSfx"
+			mineSfxAnchor.Size = Vector3.new(0.15, 0.15, 0.15)
+			mineSfxAnchor.Transparency = 1
+			mineSfxAnchor.Anchored = true
+			mineSfxAnchor.CanCollide = false
+			mineSfxAnchor.CanQuery = false
+			mineSfxAnchor.Position = hitPos
+			mineSfxAnchor.Parent = Workspace
+			local mineImpactHitSfx = Instance.new("Sound")
+			mineImpactHitSfx.SoundId = MINE_IMPACT_HIT_SFX_ID
+			mineImpactHitSfx.Volume = MINE_IMPACT_HIT_VOLUME
+			mineImpactHitSfx.RollOffMode = Enum.RollOffMode.InverseTapered
+			mineImpactHitSfx.RollOffMaxDistance = 2000
+			mineImpactHitSfx.Parent = mineSfxAnchor
+			mineImpactHitSfx:Play()
+			Debris:AddItem(mineSfxAnchor, 30)
 
 			-- Roblox shockwave
 			local rx = Instance.new("Explosion")

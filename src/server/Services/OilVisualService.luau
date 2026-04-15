@@ -178,7 +178,7 @@ function OilVisualService:_bindSellBackPromptServer(prompt: ProximityPrompt, spe
 			return
 		end
 		if not oil:IsHammerDestroyInRange(player.UserId, payload, hrp.Position) then
-			fireOilActionResult(player, false, "ERR_TOO_FAR", "Move closer to salvage.", nil)
+			fireOilActionResult(player, false, "ERR_TOO_FAR", "Move closer to sell back.", nil)
 			return
 		end
 		if not sellBackRateAllow(player.UserId) then

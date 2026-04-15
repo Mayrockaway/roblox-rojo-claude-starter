@@ -8,6 +8,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
+local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
 local ShipUpgradeConfig = require(Shared:WaitForChild("Config"):WaitForChild("ShipUpgradeConfig"))
 
 local SelectShipPanel = require(script.Parent.SelectShipPanel)
@@ -26,6 +27,8 @@ local connections: { RBXScriptConnection } = {}
 
 local speedValueLabel: TextLabel? = nil
 local capacityValueLabel: TextLabel? = nil
+local speedStatRawDetail: TextLabel? = nil
+local capacityStatRawDetail: TextLabel? = nil
 local speedCostLabel: TextLabel? = nil
 local capacityCostLabel: TextLabel? = nil
 local speedBuyButton: GuiButton? = nil
@@ -123,6 +126,33 @@ local function applyShipManagementUi(snap: any)
 		capacityValueLabel.Text = string.format("%d/%d", capLevel, ShipUpgradeConfig.MaxCapacityLevel)
 	end
 
+	local rs = (snap :: any).resolvedShip
+	local travelSec: number?
+	local cargoUnits: number?
+	if typeof(rs) == "table" then
+		travelSec = tonumber((rs :: any).travelSeconds)
+		cargoUnits = tonumber((rs :: any).capacity)
+	end
+	local resolved = ShipStats.Resolve(speedLevel, capLevel)
+	if travelSec == nil then
+		travelSec = resolved.travelSeconds
+	end
+	if cargoUnits == nil then
+		cargoUnits = resolved.capacity
+	end
+	if speedStatRawDetail then
+		speedStatRawDetail.Text = string.format(
+			"Current: %ds voyage",
+			math.floor((travelSec or 0) + 0.5)
+		)
+	end
+	if capacityStatRawDetail then
+		capacityStatRawDetail.Text = string.format(
+			"Current: %d barrels",
+			math.floor((cargoUnits or 0) + 0.5)
+		)
+	end
+
 	local speedCost = (snap :: any).upgradeShipSpeedCost
 	local capCost = (snap :: any).upgradeShipCapacityCost
 	local speedNum = tonumber(speedCost)
@@ -179,6 +209,12 @@ local function wireShipManagement(screen: ScreenGui)
 	else
 		capacityValueLabel = nil
 	end
+
+	-- Raw stat lines (voyage time, cargo units); Studio-authored under placards or stat pills.
+	local rawS = findFirstNamed(screen, { "SpeedStatRawDetail" })
+	local rawC = findFirstNamed(screen, { "CapacityStatRawDetail" })
+	speedStatRawDetail = if rawS and rawS:IsA("TextLabel") then rawS else nil
+	capacityStatRawDetail = if rawC and rawC:IsA("TextLabel") then rawC else nil
 
 	local speedCost = findFirstNamed(screen, { "SpeedUpgradeCostLabel", "speedupgradecostlabel" })
 	if speedCost and speedCost:IsA("TextLabel") then

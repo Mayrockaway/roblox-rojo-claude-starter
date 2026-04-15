@@ -448,6 +448,7 @@ function OilStateService:Init(remoteService, plotService)
 	self._skinChangedHandler = nil :: ((number, string) -> ())?
 	self._stateReadyForTimersCallback = nil :: ((number, { any }, { any }) -> ())?
 	self._dataStore = nil
+	self._devSkipSaveOnNextDrop = {} :: { [number]: boolean }
 	local okStore, storeOrErr = pcall(function()
 		return DataStoreService:GetDataStore(DATASTORE_NAME)
 	end)
@@ -592,10 +593,10 @@ local function worldXYZFromPersistedPosition(pos: any): (number?, number?, numbe
 		return v.X, v.Y, v.Z
 	end
 	if typeof(pos) == "table" then
-		local t = pos :: { [string]: any }
-		local px = tonumber(t.x) or tonumber(t.X)
-		local py = tonumber(t.y) or tonumber(t.Y)
-		local pz = tonumber(t.z) or tonumber(t.Z)
+		local t = pos :: { [any]: any }
+		local px = tonumber(t.x) or tonumber(t.X) or tonumber(t[1])
+		local py = tonumber(t.y) or tonumber(t.Y) or tonumber(t[2])
+		local pz = tonumber(t.z) or tonumber(t.Z) or tonumber(t[3])
 		if px and py and pz then
 			return px, py, pz
 		end
@@ -614,13 +615,18 @@ local function activeDrillWorldFromStateEntry(plotForGrid: Model?, e: { [string]
 	-- Fall back to stored position only if we can't derive from cell/tile, since
 	-- stored coords may be stale (different plot from previous session).
 	if typeof(plotForGrid) == "Instance" and plotForGrid:IsA("Model") then
-		local row = tonumber(e.cellRow)
-		local col = tonumber(e.cellCol)
+		local row = tonumber(e.cellRow) or tonumber(e.row)
+		local col = tonumber(e.cellCol) or tonumber(e.col)
 		if (not row or not col) and typeof(e.cellKey) == "string" then
 			row, col = globalCellFromCellKeyString(e.cellKey :: string)
 		end
 		if row and col and cellInBounds(row, col) then
 			local wx, wz = cellToWorld(plotForGrid :: Model, row, col)
+			-- Never hardcode Y=6: plots live at real elevation; stale Y breaks salvage range vs HRP.
+			local px, py, pz = worldXYZFromPersistedPosition(e.position)
+			if px and py and pz then
+				return wx, py, wz
+			end
 			return wx, 6, wz
 		end
 	end
@@ -1539,6 +1545,8 @@ local function positionVectorFromStateEntry(pos: any): Vector3?
 end
 
 --- World position used for salvage range checks (`OilConfig.SalvageProximityMaxStuds`).
+--- Prefer current plot + chunk/tile (same as hydrate / visuals) so range matches authored placement
+--- when stored world coords are stale or persisted tables omit x/y/z keys.
 function OilStateService:GetHammerTargetWorldPosition(userId: number, payload: any): Vector3?
 	if typeof(payload) ~= "table" then
 		return nil
@@ -1548,26 +1556,55 @@ function OilStateService:GetHammerTargetWorldPosition(userId: number, payload: a
 		return nil
 	end
 	local kind = payload.targetKind
+	local entry: { [string]: any }? = nil
 	if kind == "pump" then
 		local drillId = tonumber(payload.targetId)
-		local pump = drillId and state.drillsById[drillId]
-		return pump and positionVectorFromStateEntry(pump.position) or nil
+		entry = drillId and state.drillsById[drillId] or nil
 	elseif kind == "pipe" then
 		local ck = tostring(payload.cellKey or "")
-		local pipe = ck ~= "" and state.pipesByCellKey[ck] or nil
-		return pipe and positionVectorFromStateEntry(pipe.position) or nil
+		entry = (ck ~= "" and state.pipesByCellKey[ck]) or nil
 	elseif kind == "drum" then
 		local drumId = tonumber(payload.targetId)
-		local drum = drumId and state.drumsById[drumId]
-		return drum and positionVectorFromStateEntry(drum.position) or nil
+		entry = drumId and state.drumsById[drumId] or nil
 	elseif kind == "drill" then
 		local drillId = tonumber(payload.targetId)
-		local active = drillId and state.activeDrills[drillId]
-		return active and positionVectorFromStateEntry(active.position) or nil
+		entry = drillId and state.activeDrills[drillId] or nil
 	elseif kind == "prospector" then
 		local prospectId = tonumber(payload.targetId)
-		local pr = prospectId and state.activeProspectors[prospectId]
-		return pr and positionVectorFromStateEntry(pr.position) or nil
+		entry = prospectId and state.activeProspectors[prospectId] or nil
+	end
+	if not entry then
+		return nil
+	end
+	local plot = self:_plotModelForGrid(userId, state)
+	local chunkId = entry.chunkId
+	local tileKey = entry.tileKey
+	if typeof(chunkId) == "string" and chunkId ~= "" and typeof(tileKey) == "string" and tileKey ~= "" and plot then
+		local ps = self._plotService
+		if ps then
+			local tx, ty, tz = activeDrillWorldFromChunkTile(ps, plot, chunkId, tileKey)
+			if tx and ty and tz then
+				return Vector3.new(tx, ty, tz)
+			end
+		end
+	end
+	-- Pipes use `sectionId` + global row/col (not `chunkId`/`tileKey` on the entry).
+	if kind == "pipe" and plot then
+		local ps = self._plotService
+		local secId = entry.sectionId
+		local pr = tonumber(entry.row)
+		local pc = tonumber(entry.col)
+		if ps and typeof(secId) == "string" and secId ~= "" and pr and pc then
+			local tk = globalCellToLocalTileKey(pr, pc)
+			local tx, ty, tz = activeDrillWorldFromChunkTile(ps, plot, secId, tk)
+			if tx and ty and tz then
+				return Vector3.new(tx, ty, tz)
+			end
+		end
+	end
+	local wx, wy, wz = activeDrillWorldFromStateEntry(plot, entry)
+	if wx and wy and wz then
+		return Vector3.new(wx, wy, wz)
 	end
 	return nil
 end
@@ -2963,6 +3000,12 @@ function OilStateService:_markDirty(userId: number)
 end
 
 function OilStateService:_flushAndDropUser(userId: number)
+	if self._devSkipSaveOnNextDrop[userId] then
+		self._devSkipSaveOnNextDrop[userId] = nil
+		self._statesByUserId[userId] = nil
+		self._dirtyByUserId[userId] = nil
+		return
+	end
 	-- Always persist latest state when removing session data (PlayerRemoving / plot release),
 	-- even if `_markDirty` never ran after the last successful autosave.
 	self:_saveUser(userId, true, true)
@@ -2986,6 +3029,9 @@ end
 
 --- @param persistRegardlessOfDirty When true (player drop / plot release), write current state even if not marked dirty.
 function OilStateService:_saveUser(userId: number, force: boolean?, persistRegardlessOfDirty: boolean?)
+	if self._devSkipSaveOnNextDrop[userId] then
+		return
+	end
 	if not persistRegardlessOfDirty and not self._dirtyByUserId[userId] then
 		return
 	end
@@ -3353,6 +3399,22 @@ function OilStateService:MarkEquipmentInventoryBackfillComplete(userId: number)
 	end
 	state.equipmentOwnedNeedsInventoryBackfill = false
 	self:_markDirty(userId)
+end
+
+--- Studio/dev: next `PlayerRemoving` / plot drop will not write oil profile (after `RemoveAsync`).
+function OilStateService:MarkDevSkipSaveOnNextDrop(userId: number)
+	self._devSkipSaveOnNextDrop[userId] = true
+end
+
+--- Remove `OilMiningProfiles_v3` entry and in-memory fallback cache. Does not touch live session state.
+function OilStateService:DevRemovePersistedOilProfile(userId: number)
+	local key = tostring(userId)
+	if self._dataStore then
+		pcall(function()
+			self._dataStore:RemoveAsync(key)
+		end)
+	end
+	self._memoryStore[key] = nil
 end
 
 return OilStateService

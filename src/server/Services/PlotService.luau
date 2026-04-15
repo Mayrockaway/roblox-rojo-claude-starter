@@ -11,6 +11,12 @@ local PlotService = {}
 local CLAIMED_COLOR = Color3.fromRGB(240, 95, 95)
 local UNCLAIMED_COLOR = Color3.fromRGB(105, 210, 120)
 
+local PLOT_OWNER_BILLBOARD_NAME = "PlotOwnerBillboard"
+-- Server-authored `BillboardGui` on workspace `ClaimPad`; replicates to every client.
+local PLOT_NAME_BILLBOARD_STUDS_OFFSET_Y = 54
+local PLOT_NAME_TEXT_MAX_SIZE = 48
+local PLOT_NAME_TEXT_MIN_SIZE = 18
+
 local function getPlotId(plot: Instance): number
 	local attr = plot:GetAttribute("PlotId")
 	if typeof(attr) == "number" then
@@ -239,6 +245,7 @@ function PlotService:_initializePlots()
 		self:_ensureCoreMachineAnchorsAndSnap(plot)
 		self:_ensurePlotMarkers(plot)
 		self:_refreshPlotVisual(plot)
+		self:_updatePlotNameBillboard(plot, nil)
 	end
 end
 
@@ -417,6 +424,69 @@ function PlotService:_refreshPlotVisual(plot: Model)
 	claimPad.CanTouch = false
 end
 
+--- World-space title above the plot: server-only `BillboardGui` on `ClaimPad` (all players see every plot name).
+function PlotService:_updatePlotNameBillboard(plot: Model, ownerPlayer: Player?)
+	local anchor = plot:FindFirstChild("ClaimPad") :: BasePart?
+	if not (anchor and anchor:IsA("BasePart")) then
+		anchor = getSpawnPart(plot)
+	end
+	if not anchor then
+		return
+	end
+
+	local existing = anchor:FindFirstChild(PLOT_OWNER_BILLBOARD_NAME)
+	if not ownerPlayer then
+		if existing and existing:IsA("BillboardGui") then
+			existing.Enabled = false
+		end
+		return
+	end
+
+	local text = string.format("%s's Plot", ownerPlayer.Name)
+	local bb: BillboardGui
+	if existing and existing:IsA("BillboardGui") then
+		bb = existing
+	else
+		if existing then
+			existing:Destroy()
+		end
+		bb = Instance.new("BillboardGui")
+		bb.Name = PLOT_OWNER_BILLBOARD_NAME
+		bb.AlwaysOnTop = true
+		bb.Size = UDim2.new(0, 440, 0, 96)
+		bb.StudsOffset = Vector3.new(0, PLOT_NAME_BILLBOARD_STUDS_OFFSET_Y, 0)
+		bb.MaxDistance = 380
+		bb.LightInfluence = 0
+		bb.Parent = anchor
+		local tl = Instance.new("TextLabel")
+		tl.Name = "PlotNameText"
+		tl.Size = UDim2.fromScale(1, 1)
+		tl.BackgroundTransparency = 1
+		tl.TextColor3 = Color3.fromRGB(255, 252, 245)
+		tl.Font = Enum.Font.Merriweather
+		tl.TextStrokeTransparency = 0.4
+		tl.TextStrokeColor3 = Color3.fromRGB(15, 18, 28)
+		tl.TextScaled = true
+		tl.Parent = bb
+		local tsc = Instance.new("UITextSizeConstraint")
+		tsc.MaxTextSize = PLOT_NAME_TEXT_MAX_SIZE
+		tsc.MinTextSize = PLOT_NAME_TEXT_MIN_SIZE
+		tsc.Parent = tl
+	end
+	bb.Enabled = true
+	bb.StudsOffset = Vector3.new(0, PLOT_NAME_BILLBOARD_STUDS_OFFSET_Y, 0)
+	local tl = bb:FindFirstChild("PlotNameText", true)
+	if tl and tl:IsA("TextLabel") then
+		tl.Font = Enum.Font.Merriweather
+		tl.Text = text
+		local tsc = tl:FindFirstChildOfClass("UITextSizeConstraint")
+		if tsc then
+			tsc.MaxTextSize = PLOT_NAME_TEXT_MAX_SIZE
+			tsc.MinTextSize = PLOT_NAME_TEXT_MIN_SIZE
+		end
+	end
+end
+
 function PlotService:_claimRandomOpenPlot(userId: number): Model?
 	local openPlots = {}
 	for _, plot in ipairs(self:_getPlotsSorted()) do
@@ -463,6 +533,7 @@ function PlotService:_releasePlot(plot: Model?)
 	end
 	plot:SetAttribute("OwnerUserId", 0)
 	self:_refreshPlotVisual(plot)
+	self:_updatePlotNameBillboard(plot, nil)
 end
 
 function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Model)
@@ -523,6 +594,7 @@ function PlotService:_onPlayerAdded(player: Player)
 	local wasAlreadyAssigned = self._assignedByUserId[player.UserId] == plot
 	self._assignedByUserId[player.UserId] = plot
 	player:SetAttribute("PlotId", getPlotId(plot))
+	self:_updatePlotNameBillboard(plot, player)
 	self:_ensureCharacterAddedConnection(player)
 
 	if wasAlreadyAssigned then

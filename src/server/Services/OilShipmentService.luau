@@ -298,10 +298,6 @@ function OilShipmentService:_discoverLanes()
 		end
 	end
 
-	-- Also find the strait BoatSpawn zone for random spawn position
-	local zones = strait and strait:FindFirstChild("Zones")
-	self._straitBoatSpawn = zones and zones:FindFirstChild("BoatSpawn")
-
 	print(string.format("[OilShipmentService] Discovered %d lanes", #self._lanes))
 end
 

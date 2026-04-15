@@ -13,6 +13,85 @@ local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames
 
 local WarehouseService = {}
 
+local WOOD_SIGN_MODEL_NAME = "Minecraft Wood Sign"
+local WOOD_SIGN_RIG_FOLDER = "WarehouseWoodSignRig"
+local WOOD_SIGN_CLICK_NAME = "TankUpgradeSignClick"
+local WAREHOUSE_TERMINAL_NAME = "WarehouseTerminal"
+local MAX_WAREHOUSE_TIER = #WarehouseConfig.Tiers
+
+local function normalizeInstanceName(name: string): string
+	return string.lower((name:gsub("%s+", "")))
+end
+
+-- Desk / monitor / terminal for upgrade UI: attribute, name variants, or ProximityPrompt text (must run BEFORE stripping prompts).
+local function findWarehouseTerminalAnchor(visual: Model): Instance?
+	for _, d in ipairs(visual:GetDescendants()) do
+		if d:GetAttribute("IsWarehouseTerminal") == true then
+			return d
+		end
+	end
+	for _, d in ipairs(visual:GetDescendants()) do
+		local n = normalizeInstanceName(d.Name)
+		if n == "warehouseterminal" or n == "warehouseterminaldesk" then
+			return d
+		end
+	end
+	local legacy = visual:FindFirstChild(WAREHOUSE_TERMINAL_NAME, true)
+	if legacy then
+		return legacy
+	end
+	for _, d in ipairs(visual:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then
+			local blob = string.lower(tostring(d.ActionText) .. " " .. tostring(d.ObjectText))
+			if string.find(blob, "upgrade", 1, true) and string.find(blob, "warehouse", 1, true) then
+				local p: Instance? = d.Parent
+				while p and not (p:IsA("BasePart") or p:IsA("Model")) do
+					if p == visual then
+						p = nil
+						break
+					end
+					p = p.Parent
+				end
+				if p then
+					return p
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function stripAllProximityPromptsInWarehouse(visual: Model)
+	for _, d in ipairs(visual:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then
+			d:Destroy()
+		end
+	end
+end
+
+local function pivotSignModelAboveTerminal(signModel: Model, terminal: Instance)
+	local halfSignY = 2
+	pcall(function()
+		local _, sz = signModel:GetBoundingBox()
+		halfSignY = sz.Y / 2
+	end)
+	local gap = 0.75
+	if terminal:IsA("BasePart") then
+		local cf = terminal :: BasePart
+		local topY = cf.Position.Y + cf.Size.Y / 2
+		local pos = Vector3.new(cf.Position.X, topY + halfSignY + gap, cf.Position.Z)
+		local rot = cf.CFrame - cf.CFrame.Position
+		signModel:PivotTo(CFrame.new(pos) * rot)
+	elseif terminal:IsA("Model") then
+		local m = terminal :: Model
+		local tcf, size = m:GetBoundingBox()
+		local topY = tcf.Position.Y + size.Y / 2
+		local pos = Vector3.new(tcf.Position.X, topY + halfSignY + gap, tcf.Position.Z)
+		local rot = tcf - tcf.Position
+		signModel:PivotTo(CFrame.new(pos) * rot)
+	end
+end
+
 local TIER_ORDER = { "HeavyCrude", "LightSweet", "PremiumRefined" }
 local SAVE_INTERVAL = 25
 local AUTOSAVE_START_OFFSET_SECONDS = 12
@@ -65,6 +144,10 @@ function WarehouseService:Init(remoteService, oilStateService)
 	self._dataStoreStudioFallbackWarned = false
 	self._lastWarehouseDataStoreSaveClock = {} :: { [number]: number }
 	self._dataStore = nil
+	self._devSkipSaveOnNextDrop = {} :: { [number]: boolean }
+	self._woodSignPrototype = nil :: Model?
+	self._woodSignTemplateWarned = false
+	self._hookedWarehouseWoodSigns = {} :: { [BasePart]: boolean }
 	local okStore, storeOrErr = pcall(function()
 		return DataStoreService:GetDataStore(WarehouseConfig.DataStoreName)
 	end)
@@ -109,8 +192,7 @@ function WarehouseService:Start()
 	-- Remotes
 	local upgradeEvent = self._remoteService:GetEvent(RemoteNames.RequestUpgradeWarehouse)
 	table.insert(self._connections, upgradeEvent.OnServerEvent:Connect(function(player)
-		self:TryUpgrade(player.UserId)
-		self:PushState(player.UserId)
+		self:TryUpgrade(player.UserId, player)
 	end))
 
 	-- RequestSellAllWarehouse is deprecated — selling handled by OilMarketService
@@ -128,6 +210,7 @@ function WarehouseService:Start()
 		end
 		return {
 			tier = 1,
+			maxTier = MAX_WAREHOUSE_TIER,
 			barrels = emptyBarrelMap(),
 			capacity = WarehouseConfig.GetCapacity(1),
 			totalBarrels = 0,
@@ -157,6 +240,7 @@ function WarehouseService:Stop()
 		conn:Disconnect()
 	end
 	self._connections = {}
+	self._hookedWarehouseWoodSigns = {}
 end
 
 function WarehouseService:_onPlayerAdded(player: Player)
@@ -212,11 +296,15 @@ end
 
 function WarehouseService:_onPlayerRemoving(player: Player)
 	local userId = player.UserId
-	-- Same as oil: persist latest warehouse row on leave even if last autosave cleared dirty.
-	-- Brief delay: `PlotService` `PlayerRemoving` runs first and oil may `SetAsync` the same second;
-	-- spacing warehouse writes reduces "Key (x2)" DataStore queue pairing in Studio (still not an error).
-	task.wait(0.12)
-	self:_saveProfile(userId, true, true)
+	if self._devSkipSaveOnNextDrop[userId] then
+		self._devSkipSaveOnNextDrop[userId] = nil
+	else
+		-- Same as oil: persist latest warehouse row on leave even if last autosave cleared dirty.
+		-- Brief delay: `PlotService` `PlayerRemoving` runs first and oil may `SetAsync` the same second;
+		-- spacing warehouse writes reduces "Key (x2)" DataStore queue pairing in Studio (still not an error).
+		task.wait(0.12)
+		self:_saveProfile(userId, true, true)
+	end
 
 	-- Release slot
 	local slotId = self._slotByUserId[userId]
@@ -254,6 +342,196 @@ function WarehouseService:_getSlotPosition(slotId: number): Vector3?
 	return nil
 end
 
+function WarehouseService:_getWoodSignPrototype(): Model?
+	if self._woodSignPrototype and self._woodSignPrototype.Parent then
+		return self._woodSignPrototype
+	end
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	if not assets then
+		return nil
+	end
+	local direct = assets:FindFirstChild("WarehouseUpgradeWoodSign")
+	if direct and direct:IsA("Model") then
+		self._woodSignPrototype = direct
+		return direct
+	end
+	local oilTanks = assets:FindFirstChild("OilTanksTemplate")
+	if oilTanks then
+		for _, d in ipairs(oilTanks:GetDescendants()) do
+			if d:IsA("Model") and d.Name == WOOD_SIGN_MODEL_NAME then
+				self._woodSignPrototype = d
+				return d
+			end
+		end
+	end
+	return nil
+end
+
+function WarehouseService:_fireWarehouseUpgradeResult(player: Player, ok: boolean, code: string, message: string, data: any?)
+	self._remoteService:GetEvent(RemoteNames.OilActionResult):FireClient(player, {
+		action = "UpgradeWarehouse",
+		ok = ok,
+		code = code,
+		message = message,
+		data = data,
+	})
+end
+
+function WarehouseService:_syncWoodSignGui(signPart: BasePart, userId: number)
+	local state = self._stateByUserId[userId]
+	if not state or not signPart.Parent then
+		return
+	end
+	local surfaceGui = signPart:FindFirstChildOfClass("SurfaceGui")
+	if surfaceGui then
+		surfaceGui.Active = false
+		local signLabel = surfaceGui:FindFirstChild("SIGN")
+		if not (signLabel and signLabel:IsA("TextLabel")) then
+			for _, ui in ipairs(surfaceGui:GetDescendants()) do
+				if ui:IsA("TextLabel") then
+					signLabel = ui
+					break
+				end
+			end
+		end
+		if signLabel and signLabel:IsA("TextLabel") then
+			local cap = WarehouseConfig.GetCapacity(state.tier)
+			local total = totalBarrels(state.barrels)
+			local nextCost = WarehouseConfig.GetUpgradeCost(state.tier)
+			if state.tier >= MAX_WAREHOUSE_TIER or nextCost == nil then
+				signLabel.Text = string.format(
+					"Warehouse\nTier %d / %d\n%d / %d\nMAXED",
+					state.tier,
+					MAX_WAREHOUSE_TIER,
+					total,
+					cap
+				)
+			else
+				signLabel.Text = string.format(
+					"Warehouse\nTier %d / %d\n%d / %d\nClick to Upgrade\n$%d",
+					state.tier,
+					MAX_WAREHOUSE_TIER,
+					total,
+					cap,
+					nextCost
+				)
+			end
+		end
+	end
+end
+
+function WarehouseService:_hookWarehouseWoodSign(signPart: BasePart, userId: number)
+	if self._hookedWarehouseWoodSigns[signPart] then
+		return
+	end
+	self._hookedWarehouseWoodSigns[signPart] = true
+
+	signPart.CanQuery = true
+	signPart.CanTouch = false
+	signPart.CanCollide = false
+	signPart.Anchored = true
+	signPart.Massless = true
+	signPart:SetAttribute("WarehouseOwnerUserId", userId)
+
+	local click = signPart:FindFirstChild(WOOD_SIGN_CLICK_NAME)
+	if click and not click:IsA("ClickDetector") then
+		click:Destroy()
+		click = nil
+	end
+	if not click then
+		local cd = Instance.new("ClickDetector")
+		cd.Name = WOOD_SIGN_CLICK_NAME
+		cd.MaxActivationDistance = 22
+		cd.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
+		cd.Parent = signPart
+		click = cd
+	end
+	if click and click:IsA("ClickDetector") then
+		click.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
+		click.MaxActivationDistance = math.max(22, click.MaxActivationDistance)
+		table.insert(
+			self._connections,
+			click.MouseClick:Connect(function(player: Player)
+				local ownerId = signPart:GetAttribute("WarehouseOwnerUserId")
+				if typeof(ownerId) ~= "number" then
+					return
+				end
+				if player.UserId ~= ownerId then
+					self:_fireWarehouseUpgradeResult(player, false, "NOT_OWNER", "This is not your warehouse.", nil)
+					return
+				end
+				self:TryUpgrade(ownerId, player)
+			end)
+		)
+	end
+end
+
+function WarehouseService:_ensureWarehouseWoodSign(visual: Model, userId: number, terminalAnchor: Instance?)
+	local existingRig = visual:FindFirstChild(WOOD_SIGN_RIG_FOLDER, true)
+	if existingRig then
+		local signModel = existingRig:FindFirstChild(WOOD_SIGN_MODEL_NAME, true)
+		local signPart = signModel and signModel:FindFirstChild("Sign")
+		if signModel and signModel:IsA("Model") and signPart and signPart:IsA("BasePart") then
+			local terminal = terminalAnchor or findWarehouseTerminalAnchor(visual)
+			if terminal then
+				pivotSignModelAboveTerminal(signModel, terminal)
+			end
+			self:_hookWarehouseWoodSign(signPart, userId)
+			self:_syncWoodSignGui(signPart, userId)
+		end
+		return
+	end
+
+	local proto = self:_getWoodSignPrototype()
+	if not proto then
+		if not self._woodSignTemplateWarned then
+			self._woodSignTemplateWarned = true
+			warn(
+				"[WarehouseService] No wood sign for warehouse upgrades: add ReplicatedStorage.Assets.WarehouseUpgradeWoodSign "
+					.. "(copy of oil tank Minecraft Wood Sign) or ensure OilTanksTemplate contains a Minecraft Wood Sign."
+			)
+		end
+		return
+	end
+
+	local rig = Instance.new("Folder")
+	rig.Name = WOOD_SIGN_RIG_FOLDER
+	rig.Parent = visual
+
+	local signModel = proto:Clone()
+	signModel.Name = WOOD_SIGN_MODEL_NAME
+	signModel.Parent = rig
+
+	local terminal = terminalAnchor or findWarehouseTerminalAnchor(visual)
+	local signPart = signModel:FindFirstChild("Sign")
+	if signPart and signPart:IsA("BasePart") then
+		if terminal then
+			pivotSignModelAboveTerminal(signModel, terminal)
+		else
+			local anchor = visual:FindFirstChild("WarehouseUpgradeSignAnchor", true)
+			if anchor and anchor:IsA("BasePart") then
+				signModel:PivotTo(anchor.CFrame)
+			else
+				local signBoard = visual:FindFirstChild("SignBoard", true)
+				if signBoard and signBoard:IsA("BasePart") then
+					signModel:PivotTo(signBoard.CFrame * CFrame.new(6, 0, 2))
+				end
+			end
+		end
+		for _, d in ipairs(signModel:GetDescendants()) do
+			if d:IsA("BasePart") then
+				d.Anchored = true
+				d.CanCollide = false
+				d.CanQuery = true
+				d.CanTouch = false
+				d.Massless = true
+			end
+		end
+		self:_hookWarehouseWoodSign(signPart, userId)
+		self:_syncWoodSignGui(signPart, userId)
+	end
+end
+
 function WarehouseService:_spawnWarehouseVisual(userId: number)
 	local state = self._stateByUserId[userId]
 	if not state or not state.slotId then return end
@@ -269,6 +547,9 @@ function WarehouseService:_spawnWarehouseVisual(userId: number)
 	local visual = self._template:Clone()
 	visual.Name = "Warehouse_" .. tostring(userId)
 	visual:PivotTo(CFrame.new(pos))
+
+	-- Resolve terminal while ProximityPrompts still exist (text match), then parent, place wood sign, strip prompts.
+	local terminalForWoodSign = findWarehouseTerminalAnchor(visual)
 
 	-- Update sign
 	local signBoard = visual:FindFirstChild("SignBoard", true)
@@ -295,6 +576,8 @@ function WarehouseService:_spawnWarehouseVisual(userId: number)
 	local finishPlot = Workspace.Map:FindFirstChild("FinishPlot")
 	visual.Parent = finishPlot or Workspace
 	self._visualByUserId[userId] = visual
+	self:_ensureWarehouseWoodSign(visual, userId, terminalForWoodSign)
+	stripAllProximityPromptsInWarehouse(visual)
 end
 
 function WarehouseService:_applyFenceSize(_visual: Model, _tier: number)
@@ -393,20 +676,42 @@ function WarehouseService:DeliverHitBarrels(userId: number, manifest): boolean
 	return true
 end
 
-function WarehouseService:TryUpgrade(userId: number): (boolean, string)
+function WarehouseService:TryUpgrade(userId: number, feedbackPlayer: Player?): (boolean, string)
 	local state = self._stateByUserId[userId]
-	if not state then return false, "No state" end
+	if not state then
+		local msg = "No warehouse state."
+		if feedbackPlayer then
+			self:_fireWarehouseUpgradeResult(feedbackPlayer, false, "ERR_NO_STATE", msg, nil)
+		end
+		return false, msg
+	end
 
 	local nextCost = WarehouseConfig.GetUpgradeCost(state.tier)
-	if not nextCost then return false, "Already max tier" end
+	if not nextCost then
+		local msg = "Warehouse already at max tier."
+		if feedbackPlayer then
+			self:_fireWarehouseUpgradeResult(feedbackPlayer, false, "ERR_MAX_TIER", msg, {
+				tier = state.tier,
+				maxTier = MAX_WAREHOUSE_TIER,
+			})
+		end
+		return false, msg
+	end
 
 	if not self._oilStateService:TrySpendCash(userId, nextCost) then
-		return false, "Not enough cash" end
+		local msg = string.format("Need $%d to upgrade.", nextCost)
+		if feedbackPlayer then
+			self:_fireWarehouseUpgradeResult(feedbackPlayer, false, "ERR_NOT_ENOUGH_CASH", msg, {
+				cost = nextCost,
+				tier = state.tier,
+			})
+		end
+		return false, msg
+	end
 
 	state.tier += 1
 	self._dirtyByUserId[userId] = true
 
-	-- Expand the visual fence
 	local visual = self._visualByUserId[userId]
 	if visual then
 		self:_applyFenceSize(visual, state.tier)
@@ -414,7 +719,17 @@ function WarehouseService:TryUpgrade(userId: number): (boolean, string)
 
 	self:_updateSign(userId)
 	self._oilStateService:PushState(userId)
-	return true, "Upgraded to tier " .. state.tier
+	self:PushState(userId)
+
+	local msg = string.format("Upgraded to tier %d.", state.tier)
+	if feedbackPlayer then
+		self:_fireWarehouseUpgradeResult(feedbackPlayer, true, "OK", msg, {
+			tier = state.tier,
+			maxTier = MAX_WAREHOUSE_TIER,
+			costSpent = nextCost,
+		})
+	end
+	return true, msg
 end
 
 function WarehouseService:SellAll(userId: number)
@@ -515,6 +830,7 @@ function WarehouseService:GetWarehouseForClient(userId: number)
 
 	return {
 		tier = state.tier,
+		maxTier = MAX_WAREHOUSE_TIER,
 		barrels = {
 			HeavyCrude = (state.barrels.HeavyCrude or 0) + (state.hitOverflowBarrels.HeavyCrude or 0),
 			LightSweet = (state.barrels.LightSweet or 0) + (state.hitOverflowBarrels.LightSweet or 0),
@@ -642,7 +958,16 @@ function WarehouseService:_updateSign(userId: number)
 	local tierLabel = gui:FindFirstChild("TierLabel")
 	if tierLabel then
 		local cap = WarehouseConfig.GetCapacity(state.tier)
-		tierLabel.Text = string.format("Tier %d | %d/%d", state.tier, totalBarrels(state.barrels), cap)
+		tierLabel.Text = string.format("Tier %d/%d | %d/%d", state.tier, MAX_WAREHOUSE_TIER, totalBarrels(state.barrels), cap)
+	end
+
+	local rig = visual:FindFirstChild(WOOD_SIGN_RIG_FOLDER)
+	if rig then
+		local signModel = rig:FindFirstChild(WOOD_SIGN_MODEL_NAME)
+		local signPart = signModel and signModel:FindFirstChild("Sign")
+		if signPart and signPart:IsA("BasePart") then
+			self:_syncWoodSignGui(signPart, userId)
+		end
 	end
 end
 
@@ -702,6 +1027,9 @@ end
 
 --- @param persistRegardlessOfDirty When true (e.g. PlayerRemoving), write even if not dirty.
 function WarehouseService:_saveProfile(userId: number, force: boolean?, persistRegardlessOfDirty: boolean?)
+	if self._devSkipSaveOnNextDrop[userId] then
+		return
+	end
 	if not persistRegardlessOfDirty and not self._dirtyByUserId[userId] then
 		return
 	end
@@ -779,6 +1107,22 @@ function WarehouseService:_flushDirty(force: boolean?)
 			task.wait(FLUSH_MULTI_USER_SPACING_SECONDS)
 		end
 	end
+end
+
+--- Studio/dev: next `PlayerRemoving` will not write warehouse profile (after `RemoveAsync`).
+function WarehouseService:MarkDevSkipSaveOnNextDrop(userId: number)
+	self._devSkipSaveOnNextDrop[userId] = true
+end
+
+--- Remove `WarehouseProfiles_v1` entry and in-memory fallback cache. Does not touch live session state.
+function WarehouseService:DevRemovePersistedWarehouseProfile(userId: number)
+	local key = tostring(userId)
+	if self._dataStore then
+		pcall(function()
+			self._dataStore:RemoveAsync(key)
+		end)
+	end
+	self._memoryStore[key] = nil
 end
 
 return WarehouseService
