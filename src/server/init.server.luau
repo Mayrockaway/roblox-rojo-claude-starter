@@ -105,6 +105,15 @@ PlotResourceService:Init(RemoteService, OilStateService, PlotService, OilVisualS
 OilProductionService:Init(OilStateService, PipeNetworkService)
 DrillingService:Init(RemoteService, OilStateService)
 ProspectingService:Init(RemoteService, OilStateService)
+OilStateService:SetStateReadyForTimersCallback(function(userId: number, drillDone: { any }, prospectDone: { any })
+	DrillingService:ReplayCompletedDrills(userId, drillDone)
+	ProspectingService:ReplayCompletedProspects(userId, prospectDone)
+	if #drillDone > 0 or #prospectDone > 0 then
+		OilStateService:PushState(userId)
+	end
+	DrillingService:ResumePendingDrillDelays(userId)
+	ProspectingService:ResumePendingProspects(userId)
+end)
 OilTankService:Init(RemoteService, OilStateService)
 ToolService:Init()
 FighterPlaneWaveService:Init(RemoteService)
@@ -155,32 +164,66 @@ end)
 
 -- Debug chat commands (Studio only)
 if RunService:IsStudio() then
-	game:GetService("Players").PlayerAdded:Connect(function(player)
-		player.Chatted:Connect(function(message)
-			local cmd = message:lower():gsub("^%s+", ""):gsub("%s+$", "")
-			if cmd == "/missile" then
-				OilShipmentService:DebugDispatchMissile(player)
-			elseif cmd == "/mine" then
-				OilShipmentService:DebugDispatchMine(player)
-			elseif cmd == "/pirate" then
-				OilShipmentService:DebugDispatchPirate(player)
-			elseif cmd == "/storm" then
-				OilShipmentService:DebugDispatchStorm(player)
-			elseif cmd == "/tornado" then
-				OilShipmentService:DebugDispatchTornado(player)
-			elseif cmd == "/coastguard" then
-				OilShipmentService:DebugDispatchCoastGuard(player)
-			elseif cmd == "/slap" then
-				OilShipmentService:DebugDispatchUSShipSlap(player)
-			elseif cmd == "/fighterwave" or cmd == "/fighters" then
-				FighterPlaneWaveService:DebugSpawnWave(player.Name)
-			elseif cmd == "/fighterhere" or cmd == "/jethere" then
-				FighterPlaneWaveService:DebugSpawnOverPlayer(player)
-			elseif cmd == "/fighterretarget" or cmd == "/jetretarget" then
-				FighterPlaneWaveService:DebugRetargetTemplate(player.Name)
+	local Players = game:GetService("Players")
+
+	local function grantAllPlayersCash(amount: number)
+		local okCount = 0
+		for _, p in ipairs(Players:GetPlayers()) do
+			if OilStateService:AddCash(p.UserId, amount) then
+				OilStateService:PushState(p.UserId)
+				okCount += 1
 			end
+		end
+		print(string.format("[Dev] grant all cash +$%d → %d player(s) with oil state", amount, okCount))
+	end
+
+	-- Studio command bar: `_G.__OTS_DEV_GRANT_ALL_CASH(500)`
+	_G.__OTS_DEV_GRANT_ALL_CASH = grantAllPlayersCash
+
+	local function onDebugChat(player: Player, message: string)
+		local cmd = message:lower():gsub("^%s+", ""):gsub("%s+$", "")
+		if cmd == "/missile" then
+			OilShipmentService:DebugDispatchMissile(player)
+		elseif cmd == "/mine" then
+			OilShipmentService:DebugDispatchMine(player)
+		elseif cmd == "/pirate" then
+			OilShipmentService:DebugDispatchPirate(player)
+		elseif cmd == "/storm" then
+			OilShipmentService:DebugDispatchStorm(player)
+		elseif cmd == "/tornado" then
+			OilShipmentService:DebugDispatchTornado(player)
+		elseif cmd == "/coastguard" then
+			OilShipmentService:DebugDispatchCoastGuard(player)
+		elseif cmd == "/slap" then
+			OilShipmentService:DebugDispatchUSShipSlap(player)
+		elseif cmd == "/fighterwave" or cmd == "/fighters" then
+			FighterPlaneWaveService:DebugSpawnWave(player.Name)
+		elseif cmd == "/fighterhere" or cmd == "/jethere" then
+			FighterPlaneWaveService:DebugSpawnOverPlayer(player)
+		elseif cmd == "/fighterretarget" or cmd == "/jetretarget" then
+			FighterPlaneWaveService:DebugRetargetTemplate(player.Name)
+		elseif cmd == "/grant500" then
+			grantAllPlayersCash(500)
+		else
+			local grantN = string.match(cmd, "^/giveall%s+(%d+)$")
+			if grantN then
+				local n = tonumber(grantN)
+				if n and n > 0 then
+					grantAllPlayersCash(n)
+				end
+			end
+		end
+	end
+
+	local function hookPlayerChatted(player: Player)
+		player.Chatted:Connect(function(message)
+			onDebugChat(player, message)
 		end)
-	end)
+	end
+	Players.PlayerAdded:Connect(hookPlayerChatted)
+	for _, p in ipairs(Players:GetPlayers()) do
+		hookPlayerChatted(p)
+	end
 end
 
 print("[Server] Oil mining mode active: chunked plot + free-placed drills")

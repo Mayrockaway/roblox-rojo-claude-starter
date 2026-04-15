@@ -7,6 +7,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local OilTankConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilTankConfig"))
+local PlacementAnchor = require(Shared:WaitForChild("Utils"):WaitForChild("PlacementAnchor"))
 
 local OilVisualService = {}
 
@@ -48,6 +49,23 @@ local function anchorAllBaseParts(instance: Instance)
 			child.CanQuery = true
 		end
 	end
+end
+
+-- Catalog `visualGroundOffsetStuds` (world studs at unit scale) × placed pump scale.
+local function pumpTierVisualGroundLiftStuds(tier: any, appliedScale: number): number
+	if typeof(tier) ~= "string" then
+		return 0
+	end
+	local tiers = OilConfig.PumpTiers :: { [string]: any }
+	local pt = tiers[tier]
+	if not pt or typeof(pt.visualGroundOffsetStuds) ~= "number" then
+		return 0
+	end
+	local s = appliedScale
+	if typeof(s) ~= "number" or s <= 0 then
+		s = 1
+	end
+	return (pt.visualGroundOffsetStuds :: number) * s
 end
 
 local function ensureFolder(parent: Instance, name: string): Folder
@@ -300,6 +318,17 @@ function OilVisualService:Start()
 		self:_syncUserVisuals(userId, snapshot)
 	end))
 
+	-- Reclone world visuals after plot assignment even if an early `PushState` missed `OnStateChanged`
+	-- (startup order) or replication timing leaves the plot ready one frame later.
+	table.insert(self._connections, self._plotService:OnPlotAssigned(function(userId: number, _plot: Model)
+		task.defer(function()
+			local snap = self._oilStateService:GetStateForClient(userId)
+			if typeof(snap) == "table" then
+				self:_syncUserVisuals(userId, snap)
+			end
+		end)
+	end))
+
 	table.insert(self._connections, self._plotService:OnPlotReleased(function(userId: number, plot: Model)
 		self:_clearPlotVisuals(plot)
 	end))
@@ -378,7 +407,7 @@ end
 -- template and tags with prospectId so the client animates it separately.
 function OilVisualService:_syncActiveProspectors(_plot: Model, folder: Folder, activeProspectors, ownerUserId: number)
 	local wanted = {}
-	for _, entry in ipairs(activeProspectors) do
+	for _, entry in pairs(activeProspectors) do
 		local pid = entry.prospectId
 		if typeof(pid) ~= "number" or typeof(entry.position) ~= "table" then continue end
 		local name = "ActiveProspector_" .. tostring(pid)
@@ -428,11 +457,35 @@ function OilVisualService:_syncActiveProspectors(_plot: Model, folder: Folder, a
 	end
 end
 
+local function activeDrillPositionXYZ(entry: any): (number?, number?, number?)
+	if typeof(entry) ~= "table" then
+		return nil, nil, nil
+	end
+	local p = (entry :: { [string]: any }).position
+	if typeof(p) == "Vector3" then
+		local v = p :: Vector3
+		return v.X, v.Y, v.Z
+	end
+	if typeof(p) == "table" then
+		local t = p :: { [string]: any }
+		local px = tonumber(t.x) or tonumber(t.X)
+		local py = tonumber(t.y) or tonumber(t.Y)
+		local pz = tonumber(t.z) or tonumber(t.Z)
+		if px and py and pz then
+			return px, py, pz
+		end
+	end
+	return nil, nil, nil
+end
+
 function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, activeDrills, ownerUserId: number)
 	local wanted = {}
-	for _, entry in ipairs(activeDrills) do
+	for _, entry in pairs(activeDrills) do
 		local drillId = entry.drillId
-		if typeof(drillId) ~= "number" or typeof(entry.position) ~= "table" then continue end
+		local px, py, pz = activeDrillPositionXYZ(entry)
+		if typeof(drillId) ~= "number" or not px or not py or not pz then
+			continue
+		end
 		local name = "ActiveDrill_" .. tostring(drillId)
 		local timerName = "DrillTimer_" .. tostring(drillId)
 		wanted[name] = true
@@ -500,33 +553,16 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 		-- Keep the static anchor parked at (px, py + 3) above the drill tip
 		local anchor = folder:FindFirstChild(timerName)
 		if anchor and anchor:IsA("BasePart") then
-			local px = tonumber(entry.position.x) or 0
-			local py = tonumber(entry.position.y) or 0
-			local pz = tonumber(entry.position.z) or 0
 			anchor.Position = Vector3.new(px, py + 3, pz)
 		end
 
 		-- Only set CFrame on creation; the client's animation loop owns the CFrame after that,
 		-- otherwise snapshot pushes would stomp the sink/spin every tick.
 		if justCreated then
-			local px = tonumber(entry.position.x) or 0
-			local py = tonumber(entry.position.y) or 0
-			local pz = tonumber(entry.position.z) or 0
-			-- Compute pivot→LOWEST-PART offset so the drill's visible bottom sits on the tile surface.
-			-- Using iterated lowest part (not GetBoundingBox) because models can have invisible
-			-- attachments/helper parts that skew bbox — we want the visible mesh bottom.
+			-- Match client ghost / `PlacementAnchor` (optional `Bottom` part, else full-model bbox).
 			local pivotToBottom = 0
 			if model:IsA("Model") then
-				local pivotY = model:GetPivot().Position.Y
-				local lowestY = math.huge
-				for _, d in ipairs(model:GetDescendants()) do
-					if d:IsA("BasePart") then
-						local bot = d.Position.Y - d.Size.Y / 2
-						if bot < lowestY then lowestY = bot end
-					end
-				end
-				if lowestY == math.huge then lowestY = pivotY end
-				pivotToBottom = pivotY - lowestY
+				pivotToBottom = PlacementAnchor.pivotYMinusBottomWorldY(model)
 			elseif model:IsA("BasePart") then
 				pivotToBottom = (model :: BasePart).Size.Y / 2
 			end
@@ -555,7 +591,7 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 		if d.cellKey then pumpCellKeys[d.cellKey] = true end
 	end
 	local activeCellKeys = {}
-	for _, a in ipairs(snapshot.activeDrills or {}) do
+	for _, a in pairs(snapshot.activeDrills or {}) do
 		if a.chunkId and a.tileKey then
 			activeCellKeys[a.chunkId .. ":" .. a.tileKey] = true
 		end
@@ -736,47 +772,39 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 			local pz = tonumber(drill.position.z) or 0
 			local scale = tonumber(drill.scale) or 1
 
-			-- Measure pivot→true-visible-bottom at unit scale and cache it.
-			-- If attribute is missing (restored pump, older data), we measure now and
-			-- divide out the current AppliedScale so the stored value is always unit-scale.
-			if model:IsA("Model") and typeof(model:GetAttribute("PivotToBottomUnit")) ~= "number" then
-				local pivotY = model:GetPivot().Position.Y
-				local lowestY = math.huge
-				for _, d in ipairs(model:GetDescendants()) do
-					if d:IsA("BasePart") then
-						local cf, sz = d.CFrame, d.Size
-						local hx, hy, hz = sz.X/2, sz.Y/2, sz.Z/2
-						for _, o in ipairs({
-							Vector3.new( hx,  hy,  hz), Vector3.new(-hx,  hy,  hz),
-							Vector3.new( hx, -hy,  hz), Vector3.new(-hx, -hy,  hz),
-							Vector3.new( hx,  hy, -hz), Vector3.new(-hx,  hy, -hz),
-							Vector3.new( hx, -hy, -hz), Vector3.new(-hx, -hy, -hz),
-						}) do
-							local wy = (cf * o).Y
-							if wy < lowestY then lowestY = wy end
+			-- Re-resolve tile top from live plot geometry so Y is never stale / never from void raycasts.
+			if typeof(drill.chunkId) == "string" and typeof(drill.tileKey) == "string" then
+				local liveY = self._plotService:GetChunkTileSurfaceWorldY(_plot, drill.chunkId, drill.tileKey)
+				if typeof(liveY) == "number" then
+					py = liveY
+					local sectionModel = self._plotService:GetChunkModel(_plot, drill.chunkId)
+					if sectionModel then
+						local tilePart = self._plotService:FindChunkTileBasePart(sectionModel, drill.tileKey)
+						if tilePart then
+							px = tilePart.Position.X
+							pz = tilePart.Position.Z
 						end
 					end
 				end
-				if lowestY == math.huge then lowestY = pivotY end
-				local curScale = tonumber(model:GetAttribute("AppliedScale")) or 1
-				if curScale <= 0 then curScale = 1 end
-				model:SetAttribute("PivotToBottomUnit", (pivotY - lowestY) / curScale)
-			end
-			local pivotToBottomUnit = tonumber(model:GetAttribute("PivotToBottomUnit")) or 0
-			local pivotToBottom
-			if model:IsA("BasePart") then
-				pivotToBottom = (model :: BasePart).Size.Y / 2 * scale
-			else
-				pivotToBottom = pivotToBottomUnit * scale
 			end
 
-			-- Apply target scale immediately.
+			-- Apply ScaleTo before measuring vertical lift: `pivotY - bottomY` at authored scale
+			-- times `scale` is NOT equal to the same delta after `Model:ScaleTo(scale)` (Roblox uses
+			-- an internal authored baseline). T1 looked fine only because that delta was tiny.
 			if model:IsA("Model") and model:GetAttribute("AppliedScale") ~= scale then
 				model:ScaleTo(scale)
 				model:SetAttribute("AppliedScale", scale)
 			end
 
-			local targetCf = CFrame.new(px, py + DRILL_HEIGHT_OFFSET + pivotToBottom, pz)
+			local pivotToBottom = 0
+			if model:IsA("Model") then
+				pivotToBottom = PlacementAnchor.pivotYMinusBottomWorldY(model)
+			elseif model:IsA("BasePart") then
+				pivotToBottom = (model :: BasePart).Size.Y / 2 * scale
+			end
+
+			local extraLift = pumpTierVisualGroundLiftStuds(drill.tier, scale)
+			local targetCf = CFrame.new(px, py + DRILL_HEIGHT_OFFSET + pivotToBottom + extraLift, pz)
 			if model:IsA("Model") then
 				model:PivotTo(targetCf)
 			elseif model:IsA("BasePart") then
@@ -1117,6 +1145,7 @@ function OilVisualService:_createDrillVisual(name: string, templateName: string?
 	if template then
 		local clone = template:Clone()
 		clone.Name = name
+		clone:SetAttribute("AppliedScale", nil)
 		anchorAllBaseParts(clone)
 		-- Do NOT set PrimaryPart: doing so makes Roblox re-derive WorldPivot from
 		-- that part's CFrame, overriding the bottom-center pivot baked into the template.

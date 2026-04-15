@@ -31,6 +31,9 @@ export type EquipmentRow = {
 	prospectDurationSeconds: number?,
 	--- Second line on shop cards (e.g. one-use vs persistent).
 	shopSubtitle: string?,
+	--- Placed model / ghost: extra world +Y after anchor/bbox alignment (fine trim). Prefer naming
+	--- a `BasePart` `Bottom` or `bottom` on the asset; see `Shared.Utils.PlacementAnchor`.
+	visualGroundOffsetStuds: number?,
 }
 
 --- Edit this list only. Keep `tierKey` as "T1"|"T2"|"T3" for drills and pumps.
@@ -272,6 +275,7 @@ function EquipmentCatalog.getPumpTiersMap(): {
 		flowMultiplier: number,
 		templateName: string,
 		displayName: string,
+		visualGroundOffsetStuds: number?,
 	},
 }
 	local m: any = {}
@@ -282,6 +286,7 @@ function EquipmentCatalog.getPumpTiersMap(): {
 				flowMultiplier = r.pumpFlowMultiplier or 1,
 				templateName = r.toolName,
 				displayName = r.displayName,
+				visualGroundOffsetStuds = r.visualGroundOffsetStuds,
 			}
 		end
 	end

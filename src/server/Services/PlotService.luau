@@ -171,6 +171,42 @@ function PlotService:GetChunkModel(plot: Model, chunkId: string): Model?
 	return nil
 end
 
+-- Tile parts are usually `T11`-style BaseParts; they may be nested (folders) in authored plots.
+function PlotService:FindChunkTileBasePart(sectionModel: Model, tileKey: string): BasePart?
+	local inst = sectionModel:FindFirstChild(tileKey, true)
+	if inst and inst:IsA("BasePart") then
+		return inst
+	end
+	if inst and inst:IsA("Model") then
+		if inst.PrimaryPart and inst.PrimaryPart:IsA("BasePart") then
+			return inst.PrimaryPart
+		end
+		for _, d in ipairs(inst:GetDescendants()) do
+			if d:IsA("BasePart") then
+				return d
+			end
+		end
+	end
+	for _, d in ipairs(sectionModel:GetDescendants()) do
+		if d:IsA("BasePart") and d.Name == tileKey then
+			return d
+		end
+	end
+	return nil
+end
+
+function PlotService:GetChunkTileSurfaceWorldY(plot: Model, chunkId: string, tileKey: string): number?
+	local section = self:GetChunkModel(plot, chunkId)
+	if not section then
+		return nil
+	end
+	local tilePart = self:FindChunkTileBasePart(section, tileKey)
+	if not tilePart then
+		return nil
+	end
+	return tilePart.Position.Y + tilePart.Size.Y / 2
+end
+
 function PlotService:OnPlotAssigned(callback)
 	assert(self._plotAssignedEvent ~= nil, "PlotService not initialized.")
 	return self._plotAssignedEvent.Event:Connect(callback)

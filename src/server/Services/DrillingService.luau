@@ -1,8 +1,8 @@
 --!strict
 -- DrillingService
 -- Owns the timed lifecycle of a drill operation on a tile:
---   1. TryStartDrill (via RequestStartDrill remote) stores a transient activeDrill in OilStateService.
---   2. This service schedules a completion task at (endTime).
+--   1. TryStartDrill (via RequestStartDrill remote) stores an activeDrill in OilStateService (persisted).
+--   2. This service schedules completion at wall-clock `endTime` (remaining delay after rejoin).
 --   3. On completion, calls OilStateService:CompleteDrill which marks the tile drilled
 --      and returns metadata used to fire DrillProgressUpdate {kind="completed"} to clients.
 --   4. Clients listening to DrillProgressUpdate play the matching VFX (sink animation start,
@@ -24,18 +24,82 @@ function DrillingService:Init(remoteService, oilStateService)
 	self._connections = {}
 	-- Pending completion tasks keyed by "userId:drillId"
 	self._pendingCompletions = {}
+	self._progressEvent = remoteService:GetEvent(RemoteNames.DrillProgressUpdate)
 end
 
 local function pendingKey(userId: number, drillId: number): string
 	return tostring(userId) .. ":" .. tostring(drillId)
 end
 
+function DrillingService:_fireDrillCompleted(userId: number, done: any)
+	self._progressEvent:FireAllClients({
+		kind = "completed",
+		ownerUserId = userId,
+		drillId = done.drillId,
+		chunkId = done.chunkId,
+		tileKey = done.tileKey,
+		position = { x = done.position.X, y = done.position.Y, z = done.position.Z },
+		oilType = done.oilType,
+		hasOil = done.hasOil,
+	})
+end
+
+function DrillingService:_scheduleDrillCompletion(userId: number, drillId: number, delaySeconds: number)
+	local key = pendingKey(userId, drillId)
+	if self._pendingCompletions[key] then
+		return
+	end
+	local entry = { userId = userId, drillId = drillId, cancelled = false }
+	self._pendingCompletions[key] = entry
+	local function finish()
+		if entry.cancelled then
+			return
+		end
+		self._pendingCompletions[key] = nil
+		local doneOk, done = self._oilStateService:CompleteDrill(userId, drillId)
+		if not doneOk or not done then
+			return
+		end
+		self:_fireDrillCompleted(userId, done)
+		self._oilStateService:PushState(userId)
+	end
+	if delaySeconds <= 0 then
+		task.defer(finish)
+	else
+		task.delay(delaySeconds, finish)
+	end
+end
+
+--- Replay `kind=completed` for drills that finished while the player was offline (state already updated).
+function DrillingService:ReplayCompletedDrills(userId: number, completions: { any })
+	for _, done in ipairs(completions) do
+		if typeof(done) == "table" then
+			self:_fireDrillCompleted(userId, done)
+		end
+	end
+end
+
+--- After profile load, schedule `task.delay` for each active drill still in progress.
+function DrillingService:ResumePendingDrillDelays(userId: number)
+	local state = self._oilStateService:GetState(userId)
+	if not state or not state.activeDrills then
+		return
+	end
+	local now = workspace:GetServerTimeNow()
+	for drillId, active in pairs(state.activeDrills) do
+		if typeof(drillId) == "number" and typeof(active) == "table" then
+			local endTime = (active :: any).endTime
+			if typeof(endTime) == "number" then
+				local remain = math.max(0, endTime - now)
+				self:_scheduleDrillCompletion(userId, drillId, remain)
+			end
+		end
+	end
+end
+
 function DrillingService:Start()
 	local startEvent = self._remoteService:GetEvent(RemoteNames.RequestStartDrill)
 	local placePumpEvent = self._remoteService:GetEvent(RemoteNames.RequestPlacePump)
-	local progressEvent = self._remoteService:GetEvent(RemoteNames.DrillProgressUpdate)
-
-	self._progressEvent = progressEvent
 
 	table.insert(self._connections, startEvent.OnServerEvent:Connect(function(player, payload)
 		self:_handleStartDrill(player, payload)
@@ -45,8 +109,8 @@ function DrillingService:Start()
 		self:_handlePlacePump(player, payload)
 	end))
 
-	-- When a player leaves, cancel any pending completions for them so we don't mutate state
-	-- for a gone user.
+	-- When a player leaves, cancel any pending completion tasks so we don't double-complete
+	-- after OilState reload (persisted active drills get fresh delays on rejoin).
 	table.insert(self._connections, Players.PlayerRemoving:Connect(function(player)
 		for key, entry in pairs(self._pendingCompletions) do
 			if entry.userId == player.UserId then
@@ -58,7 +122,9 @@ function DrillingService:Start()
 end
 
 function DrillingService:Stop()
-	for _, c in ipairs(self._connections) do c:Disconnect() end
+	for _, c in ipairs(self._connections) do
+		c:Disconnect()
+	end
 	self._connections = {}
 	for key, entry in pairs(self._pendingCompletions) do
 		entry.cancelled = true
@@ -111,28 +177,7 @@ function DrillingService:_handleStartDrill(player: Player, payload: any)
 	-- Push again so backpack reflects consumed drill tool after TryStartDrill snapshot.
 	self._oilStateService:PushState(userId)
 
-	-- Schedule the completion
-	local key = pendingKey(userId, data.drillId)
-	local entry = { userId = userId, drillId = data.drillId, cancelled = false }
-	self._pendingCompletions[key] = entry
-	task.delay(duration, function()
-		if entry.cancelled then return end
-		self._pendingCompletions[key] = nil
-		local doneOk, done = self._oilStateService:CompleteDrill(userId, data.drillId)
-		if not doneOk then return end
-		self._progressEvent:FireAllClients({
-			kind = "completed",
-			ownerUserId = userId,
-			drillId = done.drillId,
-			chunkId = done.chunkId,
-			tileKey = done.tileKey,
-			position = { x = done.position.X, y = done.position.Y, z = done.position.Z },
-			oilType = done.oilType,
-			hasOil = done.hasOil,
-		})
-		-- Push state so tile.drilled flips on the client and activeDrills clears
-		self._oilStateService:PushState(userId)
-	end)
+	self:_scheduleDrillCompletion(userId, data.drillId, duration)
 end
 
 function DrillingService:_handlePlacePump(player: Player, payload: any)

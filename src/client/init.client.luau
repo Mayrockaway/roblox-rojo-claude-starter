@@ -14,6 +14,8 @@ local mouse = player:GetMouse()
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local Constants = require(Shared:WaitForChild("Constants"))
+local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
+local PlacementAnchor = require(Shared:WaitForChild("Utils"):WaitForChild("PlacementAnchor"))
 
 type StraitWaypointFxModule = {
 	OnStraitWaypointPayload: (data: { [string]: any }) -> (),
@@ -577,15 +579,15 @@ local function isChunkUnlocked(chunkId: string): boolean
 	return c ~= nil and c.unlocked == true
 end
 
--- Returns the top Y of a chunk's surface (the highest sub-tile).
--- Used to snap drill placement Y so grazing-camera raycasts don't yield floating drills.
+-- Returns the top Y of a chunk's surface (the highest sub-tile). Uses descendants so nested
+-- authored tiles still resolve; avoids falling back to `hitPos.Y` (StartBeach / void) when grazing.
 local function getChunkSurfaceY(chunkId: string): number?
 	local sectionModel = chunkPartById[chunkId]
 	if not sectionModel then
 		return nil
 	end
 	local topY: number? = nil
-	for _, d in ipairs(sectionModel:GetChildren()) do
+	for _, d in ipairs(sectionModel:GetDescendants()) do
 		if d:IsA("BasePart") and d.Name:match("^T%d%d$") then
 			local surface = d.Position.Y + d.Size.Y / 2
 			if topY == nil or surface > topY then
@@ -594,6 +596,26 @@ local function getChunkSurfaceY(chunkId: string): number?
 		end
 	end
 	return topY
+end
+
+-- When the mouse hits a tile part directly, use that surface (matches server tile snap).
+local function surfaceYFromRayTarget(): number?
+	local t = mouse.Target
+	if t and t:IsA("BasePart") and t.Name:match("^T%d%d$") then
+		return t.Position.Y + t.Size.Y / 2
+	end
+	return nil
+end
+
+local function pumpGhostVisualGroundLiftStuds(tier: string?): number
+	if typeof(tier) ~= "string" then
+		return 0
+	end
+	local pt = (OilConfig.PumpTiers :: { [string]: any })[tier]
+	if pt and typeof(pt.visualGroundOffsetStuds) == "number" then
+		return pt.visualGroundOffsetStuds :: number
+	end
+	return 0
 end
 
 local function distanceXZ(a: Vector3, b: Vector3): number
@@ -715,6 +737,7 @@ local function updateGhost()
 		return
 	end
 	local equipKind = select(1, getEquippedToolInfo())
+	local equipTier = select(2, getEquippedToolInfo())
 	if equipKind == nil and equipped == TOOL_DRILL then
 		equipKind = "Drill"
 	end
@@ -723,16 +746,14 @@ local function updateGhost()
 	if not g then
 		return
 	end
-	local surfaceY = getChunkSurfaceY(chunkId) or hitPos.Y
-	-- Compute pivot→bbox-bottom offset so the ghost's bottom sits on the ground, not its pivot.
-	-- Pump_T2/T3 + Drill_T2/T3 have off-center pivots and would sink without this.
+	local surfaceY = surfaceYFromRayTarget() or getChunkSurfaceY(chunkId) or hitPos.Y
+	-- Pivot → ground: optional `Bottom` / `bottom` anchor part, else full-model bbox (PlacementAnchor).
 	local pivotToBottom = 0
 	if g:IsA("Model") then
-		local bbCF, bbSize = g:GetBoundingBox()
-		local pivotY = g:GetPivot().Position.Y
-		pivotToBottom = pivotY - (bbCF.Position.Y - bbSize.Y / 2)
+		pivotToBottom = PlacementAnchor.pivotYMinusBottomWorldY(g)
 	end
-	g:PivotTo(CFrame.new(hitPos.X, surfaceY + pivotToBottom, hitPos.Z))
+	local catalogLift = (equipKind == "Pump") and pumpGhostVisualGroundLiftStuds(equipTier) or 0
+	g:PivotTo(CFrame.new(hitPos.X, surfaceY + pivotToBottom + catalogLift, hitPos.Z))
 	if ghostHighlight then
 		if isPlacementValid(chunkId, hitPos, equipKind) then
 			ghostHighlight.FillColor = Color3.fromRGB(80, 220, 120)
@@ -1266,7 +1287,7 @@ local function tryPrimaryAction()
 		setStatus("That chunk is locked.", false)
 		return
 	end
-	local surfaceY = getChunkSurfaceY(chunkId) or hitPos.Y
+	local surfaceY = surfaceYFromRayTarget() or getChunkSurfaceY(chunkId) or hitPos.Y
 	local payload = {
 		chunkId = chunkId,
 		x = hitPos.X,

@@ -88,7 +88,7 @@ end
 
 local function buildDefaultPersisted()
 	return {
-		version = 5,
+		version = 6,
 		cash = OilConfig.StartingCash,
 		storageCapacity = OilConfig.StartingStorageCapacity,
 		oilByTier = {
@@ -103,9 +103,12 @@ local function buildDefaultPersisted()
 		drums = {},
 		equipmentOwned = {},
 		nextDrillId = 1,
+		nextProspectId = 1,
 		nextPipeId = 1,
 		nextDrumId = 1,
 		nextAttachmentId = 1,
+		activeDrills = {},
+		activeProspectors = {},
 		shipSpeedLevel = 1,
 		shipCapacityLevel = 1,
 		shipSkinId = "DefaultTanker",
@@ -186,9 +189,10 @@ local function plotGridOrigin(plot: Model): { cellOriginX: number, cellOriginZ: 
 
 	local s = staticGridConstants()
 	local centerX, centerZ = 0, 0
+	local sectionCenterCount = 0
 	local ground = plot:FindFirstChild("PlotGround")
 	if ground then
-		local totalX, totalZ, count = 0, 0, 0
+		local totalX, totalZ = 0, 0
 		for _, section in ipairs(ground:GetChildren()) do
 			if section:IsA("Model") then
 				local cx = section:GetAttribute("CenterX")
@@ -196,13 +200,13 @@ local function plotGridOrigin(plot: Model): { cellOriginX: number, cellOriginZ: 
 				if typeof(cx) == "number" and typeof(cz) == "number" then
 					totalX += cx
 					totalZ += cz
-					count += 1
+					sectionCenterCount += 1
 				end
 			end
 		end
-		if count > 0 then
-			centerX = totalX / count
-			centerZ = totalZ / count
+		if sectionCenterCount > 0 then
+			centerX = totalX / sectionCenterCount
+			centerZ = totalZ / sectionCenterCount
 		else
 			warn(string.format("[OilStateService] %s has no CenterX/CenterZ attributes on PlotGround sections", plot.Name))
 		end
@@ -214,7 +218,11 @@ local function plotGridOrigin(plot: Model): { cellOriginX: number, cellOriginZ: 
 	local cellOriginZ = startZ - ((s.subTilesPerSide - 1) / 2) * SUB_TILE_SIZE
 
 	local origin = { cellOriginX = cellOriginX, cellOriginZ = cellOriginZ }
-	_gridOriginByPlotId[plotId] = origin
+	-- Never cache a grid built from (0,0) when sections had no CenterX/CenterZ yet: that poisons
+	-- `_gridOriginByPlotId` for the whole session and intermittently misplaces active drills.
+	if sectionCenterCount > 0 then
+		_gridOriginByPlotId[plotId] = origin
+	end
 	return origin
 end
 
@@ -259,6 +267,16 @@ local function cellToSectionId(row: number, col: number): string
 	return string.format("S%02d_%02d", sRow, sCol)
 end
 
+-- Global grid cell (1..globalRows/Cols) → local sub-tile key `T11`..`T55` within that section.
+local function globalCellToLocalTileKey(row: number, col: number): string
+	local s = staticGridConstants()
+	local sRow = math.floor((row - 1) / s.subTilesPerSide) + 1
+	local sCol = math.floor((col - 1) / s.subTilesPerSide) + 1
+	local localR = row - (sRow - 1) * s.subTilesPerSide
+	local localC = col - (sCol - 1) * s.subTilesPerSide
+	return string.format("T%d%d", localR, localC)
+end
+
 local function cellInBounds(row: number, col: number): boolean
 	local s = staticGridConstants()
 	return row >= 1 and row <= s.globalRows and col >= 1 and col <= s.globalCols
@@ -297,6 +315,7 @@ function OilStateService:Init(remoteService, plotService)
 	self._lastOilDataStoreSaveClock = {} :: { [number]: number }
 	self._boatDockService = nil :: any
 	self._skinChangedHandler = nil :: ((number, string) -> ())?
+	self._stateReadyForTimersCallback = nil :: ((number, { any }, { any }) -> ())?
 	self._dataStore = nil
 	local okStore, storeOrErr = pcall(function()
 		return DataStoreService:GetDataStore(DATASTORE_NAME)
@@ -307,6 +326,25 @@ function OilStateService:Init(remoteService, plotService)
 		self._dataStore = nil
 		warn("[OilStateService] DataStore unavailable (enable API access in Studio if needed); using memory fallback:", storeOrErr)
 	end
+end
+
+--- Fired after a plot profile is loaded into memory: `(userId, drillCompletions, prospectCompletions)`.
+--- Used to replay completed timers that finished while offline and to schedule remaining delays.
+function OilStateService:SetStateReadyForTimersCallback(cb: (number, { any }, { any }) -> ())
+	self._stateReadyForTimersCallback = cb
+end
+
+-- Rehydrate runs synchronously so the first `PushState` after assign does not show stale in-progress ops.
+-- Client VFX replay + `task.delay` wiring is deferred until `DrillingService` / `ProspectingService` have started.
+function OilStateService:_invokeStateTimersReady(userId: number)
+	local drillDone, prospectDone = self:RehydrateExpiredTimers(userId)
+	task.defer(function()
+		local cb = self._stateReadyForTimersCallback
+		if not cb then
+			return
+		end
+		cb(userId, drillDone, prospectDone)
+	end)
 end
 
 function OilStateService:Start()
@@ -340,11 +378,28 @@ function OilStateService:Start()
 			self:PushState(player.UserId)
 		end
 	end
+
+	-- `OilVisualService:Start()` runs after this `Start()`; the bootstrap `PushState` above would not
+	-- reach `OnStateChanged` yet. Re-push once sibling services have wired listeners so ActiveDrill_* reclones.
+	task.defer(function()
+		if not self._running then
+			return
+		end
+		for _, player in ipairs(Players:GetPlayers()) do
+			local uid = player.UserId
+			if self._statesByUserId[uid] and self._plotService:GetOwnedPlot(uid) then
+				self:PushState(uid)
+			end
+		end
+	end)
 end
 
 function OilStateService:Stop()
 	self._running = false
-	self:_flushDirtyUsers(true)
+	-- Save every in-memory profile (dirty-only flush misses users whose dirty flag cleared after last autosave).
+	for uid, _ in pairs(self._statesByUserId) do
+		self:_saveUser(uid, true, true)
+	end
 
 	for _, connection in ipairs(self._connections) do
 		connection:Disconnect()
@@ -399,11 +454,93 @@ local function hasUnlockedNeighbor(state, row: number, col: number): boolean
 	return false
 end
 
+-- DataStore / JSON may use `{x,y,z}` or `{X,Y,Z}`; runtime uses `Vector3`.
+local function worldXYZFromPersistedPosition(pos: any): (number?, number?, number?)
+	if typeof(pos) == "Vector3" then
+		local v = pos :: Vector3
+		return v.X, v.Y, v.Z
+	end
+	if typeof(pos) == "table" then
+		local t = pos :: { [string]: any }
+		local px = tonumber(t.x) or tonumber(t.X)
+		local py = tonumber(t.y) or tonumber(t.Y)
+		local pz = tonumber(t.z) or tonumber(t.Z)
+		if px and py and pz then
+			return px, py, pz
+		end
+	end
+	return nil, nil, nil
+end
+
+local function globalCellFromCellKeyString(ck: string): (number?, number?)
+	local r, c = string.match(ck, "^R(%d+)C(%d+)$")
+	return tonumber(r), tonumber(c)
+end
+
+-- `state.plot` can point at a destroyed/stale Model after Studio rejoin while PlotService already
+-- references the live plot; fall back to GetOwnedPlot for grid math.
+local function activeDrillWorldFromStateEntry(plotForGrid: Model?, e: { [string]: any }): (number?, number?, number?)
+	local px, py, pz = worldXYZFromPersistedPosition(e.position)
+	if px and py and pz then
+		return px, py, pz
+	end
+	if typeof(plotForGrid) == "Instance" and plotForGrid:IsA("Model") then
+		local row = tonumber(e.cellRow)
+		local col = tonumber(e.cellCol)
+		if (not row or not col) and typeof(e.cellKey) == "string" then
+			row, col = globalCellFromCellKeyString(e.cellKey :: string)
+		end
+		if row and col and cellInBounds(row, col) then
+			local wx, wz = cellToWorld(plotForGrid :: Model, row, col)
+			return wx, 6, wz
+		end
+	end
+	return nil, nil, nil
+end
+
+-- Uses authored section/tile parts (same as OilVisualService puddle placement) when analytic
+-- `cellToWorld` is unavailable or was skipped due to missing grid metadata.
+local function activeDrillWorldFromChunkTile(plotService: any, plot: Model?, chunkId: any, tileKey: any): (number?, number?, number?)
+	if typeof(plot) ~= "Instance" or not plot:IsA("Model") then
+		return nil, nil, nil
+	end
+	if typeof(chunkId) ~= "string" or chunkId == "" then
+		return nil, nil, nil
+	end
+	if typeof(tileKey) ~= "string" or tileKey == "" then
+		return nil, nil, nil
+	end
+	local section = plotService:GetChunkModel(plot, chunkId)
+	if not section then
+		return nil, nil, nil
+	end
+	local tile = plotService:FindChunkTileBasePart(section, tileKey)
+	if not (tile and tile:IsA("BasePart")) then
+		return nil, nil, nil
+	end
+	local topY = tile.Position.Y + tile.Size.Y / 2
+	return tile.Position.X, topY, tile.Position.Z
+end
+
+function OilStateService:_plotModelForGrid(userId: number, state: any): Model?
+	local sp = state.plot
+	if typeof(sp) == "Instance" and sp:IsA("Model") and sp:IsDescendantOf(workspace) then
+		return sp :: Model
+	end
+	local owned = self._plotService:GetOwnedPlot(userId)
+	if typeof(owned) == "Instance" and owned:IsA("Model") then
+		return owned
+	end
+	return nil
+end
+
 function OilStateService:GetStateForClient(userId: number)
 	local state = self._statesByUserId[userId]
 	if not state then
 		return nil
 	end
+
+	local plotForGrid = self:_plotModelForGrid(userId, state)
 
 	local chunks = {}
 	for _, chunk in pairs(state.chunksById) do
@@ -460,32 +597,64 @@ function OilStateService:GetStateForClient(userId: number)
 
 	local activeProspectors = {}
 	for _, entry in pairs(state.activeProspectors or {}) do
-		table.insert(activeProspectors, {
-			prospectId = entry.prospectId,
-			chunkId = entry.chunkId,
-			tileKey = entry.tileKey,
-			template = entry.template,
-			position = { x = entry.position.X, y = entry.position.Y, z = entry.position.Z },
-			startTime = entry.startTime,
-			endTime = entry.endTime,
-		})
+		if typeof(entry) == "table" then
+			local e = entry :: { [string]: any }
+			local px, py, pz = worldXYZFromPersistedPosition(e.position)
+			if px and py and pz then
+				table.insert(activeProspectors, {
+					prospectId = e.prospectId,
+					chunkId = e.chunkId,
+					tileKey = e.tileKey,
+					template = e.template,
+					position = { x = px, y = py, z = pz },
+					startTime = e.startTime,
+					endTime = e.endTime,
+				})
+			end
+		end
 	end
 
 	local activeDrills = {}
 	local nowT = workspace:GetServerTimeNow()
-	for _, entry in pairs(state.activeDrills or {}) do
-		table.insert(activeDrills, {
-			drillId = entry.drillId,
-			chunkId = entry.chunkId,
-			tier = entry.tier,
-			tileKey = entry.tileKey,
-			template = entry.template,
-			position = { x = entry.position.X, y = entry.position.Y, z = entry.position.Z },
-			startTime = entry.startTime,
-			endTime = entry.endTime,
-			remaining = math.max(0, entry.endTime - nowT),
-			oilType = entry.oilType,
-		})
+	for key, entry in pairs(state.activeDrills or {}) do
+		if typeof(entry) == "table" then
+			local e = entry :: { [string]: any }
+			local drillId = typeof(e.drillId) == "number" and e.drillId or tonumber(e.drillId) or tonumber(key)
+			if typeof(drillId) == "number" then
+				local px, py, pz = activeDrillWorldFromStateEntry(plotForGrid, e)
+				if not (px and py and pz) and plotForGrid then
+					px, py, pz = activeDrillWorldFromChunkTile(self._plotService, plotForGrid, e.chunkId, e.tileKey)
+				end
+				if px and py and pz then
+					local st = tonumber(e.startTime) or nowT
+					local et = tonumber(e.endTime) or (st + 1)
+					table.insert(activeDrills, {
+						drillId = drillId,
+						chunkId = e.chunkId,
+						tier = e.tier,
+						tileKey = e.tileKey,
+						template = e.template,
+						position = { x = px, y = py, z = pz },
+						cellRow = e.cellRow,
+						cellCol = e.cellCol,
+						cellKey = e.cellKey,
+						startTime = st,
+						endTime = et,
+						remaining = math.max(0, et - nowT),
+						oilType = e.oilType,
+					})
+				else
+					-- Do not mutate `state.activeDrills` here: a transient missing/stale `state.plot` would
+					-- delete valid in-progress ops. Omit from this snapshot only; next push may resolve.
+					DevLog.log(string.format(
+						"[OilState] activeDrill omitted from snapshot user=%d key=%s id=%s (no world position yet)",
+						userId,
+						tostring(key),
+						tostring(drillId)
+					))
+				end
+			end
+		end
 	end
 
 	local pipes = {}
@@ -812,30 +981,77 @@ function OilStateService:_validateTilePlacement(userId: number, payload)
 		return false, "ERR_CELL_BLOCKED", "This cell is occupied by refinery infrastructure."
 	end
 
-	-- Snap XYZ to the actual tile instance. Using the tile's authored position directly
-	-- beats the formula-based cellToWorld when tiles were authored at a spacing that
-	-- drifts from the hardcoded SUB_TILE_SIZE. Y is top surface, XZ is tile center.
-	local sectionModel = self._plotService:GetChunkModel(plot, chunkId)
+	-- Snap XYZ to the actual tile instance (recursive search — tiles may sit under folders).
+	-- Y must be the tile's top surface; never leave client `payload.y` (can be StartBeach / void ray).
 	local snappedX, snappedZ = x, z
-	if sectionModel then
-		local topY: number? = nil
-		local tileInstance = sectionModel:FindFirstChild(tileKey)
-		if tileInstance and tileInstance:IsA("BasePart") then
-			snappedX = tileInstance.Position.X
-			snappedZ = tileInstance.Position.Z
-			topY = tileInstance.Position.Y + tileInstance.Size.Y / 2
-		else
-			for _, d in ipairs(sectionModel:GetChildren()) do
+	if typeof(tileKey) == "string" then
+		local topY = self._plotService:GetChunkTileSurfaceWorldY(plot, chunkId, tileKey)
+		local sectionModel = self._plotService:GetChunkModel(plot, chunkId)
+		if topY and sectionModel then
+			y = topY
+			local tilePart = self._plotService:FindChunkTileBasePart(sectionModel, tileKey)
+			if tilePart then
+				snappedX = tilePart.Position.X
+				snappedZ = tilePart.Position.Z
+			end
+		elseif sectionModel then
+			-- Fallback: highest T## surface in section (legacy flat layout).
+			local bestTop: number? = nil
+			for _, d in ipairs(sectionModel:GetDescendants()) do
 				if d:IsA("BasePart") and d.Name:match("^T%d%d$") then
 					local surface = d.Position.Y + d.Size.Y / 2
-					if topY == nil or surface > topY then topY = surface end
+					if bestTop == nil or surface > bestTop then
+						bestTop = surface
+					end
 				end
 			end
+			if bestTop then
+				y = bestTop
+			end
 		end
-		if topY then y = topY end
 	end
 
 	return true, "OK", "", chunk, tileKey, snappedX, y, snappedZ, cellR, cellC
+end
+
+-- Complete any in-progress drills/prospects whose `endTime` is already past (e.g. while offline).
+-- Returns payloads matching `CompleteDrill` / `CompleteProspect` for replaying client VFX.
+function OilStateService:RehydrateExpiredTimers(userId: number): ({ any }, { any })
+	local state = self._statesByUserId[userId]
+	if not state then
+		return {}, {}
+	end
+	local now = workspace:GetServerTimeNow()
+	local drillIds: { number } = {}
+	for drillId, entry in pairs(state.activeDrills or {}) do
+		if typeof((entry :: any).endTime) == "number" and (entry :: any).endTime <= now then
+			table.insert(drillIds, drillId)
+		end
+	end
+	local drillDone: { any } = {}
+	for _, drillId in ipairs(drillIds) do
+		local ok, data = self:CompleteDrill(userId, drillId)
+		if ok and data then
+			table.insert(drillDone, data)
+		end
+	end
+	local prospectIds: { number } = {}
+	for prospectId, entry in pairs(state.activeProspectors or {}) do
+		if typeof((entry :: any).endTime) == "number" and (entry :: any).endTime <= now then
+			table.insert(prospectIds, prospectId)
+		end
+	end
+	local prospectDone: { any } = {}
+	for _, prospectId in ipairs(prospectIds) do
+		local ok, data = self:CompleteProspect(userId, prospectId)
+		if ok and data then
+			table.insert(prospectDone, data)
+		end
+	end
+	if #drillIds + #prospectIds > 0 then
+		self:_markDirty(userId)
+	end
+	return drillDone, prospectDone
 end
 
 -- Begin a drill operation on a tile. Server-authoritative timer; pump placement is blocked
@@ -899,6 +1115,7 @@ function OilStateService:TryStartDrill(userId: number, payload): (boolean, strin
 		template = tierCfg.templateName,
 	}
 	state.activeDrills[drillId] = entry
+	self:_markDirty(userId)
 	return true, "OK", "Drilling...", {
 		drillId = drillId,
 		duration = effectiveSeconds,
@@ -975,6 +1192,7 @@ function OilStateService:TryStartProspect(userId: number, payload: any): (boolea
 		template = cfg.templateName,
 	}
 	state.activeProspectors[prospectId] = entry
+	self:_markDirty(userId)
 
 	return true, "OK", "Prospecting...", {
 		prospectId = prospectId,
@@ -1099,20 +1317,11 @@ function OilStateService:TryPlaceDrill(userId: number, payload): (boolean, strin
 end
 
 local function positionVectorFromStateEntry(pos: any): Vector3?
-	-- Runtime state often uses Vector3; persisted saves use { x, y, z } tables.
-	if typeof(pos) == "Vector3" then
-		return pos :: Vector3
+	local px, py, pz = worldXYZFromPersistedPosition(pos)
+	if px and py and pz then
+		return Vector3.new(px, py, pz)
 	end
-	if typeof(pos) ~= "table" then
-		return nil
-	end
-	local x = tonumber((pos :: any).x)
-	local y = tonumber((pos :: any).y)
-	local z = tonumber((pos :: any).z)
-	if not x or not y or not z then
-		return nil
-	end
-	return Vector3.new(x, y, z)
+	return nil
 end
 
 --- World position used for salvage range checks (`OilConfig.SalvageProximityMaxStuds`).
@@ -1645,6 +1854,9 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		else
 			DevLog.log(string.format("[OilState] _ensurePlayerState user=%d plot=%s: state already exists - reusing", userId, plot.Name))
 		end
+		-- Always bind the current Workspace plot Model (same plotId can be a new instance after rejoin).
+		existing.plot = plot
+		self:_invokeStateTimersReady(userId)
 		return
 	end
 
@@ -1729,8 +1941,8 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		shipSkinId = "DefaultTanker",
 		chunksById = chunksById,
 		drillsById = {},         -- each record is now a PLACED PUMP (post-refactor)
-		activeDrills = {},       -- transient: in-progress drill operations { [drillId] = {...} }
-		activeProspectors = {},  -- transient: in-progress prospect operations { [prospectId] = {...} }
+		activeDrills = {},       -- in-progress drills; also persisted (wall-clock start/end)
+		activeProspectors = {},  -- in-progress prospects; also persisted
 		nextProspectId = 1,
 		pipesByCellKey = {},
 		drumsById = {},
@@ -1756,6 +1968,7 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 	self:_ensureDefaultPipesForPlayer(state, plot)
 
 	self._statesByUserId[userId] = state
+	self:_invokeStateTimersReady(userId)
 
 	-- Force a deferred visual refresh so biome tiles + fog get applied after state is fully set
 	task.defer(function()
@@ -1957,6 +2170,174 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		end
 	end
 
+	-- In-progress drills (persisted so timers survive logout / server restart).
+	-- Use `pairs`: DataStore JSON can deserialize arrays as sparse/dict tables where `ipairs` would skip rows.
+	if typeof(persisted.activeDrills) == "table" then
+		for _, rec in pairs(persisted.activeDrills) do
+			if typeof(rec) == "table" then
+				local r = rec :: { [string]: any }
+				local drillId = tonumber(r.drillId)
+				local savedChunkId: string? = nil
+				if typeof(r.chunkId) == "string" then
+					local s = (r.chunkId :: string):gsub("^%s+", ""):gsub("%s+$", "")
+					if s ~= "" then
+						savedChunkId = s
+					end
+				end
+				local tileKeySaved: string? = nil
+				if typeof(r.tileKey) == "string" then
+					local t = (r.tileKey :: string):gsub("^%s+", ""):gsub("%s+$", "")
+					if t ~= "" then
+						tileKeySaved = t
+					end
+				end
+				if drillId then
+					local cellR = tonumber(r.cellRow)
+					local cellC = tonumber(r.cellCol)
+					if not cellR or not cellC or not cellInBounds(cellR, cellC) then
+						local pv = positionVectorFromStateEntry(r.position)
+						if pv then
+							cellR, cellC = worldToCell(plot, pv.X, pv.Z)
+						end
+					end
+					if cellR and cellC and cellInBounds(cellR, cellC) then
+						local sectionFromCell = cellToSectionId(cellR, cellC)
+						local tileKeyFromCell = globalCellToLocalTileKey(cellR, cellC)
+						local chunk = state.chunksById[sectionFromCell]
+						if not chunk and savedChunkId then
+							chunk = state.chunksById[savedChunkId]
+						end
+						local tiles = chunk and chunk.tiles
+						local tile: any = nil
+						local tileKeyResolved: string? = nil
+						if typeof(tiles) == "table" then
+							if tileKeySaved then
+								tile = (tiles :: { [string]: any })[tileKeySaved]
+								if tile then
+									tileKeyResolved = tileKeySaved
+								end
+							end
+							if not tile then
+								tile = (tiles :: { [string]: any })[tileKeyFromCell]
+								if tile then
+									tileKeyResolved = tileKeyFromCell
+								end
+							end
+						end
+						if not tile and savedChunkId and savedChunkId ~= sectionFromCell then
+							local ch2 = state.chunksById[savedChunkId]
+							local t2 = ch2 and ch2.tiles
+							if typeof(t2) == "table" and tileKeySaved then
+								tile = (t2 :: { [string]: any })[tileKeySaved]
+								if tile then
+									chunk = ch2
+									tileKeyResolved = tileKeySaved
+								end
+							end
+						end
+						-- `chunkTiles` is applied above; a stale profile can have `tile.drilled == true` while
+						-- `activeDrills` still lists that op (or wall-clock says it is still running). Do not skip
+						-- restore solely on `drilled`, or the drill model never reclones and timers look "wrong".
+						if chunk and chunk.unlocked == true and tile then
+							local ck = if typeof(r.cellKey) == "string" and r.cellKey ~= "" then r.cellKey :: string else cellKey(cellR, cellC)
+							local pos = positionVectorFromStateEntry(r.position)
+							if not pos then
+								local wx, wz = cellToWorld(plot, cellR, cellC)
+								pos = Vector3.new(wx, 6, wz)
+							end
+							local tier = if typeof(r.tier) == "string" and r.tier ~= "" then r.tier :: string else "T1"
+							local tierCfg = OilConfig.DrillTiers[tier]
+							if not tierCfg then
+								tier = "T1"
+								tierCfg = OilConfig.DrillTiers["T1"] :: any
+							end
+							local tmpl = if typeof(r.template) == "string" and r.template ~= "" then r.template :: string else tierCfg.templateName
+							local nowWall = workspace:GetServerTimeNow()
+							local st = tonumber(r.startTime) or nowWall
+							local et = tonumber(r.endTime) or (st + 10)
+							if et <= st then
+								local baseSec = (tile and tonumber(tile.drillSeconds)) or tierCfg.fallbackSeconds or 10
+								local eff = math.max(0.5, baseSec / ((tierCfg :: any).timeDivisor or 1))
+								et = st + eff
+							end
+							if et <= nowWall then
+								-- Finished while away: match tile to completed drill; do not resurrect `activeDrills`.
+								if tile.drilled ~= true then
+									tile.drilled = true
+									self:_markDirty(state.ownerUserId)
+								end
+							else
+								if tile.drilled == true then
+									tile.drilled = false
+									self:_markDirty(state.ownerUserId)
+								end
+								local chunkIdResolved = chunk.chunkId
+								local tk = tileKeyResolved or tileKeyFromCell
+								state.activeDrills[drillId] = {
+									drillId = drillId,
+									chunkId = chunkIdResolved,
+									tier = tier,
+									tileKey = tk,
+									cellKey = ck,
+									cellRow = cellR,
+									cellCol = cellC,
+									position = pos,
+									startTime = st,
+									endTime = et,
+									oilType = r.oilType,
+									template = tmpl,
+								}
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- In-progress prospectors (same wall-clock pattern as drills).
+	if typeof(persisted.activeProspectors) == "table" then
+		for _, rec in pairs(persisted.activeProspectors) do
+			if typeof(rec) == "table" then
+				local r = rec :: { [string]: any }
+				local prospectId = tonumber(r.prospectId)
+				local chunkId = r.chunkId
+				if prospectId and typeof(chunkId) == "string" then
+					local chunk = state.chunksById[chunkId]
+					if chunk and chunk.prospected ~= true then
+						local pos = positionVectorFromStateEntry(r.position)
+						if not pos then
+							pos = Vector3.new(0, 6, 0)
+						end
+						local nowWall = workspace:GetServerTimeNow()
+						local st = tonumber(r.startTime) or nowWall
+						local et = tonumber(r.endTime) or (st + 5)
+						if et <= st then
+							et = st + ((OilConfig.Prospecting and OilConfig.Prospecting.durationSeconds) or 5)
+						end
+						state.activeProspectors[prospectId] = {
+							prospectId = prospectId,
+							chunkId = chunkId,
+							tileKey = if typeof(r.tileKey) == "string" then r.tileKey :: string else "T11",
+							position = pos,
+							startTime = st,
+							endTime = et,
+							template = if typeof(r.template) == "string" then r.template :: string else "Prospector",
+						}
+					end
+				end
+			end
+		end
+	end
+	if typeof(persisted.nextProspectId) == "number" then
+		state.nextProspectId = math.max(state.nextProspectId, math.floor(persisted.nextProspectId))
+	end
+	for pid, _ in pairs(state.activeProspectors) do
+		if typeof(pid) == "number" then
+			state.nextProspectId = math.max(state.nextProspectId, pid + 1)
+		end
+	end
+
 	-- Restore placed pumps (requires `tileKey` + cell coords or position — v5+ saves).
 	if typeof(persisted.drills) == "table" then
 		local maxDrillId = 0
@@ -2014,12 +2395,16 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 									-- Stored absolute world coords would be wrong if the player was assigned
 									-- a different plot than last session (each plot has its own worldspace).
 									local pos: Vector3
-									local ground = plot:FindFirstChild("PlotGround")
-									local sectionModel = ground and ground:FindFirstChild(chunkId)
-									local tileInst = sectionModel and sectionModel:FindFirstChild(tileKey)
-									if tileInst and tileInst:IsA("BasePart") then
-										local topY = tileInst.Position.Y + tileInst.Size.Y / 2
-										pos = Vector3.new(tileInst.Position.X, topY, tileInst.Position.Z)
+									local topY = self._plotService:GetChunkTileSurfaceWorldY(plot, chunkId, tileKey)
+									local sectionModel = self._plotService:GetChunkModel(plot, chunkId)
+									if topY and sectionModel then
+										local tilePart = self._plotService:FindChunkTileBasePart(sectionModel, tileKey)
+										if tilePart then
+											pos = Vector3.new(tilePart.Position.X, topY, tilePart.Position.Z)
+										else
+											local wx, wz = cellToWorld(plot, cellR, cellC)
+											pos = Vector3.new(wx, topY, wz)
+										end
 									else
 										local wx, wz = cellToWorld(plot, cellR, cellC)
 										pos = Vector3.new(wx, 6, wz)
@@ -2139,6 +2524,11 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 
 	if typeof(persisted.nextDrillId) == "number" then
 		state.nextDrillId = math.max(state.nextDrillId, math.floor(persisted.nextDrillId))
+	end
+	for aid, _ in pairs(state.activeDrills) do
+		if typeof(aid) == "number" then
+			state.nextDrillId = math.max(state.nextDrillId, aid + 1)
+		end
 	end
 	if typeof(persisted.nextPipeId) == "number" then
 		state.nextPipeId = math.max(state.nextPipeId, math.floor(persisted.nextPipeId))
@@ -2357,9 +2747,85 @@ function OilStateService:_serializeState(state)
 	end
 
 	persisted.nextDrillId = state.nextDrillId
+	persisted.nextProspectId = state.nextProspectId or 1
 	persisted.nextPipeId = state.nextPipeId
 	persisted.nextDrumId = state.nextDrumId
-	persisted.version = 5
+	persisted.version = 6
+
+	local activeDrillIds: { number } = {}
+	local seenActiveDrill: { [number]: boolean } = {}
+	for id, ad0 in pairs(state.activeDrills or {}) do
+		local drillId = typeof(id) == "number" and id or tonumber(id)
+		if typeof(drillId) == "number" and typeof(ad0) == "table" then
+			local adt = ad0 :: { [string]: any }
+			local did = tonumber(adt.drillId)
+			if did then
+				drillId = math.floor(did)
+			end
+			if not seenActiveDrill[drillId] then
+				seenActiveDrill[drillId] = true
+				table.insert(activeDrillIds, drillId)
+			end
+		end
+	end
+	table.sort(activeDrillIds)
+	persisted.activeDrills = {}
+	for _, drillId in ipairs(activeDrillIds) do
+		local ad = (state.activeDrills :: { [any]: any })[drillId]
+			or (state.activeDrills :: { [any]: any })[tostring(drillId)]
+		if typeof(ad) == "table" then
+			local pos = ad.position
+			table.insert(persisted.activeDrills, {
+				drillId = drillId,
+				chunkId = ad.chunkId,
+				tier = ad.tier,
+				tileKey = ad.tileKey,
+				cellKey = ad.cellKey,
+				cellRow = ad.cellRow,
+				cellCol = ad.cellCol,
+				position = if typeof(pos) == "Vector3" then { x = pos.X, y = pos.Y, z = pos.Z } else ad.position,
+				startTime = ad.startTime,
+				endTime = ad.endTime,
+				oilType = ad.oilType,
+				template = ad.template,
+			})
+		end
+	end
+
+	local prospectIds: { number } = {}
+	local seenProspect: { [number]: boolean } = {}
+	for id, ap0 in pairs(state.activeProspectors or {}) do
+		local prospectId = typeof(id) == "number" and id or tonumber(id)
+		if typeof(prospectId) == "number" and typeof(ap0) == "table" then
+			local apt = ap0 :: { [string]: any }
+			local pid = tonumber(apt.prospectId)
+			if pid then
+				prospectId = math.floor(pid)
+			end
+			if not seenProspect[prospectId] then
+				seenProspect[prospectId] = true
+				table.insert(prospectIds, prospectId)
+			end
+		end
+	end
+	table.sort(prospectIds)
+	persisted.activeProspectors = {}
+	for _, prospectId in ipairs(prospectIds) do
+		local ap = (state.activeProspectors :: { [any]: any })[prospectId]
+			or (state.activeProspectors :: { [any]: any })[tostring(prospectId)]
+		if typeof(ap) == "table" then
+			local pos = ap.position
+			table.insert(persisted.activeProspectors, {
+				prospectId = prospectId,
+				chunkId = ap.chunkId,
+				tileKey = ap.tileKey,
+				position = if typeof(pos) == "Vector3" then { x = pos.X, y = pos.Y, z = pos.Z } else ap.position,
+				startTime = ap.startTime,
+				endTime = ap.endTime,
+				template = ap.template,
+			})
+		end
+	end
 	persisted.shipSpeedLevel = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
 	persisted.shipCapacityLevel = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
 	persisted.shipSkinId = (typeof(state.shipSkinId) == "string" and state.shipSkinId) or "DefaultTanker"
