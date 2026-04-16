@@ -22,6 +22,8 @@ local ErrorCodes = {
 	EquipmentNotFound = "ERR_EQUIPMENT_NOT_FOUND",
 	EquipmentTemplateMissing = "ERR_EQUIPMENT_TEMPLATE_MISSING",
 	EquipmentQuantity = "ERR_EQUIPMENT_QUANTITY",
+	EquipmentOutOfStock = "ERR_EQUIPMENT_OUT_OF_STOCK",
+	EquipmentDuplicateRequest = "ERR_EQUIPMENT_DUPLICATE_REQUEST",
 }
 
 return ErrorCodes

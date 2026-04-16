@@ -8,6 +8,7 @@
 -- Slots are re-resolved every time the panel opens so late-cloned StarterGui / layout changes still wire.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
@@ -27,12 +28,14 @@ type CatalogItem = {
 	tier: string?,
 	subtitle: string?,
 	available: boolean,
+	stock: number?,
 }
 
 type CatalogPayload = {
 	items: { CatalogItem },
 	templateFolderName: string,
 	maxQuantityPerPurchase: number,
+	refreshEndsAt: number?,
 }
 
 type Slot = { card: GuiObject, itemId: string }
@@ -49,6 +52,8 @@ local function passthroughBuyDecorations(buy: GuiButton)
 	end
 end
 
+local HttpService = game:GetService("HttpService")
+
 local lastPurchaseAttempt = 0.0
 local PURCHASE_DEBOUNCE_SEC = 0.35
 
@@ -58,7 +63,11 @@ local function firePurchase(requestPurchase: RemoteEvent, itemId: string)
 		return
 	end
 	lastPurchaseAttempt = now
-	requestPurchase:FireServer({ itemId = itemId, quantity = 1 })
+	requestPurchase:FireServer({
+		itemId = itemId,
+		quantity = 1,
+		requestId = HttpService:GenerateGUID(false),
+	})
 end
 
 local function waitRemotesFolder(): Folder
@@ -141,16 +150,57 @@ local function catalogById(payload: CatalogPayload?): { [string]: EquipmentShopP
 			if typeof(it.subtitle) == "string" and it.subtitle ~= "" then
 				sub = it.subtitle
 			end
+			local stock: number? = nil
+			if typeof(it.stock) == "number" then
+				stock = math.max(0, math.floor(it.stock))
+			end
 			map[it.id] = {
 				id = it.id,
 				displayName = typeof(it.displayName) == "string" and it.displayName or it.id,
 				cost = math.max(0, math.floor(tonumber(it.cost) or 0)),
 				available = avail,
 				subtitle = sub,
+				stock = stock,
 			}
 		end
 	end
 	return map
+end
+
+local function formatCountdown(secondsRemaining: number): string
+	if secondsRemaining < 0 then
+		secondsRemaining = 0
+	end
+	local m = math.floor(secondsRemaining / 60)
+	local s = math.floor(secondsRemaining - m * 60)
+	return string.format("Refresh in %d:%02d", m, s)
+end
+
+--- Find or lazily create a header countdown label on the shop screen. Tolerates
+--- missing Studio authoring: if no pre-authored `RotationCountdown` TextLabel
+--- exists, we inject one so players still see the clock.
+local function ensureCountdownLabel(screen: ScreenGui): TextLabel?
+	local existing = screen:FindFirstChild("RotationCountdown", true)
+	if existing and existing:IsA("TextLabel") then
+		return existing
+	end
+	-- Inject as a sibling of EquipmentSection so it floats above the cards.
+	local section = screen:FindFirstChild("EquipmentSection", true)
+	local parent: Instance? = section and section.Parent or screen
+	local label = Instance.new("TextLabel")
+	label.Name = "RotationCountdown"
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.new(1, 0, 0, 20)
+	label.Position = UDim2.new(0, 0, 0, -22)
+	label.AnchorPoint = Vector2.new(0, 0)
+	label.Font = Enum.Font.GothamBold
+	label.TextSize = 14
+	label.TextColor3 = Color3.fromRGB(220, 228, 240)
+	label.TextXAlignment = Enum.TextXAlignment.Right
+	label.Text = ""
+	label.ZIndex = 20
+	label.Parent = parent
+	return label
 end
 
 function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelController?
@@ -163,9 +213,12 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 	local requestCatalog = remotes:WaitForChild(RemoteNames.RequestEquipmentShopCatalog) :: RemoteFunction
 	local requestPurchase = remotes:WaitForChild(RemoteNames.RequestPurchaseEquipment) :: RemoteEvent
 	local oilActionResult = remotes:WaitForChild(RemoteNames.OilActionResult) :: RemoteEvent
+	local stockUpdate = remotes:WaitForChild(RemoteNames.EquipmentShopStockUpdate) :: RemoteEvent
 
 	local screen = ctrl.ScreenGui
 	local slotBuyConns: { RBXScriptConnection } = {}
+	local refreshEndsAt = 0.0
+	local countdownLabel = ensureCountdownLabel(screen)
 
 	local function disconnectSlotBuys()
 		for _, c in ipairs(slotBuyConns) do
@@ -179,6 +232,9 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 			return requestCatalog:InvokeServer()
 		end)
 		if ok and typeof(payload) == "table" then
+			if typeof((payload :: any).refreshEndsAt) == "number" then
+				refreshEndsAt = (payload :: any).refreshEndsAt
+			end
 			local byId = catalogById(payload :: any)
 			for _, slot in ipairs(slots) do
 				local row = byId[slot.itemId]
@@ -205,6 +261,31 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 		end
 	end
 
+	-- Stock broadcast from server: fires on every rotation refresh and every
+	-- successful purchase. Just re-pull the catalog so card copy rebuilds.
+	stockUpdate.OnClientEvent:Connect(function(msg: any)
+		if typeof(msg) == "table" and typeof(msg.refreshEndsAt) == "number" then
+			refreshEndsAt = msg.refreshEndsAt
+		end
+		local slotsNow = resolveEquipmentSlots(screen)
+		if #slotsNow > 0 then
+			refreshCatalog(slotsNow)
+		end
+	end)
+
+	-- Countdown heartbeat: ticks once per second while the panel is open.
+	task.spawn(function()
+		while countdownLabel and countdownLabel.Parent do
+			if screen.Enabled and refreshEndsAt > 0 then
+				local remaining = refreshEndsAt - workspace:GetServerTimeNow()
+				countdownLabel.Text = formatCountdown(remaining)
+			else
+				countdownLabel.Text = ""
+			end
+			task.wait(1.0)
+		end
+	end)
+
 	local function wireSlotBuys(slots: { Slot })
 		disconnectSlotBuys()
 		for _, slot in ipairs(slots) do
@@ -219,9 +300,10 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 					end
 					firePurchase(requestPurchase, id)
 				end
+				-- Bind ONLY `Activated` — it covers mouse, touch, and gamepad. Dual
+				-- binding with `MouseButton1Click` caused same-frame double-fire
+				-- → double-charge on purchase.
 				table.insert(slotBuyConns, buy.Activated:Connect(onBuy))
-				-- Some `ImageButton` + child setups only deliver mouse through `MouseButton1Click`.
-				table.insert(slotBuyConns, buy.MouseButton1Click:Connect(onBuy))
 			end
 		end
 	end

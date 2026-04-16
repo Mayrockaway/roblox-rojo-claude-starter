@@ -202,6 +202,33 @@ export type ShopCatalogRow = {
 	subtitle: string?,
 }
 
+export type ShopStockBand = { min: number, max: number }
+
+--- Rotating-shop knobs. Every `RefreshIntervalSeconds`, the server rolls a
+--- fresh stock count per listed item:
+---   `stock[id] = max(CoreFloor[id] or 0, rng:NextInteger(band.min, band.max))`
+--- Items NOT in `Bands` are non-rotating / always available (fall through to
+--- current infinite behavior). Core items are guaranteed a minimum every
+--- refresh so players never get stranded with no pipes / no T1 drill.
+local ShopRotation = {
+	RefreshIntervalSeconds = 180, -- 3 min
+	Bands = {
+		pipe       = { min = 8,  max = 20 } :: ShopStockBand,
+		drill_t1   = { min = 2,  max = 4  } :: ShopStockBand,
+		drill_t2   = { min = 0,  max = 2  } :: ShopStockBand,
+		drill_t3   = { min = 0,  max = 1  } :: ShopStockBand,
+		pump_t1    = { min = 1,  max = 3  } :: ShopStockBand,
+		pump_t2    = { min = 0,  max = 2  } :: ShopStockBand,
+		pump_t3    = { min = 0,  max = 1  } :: ShopStockBand,
+		prospector = { min = 0,  max = 1  } :: ShopStockBand,
+	} :: { [string]: ShopStockBand },
+	CoreFloor = {
+		pipe     = 5,
+		drill_t1 = 1,
+		pump_t1  = 1,
+	} :: { [string]: number },
+}
+
 local function shopPriceFor(row: EquipmentRow): number
 	local sp = row.shopPrice
 	if sp ~= nil then
@@ -211,6 +238,27 @@ local function shopPriceFor(row: EquipmentRow): number
 end
 
 local EquipmentCatalog = {}
+
+EquipmentCatalog.ShopRotation = ShopRotation
+
+--- Roll fresh per-refresh stock counts. Items present in `ShopRotation.Bands`
+--- get a uniform int in `[min, max]`, then floored to `CoreFloor` if set.
+--- Items NOT listed (e.g. hypothetical non-rotating extras) are omitted from
+--- the result — callers should treat "missing key" as "unlimited / always in stock".
+function EquipmentCatalog.rollShopStock(rng: Random): { [string]: number }
+	local out: { [string]: number } = {}
+	for id, band in pairs(ShopRotation.Bands) do
+		local lo = math.max(0, math.floor(band.min))
+		local hi = math.max(lo, math.floor(band.max))
+		local n = rng:NextInteger(lo, hi)
+		local floor = ShopRotation.CoreFloor[id]
+		if typeof(floor) == "number" and floor > n then
+			n = floor
+		end
+		out[id] = n
+	end
+	return out
+end
 
 function EquipmentCatalog.getAllRows(): { EquipmentRow }
 	return ITEMS

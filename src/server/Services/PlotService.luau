@@ -567,7 +567,10 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 		return
 	end
 
+	local hum = character:FindFirstChildOfClass("Humanoid")
+	local wasSitting = hum ~= nil and hum.SeatPart ~= nil
 	CharacterTeleport.unseatIfSitting(character)
+	DevLog.log(string.format("[teleport] path=PlotService:spawnClaim seated=%s", tostring(wasSitting)))
 
 	local target = CFrame.new(
 		spawnPart.Position.X,

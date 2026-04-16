@@ -524,6 +524,35 @@ end
 
 --- Owner teleport ---
 
+--- Teleport `caller` onto the DECK of `targetUserId`'s active voyage boat.
+--- Does NOT re-seat — the target player owns the DeckSeat. Caller lands a few
+--- studs above the seat and can walk around the deck. Returns `(false, err)`
+--- if the target isn't actively sailing.
+function BoatDockService:TeleportSpectatorToBoat(caller: Player, targetUserId: number): (boolean, string?)
+	if self._stateByUser[targetUserId] ~= "sailing" then
+		return false, "TARGET_NOT_SAILING"
+	end
+	local boat = self._boatsByUser[targetUserId]
+	if not boat then
+		return false, "TARGET_BOAT_MISSING"
+	end
+	local seat = findSeatForBoat(boat)
+	if not seat then
+		return false, "SEAT_MISSING"
+	end
+	local character = caller.Character
+	if not character then
+		return false, "NO_CHARACTER"
+	end
+	-- Drop caller ~3 studs above the deck seat without re-seating them.
+	CharacterTeleport.teleportWithUnseat(
+		character,
+		seat.CFrame + Vector3.new(0, 3, 0),
+		string.format("BoatDock:TeleportSpectatorToBoat target=%d", targetUserId)
+	)
+	return true, nil
+end
+
 function BoatDockService:TeleportOwnerToSeat(player: Player): (boolean, string?)
 	local boat = self._boatsByUser[player.UserId]
 	local st = self._stateByUser[player.UserId]
@@ -539,8 +568,7 @@ function BoatDockService:TeleportOwnerToSeat(player: Player): (boolean, string?)
 	end
 	local character = player.Character
 	if not character then return false, "NO_CHARACTER" end
-	CharacterTeleport.unseatIfSitting(character)
-	character:PivotTo(seat.CFrame + Vector3.new(0, 3, 0))
+	CharacterTeleport.teleportWithUnseat(character, seat.CFrame + Vector3.new(0, 3, 0), "BoatDock:TeleportOwnerToSeat")
 	local hum = character:FindFirstChildOfClass("Humanoid")
 	if hum then
 		pcall(function() seat:Sit(hum) end)

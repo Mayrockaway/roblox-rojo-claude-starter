@@ -61,6 +61,9 @@ local RemoteNames = {
 	-- One-shot equipment shop (Tools cloned into `Player.Backpack`; cash via `OilStateService`).
 	RequestPurchaseEquipment = "RequestPurchaseEquipment",
 	RequestEquipmentShopCatalog = "RequestEquipmentShopCatalog",
+	-- Server → all clients: rotating-shop stock map + refreshEndsAt. Fires on
+	-- every rotation refresh and on every successful purchase.
+	EquipmentShopStockUpdate = "EquipmentShopStockUpdate",
 
 	-- Per-plot oil tanks: three tubes (HeavyCrude/LightSweet/PremiumRefined) upgradable 1..10.
 	RequestUpgradeOilTank = "RequestUpgradeOilTank",

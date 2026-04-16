@@ -11,7 +11,30 @@ export type CatalogRow = {
 	cost: number,
 	available: boolean,
 	subtitle: string?,
+	--- Rotating-shop remaining count. `nil` = non-rotating / unlimited;
+	--- a number = "X left this rotation". Zero = sold out.
+	stock: number?,
 }
+
+--- Resolve the line-2 text: stock overrides subtitle when rotating.
+local function formatSubtitle(row: CatalogRow?): string
+	if not row then
+		return ""
+	end
+	if typeof(row.stock) == "number" then
+		if row.stock <= 0 then
+			return "Sold out"
+		end
+		return string.format("%d left", row.stock)
+	end
+	if not row.available then
+		return "Unavailable"
+	end
+	if typeof(row.subtitle) == "string" and row.subtitle ~= "" then
+		return row.subtitle
+	end
+	return "In stock"
+end
 
 --- Anything we can set `.Text` on for shop copy.
 type TextCapable = TextLabel | TextButton | TextBox
@@ -113,21 +136,15 @@ function EquipmentShopPopulate.ApplyCard(card: GuiObject, row: CatalogRow?)
 		end
 	end
 
+	local subtitleText = formatSubtitle(row)
+
 	local tNamed, sNamed = resolveNamedTitlePair(card)
 	if tNamed or sNamed then
 		if tNamed then
 			tNamed.Text = if row then row.displayName else "—"
 		end
 		if sNamed then
-			if not row then
-				sNamed.Text = ""
-			elseif not row.available then
-				sNamed.Text = "Unavailable"
-			elseif typeof(row.subtitle) == "string" and row.subtitle ~= "" then
-				sNamed.Text = row.subtitle
-			else
-				sNamed.Text = "In stock"
-			end
+			sNamed.Text = subtitleText
 		end
 	else
 		local lines = collectAnonymousLineLabels(card)
@@ -137,30 +154,14 @@ function EquipmentShopPopulate.ApplyCard(card: GuiObject, row: CatalogRow?)
 				fb[1].Text = if row then row.displayName else "—"
 			end
 			if fb[2] then
-				if not row then
-					fb[2].Text = ""
-				elseif not row.available then
-					fb[2].Text = "Unavailable"
-				elseif typeof(row.subtitle) == "string" and row.subtitle ~= "" then
-					fb[2].Text = row.subtitle
-				else
-					fb[2].Text = "In stock"
-				end
+				fb[2].Text = subtitleText
 			end
 		else
 			if lines[1] then
 				lines[1].Text = if row then row.displayName else "—"
 			end
 			if lines[2] then
-				if not row then
-					lines[2].Text = ""
-				elseif not row.available then
-					lines[2].Text = "Unavailable"
-				elseif typeof(row.subtitle) == "string" and row.subtitle ~= "" then
-					lines[2].Text = row.subtitle
-				else
-					lines[2].Text = "In stock"
-				end
+				lines[2].Text = subtitleText
 			end
 		end
 	end

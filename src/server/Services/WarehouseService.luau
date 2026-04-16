@@ -985,8 +985,7 @@ function WarehouseService:TryTeleportPlayerToWarehouse(player: Player): boolean
 	if not character then
 		return false
 	end
-	CharacterTeleport.unseatIfSitting(character)
-	character:PivotTo(CFrame.new(spawn.Position + Vector3.new(0, 3, 0)))
+	CharacterTeleport.teleportWithUnseat(character, CFrame.new(spawn.Position + Vector3.new(0, 3, 0)), "RequestTeleportToWarehouse")
 	return true
 end
 

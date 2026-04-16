@@ -22,6 +22,7 @@ local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames
 local ParticleFxScale = require(Shared:WaitForChild("ParticleFxScale"))
 local ShipRig = require(Shared:WaitForChild("Utils"):WaitForChild("ShipRig"))
 local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
+local DevLog = require(Shared:WaitForChild("DevLog"))
 
 local OilShipmentService = {}
 local FORCED_CONTRACT_PIRATE_LOSS_FRACTION = 0.50
@@ -334,8 +335,8 @@ function OilShipmentService:Start()
 	end))
 
 	local teleportToShip = self._remoteService:GetEvent(RemoteNames.RequestTeleportToShip)
-	table.insert(self._connections, teleportToShip.OnServerEvent:Connect(function(player)
-		self:_handleTeleportToShip(player)
+	table.insert(self._connections, teleportToShip.OnServerEvent:Connect(function(player, payload)
+		self:_handleTeleportToShip(player, payload)
 	end))
 
 	local teleportHome = self._remoteService:GetEvent(RemoteNames.RequestTeleportHome)
@@ -349,7 +350,7 @@ function OilShipmentService:Start()
 	end))
 end
 
-function OilShipmentService:_handleTeleportToShip(player: Player)
+function OilShipmentService:_handleTeleportToShip(player: Player, payload: any?)
 	if not player.Character then
 		warn("[TeleportToShip] No character")
 		return
@@ -358,9 +359,28 @@ function OilShipmentService:_handleTeleportToShip(player: Player)
 		warn("[TeleportToShip] BoatDockService unavailable")
 		return
 	end
-	local ok, err = self._boatDockService:TeleportOwnerToSeat(player)
+
+	-- Spectate another player's active voyage: `{ targetUserId = <uid> }`.
+	-- Default / self-target routes to the owner's own ship (idle or sailing).
+	local targetUserId: number? = nil
+	if typeof(payload) == "table" and typeof(payload.targetUserId) == "number" then
+		targetUserId = math.floor(payload.targetUserId)
+	end
+	if targetUserId == nil or targetUserId == player.UserId then
+		local ok, err = self._boatDockService:TeleportOwnerToSeat(player)
+		if not ok then
+			self:_sendActionResult(player, false, "ERR_BOAT_UNAVAILABLE", "Your ship is not available right now.", { reason = err })
+		end
+		return
+	end
+
+	local ok, err = self._boatDockService:TeleportSpectatorToBoat(player, targetUserId)
 	if not ok then
-		self:_sendActionResult(player, false, "ERR_BOAT_UNAVAILABLE", "Your ship is not available right now.", { reason = err })
+		local msg = "That ship is not available right now."
+		if err == "TARGET_NOT_SAILING" then
+			msg = "That player isn't sailing right now."
+		end
+		self:_sendActionResult(player, false, "ERR_BOAT_UNAVAILABLE", msg, { reason = err, targetUserId = targetUserId })
 	end
 end
 
@@ -368,13 +388,11 @@ function OilShipmentService:_handleTeleportHome(player: Player)
 	local character = player.Character
 	if not character then return end
 
-	CharacterTeleport.unseatIfSitting(character)
-
 	local plot = self._plotService:GetOwnedPlot(player.UserId)
 	if not plot then return end
 	local claimPad = plot:FindFirstChild("ClaimPad")
 	if claimPad and claimPad:IsA("BasePart") then
-		character:PivotTo(CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)))
+		CharacterTeleport.teleportWithUnseat(character, CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)), "RequestTeleportHome")
 	end
 end
 
@@ -407,12 +425,10 @@ function OilShipmentService:_handleTeleportToDocks(player: Player)
 		return
 	end
 
-	CharacterTeleport.unseatIfSitting(character)
-
 	local cf = getDocksTeleportCFrame()
 	if cf then
 		-- Face away from the authored forward (e.g. into the shop) — 180° yaw in target-local space.
-		character:PivotTo(cf * CFrame.Angles(0, math.pi, 0))
+		CharacterTeleport.teleportWithUnseat(character, cf * CFrame.Angles(0, math.pi, 0), "RequestTeleportToDocks")
 		return
 	end
 
@@ -422,7 +438,7 @@ function OilShipmentService:_handleTeleportToDocks(player: Player)
 	end
 	local boatSpawn = plot:FindFirstChild("BoatSpawn")
 	if boatSpawn and boatSpawn:IsA("BasePart") then
-		character:PivotTo(CFrame.new(boatSpawn.Position + Vector3.new(0, 5, 0)))
+		CharacterTeleport.teleportWithUnseat(character, CFrame.new(boatSpawn.Position + Vector3.new(0, 5, 0)), "RequestTeleportToDocks:fallback")
 	end
 end
 
@@ -898,7 +914,6 @@ function OilShipmentService:_handleOwnerAfterSuccessfulShipmentFinish(boat: Inst
 
 	local hum = character:FindFirstChildOfClass("Humanoid")
 	local wasSeatedOnThisBoat = hum ~= nil and hum.SeatPart ~= nil and hum.SeatPart:IsDescendantOf(boat)
-	CharacterTeleport.unseatIfSitting(character)
 
 	if self._warehouseService and self:_postStraitWarehouseTeleportByMapPosition(samplePos) then
 		if self._warehouseService:TryTeleportPlayerToWarehouse(player) then
@@ -910,38 +925,77 @@ function OilShipmentService:_handleOwnerAfterSuccessfulShipmentFinish(boat: Inst
 		local plot = self._plotService:GetOwnedPlot(player.UserId)
 		local claimPad = plot and plot:FindFirstChild("ClaimPad")
 		if claimPad and claimPad:IsA("BasePart") then
-			character:PivotTo(CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)))
+			CharacterTeleport.teleportWithUnseat(character, CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)), "ShipmentFinish:claimPad")
 		end
 	end
 end
 
---- Strait total loss, etc.: unseat from **DeckSeat** and send rider to home **ClaimPad**.
+--- Strait total loss, etc.: teleport everyone on the boat (seated OR just
+--- standing on the deck) to their home ClaimPad. Seated-only detection was
+--- insufficient — owners routinely walk around the deck mid-voyage, and a
+--- spectator teleported in via the crowd-marker click is never seated.
 function OilShipmentService:_unseatPlayersFromBoat(boat: Instance)
-	local seat = findBoatSeat(boat)
-	if not seat then
+	DevLog.log(string.format("[ShipDestroy] _unseatPlayersFromBoat fired for boat=%s", tostring(boat and boat.Name)))
+	if not (boat and boat:IsA("Model")) then
 		return
 	end
 
-	local occupant = seat.Occupant
-	if not (occupant and occupant:IsA("Humanoid")) then
-		return
-	end
+	local boatCF, boatSize = (boat :: Model):GetBoundingBox()
+	-- Pad the AABB so characters standing on the railing / at the edge still qualify.
+	local halfX = boatSize.X * 0.5 + 2
+	local halfY = boatSize.Y * 0.5 + 6
+	local halfZ = boatSize.Z * 0.5 + 2
 
-	seat:Sit(nil)
-	task.wait(0.1)
-	local character = occupant.Parent
-	if not character then
-		return
-	end
-	local player = Players:GetPlayerFromCharacter(character)
-	if not player then
-		return
-	end
+	local teleportedAny = false
+	for _, player in ipairs(Players:GetPlayers()) do
+		local character = player.Character
+		if not character then
+			continue
+		end
+		local hrp = character:FindFirstChild("HumanoidRootPart")
+		if not (hrp and hrp:IsA("BasePart")) then
+			continue
+		end
 
-	local plot = self._plotService:GetOwnedPlot(player.UserId)
-	local claimPad = plot and plot:FindFirstChild("ClaimPad")
-	if claimPad and claimPad:IsA("BasePart") then
+		local hum = character:FindFirstChildOfClass("Humanoid")
+		local seatedOnBoat = hum ~= nil and hum.SeatPart ~= nil and hum.SeatPart:IsDescendantOf(boat)
+		local rel = boatCF:PointToObjectSpace(hrp.Position)
+		local onDeck = math.abs(rel.X) <= halfX
+			and math.abs(rel.Y) <= halfY
+			and math.abs(rel.Z) <= halfZ
+
+		if not (seatedOnBoat or onDeck) then
+			continue
+		end
+
+		local plot = self._plotService:GetOwnedPlot(player.UserId)
+		local claimPad = plot and plot:FindFirstChild("ClaimPad")
+		if not (claimPad and claimPad:IsA("BasePart")) then
+			DevLog.log(string.format("[ShipDestroy] no ClaimPad for %s; skipping teleport", player.Name))
+			if seatedOnBoat and hum and hum.SeatPart then
+				hum.SeatPart:Sit(nil)
+			end
+			continue
+		end
+
+		if seatedOnBoat and hum and hum.SeatPart then
+			local seat = hum.SeatPart
+			seat:Sit(nil)
+			hum.Sit = false
+			local weld = seat:FindFirstChild("SeatWeld")
+			if weld and weld:IsA("Weld") then
+				weld:Destroy()
+			end
+		end
+
 		character:PivotTo(CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)))
+		DevLog.log(string.format("[ShipDestroy] teleported %s to ClaimPad (seated=%s onDeck=%s)",
+			player.Name, tostring(seatedOnBoat), tostring(onDeck)))
+		teleportedAny = true
+	end
+
+	if not teleportedAny then
+		DevLog.log("[ShipDestroy] no players on or near the boat; nobody teleported")
 	end
 end
 
@@ -1156,10 +1210,11 @@ function OilShipmentService:_straitDebugLogEnabled(): boolean
 	return false
 end
 
--- Returns oil units removed (sum) and per-tier oil removed. Loss = ceil(manifestSum * fraction); min 0.
-function OilShipmentService:_applyLooseBarrelLoss(shipment, fraction: number): (number, { [string]: number })
+-- Returns oil units removed (sum) and per-tier oil removed. Loss = max(minFloor, ceil(manifestSum * fraction)),
+-- clamped to manifest total. `minFloor` is used by tornado to guarantee a minimum hit on small manifests.
+function OilShipmentService:_applyLooseBarrelLoss(shipment, fraction: number, minFloor: number?): (number, { [string]: number })
 	local removedByTier: { [string]: number } = {}
-	if fraction <= 0 then
+	if fraction <= 0 and (minFloor or 0) <= 0 then
 		return 0, removedByTier
 	end
 	local manifest = shipment.manifest
@@ -1174,6 +1229,12 @@ function OilShipmentService:_applyLooseBarrelLoss(shipment, fraction: number): (
 		return 0, removedByTier
 	end
 	local toRemove = math.ceil(onShip * fraction)
+	if minFloor and minFloor > toRemove then
+		toRemove = minFloor
+	end
+	if toRemove > onShip then
+		toRemove = onShip
+	end
 	if toRemove <= 0 then
 		return 0, removedByTier
 	end
@@ -1880,17 +1941,14 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			delaySeconds = rng:NextNumber(delayMin, delayMax)
 		end
 
-		local didBarrelLoss = rng:NextNumber() < clamp01(tonumber(tc.BarrelLossChance) or 0)
-		local barrelLossFraction = 0
-		local barrelsLost = 0
-		local tornadoLossByTier: { [string]: number } = {}
-		if didBarrelLoss then
-			local lossMin = clamp01(tonumber(tc.BarrelLossFractionMin) or 0)
-			local lossMax = math.max(lossMin, clamp01(tonumber(tc.BarrelLossFractionMax) or lossMin))
-			barrelLossFraction = clamp01(rng:NextNumber(lossMin, lossMax))
-			barrelsLost, tornadoLossByTier = self:_applyLooseBarrelLoss(shipment, barrelLossFraction)
-			didBarrelLoss = barrelsLost > 0
-		end
+		-- Tornado always rolls a fraction + enforces a minimum barrel floor —
+		-- no `BarrelLossChance` gate (that's storm behavior). Every tornado bites.
+		local lossMin = clamp01(tonumber(tc.BarrelLossFractionMin) or 0)
+		local lossMax = math.max(lossMin, clamp01(tonumber(tc.BarrelLossFractionMax) or lossMin))
+		local barrelLossFraction = clamp01(rng:NextNumber(lossMin, lossMax))
+		local minFloor = math.max(0, tonumber(tc.MinBarrelsLost) or 0)
+		local barrelsLost, tornadoLossByTier = self:_applyLooseBarrelLoss(shipment, barrelLossFraction, minFloor)
+		local didBarrelLoss = barrelsLost > 0
 		if barrelsLost > 0 then
 			self:_emitManifestHudSnapshot(shipment, {
 				title = ManifestIncidentTitle.fromEventId(def.id),

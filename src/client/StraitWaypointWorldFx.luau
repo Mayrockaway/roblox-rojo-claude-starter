@@ -1379,8 +1379,13 @@ function StraitWaypointWorldFx.OnMissileStrikePayload(data: { [string]: any })
 			glow.Parent = trailHost
 		end
 
+		-- The `Missile` asset's nose points along its local +X, not the LookVector
+		-- axis produced by `CFrame.lookAt`, so apply a yaw -90° correction so
+		-- the nose points along the flight direction instead of sideways.
+		local MISSILE_ORIENT_FIX = CFrame.Angles(0, math.rad(-90), 0)
+
 		-- Position at launch
-		local startCF = CFrame.lookAt(launchPos, targetPos)
+		local startCF = CFrame.lookAt(launchPos, targetPos) * MISSILE_ORIENT_FIX
 		if missile:IsA("Model") then
 			missile:PivotTo(startCF)
 		else
@@ -1398,7 +1403,7 @@ function StraitWaypointWorldFx.OnMissileStrikePayload(data: { [string]: any })
 			local arcHeight = 15 * math.sin(alpha * math.pi)
 			local pos = launchPos:Lerp(targetPos, alpha) + Vector3.new(0, arcHeight, 0)
 			local lookTarget = launchPos:Lerp(targetPos, math.min(alpha + 0.05, 1)) + Vector3.new(0, 15 * math.sin(math.min(alpha + 0.05, 1) * math.pi), 0)
-			local cf = CFrame.lookAt(pos, lookTarget)
+			local cf = CFrame.lookAt(pos, lookTarget) * MISSILE_ORIENT_FIX
 
 			if missile:IsA("Model") then
 				missile:PivotTo(cf)

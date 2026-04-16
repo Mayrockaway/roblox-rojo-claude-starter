@@ -13,6 +13,7 @@ local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
+local EquipmentCatalog = require(Shared:WaitForChild("Config"):WaitForChild("EquipmentCatalog"))
 local EquipmentShopConfig = require(Shared:WaitForChild("Config"):WaitForChild("EquipmentShopConfig"))
 local ErrorCodes = require(Shared:WaitForChild("Net"):WaitForChild("ErrorCodes"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
@@ -47,6 +48,38 @@ function EquipmentShopService:Init(remoteService, oilStateService, plotService)
 	self._connections = {}
 	self._running = false
 	self._templateFolder = nil :: Folder?
+	-- Duplicate-request cache: per userId, map of requestId → expiry os.clock().
+	-- Client sends a GUID per click; same id within 2 s is ignored.
+	self._recentRequestIds = {} :: { [number]: { [string]: number } }
+	-- Rotating-shop state. `_currentStock[itemId]` is the remaining count for
+	-- this rotation; nil means "not rotating → unlimited". `_refreshEndsAt` is
+	-- the Unix-ish timestamp when the next rotation fires (via `workspace:GetServerTimeNow()`
+	-- so clients can sync their countdown).
+	self._currentStock = {} :: { [string]: number }
+	self._refreshEndsAt = 0.0
+	self._rotationRng = Random.new()
+end
+
+local REQUEST_ID_TTL_SECONDS = 2.0
+
+local function isDuplicateRequestId(self, userId: number, requestId: string): boolean
+	local now = os.clock()
+	local byUser = self._recentRequestIds[userId]
+	if not byUser then
+		byUser = {}
+		self._recentRequestIds[userId] = byUser
+	end
+	-- Sweep expired entries lazily.
+	for id, expires in pairs(byUser) do
+		if expires <= now then
+			byUser[id] = nil
+		end
+	end
+	if byUser[requestId] then
+		return true
+	end
+	byUser[requestId] = now + REQUEST_ID_TTL_SECONDS
+	return false
 end
 
 function EquipmentShopService:Start()
@@ -97,6 +130,10 @@ function EquipmentShopService:Start()
 		end))
 	end))
 
+	table.insert(self._connections, Players.PlayerRemoving:Connect(function(player: Player)
+		self._recentRequestIds[player.UserId] = nil
+	end))
+
 	for _, player in ipairs(Players:GetPlayers()) do
 		table.insert(self._connections, player.CharacterAdded:Connect(function()
 			task.defer(function()
@@ -109,6 +146,36 @@ function EquipmentShopService:Start()
 			end)
 		end
 	end
+
+	-- Rotating-shop loop: roll stock immediately, then every RefreshIntervalSeconds.
+	-- Does NOT persist — server-restart is a fresh roll.
+	self:_rollShopStock()
+	task.spawn(function()
+		while self._running do
+			local interval = math.max(5, tonumber(EquipmentCatalog.ShopRotation.RefreshIntervalSeconds) or 180)
+			task.wait(interval)
+			if not self._running then
+				break
+			end
+			self:_rollShopStock()
+		end
+	end)
+end
+
+function EquipmentShopService:_rollShopStock()
+	local stock = EquipmentCatalog.rollShopStock(self._rotationRng)
+	self._currentStock = stock
+	local interval = math.max(5, tonumber(EquipmentCatalog.ShopRotation.RefreshIntervalSeconds) or 180)
+	self._refreshEndsAt = workspace:GetServerTimeNow() + interval
+	self:_broadcastStock()
+end
+
+function EquipmentShopService:_broadcastStock()
+	local ev = self._remoteService:GetEvent(RemoteNames.EquipmentShopStockUpdate)
+	ev:FireAllClients({
+		stock = self._currentStock,
+		refreshEndsAt = self._refreshEndsAt,
+	})
 end
 
 function EquipmentShopService:Stop()
@@ -263,12 +330,16 @@ end
 function EquipmentShopService:GetCatalogForClient(_player: Player)
 	local rows = {}
 	for _, item in ipairs(EquipmentShopConfig.Items) do
-		local available = false
+		local templateAvailable = false
 		local folder = self._templateFolder
 		if folder then
 			local t = folder:FindFirstChild(item.toolTemplateName)
-			available = t ~= nil and t:IsA("Tool")
+			templateAvailable = t ~= nil and t:IsA("Tool")
 		end
+		local stockCount = self._currentStock[item.id]
+		local isRotating = stockCount ~= nil
+		-- `available` = buyable right now (template present AND, if rotating, stock > 0).
+		local available = templateAvailable and (not isRotating or stockCount > 0)
 		table.insert(rows, {
 			id = item.id,
 			displayName = item.displayName,
@@ -278,12 +349,14 @@ function EquipmentShopService:GetCatalogForClient(_player: Player)
 			tier = item.tier,
 			subtitle = item.subtitle,
 			available = available,
+			stock = stockCount, -- nil for non-rotating items
 		})
 	end
 	return {
 		items = rows,
 		templateFolderName = EquipmentShopConfig.TemplateFolderName,
 		maxQuantityPerPurchase = EquipmentShopConfig.MaxQuantityPerPurchase,
+		refreshEndsAt = self._refreshEndsAt,
 	}
 end
 
@@ -303,6 +376,15 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 		end
 		self:_sendOilAction(player, false, ErrorCodes.InvalidPayload, "Missing itemId.")
 		return
+	end
+
+	-- Idempotency: drop retries / double-fires that carry the same requestId.
+	-- Silent drop (no sendOilAction) so the legitimate first request's response
+	-- is the only one the client sees.
+	if typeof(payload.requestId) == "string" and payload.requestId ~= "" then
+		if isDuplicateRequestId(self, player.UserId, payload.requestId) then
+			return
+		end
 	end
 
 	local itemId = payload.itemId :: string
@@ -345,6 +427,19 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 		return
 	end
 
+	-- Rotating-shop stock check. Only gate items listed in the rotation; items
+	-- absent from `_currentStock` are treated as always-available (future-proofing).
+	local stockCount = self._currentStock[itemId]
+	local isRotating = stockCount ~= nil
+	if isRotating and stockCount < qty then
+		self:_sendOilAction(player, false, ErrorCodes.EquipmentOutOfStock, "That item is sold out this rotation.", {
+			itemId = itemId,
+			stockRemaining = stockCount,
+			refreshEndsAt = self._refreshEndsAt,
+		})
+		return
+	end
+
 	if not self._oilStateService:TrySpendCash(player.UserId, totalCost) then
 		if RunService:IsStudio() then
 			warn("[EquipmentShopService] TrySpendCash failed ", player.Name, " item=", itemId, " cost=", totalCost)
@@ -353,9 +448,18 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 		return
 	end
 
+	-- Reserve the stock now so a concurrent request can't double-allocate the
+	-- last unit. Refunded below if backpack-grant fails.
+	if isRotating then
+		self._currentStock[itemId] = stockCount - qty
+	end
+
 	local backpack = player:FindFirstChild("Backpack") or player:WaitForChild("Backpack", 5)
 	if not backpack or not backpack:IsA("Backpack") then
 		self._oilStateService:AddCash(player.UserId, totalCost)
+		if isRotating then
+			self._currentStock[itemId] = (self._currentStock[itemId] or 0) + qty
+		end
 		self:_sendOilAction(player, false, ErrorCodes.Unknown, "Backpack not ready.")
 		return
 	end
@@ -373,6 +477,10 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 	end
 
 	self._oilStateService:PushState(player.UserId)
+
+	if isRotating then
+		self:_broadcastStock()
+	end
 
 	if RunService:IsStudio() then
 		print("[EquipmentShopService] bought ", qty, "×", item.displayName, " for ", player.Name, " ($", totalCost, ")")

@@ -203,11 +203,14 @@ function StraitStateService:_leaderTick()
 	end
 
 	if now >= self._nextRollAt then
-		self:_rollState()
-		self._version += 1
+		local changed = self:_rollState()
 		self._nextRollAt = now + self:_sampleRollDelaySeconds()
-		self:_publishState()
-		self:_broadcast()
+		if changed then
+			self._version += 1
+			self:_publishState()
+			self:_broadcast()
+		end
+		-- Silent reroll when `changed == false` — same bracket, no announcement.
 	end
 end
 
@@ -295,10 +298,18 @@ function StraitStateService:_sampleRollDelaySeconds(): number
 	return math.max(20, base + delta)
 end
 
-function StraitStateService:_rollState()
+--- Roll a new bracket. Returns `true` if the result differs from the previous
+--- state, `false` if the roll landed on the same bracket (in which case
+--- callers should skip version bump / broadcast so the UI stays quiet).
+function StraitStateService:_rollState(): boolean
 	local order = StraitConfig.StateOrder
 	local idx = self._rng:NextInteger(1, #order)
-	self._state = order[idx]
+	local newState = order[idx]
+	if newState == self._state then
+		return false
+	end
+	self._state = newState
+	return true
 end
 
 function StraitStateService:_pushSnapshotToPlayer(player: Player)

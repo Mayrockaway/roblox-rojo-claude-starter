@@ -115,15 +115,17 @@ Catalog.StormConfig = {
 	BarrelLossFractionMax = 0.16,
 }
 
--- Tornado visual + gameplay config (delay and barrel-loss outcomes are rolled independently).
+-- Tornado visual + gameplay config. Unlike storms, tornadoes always strip
+-- barrels — there's no `BarrelLossChance` gate. `MinBarrelsLost` guarantees a
+-- floor on small manifests where `ceil(onShip * fraction)` could round low.
 Catalog.TornadoConfig = {
 	BaseSequenceSeconds = 11.5,
 	DelayChance = 0.5,
 	DelaySecondsMin = 4.0,
 	DelaySecondsMax = 9.0,
-	BarrelLossChance = 0.6,
 	BarrelLossFractionMin = 0.12,
 	BarrelLossFractionMax = 0.3,
+	MinBarrelsLost = 5,
 	MaxVisualBarrels = 10,
 }
 

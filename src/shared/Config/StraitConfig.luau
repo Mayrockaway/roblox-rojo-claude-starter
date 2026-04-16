@@ -4,8 +4,8 @@ export type StraitState = "Open" | "Restricted" | "Closed"
 
 local StraitConfig = {
 	InitialState = "Open" :: StraitState,
-	RollIntervalSeconds = 180,
-	RollJitterSeconds = 45,
+	RollIntervalSeconds = 70,
+	RollJitterSeconds = 10,
 	StateOrder = { "Open", "Restricted", "Closed" } :: { StraitState },
 	States = {
 		Open = {

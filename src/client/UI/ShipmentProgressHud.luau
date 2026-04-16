@@ -14,6 +14,29 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local StraitEventCatalog = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("Catalog"))
+local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+
+local localPlayer = Players.LocalPlayer
+
+--- Lazy-resolve the `RequestTeleportToShip` remote so marker clicks can spectate
+--- other players' voyages. Cached after first success; silently no-ops if the
+--- Remotes folder isn't ready yet (marker clicks early after join become a no-op).
+local cachedTeleportShipRemote: RemoteEvent? = nil
+local function resolveTeleportShipRemote(): RemoteEvent?
+	if cachedTeleportShipRemote and cachedTeleportShipRemote.Parent then
+		return cachedTeleportShipRemote
+	end
+	local remotes = Shared:FindFirstChild("Remotes")
+	if not remotes then
+		return nil
+	end
+	local ev = remotes:FindFirstChild(RemoteNames.RequestTeleportToShip)
+	if ev and ev:IsA("RemoteEvent") then
+		cachedTeleportShipRemote = ev
+		return ev
+	end
+	return nil
+end
 
 export type Packet = { [string]: any }
 
@@ -61,7 +84,7 @@ type CrowdStateRow = {
 }
 
 local crowdState: { [number]: CrowdStateRow } = {}
-local crowdMarkers: { [number]: Frame } = {}
+local crowdMarkers: { [number]: ImageButton } = {}
 local crowdHeartbeatConn: RBXScriptConnection? = nil
 local crowdPlayerRemovingConn: RBXScriptConnection? = nil
 
@@ -554,14 +577,28 @@ local function crowdAlphaForRow(userId: number, row: CrowdStateRow): number
 	return math.clamp(crowdLinearAlphaAtNow(row, now), 0, 1)
 end
 
-local function crowdBuildMarker(userId: number, displayName: string): Frame
-	local root = Instance.new("Frame")
+local function crowdBuildMarker(userId: number, displayName: string): ImageButton
+	-- `ImageButton` root: the whole marker area clicks → spectate teleport. Children
+	-- disable `Active` so the parent receives `Activated` cleanly.
+	local root = Instance.new("ImageButton")
 	root.Name = "CrowdMarker_" .. tostring(userId)
 	root.BackgroundTransparency = 1
 	root.BorderSizePixel = 0
+	root.AutoButtonColor = false
 	root.AnchorPoint = Vector2.new(0.5, 0)
 	root.Size = UDim2.fromOffset(76, 54)
 	root.ZIndex = 13
+	-- `UIListLayout` child below clashes with a sized ImageButton hit-region, so
+	-- we keep the layout on an inner Frame instead.
+
+	local inner = Instance.new("Frame")
+	inner.Name = "Inner"
+	inner.BackgroundTransparency = 1
+	inner.BorderSizePixel = 0
+	inner.Size = UDim2.fromScale(1, 1)
+	inner.Active = false
+	inner.ZIndex = 13
+	inner.Parent = root
 
 	local list = Instance.new("UIListLayout")
 	list.FillDirection = Enum.FillDirection.Vertical
@@ -569,7 +606,7 @@ local function crowdBuildMarker(userId: number, displayName: string): Frame
 	list.VerticalAlignment = Enum.VerticalAlignment.Top
 	list.SortOrder = Enum.SortOrder.LayoutOrder
 	list.Padding = UDim.new(0, 2)
-	list.Parent = root
+	list.Parent = inner
 
 	local icon = Instance.new("ImageLabel")
 	icon.Name = "Avatar"
@@ -577,7 +614,9 @@ local function crowdBuildMarker(userId: number, displayName: string): Frame
 	icon.Size = UDim2.fromOffset(28, 28)
 	icon.LayoutOrder = 1
 	icon.ScaleType = Enum.ScaleType.Fit
-	icon.Parent = root
+	icon.Active = false
+	icon.ZIndex = 13
+	icon.Parent = inner
 
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.Name = "DisplayName"
@@ -589,7 +628,9 @@ local function crowdBuildMarker(userId: number, displayName: string): Frame
 	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	nameLabel.Text = displayName
 	nameLabel.LayoutOrder = 2
-	nameLabel.Parent = root
+	nameLabel.Active = false
+	nameLabel.ZIndex = 13
+	nameLabel.Parent = inner
 
 	local stroke = Instance.new("UIStroke")
 	stroke.Thickness = 1
@@ -607,6 +648,36 @@ local function crowdBuildMarker(userId: number, displayName: string): Frame
 		end)
 		if ok and typeof(url) == "string" and icon.Parent then
 			icon.Image = url
+		end
+	end)
+
+	-- Hover affordance: grow to 110% + brighten name on mouse enter; reset on leave.
+	local baseScale = Instance.new("UIScale")
+	baseScale.Scale = 1.0
+	baseScale.Parent = root
+	root.MouseEnter:Connect(function()
+		baseScale.Scale = 1.10
+		nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	end)
+	root.MouseLeave:Connect(function()
+		baseScale.Scale = 1.0
+		nameLabel.TextColor3 = Color3.fromRGB(228, 236, 248)
+	end)
+
+	-- Click → spectate teleport to this player's active voyage boat.
+	local lastClickAt = 0.0
+	root.Activated:Connect(function()
+		if localPlayer and userId == localPlayer.UserId then
+			return -- clicking your own marker is a no-op; use the regular ship-teleport button.
+		end
+		local now = os.clock()
+		if now - lastClickAt < 0.4 then
+			return
+		end
+		lastClickAt = now
+		local ev = resolveTeleportShipRemote()
+		if ev then
+			ev:FireServer({ targetUserId = userId })
 		end
 	end)
 
