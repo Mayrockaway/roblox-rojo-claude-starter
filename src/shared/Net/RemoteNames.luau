@@ -65,6 +65,11 @@ local RemoteNames = {
 	-- every rotation refresh and on every successful purchase.
 	EquipmentShopStockUpdate = "EquipmentShopStockUpdate",
 
+	-- Oilman NPC (`Workspace.Oilman.RodgerDodger`): batch-sells local plot
+	-- oil (`oilByTier`) at OilmanConfig prices. Client sends a per-tier
+	-- quantity map + requestId; atomic commit.
+	RequestOilmanSell = "RequestOilmanSell",
+
 	-- Per-plot oil tanks: three tubes (HeavyCrude/LightSweet/PremiumRefined) upgradable 1..10.
 	RequestUpgradeOilTank = "RequestUpgradeOilTank",
 
