@@ -524,6 +524,19 @@ function PlotService:_ensureCharacterAddedConnection(player: Player)
 	self._characterAddedByUserId[player.UserId] = player.CharacterAdded:Connect(function(character)
 		DevLog.log(string.format("[PlotService] %s CharacterAdded", player.Name))
 		self:_teleportCharacterToOwnedPlot(player, character)
+
+		-- CharacterAutoLoads=false: we must explicitly respawn on Died, otherwise
+		-- the player gets stuck on the death screen (or Roblox falls back to
+		-- default spawn = world origin = mid-ocean on this map).
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			humanoid.Died:Connect(function()
+				task.wait(Players.RespawnTime or 5)
+				if player.Parent then
+					player:LoadCharacter()
+				end
+			end)
+		end
 	end)
 end
 

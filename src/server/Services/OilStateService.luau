@@ -1307,9 +1307,8 @@ function OilStateService:TryStartDrill(userId: number, payload): (boolean, strin
 		end
 	end
 
-	if not self:TrySpendCash(userId, tierCfg.cost) then
-		return false, "ERR_NOT_ENOUGH_CASH", "Not enough cash.", nil
-	end
+	-- Placement does NOT charge cash. Cash was spent at the shop. Placement only
+	-- consumes the tool stack (handled by the calling service).
 
 	local drillId = state.nextDrillId
 	state.nextDrillId += 1
@@ -1395,9 +1394,7 @@ function OilStateService:TryStartProspect(userId: number, payload: any): (boolea
 		end
 	end
 
-	if (cfg.cost or 0) > 0 and not self:TrySpendCash(userId, cfg.cost) then
-		return false, "ERR_NOT_ENOUGH_CASH", "Not enough cash.", nil
-	end
+	-- Placement does NOT charge cash. Cash was spent at the shop.
 
 	local prospectId = state.nextProspectId or 1
 	state.nextProspectId = prospectId + 1
@@ -1485,9 +1482,7 @@ function OilStateService:TryPlacePump(userId: number, payload): (boolean, string
 		return false, "ERR_MAX_DRILLS", "Max active pumps reached.", nil
 	end
 
-	if not self:TrySpendCash(userId, tierCfg.cost) then
-		return false, "ERR_NOT_ENOUGH_CASH", "Not enough cash.", nil
-	end
+	-- Placement does NOT charge cash. Cash was spent at the shop.
 
 	local biomeConfig = OilConfig.Biomes[chunk.biome] or OilConfig.Biomes.Desert
 	local pumpId = state.nextDrillId
@@ -1791,9 +1786,7 @@ function OilStateService:TryPlacePipe(userId: number, payload): (boolean, string
 		end
 	end
 
-	if not self:TrySpendCash(userId, OilConfig.Pipes.Cost or 0) then
-		return false, "ERR_NOT_ENOUGH_CASH", "Not enough cash for pipe.", nil
-	end
+	-- Placement does NOT charge cash. Cash was spent at the shop.
 
 	local pipeId = state.nextPipeId
 	state.nextPipeId += 1

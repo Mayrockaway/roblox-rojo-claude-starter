@@ -599,17 +599,25 @@ function OilShipmentService:_runShipment(shipment)
 		lane = { name = "Fallback", positions = { startPos, endPos } }
 	end
 
-	-- Dock spawn position = boat's current pivot (sits at its dock slot).
-	local dockSpawnPos = boat:GetPivot().Position
+	-- Dock spawn position XZ = boat's current pivot (sits at its dock slot). Y must be
+	-- the actual water surface — boat model pivots can be anywhere in the model (Ship3
+	-- pivot is up near the sail at Y~33), not at the waterline. Using pivot Y directly
+	-- would make the voyage path float at pivot height.
+	local boatPivotPos = boat:GetPivot().Position
+	local oceanPart = workspace:FindFirstChild("Map")
+		and workspace.Map:FindFirstChild("Ocean")
+		and workspace.Map.Ocean:FindFirstChild("StraitHormuz")
+		and workspace.Map.Ocean.StraitHormuz:FindFirstChild("Ocean")
+	local waterSurfaceY = if oceanPart and oceanPart:IsA("BasePart")
+		then oceanPart.Position.Y + oceanPart.Size.Y * 0.5
+		else boatPivotPos.Y
+	local dockSpawnPos = Vector3.new(boatPivotPos.X, waterSurfaceY, boatPivotPos.Z)
 
 	local path = self:_buildPath(dockSpawnPos, lane)
 	local totalPathLen = self:_computePathLength(path)
 	if totalPathLen < 1 then totalPathLen = 1 end
 
-	-- Ship Y offset: raise above water surface
-	local SHIP_Y_OFFSET = 8
-
-	local startRaised = Vector3.new(path[1].X, path[1].Y + SHIP_Y_OFFSET, path[1].Z)
+	local startRaised = path[1]
 	local initDir = #path >= 2 and (path[2] - path[1]) or Vector3.new(0, 0, -1)
 
 	-- Setup physics-driven ship
@@ -757,7 +765,9 @@ function OilShipmentService:_runShipment(shipment)
 				end
 			end
 
-			local raisedPos = Vector3.new(currentPos.X, currentPos.Y + SHIP_Y_OFFSET, currentPos.Z)
+			-- Y kept from the path (= water surface Y set at voyage start). Per-ship
+			-- WaterlineAnchor correction in _updateShipPosition keeps the boat at this Y.
+			local raisedPos = Vector3.new(currentPos.X, currentPos.Y, currentPos.Z)
 			local flatDir = Vector3.new(nextPos.X - currentPos.X, 0, nextPos.Z - currentPos.Z)
 			if ctx then
 				ctx.lastWorldPosition = currentPos
@@ -1695,7 +1705,18 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			print(string.format("  [StraitShipment DEBUG] COAST GUARD INSPECTION: side=%d, pausing %ds",
 				approachSide, cfg.SequenceDuration))
 		end
+		-- Freeze the boat during the event so it doesn't drift/tilt.
+		-- Root-unanchor after to restore physics-driven voyage.
+		local shipState = self._activeShips[shipment.shipmentId]
+		local rootPart = shipState and shipState.root
+		local wasAnchored = rootPart and rootPart.Anchored
+		if rootPart then
+			rootPart.Anchored = true
+		end
 		task.wait(cfg.SequenceDuration)
+		if rootPart and not wasAnchored then
+			rootPart.Anchored = false
+		end
 		voyageClock.startTime += cfg.SequenceDuration
 		return false
 	end
@@ -1765,8 +1786,14 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 				barrelsStolen, approachSide, pc.SequenceDuration))
 		end
 
-		-- Pause ship for the full cinematic sequence
+		-- Pause ship for the full cinematic sequence. Anchor root so physics
+		-- doesn't drift/tilt it while we wait (same treatment as CG inspection).
+		local shipState = self._activeShips[shipment.shipmentId]
+		local rootPart = shipState and shipState.root
+		local wasAnchored = rootPart and rootPart.Anchored
+		if rootPart then rootPart.Anchored = true end
 		task.wait(pc.SequenceDuration)
+		if rootPart and not wasAnchored then rootPart.Anchored = false end
 		voyageClock.startTime += pc.SequenceDuration
 		return false
 	end
@@ -2033,6 +2060,8 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 	-- 2. Build rigid assembly: unanchor all, weld non-root to root.
 	-- Skip welding door parts (IsDoor attribute) — they swing via HingeConstraint.
 	-- Their frames (DOOR*_Frame) DO get welded so they move with the ship.
+	-- Skip welding "Paddle" parts too — they'll be assembled into wheels below
+	-- and connected to root via a HingeConstraint motor so they spin while sailing.
 	for _, d in ipairs(boatModel:GetDescendants()) do
 		if d:IsA("BasePart") then
 			d.Anchored = false
@@ -2044,6 +2073,8 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 			elseif d:GetAttribute("IsDoor") then
 				-- Door panel: don't weld, let hinge control it
 				d.Massless = true
+			-- Paddle parts: welded to root like everything else (we'll do paddle spin
+			-- via a separate non-intrusive system later — previous rig broke movement).
 			else
 				d.Massless = true
 				local wc = Instance.new("WeldConstraint")
@@ -2135,9 +2166,40 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 	root.CFrame = CFrame.new(startPosition) * initRotation
 	alignOri.CFrame = initRotation
 
+	-- Per-ship waterline correction: authored ships have waterline at different Ys,
+	-- so a fixed +8 Y offset from _runShipment over-raises smaller ships. Compute
+	-- the waterline-to-root offset from the authored model and store it so the
+	-- voyage update can keep the WaterlineAnchor at sea level.
+	local waterlineAnchorPart = boatModel:FindFirstChild("WaterlineAnchor", true)
+	local waterlineToRootY = 0
+	if waterlineAnchorPart and waterlineAnchorPart:IsA("BasePart") then
+		-- Welded → offset is fixed at setup time.
+		waterlineToRootY = waterlineAnchorPart.Position.Y - root.Position.Y
+	end
+
+	-- Snap root.Y so WaterlineAnchor ends at startPosition.Y (treat startPosition.Y
+	-- as the desired water surface Y for this voyage).
+	local correctedStartY = startPosition.Y - waterlineToRootY
+	root.CFrame = CFrame.new(Vector3.new(startPosition.X, correctedStartY, startPosition.Z)) * initRotation
+	alignPos.Position = Vector3.new(startPosition.X, correctedStartY, startPosition.Z)
+
+	-- DIAGNOSTIC: verify waterline landed where we asked.
+	local wlNowY = waterlineAnchorPart and waterlineAnchorPart.Position.Y or math.huge
+	print(string.format(
+		"[ShipSetup] skin=%s template=%s wlToRootY=%.2f startY_req=%.2f rootY=%.2f wlY=%.2f (delta-from-target=%.2f)",
+		tostring(boatModel:GetAttribute("ShipSkinId")),
+		tostring(boatModel:GetAttribute("ShipTemplateName")),
+		waterlineToRootY,
+		startPosition.Y,
+		root.Position.Y,
+		wlNowY,
+		wlNowY - startPosition.Y
+	))
+
 	-- Store default yaw + bow-convention mode so _updateShipPosition matches.
 	boatModel:SetAttribute("DefaultYaw", defaultYaw)
 	boatModel:SetAttribute("BowAtan2Mode", (frontMarker and dockAnchor) and "xz" or "legacy")
+	boatModel:SetAttribute("WaterlineToRootY", waterlineToRootY)
 
 	boatModel.PrimaryPart = root
 
@@ -2148,6 +2210,7 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 		alignOri = alignOri,
 		lastForward = bowDir,
 		baseRotation = baseRotation,
+		waterlineToRootY = waterlineToRootY,
 		connections = {},
 	}
 end
@@ -2171,7 +2234,7 @@ function OilShipmentService:_updateShipPosition(shipmentId: string, boatModel: M
 	local mode = boatModel:GetAttribute("BowAtan2Mode") or "legacy"
 	local targetYaw: number
 	if mode == "xz" then
-		targetYaw = math.atan2(flatDir.X, flatDir.Z) + math.pi
+		targetYaw = math.atan2(flatDir.X, flatDir.Z)
 	else
 		targetYaw = math.atan2(-flatDir.Z, flatDir.X) + math.pi
 	end
@@ -2185,9 +2248,39 @@ function OilShipmentService:_updateShipPosition(shipmentId: string, boatModel: M
 		state.baseRotation = CFrame.Angles(0, 0, 0)
 	end
 
-	-- Drive constraints: base upright + yaw delta
-	state.alignPos.Position = targetPosition
+	-- Correct target Y so the per-ship WaterlineAnchor (not root center) aligns
+	-- with the path water Y.
+	local wlOffset = state.waterlineToRootY or 0
+	local correctedTarget = Vector3.new(targetPosition.X, targetPosition.Y - wlOffset, targetPosition.Z)
+	state.alignPos.Position = correctedTarget
 	state.alignOri.CFrame = CFrame.Angles(0, yawDelta, 0) * state.baseRotation
+
+	-- Throttled diagnostic: 1 log/sec showing movement forensics.
+	local now = os.clock()
+	if (state.lastDiagnosticT or 0) + 1.0 < now then
+		state.lastDiagnosticT = now
+		local wlPart = boatModel:FindFirstChild("WaterlineAnchor", true)
+		local rootPos = state.root.Position
+		local rootVel = state.root.AssemblyLinearVelocity
+		local mass = state.root.AssemblyMass
+		local distToTarget = (rootPos - correctedTarget).Magnitude
+		local alignPosPos = state.alignPos.Position
+		print(string.format(
+			"[ShipUpdate] tgt=(%.1f,%.1f,%.1f) alignPos.Position=(%.1f,%.1f,%.1f) rootPos=(%.1f,%.1f,%.1f) dist=%.2f vel=%.1f assemblyRoot=%s mass=%.0f netOwner=%s",
+			targetPosition.X, targetPosition.Y, targetPosition.Z,
+			alignPosPos.X, alignPosPos.Y, alignPosPos.Z,
+			rootPos.X, rootPos.Y, rootPos.Z,
+			distToTarget,
+			rootVel.Magnitude,
+			tostring(state.root.AssemblyRootPart and state.root.AssemblyRootPart:GetFullName() or "nil"),
+			mass,
+			tostring(state.root:GetNetworkOwner())
+		))
+		if wlPart and wlPart:IsA("BasePart") then
+			print(string.format("[ShipUpdate]   waterlineY=%.2f (target=%.2f delta=%.2f)",
+				wlPart.Position.Y, targetPosition.Y, wlPart.Position.Y - targetPosition.Y))
+		end
+	end
 end
 
 -- Drops this shipment's voyage state (constraint refs, connections). Does NOT destroy the

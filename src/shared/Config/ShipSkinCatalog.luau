@@ -5,6 +5,7 @@ export type RigDef = {
 	dockAnchorName: string,
 	frontMarkerName: string,
 	deckAnchorName: string,
+	deckTopAnchorName: string,
 	deckYOffsetFallback: number,
 	deckSeatName: string,
 	barrelStackRootName: string,
@@ -15,6 +16,7 @@ export type RigOverride = {
 	dockAnchorName: string?,
 	frontMarkerName: string?,
 	deckAnchorName: string?,
+	deckTopAnchorName: string?,
 	deckYOffsetFallback: number?,
 	deckSeatName: string?,
 	barrelStackRootName: string?,
@@ -33,6 +35,7 @@ local DEFAULT_RIG: RigDef = {
 	dockAnchorName = "DockAnchor",
 	frontMarkerName = "FRONT_MARKER",
 	deckAnchorName = "DeckAnchor",
+	deckTopAnchorName = "DeckTopAnchor",
 	deckYOffsetFallback = 15,
 	deckSeatName = "DeckSeat",
 	barrelStackRootName = "BarrelStackRoot",
@@ -68,6 +71,9 @@ local function applyRigOverride(rig: RigDef, over: RigOverride?)
 	if typeof(over.deckAnchorName) == "string" and over.deckAnchorName ~= "" then
 		rig.deckAnchorName = over.deckAnchorName
 	end
+	if typeof(over.deckTopAnchorName) == "string" and over.deckTopAnchorName ~= "" then
+		rig.deckTopAnchorName = over.deckTopAnchorName
+	end
 	if typeof(over.deckYOffsetFallback) == "number" then
 		rig.deckYOffsetFallback = over.deckYOffsetFallback
 	end
@@ -87,6 +93,7 @@ local function buildRig(templateName: string, skinRigOverride: RigOverride?): Ri
 		dockAnchorName = DEFAULT_RIG.dockAnchorName,
 		frontMarkerName = DEFAULT_RIG.frontMarkerName,
 		deckAnchorName = DEFAULT_RIG.deckAnchorName,
+		deckTopAnchorName = DEFAULT_RIG.deckTopAnchorName,
 		deckYOffsetFallback = DEFAULT_RIG.deckYOffsetFallback,
 		deckSeatName = DEFAULT_RIG.deckSeatName,
 		barrelStackRootName = DEFAULT_RIG.barrelStackRootName,

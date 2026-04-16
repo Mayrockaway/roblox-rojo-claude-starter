@@ -372,6 +372,21 @@ end
 
 local function getBoatDeckY(boat: Model, waterlineY: number): number
 	local rig = getBoatRigDef(boat)
+	-- DeckTopAnchor: dedicated, hand-authored Attachment on each ship template
+	-- placed exactly at the walkable deck surface. Single source of truth for
+	-- "where do NPC feet go on this boat."
+	local deckTop = findRigAttachment(boat, rig.deckTopAnchorName)
+	if deckTop then
+		return deckTop.WorldPosition.Y
+	end
+	local barrel = boat:FindFirstChild(rig.barrelStackRootName, true)
+	if barrel and barrel:IsA("BasePart") then
+		return barrel.Position.Y + barrel.Size.Y / 2
+	end
+	local seat = boat:FindFirstChild(rig.deckSeatName, true)
+	if seat and seat:IsA("BasePart") then
+		return seat.Position.Y + seat.Size.Y / 2
+	end
 	if ShipRigUtil and typeof(ShipRigUtil.ResolveDeckWorldY) == "function" then
 		local okResolve, y = pcall(ShipRigUtil.ResolveDeckWorldY, boat, rig, waterlineY)
 		if okResolve and typeof(y) == "number" then
@@ -383,6 +398,55 @@ local function getBoatDeckY(boat: Model, waterlineY: number): number
 		return deckAnchor.WorldPosition.Y
 	end
 	return waterlineY + rig.deckYOffsetFallback
+end
+
+-- Raycasts straight down at (x, z) looking ONLY near the authored deck Y (from
+-- DeckTopAnchor / BarrelStackRoot). Sails and masts are well above the deck so
+-- they're excluded by starting the cast just above deck Y with a short range.
+local function raycastBoatDeckY(boat: Model, x: number, z: number): number?
+	local rig = getBoatRigDef(boat)
+	-- Use BarrelStackRoot/DeckSeat as the canonical deck Y reference.
+	local approxDeckY: number? = nil
+	local bs = boat:FindFirstChild(rig.barrelStackRootName, true)
+	if bs and bs:IsA("BasePart") then
+		approxDeckY = bs.Position.Y + bs.Size.Y / 2
+	else
+		local seat = boat:FindFirstChild(rig.deckSeatName, true)
+		if seat and seat:IsA("BasePart") then
+			approxDeckY = seat.Position.Y + seat.Size.Y / 2
+		end
+	end
+	if not approxDeckY then
+		local bbCF, _ = boat:GetBoundingBox()
+		approxDeckY = bbCF.Position.Y
+	end
+	-- Cast from 4 studs above expected deck, 8 studs downward. Sails/masts are
+	-- tens of studs above this window so they're impossible to hit.
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = { boat }
+	params.IgnoreWater = true
+	local origin = Vector3.new(x, approxDeckY + 4, z)
+	local remaining = 8
+	for _ = 1, 4 do
+		if remaining <= 0 then break end
+		local result = Workspace:Raycast(origin, Vector3.new(0, -remaining, 0), params)
+		if not result then return nil end
+		if result.Normal.Y > 0.7 then return result.Position.Y end
+		local stepped = (origin.Y - result.Position.Y) + 0.1
+		remaining = remaining - stepped
+		origin = Vector3.new(x, result.Position.Y - 0.1, z)
+	end
+	return nil
+end
+
+-- Takes a desired NPC stand position (where feet should land) and returns the
+-- NPC PIVOT position (feet + pivot-to-feet offset). Falls back to nil if
+-- targetXZ is off the boat — caller should skip or clamp.
+local function npcPivotOnDeck(boat: Model, targetXZ: Vector3, npcPivotToFeet: number): Vector3?
+	local y = raycastBoatDeckY(boat, targetXZ.X, targetXZ.Z)
+	if not y then return nil end
+	return Vector3.new(targetXZ.X, y + npcPivotToFeet, targetXZ.Z)
 end
 
 local function getInstanceWorldCFrame(inst: Instance): CFrame?
@@ -2418,12 +2482,19 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		end
 
 		local function prepStatic(instance: Instance)
+			-- Kill any Humanoid first — it would otherwise reset CanCollide=true on
+			-- body parts every frame, letting the NPC physically push the player boat.
+			for _, d in ipairs(instance:GetDescendants()) do
+				if d:IsA("Humanoid") then d:Destroy() end
+			end
 			for _, d in ipairs(instance:GetDescendants()) do
 				if d:IsA("BasePart") then
 					d.Anchored = true
 					d.CanCollide = false
 					d.CanQuery = false
 					d.CanTouch = false
+					d.Massless = true
+					pcall(function() d.CollisionGroup = "ShipmentShip" end)
 				end
 			end
 		end
@@ -2493,6 +2564,12 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		local PIRATE_COUNT = 5
 		local PIRATE_SPACING = 1.5
 		local deckY = getBoatDeckY(playerBoat, boatRoot.Position.Y)
+		-- Lift by NPC pivot-to-feet offset so pirates' feet land on deck (not buried).
+		local _, pirateSize = pirateNpcTemplate:GetBoundingBox()
+		local pirateLift = if pirateNpcTemplate:IsA("Model")
+			then pirateNpcTemplate:GetPivot().Position.Y - (pirateNpcTemplate:GetBoundingBox().Position.Y - pirateSize.Y / 2)
+			else pirateSize.Y / 2
+		deckY = deckY + pirateLift
 		local PIRATE_BOAT_DECK_Y = 4
 		local GAP = 20
 		local PIRATE_HALF_LEN = 9
@@ -2540,16 +2617,23 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		animateMove(pirateBoat, pirateBoat:GetPivot(), uprightLookAt(parkPos, rootPos), PHASE_APPROACH, 0)
 
 		rootPos = boatRoot.Position
-		deckY = getBoatDeckY(playerBoat, boatRoot.Position.Y)
+		deckY = getBoatDeckY(playerBoat, boatRoot.Position.Y) + pirateLift
 		parkPos = Vector3.new(rootPos.X, rootPos.Y, rootPos.Z) + fwd * parkDist
 		pirateBoat:PivotTo(uprightLookAt(parkPos, rootPos))
 
 		local pirateBoatPos = pirateBoat:GetPivot().Position
 		local zipFromBase = Vector3.new(pirateBoatPos.X, pirateBoatPos.Y + PIRATE_BOAT_DECK_Y, pirateBoatPos.Z) + perp * ZIP_SIDE_OFFSET
-		-- Tanker landing: bbox center for XZ + calibrated offsets (match CoastGuard)
-		local tankerBBCF, _ = playerBoat:GetBoundingBox()
-		local tankerDeckCtr = Vector3.new(tankerBBCF.Position.X, deckY, tankerBBCF.Position.Z)
-		local zipToBase = tankerDeckCtr + perp * LAND_LATERAL + fwd * LAND_FWD
+		-- Per-ship landing: prefer authored ZIPLINE_LAND_ANCHOR (Ship3/4/5 have one).
+		-- Anchor is deck-surface; lift by NPC pivot-to-feet so pirates land standing.
+		local zipToBase: Vector3
+		local landAnchor = playerBoat:FindFirstChild("ZIPLINE_LAND_ANCHOR", true)
+		if landAnchor and landAnchor:IsA("BasePart") then
+			zipToBase = landAnchor.Position + Vector3.new(0, pirateLift, 0)
+		else
+			local tankerBBCF, _ = playerBoat:GetBoundingBox()
+			local tankerDeckCtr = Vector3.new(tankerBBCF.Position.X, deckY, tankerBBCF.Position.Z)
+			zipToBase = tankerDeckCtr + perp * LAND_LATERAL + fwd * LAND_FWD
+		end
 		local ropeStart = zipFromBase + Vector3.new(0, ZIP_ATTACH_UP, 0)
 		local ropeEnd = zipToBase + Vector3.new(0, ZIP_ATTACH_UP, 0)
 
@@ -2773,9 +2857,15 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 		local right = Vector3.new(-fwd.Z, 0, fwd.X)
 		local perp  = right * (if approachSide >= 0 then 1 else -1)
 
-		-- Deck Y: same formula as PirateRaid — boatRoot (Union hull) sits at sea surface, +15 = deck
+		-- Deck Y: surface where feet should land. NPC pivots are at body center, so we
+		-- lift the placement Y by the NPC's pivot-to-bottom offset (measured from template).
 		local bbCF, bbSize    = playerBoat:GetBoundingBox()
 		local deckY           = getBoatDeckY(playerBoat, boatRoot.Position.Y)
+		local _, npcSize      = cgNpcTemplate:GetBoundingBox()
+		local npcPivotToFeet  = if cgNpcTemplate:IsA("Model")
+			then cgNpcTemplate:GetPivot().Position.Y - (cgNpcTemplate:GetBoundingBox().Position.Y - npcSize.Y / 2)
+			else npcSize.Y / 2
+		deckY = deckY + npcPivotToFeet
 		local waterY          = boatRoot.Position.Y  -- CG boat placed at hull Y = sea surface
 		local boatLenHalf     = math.max(bbSize.X, bbSize.Z) / 2 * 0.72
 		local boatWidthHalf   = math.min(bbSize.X, bbSize.Z) / 2 * 0.45
@@ -2847,7 +2937,7 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 		-- Constants
 		local PHASE_APPROACH   = 3.0
 		local PHASE_BOARD_INSP = 8.5   -- board + inspect combined per officer
-		local PHASE_RETURN     = 2.5
+		local PHASE_RETURN     = 1.5   -- straight zipline back, no walking
 		local OFFICER_COUNT    = 6
 		local OFFICER_SPACING  = 1.8
 		local CG_BOAT_DECK_Y   = 5    -- calibrated: deck height above CG boat pivot
@@ -2900,7 +2990,8 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 		rootPos = snapBbCF.Position
 		right   = Vector3.new(-fwd.Z, 0, fwd.X)
 		perp    = right * (if approachSide >= 0 then 1 else -1)
-		deckY = getBoatDeckY(playerBoat, boatRoot.Position.Y)
+		-- Re-read with lift preserved — raw getBoatDeckY would sink officers on next walk.
+		deckY = getBoatDeckY(playerBoat, boatRoot.Position.Y) + npcPivotToFeet
 		deckCtr = Vector3.new(rootPos.X, deckY, rootPos.Z)
 
 		local snappedPark = Vector3.new(rootPos.X, boatRoot.Position.Y, rootPos.Z) + perp * parkLateral
@@ -2926,7 +3017,18 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 
 		-- Zipline anchor points — spawn visible studs so you can drag them in playtest when calibrating
 		local zipFromPos = cgParkedPos + Vector3.new(0, CG_BOAT_DECK_Y, 0) - perp * (CG_HALF_WIDTH * 0.7) + fwd * 2
-		local zipToPos   = deckCtr + perp * LAND_LATERAL + fwd * LAND_FWD
+		-- Per-ship landing: prefer authored ZIPLINE_LAND_ANCHOR (Ship3/4/5 have one).
+		-- Anchor represents deck SURFACE; lift by NPC pivot-to-feet so officers land standing,
+		-- not half-buried (NPC pivot is 3 studs above feet on the CG template).
+		local zipToPos: Vector3
+		do
+			local landAnchor = playerBoat:FindFirstChild("ZIPLINE_LAND_ANCHOR", true)
+			if landAnchor and landAnchor:IsA("BasePart") then
+				zipToPos = landAnchor.Position + Vector3.new(0, npcPivotToFeet, 0)
+			else
+				zipToPos = deckCtr + perp * LAND_LATERAL + fwd * LAND_FWD
+			end
+		end
 
 		local sharedMod = ReplicatedStorage:FindFirstChild("Shared")
 		local constMod  = sharedMod and sharedMod:FindFirstChild("Constants")
@@ -2963,8 +3065,10 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 		local attB = Instance.new("Attachment"); attB.Position = Vector3.new(0,1,0); attB.Parent = zipB
 		local rope = Instance.new("Beam"); rope.Attachment0 = attA; rope.Attachment1 = attB; rope.Width0 = 0.35; rope.Width1 = 0.35; rope.FaceCamera = true; rope.Color = ColorSequence.new(Color3.fromRGB(60,100,160)); rope.Parent = zipA
 
-		-- 6 inspection zones computed from actual boat footprint
-		local zones = {
+		-- 6 inspection zones computed from actual boat footprint, then raycasted to the
+		-- real deck surface at each XZ. Zones that miss the boat are dropped so NPCs
+		-- can't walk off the hull. Handles bumpy/multi-level decks per-position.
+		local rawZones = {
 			deckCtr + fwd * boatLenHalf * 0.80,                          -- bow
 			deckCtr - fwd * boatLenHalf * 0.80,                          -- stern
 			deckCtr + fwd * boatLenHalf * 0.35 + right * boatWidthHalf,  -- fwd starboard
@@ -2972,7 +3076,7 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 			deckCtr - fwd * boatLenHalf * 0.35 + right * boatWidthHalf,  -- aft starboard
 			deckCtr - fwd * boatLenHalf * 0.35 - right * boatWidthHalf,  -- aft port
 		}
-		local altZones = {
+		local rawAltZones = {
 			deckCtr + fwd * boatLenHalf * 0.55,
 			deckCtr - fwd * boatLenHalf * 0.55,
 			deckCtr,
@@ -2980,19 +3084,39 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 			deckCtr - right * boatWidthHalf * 0.6,
 			deckCtr + fwd * boatLenHalf * 0.6 + right * boatWidthHalf * 0.5,
 		}
+		local function clampZonesToBoat(raw)
+			local out = {}
+			for _, pos in ipairs(raw) do
+				local p = npcPivotOnDeck(playerBoat, pos, npcPivotToFeet)
+				if p then table.insert(out, p) end
+			end
+			-- Safety: if everything missed (would mean sketchy hull colliders),
+			-- fall back to deckCtr so officers don't land nowhere.
+			if #out == 0 then
+				table.insert(out, Vector3.new(deckCtr.X, deckCtr.Y, deckCtr.Z))
+			end
+			return out
+		end
+		local zones = clampZonesToBoat(rawZones)
+		local altZones = clampZonesToBoat(rawAltZones)
 
 		-- Phase 2: Board + Inspect — each officer independently
 		-- Officer walks to zipline, slides across, then immediately walks to their zones
+		print(string.format("[CG] Inspection start: officers=%d zones=%d altZones=%d zipFrom=%s zipTo=%s",
+			#officers, #zones, #altZones, tostring(zipFromPos), tostring(zipToPos)))
 		local rng = Random.new()
 		local boardInspTasks: { () -> () } = {}
 		for i, off in ipairs(officers) do
 			local idx = i
 			table.insert(boardInspTasks, function()
+				print(string.format("[CG] officer[%d] start cf=%s", idx, tostring(off.cf.Position)))
 				-- Stagger boarding
 				task.wait((idx - 1) * BOARD_STAGGER)
 
 				-- Walk to zipline anchor on CG boat side
+				print(string.format("[CG] officer[%d] walking to zipFrom", idx))
 				walkNpc(off, flatLookAt(zipFromPos, zipToPos), WALK_SPEED)
+				print(string.format("[CG] officer[%d] zipline slide", idx))
 
 				-- Slide across zipline
 				local t0 = os.clock()
@@ -3006,41 +3130,43 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 				end
 				off.cf = flatLookAt(zipToPos, zipToPos - perp)
 
-				-- Immediately walk to primary inspection zone
-				local z1 = zones[idx]
-				local z2 = altZones[((idx) % #altZones) + 1]
+				-- Immediately walk to primary inspection zone (clamp idx to available zones).
+				local z1 = zones[((idx - 1) % math.max(1, #zones)) + 1]
+				local z2 = altZones[((idx - 1) % math.max(1, #altZones)) + 1]
+				print(string.format("[CG] officer[%d] walking to zone1=%s", idx, tostring(z1)))
+				if not z1 then return end
 				walkNpc(off, flatLookAt(z1, z1 + fwd * (if idx % 2 == 0 then 1 else -1)), WALK_SPEED)
-				task.wait(rng:NextNumber(0.7, 1.1))
+				task.wait(rng:NextNumber(0.3, 0.5))
 
 				-- Walk to secondary zone
 				walkNpc(off, flatLookAt(z2, z2 + fwd * (if idx % 2 == 0 then -1 else 1)), WALK_SPEED)
-				task.wait(rng:NextNumber(0.5, 0.9))
+				task.wait(rng:NextNumber(0.2, 0.4))
 			end)
 		end
 		runPar(boardInspTasks, PHASE_BOARD_INSP)
 
-		-- Phase 3: All officers jog back to zipline and slide back simultaneously
+		-- Phase 3: Officers zipline straight back to CG boat, then disappear — so it
+		-- reads as "they went inside" and the CG boat leaves empty-looking.
 		local returnTasks: { () -> () } = {}
 		for i, off in ipairs(officers) do
 			local idx = i
 			table.insert(returnTasks, function()
-				-- Jog back to zipline tanker-side anchor
-				walkNpc(off, flatLookAt(zipToPos, zipFromPos), RETURN_SPEED)
-
-				-- Slide back across zipline
+				local startPos = off.cf.Position
+				local endPos = cgParkedPos + Vector3.new(0, CG_BOAT_DECK_Y, 0) + fwd * ((idx - officerMid) * OFFICER_SPACING)
 				local t0 = os.clock()
+				local DUR = 1.0
 				while true do
-					local a = math.min((os.clock() - t0) / SLIDE_DUR, 1)
+					local a = math.min((os.clock() - t0) / DUR, 1)
 					local e = a * a * (3 - 2 * a)
-					local p = zipToPos:Lerp(zipFromPos, e) + Vector3.new(0, -2.5 * math.sin(e * math.pi), 0)
-					setObjCF(off.npc, flatLookAt(p, zipFromPos))
+					local p = startPos:Lerp(endPos, e) + Vector3.new(0, -2.5 * math.sin(e * math.pi), 0)
+					setObjCF(off.npc, flatLookAt(p, startPos))
 					if a >= 1 then break end
 					task.wait()
 				end
-
-				-- Walk back to row on CG boat
-				local deckPos = cgParkedPos + Vector3.new(0, CG_BOAT_DECK_Y, 0) + fwd * ((idx - officerMid) * OFFICER_SPACING)
-				walkNpc(off, flatLookAt(deckPos, deckPos - perp), WALK_SPEED)
+				-- Landed on CG boat → vanish (went inside).
+				if off.npc and off.npc.Parent then
+					off.npc:Destroy()
+				end
 			end)
 		end
 		runPar(returnTasks, PHASE_RETURN)
@@ -3050,9 +3176,9 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 		Debris:AddItem(zipB, 0.05)
 		stopSiren()
 
-		-- Depart
+		-- Depart: CG boat sails away fast so player boat can resume.
 		local escapeTarget = cgBoat:GetPivot().Position + perp * 200
-		animateMove(cgBoat, cgBoat:GetPivot(), flatLookAt(escapeTarget, escapeTarget - perp), 1.5, 0)
+		animateMove(cgBoat, cgBoat:GetPivot(), flatLookAt(escapeTarget, escapeTarget - perp), 2.5, 0)
 		Debris:AddItem(cgBoat, 2)
 	end)
 end

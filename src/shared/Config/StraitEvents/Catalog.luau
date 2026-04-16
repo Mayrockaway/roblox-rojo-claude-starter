@@ -82,17 +82,20 @@ Catalog.USShipSlapConfig = {
 -- Coast guard inspection visual sequence config
 Catalog.CoastGuardInspectionConfig = {
 	OfficerCount = 6,
-	SequenceDuration = 22,
+	-- approach 3 + board/insp 8.5 + zipline-back 1 + CG-boat depart 2.5 + buffer 1 = 16
+	SequenceDuration = 16,
 	ApproachSeconds = 3,
 	BoardingSeconds = 2.5,
 	InspectSeconds = 5.5,
-	ReturnSeconds = 2,
+	ReturnSeconds = 1.5,
 }
 
 -- Pirate raid visual sequence config
 Catalog.PirateRaidConfig = {
 	PirateCount = 4,
-	SequenceDuration = 28,
+	-- approach 4 + board 3 + steal 7 + escape 4 = 18. Add 2s buffer for pirate boat
+	-- to fully depart before player boat resumes.
+	SequenceDuration = 20,
 	ApproachDistance = 200,
 	PullUpDistance = 15,
 	ApproachSeconds = 4,

@@ -5,6 +5,7 @@ export type RigDef = {
 	dockAnchorName: string,
 	frontMarkerName: string,
 	deckAnchorName: string,
+	deckTopAnchorName: string,
 	deckYOffsetFallback: number,
 	deckSeatName: string,
 	barrelStackRootName: string,
@@ -14,7 +15,7 @@ export type RigDef = {
 local ShipRig = {}
 
 local function findNamedDescendantOfClass(model: Model, name: string, className: string): Instance?
-	if name == "" then
+	if typeof(name) ~= "string" or name == "" then
 		return nil
 	end
 	local found = model:FindFirstChild(name, true)
@@ -61,16 +62,25 @@ function ShipRig.ValidateCore(model: Model, rig: RigDef): (boolean, { string }, 
 	if not ShipRig.FindBasePart(model, rig.playerFlagName) then
 		table.insert(errors, string.format("Missing BasePart '%s'.", rig.playerFlagName))
 	end
+	-- DeckTopAnchor is a soft requirement: code falls back to BarrelStackRoot/DeckSeat,
+	-- but missing it on a new ship template will degrade NPC walking precision.
+	if not ShipRig.FindAttachment(model, rig.deckTopAnchorName) then
+		table.insert(warnings, string.format("Missing Attachment '%s' (NPCs will use fallback deck-Y).", rig.deckTopAnchorName))
+	end
 
 	return #errors == 0, errors, warnings
 end
 
 function ShipRig.ResolveDeckWorldY(model: Model, rig: RigDef, waterlineY: number): number
+	-- Authoritative: DeckTopAnchor is hand-authored at the walkable deck surface.
+	local deckTop = ShipRig.FindAttachment(model, rig.deckTopAnchorName)
+	if deckTop then
+		return deckTop.WorldPosition.Y
+	end
 	local deckAnchor = ShipRig.FindAttachment(model, rig.deckAnchorName)
 	if deckAnchor then
 		return deckAnchor.WorldPosition.Y
 	end
-	-- Prefer BarrelStackRoot as the ship's deck reference when DeckAnchor is not authored.
 	local barrelStackRoot = ShipRig.FindBasePart(model, rig.barrelStackRootName)
 	if barrelStackRoot then
 		return barrelStackRoot.Position.Y

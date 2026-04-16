@@ -57,7 +57,7 @@ local OilConfig = {
 	DrillBufferCapacity = 20, -- per tier, per drill
 
 	-- Player economy
-	StartingCash = 0,
+	StartingCash = 500,
 	StartingStorageCapacity = 100,
 	ProductionTickSeconds = 1,
 

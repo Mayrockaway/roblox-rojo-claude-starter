@@ -171,9 +171,20 @@ game:BindToClose(function()
 	RemoteService:Stop()
 end)
 
--- Debug chat commands (Studio only)
-if RunService:IsStudio() then
+-- Debug chat commands. Available in Studio always; in the live Roblox app only
+-- to the game owner (so randoms can't /grant500 themselves). Without this gate
+-- moved out of the IsStudio block, TextChatCommand never registers in the app
+-- and every slash command silently no-ops.
+do
 	local Players = game:GetService("Players")
+	local isStudio = RunService:IsStudio()
+
+	local function isAuthorizedDev(player: Player): boolean
+		if isStudio then return true end
+		-- Game.CreatorId works for both user-owned and group-owned places.
+		-- For group games we'd need GroupService:GetRankInGroup; simpler check first.
+		return player.UserId == game.CreatorId
+	end
 
 	local function grantAllPlayersCash(amount: number)
 		local okCount = 0
@@ -206,6 +217,7 @@ if RunService:IsStudio() then
 	end
 
 	local function onDebugChat(player: Player, message: string)
+		if not isAuthorizedDev(player) then return end
 		local cmd = message:lower():gsub("^%s+", ""):gsub("%s+$", "")
 		if cmd == "/missile" then
 			OilShipmentService:DebugDispatchMissile(player)
@@ -248,6 +260,10 @@ if RunService:IsStudio() then
 		end
 	end
 
+	-- Legacy chat (`Player.Chatted`) works in Studio's classic chat only.
+	-- The Roblox app defaults to TextChatService, which does NOT route through
+	-- Player.Chatted. Register TextChatCommand instances so slash commands work
+	-- in the app too.
 	local function hookPlayerChatted(player: Player)
 		player.Chatted:Connect(function(message)
 			onDebugChat(player, message)
@@ -256,6 +272,33 @@ if RunService:IsStudio() then
 	Players.PlayerAdded:Connect(hookPlayerChatted)
 	for _, p in ipairs(Players:GetPlayers()) do
 		hookPlayerChatted(p)
+	end
+
+	local TextChatService = game:GetService("TextChatService")
+	local DEV_COMMAND_ALIASES = {
+		"/missile", "/mine", "/pirate", "/storm", "/tornado", "/coastguard", "/slap",
+		"/fighterwave", "/fighters", "/fighterhere", "/jethere",
+		"/fighterretarget", "/jetretarget",
+		"/grant500", "/wipedata", "/dev_wipeme", "/wipealldata", "/dev_wipeall",
+		"/giveall",
+	}
+	for _, alias in ipairs(DEV_COMMAND_ALIASES) do
+		local ok, err = pcall(function()
+			local cmd = Instance.new("TextChatCommand")
+			cmd.Name = "DevCmd_" .. string.sub(alias, 2)
+			cmd.PrimaryAlias = alias
+			cmd.AutocompleteVisible = true
+			cmd.Triggered:Connect(function(textSource, unfilteredText)
+				local p = Players:GetPlayerByUserId(textSource.UserId)
+				if p then
+					onDebugChat(p, unfilteredText)
+				end
+			end)
+			cmd.Parent = TextChatService
+		end)
+		if not ok then
+			warn("[Dev] TextChatCommand register failed for " .. alias .. ": " .. tostring(err))
+		end
 	end
 end
 

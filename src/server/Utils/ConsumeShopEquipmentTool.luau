@@ -43,6 +43,26 @@ local function consumeOneStackUnit(tool: Tool): (boolean, string?)
 	return true, idStr
 end
 
+--- True if the player has any matching shop tool with at least one stack unit available.
+-- Checked before charging cash on placement so shop-bought tools don't double-charge.
+function ConsumeShopEquipmentTool.hasMatching(player: Player, toolKind: string, tierFilter: string?): boolean
+	local function checkContainer(container: Instance?): boolean
+		if not container then return false end
+		for _, child in ipairs(container:GetChildren()) do
+			if child:IsA("Tool") and toolMatches(child, toolKind, tierFilter) then
+				return true
+			end
+		end
+		return false
+	end
+	if checkContainer(player.Character) then return true end
+	local bp = player:FindFirstChild("Backpack")
+	if bp and bp:IsA("Backpack") then
+		return checkContainer(bp)
+	end
+	return false
+end
+
 --- Consume one matching shop stack unit (character first, then backpack). Returns **consumed**, **`EquipmentItemId`** if any.
 function ConsumeShopEquipmentTool.consumeMatching(player: Player, toolKind: string, tierFilter: string?): (boolean, string?)
 	local function tryContainer(container: Instance?): (boolean, string?)

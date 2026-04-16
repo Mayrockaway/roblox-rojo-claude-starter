@@ -187,6 +187,48 @@ if fighterPlaneFlyoverFx then
 	fighterPlaneFlyoverFx.Start(fighterFlyoverEvent)
 end
 
+local function requireSkyMissileAmbience(): { Start: () -> (), Stop: () -> () }?
+	local modScript: ModuleScript? = nil
+
+	local selfChild = script:FindFirstChild("SkyMissileAmbience")
+	if selfChild and selfChild:IsA("ModuleScript") then
+		modScript = selfChild
+	end
+
+	if not modScript then
+		local sibling = script.Parent and script.Parent:FindFirstChild("SkyMissileAmbience")
+		if sibling and sibling:IsA("ModuleScript") then
+			modScript = sibling
+		end
+	end
+
+	if not modScript then
+		local ps = player:FindFirstChild("PlayerScripts") or player:WaitForChild("PlayerScripts", 30)
+		local clientFolder = ps and ps:FindFirstChild("Client")
+		local m = clientFolder and clientFolder:FindFirstChild("SkyMissileAmbience")
+		if m and m:IsA("ModuleScript") then
+			modScript = m
+		end
+	end
+
+	if not modScript then
+		warn("[Client] SkyMissileAmbience module missing; sky missiles disabled.")
+		return nil
+	end
+
+	local ok, loaded = pcall(require, modScript)
+	if ok and typeof(loaded) == "table" then
+		return loaded :: any
+	end
+	warn("[Client] SkyMissileAmbience failed to load:", loaded)
+	return nil
+end
+
+local skyMissileAmbience = requireSkyMissileAmbience()
+if skyMissileAmbience then
+	skyMissileAmbience.Start()
+end
+
 local function requireStraitDevPanel(): { mount: (PlayerGui, RemoteEvent, RemoteEvent) -> (), shouldShow: () -> boolean }?
 	local modScript: ModuleScript? = nil
 	-- Rojo: LocalScript under PlayerScripts.Client, UI sibling
