@@ -833,6 +833,8 @@ function OilStateService:GetStateForClient(userId: number)
 			scale = drill.scale or 1,
 			position = { x = drill.position.X, y = drill.position.Y, z = drill.position.Z },
 			connected = drill.connected == true,
+			tileOilType = drill.tileOilType,
+			flowBase = drill.flowBase,
 			cellKey = drill.cellKey,
 			cellRow = drill.cellRow,
 			cellCol = drill.cellCol,
@@ -3463,6 +3465,7 @@ function OilStateService:_serializeState(state)
 			tierMix = drill.tierMix and copyTierMap(drill.tierMix) or nil,
 			intakeAttachmentId = drill.intakeAttachmentId,
 			connected = drill.connected == true,
+			flowBase = drill.flowBase,
 			placementCost = drill.placementCost,
 			ftueFreeNoSellback = drill.ftueFreeNoSellback == true,
 		})

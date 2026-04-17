@@ -842,6 +842,104 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 			-- Write Connected attribute so the OilBurstSpawner script can pause emission
 			model:SetAttribute("Connected", drill.connected == true)
 
+			-- Glass fill: when connected, slowly fill with oil; when not connected, empty glass.
+			-- Tag fill parts on first encounter so we can find them again after transparency changes.
+			local isConnected = drill.connected == true
+			local oilType = drill.tileOilType or "HeavyCrude"
+			if justCreated or isConnected then
+				print("[PumpFill] drillId=" .. tostring(drill.drillId) .. " tileOilType=" .. tostring(drill.tileOilType) .. " resolved=" .. oilType .. " connected=" .. tostring(isConnected))
+			end
+			local fillColor
+			if oilType == "LightSweet" then
+				fillColor = Color3.fromRGB(240, 200, 70)
+			elseif oilType == "PremiumRefined" then
+				fillColor = Color3.fromRGB(180, 80, 255)
+			else
+				fillColor = Color3.fromRGB(30, 30, 30)
+			end
+
+			for _, part in ipairs(model:GetDescendants()) do
+				if part:IsA("BasePart") and part.Material == Enum.Material.Glass then
+					local isFill = part:GetAttribute("IsPumpFill") == true
+					if not isFill and part.Transparency < 0.1 and part.Color.R < 0.3 and part.Color.G < 0.3 and part.Color.B < 0.3 then
+						part:SetAttribute("IsPumpFill", true)
+						isFill = true
+					end
+					if isFill then
+						part.Color = fillColor
+						local targetTrans = isConnected and 0 or 1
+						local wasConnected = model:GetAttribute("WasConnected")
+						if wasConnected ~= isConnected then
+							-- Animate fill/drain over 1.5 seconds
+							TweenService:Create(part, TweenInfo.new(1.5, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
+								Transparency = targetTrans,
+							}):Play()
+						elseif part.Transparency ~= targetTrans then
+							part.Transparency = targetTrans
+						end
+					end
+				end
+			end
+			model:SetAttribute("WasConnected", isConnected)
+
+			-- Hologram text above pump: oil type + output rate
+			local holoName = "PumpHologram"
+			local holoPart = model:FindFirstChild(holoName)
+			if not holoPart then
+				-- Find the topmost point of the pump for billboard placement
+				local topY = -math.huge
+				for _, p in ipairs(model:GetDescendants()) do
+					if p:IsA("BasePart") then
+						local partTop = p.Position.Y + p.Size.Y / 2
+						if partTop > topY then topY = partTop end
+					end
+				end
+				holoPart = Instance.new("Part")
+				holoPart.Name = holoName
+				holoPart.Size = Vector3.new(1, 1, 1)
+				holoPart.Transparency = 1
+				holoPart.Anchored = true
+				holoPart.CanCollide = false
+				holoPart.CanQuery = false
+				holoPart.CanTouch = false
+				holoPart.Position = Vector3.new(model:GetPivot().Position.X, topY + 0.5, model:GetPivot().Position.Z)
+				holoPart.Parent = model
+
+				local billboard = Instance.new("BillboardGui")
+				billboard.Name = "HoloGui"
+				billboard.Size = UDim2.fromOffset(120, 40)
+				billboard.StudsOffset = Vector3.new(0, 0, 0)
+				billboard.AlwaysOnTop = false
+				billboard.LightInfluence = 0
+				billboard.Parent = holoPart
+
+				local label = Instance.new("TextLabel")
+				label.Name = "Info"
+				label.Size = UDim2.fromScale(1, 1)
+				label.BackgroundTransparency = 1
+				label.TextColor3 = Color3.fromRGB(200, 255, 200)
+				label.Font = Enum.Font.Merriweather
+				label.TextSize = 14
+				label.TextStrokeTransparency = 0
+				label.TextStrokeColor3 = Color3.fromRGB(255, 255, 255)
+				label.Parent = billboard
+			end
+
+			-- Update hologram text
+			local holoGui = holoPart:FindFirstChild("HoloGui")
+			local infoLabel = holoGui and holoGui:FindFirstChild("Info")
+			if infoLabel then
+				local displayOilType = oilType == "LightSweet" and "Light Sweet" or oilType == "PremiumRefined" and "Premium" or "Crude"
+				if isConnected then
+					local flowRate = drill.flowBase or 0.2
+					infoLabel.Text = string.format("%s\n%.1f/s", displayOilType, flowRate)
+					infoLabel.TextColor3 = fillColor
+				else
+					infoLabel.Text = displayOilType .. "\nDisconnected"
+					infoLabel.TextColor3 = Color3.fromRGB(180, 80, 80)
+				end
+			end
+
 			-- Rare cosmetic variant: add a Highlight in the variant's color
 			local variant = drill.variant
 			if variant ~= model:GetAttribute("AppliedVariant") then

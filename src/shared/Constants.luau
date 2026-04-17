@@ -40,6 +40,8 @@ local Constants = {
 		CoastGuardCalibrateAnchors = false, -- if true, spawn red/green anchor studs and pause 15s so you can drag them to the right spots
 		ForceStorm = false, -- if true, every triggered event becomes Storm
 		ForceTornado = false, -- if true, every triggered event becomes Tornado
+		ForceNuke = false, -- debug: fire nuke immediately
+		ForceAirStrike = false, -- debug: fire airstrike immediately
 		LogWaypointTriggers = false,
 		VerboseStraitWaypointLogsInStudio = true,
 	},

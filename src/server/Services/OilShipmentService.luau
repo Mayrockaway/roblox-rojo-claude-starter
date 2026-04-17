@@ -1,5 +1,6 @@
 --!strict
 
+local Debris = game:GetService("Debris")
 local HttpService = game:GetService("HttpService")
 local PhysicsService = game:GetService("PhysicsService")
 local Players = game:GetService("Players")
@@ -915,7 +916,12 @@ function OilShipmentService:_runShipment(shipment)
 
 		local voyageAborted = false
 
-		if ctx then
+		-- Check for external destruction (nuke, airstrike)
+		if ctx and ctx._forceDestroyed then
+			voyageAborted = true
+		end
+
+		if ctx and not voyageAborted then
 			local forcedLost = false
 			if (shipment :: any).ftueTutorialSuppressStraitIncidents ~= true then
 				forcedLost = self:_maybeProcessForcedPirateHit(shipment, ownerUserId, voyageClock, boat, ctx)
@@ -1184,9 +1190,65 @@ function OilShipmentService:_unseatPlayersFromBoat(boat: Instance)
 			end
 		end
 
-		character:PivotTo(CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)))
-		DevLog.log(string.format("[ShipDestroy] teleported %s to ClaimPad (seated=%s onDeck=%s)",
-			player.Name, tostring(seatedOnBoat), tostring(onDeck)))
+		-- Dismember the player: destroy all joints, fling every body part outward
+		-- PREVENT auto-respawn: keep health at max so Humanoid doesn't "die"
+		if hum then
+			hum.PlatformStand = true
+			hum.AutoRotate = false
+			hum.BreakJointsOnDeath = false
+			hum.RequiresNeck = false -- don't die when neck joint breaks
+			hum.Health = hum.MaxHealth -- keep alive
+		end
+		-- Destroy ALL joints so parts separate completely
+		for _, joint in ipairs(character:GetDescendants()) do
+			if joint:IsA("Motor6D") or joint:IsA("Weld") or joint:IsA("WeldConstraint") or joint:IsA("BallSocketConstraint") then
+				joint:Destroy()
+			end
+		end
+		-- Fling every body part in a random direction (explosion dismemberment)
+		-- Keep HumanoidRootPart anchored so character doesn't fall into void and auto-respawn
+		local rng = Random.new()
+		local hrpPart = character:FindFirstChild("HumanoidRootPart")
+		for _, part in ipairs(character:GetDescendants()) do
+			if part:IsA("BasePart") then
+				if part == hrpPart then
+					-- Anchor HRP to prevent void death, make invisible
+					part.Anchored = true
+					part.Transparency = 1
+				else
+					part.Anchored = false
+					part.CanCollide = true
+					local bv = Instance.new("BodyVelocity")
+					local flingPower = self._nukeActive and 200 or 120
+					bv.Velocity = Vector3.new(
+						rng:NextNumber(-flingPower, flingPower),
+						rng:NextNumber(80, flingPower * 1.5),
+						rng:NextNumber(-flingPower, flingPower)
+					)
+					bv.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+					bv.P = 5000
+					bv.Parent = part
+					Debris:AddItem(bv, 1.5) -- push for 1.5 seconds so parts fly FAR
+				end
+			end
+		end
+
+		-- Delay then respawn at ClaimPad
+		-- Longer delay if a nuke is active so player can watch the mushroom cloud
+		local respawnDelay = self._nukeActive and 12 or 3.5
+		task.delay(respawnDelay, function()
+			if player.Parent and claimPad.Parent then
+				player:LoadCharacter()
+				task.wait(0.5)
+				local newChar = player.Character
+				if newChar then
+					newChar:PivotTo(CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)))
+				end
+			end
+		end)
+
+		DevLog.log(string.format("[ShipDestroy] dismembered %s, respawn in %.1fs (seated=%s onDeck=%s)",
+			player.Name, respawnDelay, tostring(seatedOnBoat), tostring(onDeck)))
 		teleportedAny = true
 	end
 
@@ -2973,6 +3035,40 @@ function OilShipmentService:DebugDispatchUSShipSlap(player: Player)
 			end
 		end
 	end)
+end
+
+-- =================== PUBLIC HELPERS (for ArmyGeneralService) ===================
+
+function OilShipmentService:HasActiveShipment(userId: number): boolean
+	return self._activeShipmentByOwner[userId] ~= nil
+end
+
+function OilShipmentService:GetActiveShipmentForUser(userId: number)
+	local shipmentId = self._activeShipmentByOwner[userId]
+	if not shipmentId then return nil end
+	return self._shipmentContexts[shipmentId]
+end
+
+function OilShipmentService:GetAllActiveShipments()
+	return self._shipmentContexts
+end
+
+function OilShipmentService:GetActiveBoat(shipmentId: string): Instance?
+	-- Find the ActiveShipmentBoat model in workspace with matching ShipmentId attribute
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("Model") and d.Name == "ActiveShipmentBoat" and d:GetAttribute("ShipmentId") == shipmentId then
+			return d
+		end
+	end
+	return nil
+end
+
+function OilShipmentService:ForceDestroyShipment(shipmentId: string, reason: string)
+	local ctx = self._shipmentContexts[shipmentId]
+	if not ctx then return end
+	-- Set a flag that the voyage loop checks to abort
+	ctx._forceDestroyed = true
+	ctx._forceDestroyReason = reason or "External destruction"
 end
 
 return OilShipmentService

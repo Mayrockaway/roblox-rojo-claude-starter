@@ -70,6 +70,15 @@ local RemoteNames = {
 	-- quantity map + requestId; atomic commit.
 	RequestOilmanSell = "RequestOilmanSell",
 
+	-- Army General NPC: nuke + airstrike
+	ArmyGeneralOpen = "ArmyGeneralOpen",
+	RequestArmyGeneralAction = "RequestArmyGeneralAction",
+	RequestArmyGeneralTargets = "RequestArmyGeneralTargets",
+	ArmyGeneralResult = "ArmyGeneralResult",
+	NukeCountdownEvent = "NukeCountdownEvent",
+	NukeDetonateEvent = "NukeDetonateEvent",
+	AirStrikeEvent = "AirStrikeEvent",
+
 	-- Per-plot oil tanks: three tubes (HeavyCrude/LightSweet/PremiumRefined) upgradable 1..10.
 	RequestUpgradeOilTank = "RequestUpgradeOilTank",
 

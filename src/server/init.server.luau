@@ -48,6 +48,7 @@ local ProspectingService = require(serviceFolder:WaitForChild("ProspectingServic
 local OilTankService = require(serviceFolder:WaitForChild("OilTankService"))
 local FighterPlaneWaveService = require(serviceFolder:WaitForChild("FighterPlaneWaveService"))
 local HitContractService = require(serviceFolder:WaitForChild("HitContractService"))
+local ArmyGeneralService = require(serviceFolder:WaitForChild("ArmyGeneralService"))
 local KillZoneService = require(serviceFolder:WaitForChild("KillZoneService"))
 
 local DevLog = require(Shared:WaitForChild("DevLog"))
@@ -106,6 +107,7 @@ OilVisualService:Init(OilStateService, PlotService)
 BoatDockService:Init(RemoteService, OilStateService)
 OilShipmentService:Init(RemoteService, OilStateService, PlotService, WarehouseService, StraitStateService, BoatDockService)
 HitContractService:Init(RemoteService, OilStateService, OilShipmentService)
+ArmyGeneralService:Init(RemoteService, OilStateService, OilShipmentService)
 OilShipmentService:SetHitContractService(HitContractService)
 ChunkOwnershipService:Init(PlotService, OilStateService)
 PipeNetworkService:Init()
@@ -145,6 +147,7 @@ OilVisualService:Start()
 BoatDockService:Start()
 OilShipmentService:Start()
 HitContractService:Start()
+ArmyGeneralService:Start()
 ChunkOwnershipService:Start()
 PipeNetworkService:Start()
 WarehouseService:Start()
@@ -178,6 +181,7 @@ game:BindToClose(function()
 	WarehouseService:Stop()
 	ChunkOwnershipService:Stop()
 	OilShipmentService:Stop()
+	ArmyGeneralService:Stop()
 	HitContractService:Stop()
 	BoatDockService:Stop()
 	OilVisualService:Stop()
@@ -249,6 +253,10 @@ do
 			OilShipmentService:DebugDispatchCoastGuard(player)
 		elseif cmd == "/slap" then
 			OilShipmentService:DebugDispatchUSShipSlap(player)
+		elseif cmd == "/nuke" then
+			ArmyGeneralService:DebugNuke(player)
+		elseif cmd == "/airstrike" then
+			ArmyGeneralService:DebugAirstrike(player)
 		elseif cmd == "/fighterwave" or cmd == "/fighters" then
 			FighterPlaneWaveService:DebugSpawnWave(player.Name)
 		elseif cmd == "/fighterhere" or cmd == "/jethere" then
@@ -292,7 +300,7 @@ do
 
 	local TextChatService = game:GetService("TextChatService")
 	local DEV_COMMAND_ALIASES = {
-		"/missile", "/mine", "/pirate", "/storm", "/tornado", "/coastguard", "/slap",
+		"/missile", "/mine", "/pirate", "/storm", "/tornado", "/coastguard", "/slap", "/nuke", "/airstrike",
 		"/fighterwave", "/fighters", "/fighterhere", "/jethere",
 		"/fighterretarget", "/jetretarget",
 		"/grant500", "/wipedata", "/dev_wipeme", "/wipealldata", "/dev_wipeall",

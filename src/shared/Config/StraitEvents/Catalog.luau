@@ -129,6 +129,29 @@ Catalog.TornadoConfig = {
 	MaxVisualBarrels = 10,
 }
 
+-- Nuke config (purchasable via Army General NPC)
+Catalog.NukeConfig = {
+	CountdownSeconds = 12, -- 2s audio buildup + 10s visible countdown = detonation at 12s
+	CooldownSeconds = 300, -- 5 minutes between nukes
+	SequenceDuration = 15, -- 12s countdown + 3s aftermath
+	MushroomCloudScale = 2.0,
+	ScreenShakeIntensity = 8,
+	ScreenShakeDuration = 2,
+	FlashDuration = 1.5,
+	BoatFlyArcHeight = 200,
+	BoatFlyDuration = 2.5,
+}
+
+-- Airstrike config (purchasable via Army General NPC, targets specific player)
+Catalog.AirStrikeConfig = {
+	Cost = 10000,
+	HitChance = 0.70,
+	JetAltitude = 300,
+	JetSpeed = 700,
+	BombFallDuration = 2.0,
+	SequenceDuration = 14, -- 2s warning + ~8s jet flight (halved speed) + 4s aftermath
+}
+
 Catalog.Events = {
 	-- Low: paperwork FX (StraitWaypointWorldFx EVENT_FX + optional StraitWaypointsFx assets)
 	{
