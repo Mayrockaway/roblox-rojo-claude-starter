@@ -12,7 +12,7 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 --- Local cosmetic NPCs (Pirate / Coast Guard): must not shove the player. `Humanoid` resets
---- `CanCollide` on body parts every frame; `ShipmentShip` still collides with `Default` (character).
+--- `CanCollide` on body parts; parts must also ignore `ShipmentShip` (deck) vs `Players` (character).
 local STRAIT_FX_NPC_GROUP = "StraitWaypointFxNpc"
 local straitFxNpcGroupReady = false
 
@@ -20,12 +20,47 @@ local function ensureStraitFxNpcCollisionGroup()
 	if straitFxNpcGroupReady then
 		return
 	end
-	straitFxNpcGroupReady = true
 	pcall(function()
 		PhysicsService:RegisterCollisionGroup(STRAIT_FX_NPC_GROUP)
-		PhysicsService:CollisionGroupSetCollidable(STRAIT_FX_NPC_GROUP, "Default", false)
-		PhysicsService:CollisionGroupSetCollidable(STRAIT_FX_NPC_GROUP, "Players", false)
 	end)
+	local function safeRegister(name: string)
+		pcall(function()
+			PhysicsService:RegisterCollisionGroup(name)
+		end)
+	end
+	local function noCollidePair(a: string, b: string)
+		pcall(function()
+			PhysicsService:CollisionGroupSetCollidable(a, b, false)
+		end)
+	end
+	-- Voyage hull + dock use custom groups; strait FX must not interact with them or the character.
+	safeRegister("Default")
+	safeRegister("Players")
+	safeRegister("ShipmentShip")
+	safeRegister("MarinaDock")
+	noCollidePair(STRAIT_FX_NPC_GROUP, "Default")
+	noCollidePair(STRAIT_FX_NPC_GROUP, "Players")
+	noCollidePair(STRAIT_FX_NPC_GROUP, "ShipmentShip")
+	noCollidePair(STRAIT_FX_NPC_GROUP, "MarinaDock")
+	noCollidePair(STRAIT_FX_NPC_GROUP, STRAIT_FX_NPC_GROUP)
+	pcall(function()
+		local list = (PhysicsService :: any):GetRegisteredCollisionGroups()
+		if typeof(list) ~= "table" then
+			return
+		end
+		for _, entry in ipairs(list) do
+			local n: string? = nil
+			if typeof(entry) == "table" then
+				n = (entry :: { name: string? }).name
+			elseif typeof(entry) == "string" then
+				n = entry
+			end
+			if typeof(n) == "string" and n ~= "" and n ~= STRAIT_FX_NPC_GROUP then
+				noCollidePair(STRAIT_FX_NPC_GROUP, n)
+			end
+		end
+	end)
+	straitFxNpcGroupReady = true
 end
 
 -- Bounded waits: avoid infinite yield if ReplicatedStorage is slow or Shared is missing in a test place.
@@ -99,7 +134,7 @@ local STRAIT_FX_ASSETS_FOLDER = "StraitWaypointsFx"
 
 -- Missile barrage: one-shot when a cloned missile impacts the ship (hit / smallHit, not clean miss).
 local MISSILE_IMPACT_HIT_SFX_ID = "rbxassetid://111630360891423"
-local MISSILE_IMPACT_HIT_VOLUME = 0.2
+local MISSILE_IMPACT_HIT_VOLUME = 0.55
 
 -- Mine field: one-shot when `didHit` — the surfacing mine detonates on the ship.
 local MINE_IMPACT_HIT_SFX_ID = "rbxassetid://102050572129572"
@@ -187,8 +222,8 @@ local function stripRuntimeScripts(root: Instance)
 	end
 end
 
---- Remove Humanoid (it reapplies CanCollide), ghost all parts, no collision with local player.
-local function prepareStraitEventNpcInstance(root: Instance)
+--- Remove Humanoid (it reapplies CanCollide), ghost all parts, no collision with player or ship.
+local function applyStraitNpcGhostParts(root: Instance)
 	ensureStraitFxNpcCollisionGroup()
 	for _, d in ipairs(root:GetDescendants()) do
 		if d:IsA("Humanoid") then
@@ -207,6 +242,38 @@ local function prepareStraitEventNpcInstance(root: Instance)
 			end)
 		end
 	end
+end
+
+--- Re-apply ghost for several seconds — templates / engine may re-enable collision after Parent changes.
+local function sustainStraitNpcGhosts(roots: { Instance }, durationSec: number)
+	if #roots == 0 then
+		return
+	end
+	local t0 = os.clock()
+	local lastSweep = t0
+	local conn: RBXScriptConnection?
+	conn = RunService.Heartbeat:Connect(function()
+		local now = os.clock()
+		if now - t0 >= durationSec then
+			if conn then
+				conn:Disconnect()
+			end
+			return
+		end
+		if now - lastSweep >= 0.12 then
+			lastSweep = now
+			for _, r in ipairs(roots) do
+				if r.Parent ~= nil then
+					applyStraitNpcGhostParts(r)
+				end
+			end
+		end
+	end)
+end
+
+local function prepareStraitEventNpcInstance(root: Instance)
+	stripRuntimeScripts(root)
+	applyStraitNpcGhostParts(root)
 end
 
 local function prepareStraitFxClone(root: Instance)
@@ -1552,7 +1619,19 @@ function StraitWaypointWorldFx.OnMissileStrikePayload(data: { [string]: any })
 			impactHitSfx.RollOffMode = Enum.RollOffMode.InverseTapered
 			impactHitSfx.RollOffMaxDistance = 2000
 			impactHitSfx.Parent = sfxAnchor
-			impactHitSfx:Play()
+			task.defer(function()
+				if not impactHitSfx.Parent then
+					return
+				end
+				if not impactHitSfx.IsLoaded then
+					pcall(function()
+						impactHitSfx.Loaded:Wait()
+					end)
+				end
+				if impactHitSfx.Parent then
+					impactHitSfx:Play()
+				end
+			end)
 			Debris:AddItem(sfxAnchor, 30)
 
 			-- Roblox shockwave ring on direct hit
@@ -2684,6 +2763,14 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 			Debris:AddItem(npc, 30)
 		end
 
+		do
+			local ghostRoots: { Instance } = { pirateBoat }
+			for _, p in ipairs(pirates) do
+				table.insert(ghostRoots, p.npc)
+			end
+			sustainStraitNpcGhosts(ghostRoots, 48)
+		end
+
 		animateMove(pirateBoat, pirateBoat:GetPivot(), uprightLookAt(parkPos, rootPos), PHASE_APPROACH, 0)
 
 		rootPos = boatRoot.Position
@@ -3072,6 +3159,14 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 			npc.Parent = Workspace  -- world-space from the start, no re-parenting needed
 			table.insert(officers, { npc = npc, cf = npcCF })
 			Debris:AddItem(npc, 42)
+		end
+
+		do
+			local ghostRoots: { Instance } = { cgBoat }
+			for _, o in ipairs(officers) do
+				table.insert(ghostRoots, o.npc)
+			end
+			sustainStraitNpcGhosts(ghostRoots, 42)
 		end
 
 		-- Brief pause so player sees officers standing on deck

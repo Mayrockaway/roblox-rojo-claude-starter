@@ -4,6 +4,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local HudTriggerHover = require(script.Parent.HudTriggerHover)
+local FtueTpHomePointerSignals = require(script.Parent:WaitForChild("FtueTpHomePointerSignals"))
 local RemoteNames = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local BUTTON_TO_REMOTE: { [string]: string } = {
@@ -96,6 +97,9 @@ function HudTeleportRouter.start(playerGui: PlayerGui)
 						armed = false
 					end)
 					remote:FireServer()
+					if remote.Name == RemoteNames.RequestTeleportHome then
+						FtueTpHomePointerSignals.fireTeleportHomePressed()
+					end
 				end
 				btn.Activated:Connect(onPress)
 				btn.MouseButton1Click:Connect(onPress)

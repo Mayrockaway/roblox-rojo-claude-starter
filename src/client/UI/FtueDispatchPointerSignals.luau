@@ -24,4 +24,9 @@ function FtueDispatchPointerSignals.fireSellOilUiChanged()
 	notify()
 end
 
+--- Any FTUE step / dialogue change that should re-resolve pointer roots (e.g. `Done` → TP Home arrow).
+function FtueDispatchPointerSignals.fireFtuePointersRefresh()
+	notify()
+end
+
 return FtueDispatchPointerSignals

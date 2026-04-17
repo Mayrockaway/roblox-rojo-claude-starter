@@ -2,6 +2,8 @@
 -- First-time user experience (FTUE) — copy keys + economy knobs. Dialogue strings live here
 -- (and in Studio placeholder text); `FtueDialogueController` maps step ids to title/body.
 
+local FtuePortraitAssets = require(script.Parent:WaitForChild("FtuePortraitAssets"))
+
 local FtueConfig = {
 	--- Master switch. When false, FtueService no-ops and existing profiles unchanged.
 	Enabled = true,
@@ -67,10 +69,10 @@ local FtueConfig = {
 	Copy = {
 		Intro = {
 			title = "CALLING ALL OIL TYCOONS!",
-			body = "SOS! Our great country is desperate for oil and we need you to get through the Strait of Hormuz by any means!",
+			body = "SOS! Our country is desperate for oil and we need you to get through the Strait of Hormuz by any means!",
 		},
 		WaitDrill = {
-			title = "DRILL BABY DRILL!",
+			title = "GET TO DRILLIN'!",
 			body = "I'll give you your first free drill - equip it from your backpack. Drill the highlighted tile.",
 		},
 		WaitPipe = {
@@ -87,7 +89,7 @@ local FtueConfig = {
 		},
 		WaitShipment = {
 			title = "SAIL THE STRAIT OF HORMUZ!",
-			body = "While you're sailing, you can teleport home or back to your ship. Sit back and relax - you'll land near your warehouse. Check out the Strait statuses in the meantime!",
+			body = "While you're sailing, you can teleport home or back to your ship. Sit back and relax - you'll make land near your warehouse. Check out the Strait statuses in the meantime!",
 		},
 		Sell = {
 			title = "TIME TO CASH IN!",
@@ -99,7 +101,7 @@ local FtueConfig = {
 		},
 		Done = {
 			title = "FIRST VOYAGE COMPLETE!",
-			body = "Our great nation thanks you for your service. Here's some extra cash to get you started. Remember to upgrade your equipment, explore the docks for some Secret Services, and always watch the status of the Strait. Now drill baby drill!",
+			body = "Our great nation thanks you for your service. Here's some extra cash to get you started. Remember to upgrade your equipment, explore the docks for some Secret Services, and always keep an eye on the Strait!",
 		},
 	} :: { [string]: { title: string, body: string } },
 
@@ -115,17 +117,17 @@ local FtueConfig = {
 	DoneContinueButtonText = "Complete!",
 
 	--- Optional portrait images for the dialogue panel (`PortraitFrame` / `PortraitImage` in FTUEDialogueGui).
-	--- Keys are `Step` ids. Use full `rbxassetid://` strings. Omit a step or use `""` to hide the portrait for that step.
+	--- Keys are `Step` ids. Asset ids are defined once in `FtuePortraitAssets` (Asset Manager import names).
 	PortraitImageByStep = {
-		Intro = "rbxassetid://99271397617804",
-		WaitDrill = "rbxassetid://126717781834408",
-		WaitPipe = "rbxassetid://126717781834408",
-		WaitPump = "rbxassetid://99271397617804",
-		Dispatch = "rbxassetid://100457827077123",
-		WaitShipment = "rbxassetid://108133563405448",
-		Sell = "rbxassetid://81692205983376",
-		WaitSell = "rbxassetid://99271397617804",
-		Done = "rbxassetid://100457827077123",
+		Intro = FtuePortraitAssets.OilManOilHead,
+		WaitDrill = FtuePortraitAssets.OilmanDrilling,
+		WaitPipe = FtuePortraitAssets.OilmanDrilling,
+		WaitPump = FtuePortraitAssets.OilmanCelebrate,
+		Dispatch = FtuePortraitAssets.OilmanSalute,
+		WaitShipment = FtuePortraitAssets.OilmanBurger,
+		Sell = FtuePortraitAssets.OilManOilHead,
+		WaitSell = FtuePortraitAssets.OilmanPointAngry,
+		Done = FtuePortraitAssets.OilmanCelebrate,
 	} :: { [string]: string },
 }
 

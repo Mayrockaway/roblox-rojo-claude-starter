@@ -193,7 +193,7 @@ local function ensureCountdownLabel(screen: ScreenGui): TextLabel?
 	label.Size = UDim2.new(1, 0, 0, 20)
 	label.Position = UDim2.new(0, 0, 0, -22)
 	label.AnchorPoint = Vector2.new(0, 0)
-	label.Font = Enum.Font.GothamBold
+	label.Font = Enum.Font.Merriweather
 	label.TextSize = 14
 	label.TextColor3 = Color3.fromRGB(220, 228, 240)
 	label.TextXAlignment = Enum.TextXAlignment.Right

@@ -7,6 +7,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
+--- Looped flyby for ambient sky missiles (spatial, follows missile).
+local AMBIENT_MISSILE_FLYBY_SOUND_ID = "rbxassetid://113742210459217"
+local AMBIENT_MISSILE_FLYBY_VOLUME = 0.4
+
 local SkyMissileAmbience = {}
 
 local SPAWN_FOLDER_NAME = "_AmbientSkyMissilesClient"
@@ -216,6 +220,36 @@ local function getBodyPart(clone: Model | BasePart): BasePart?
 	return model:FindFirstChildWhichIsA("BasePart", true)
 end
 
+local function attachAmbientFlybySound(host: BasePart): Sound
+	local existing = host:FindFirstChild("AmbientMissileFlyby")
+	if existing and existing:IsA("Sound") then
+		return existing
+	end
+	local s = Instance.new("Sound")
+	s.Name = "AmbientMissileFlyby"
+	s.SoundId = AMBIENT_MISSILE_FLYBY_SOUND_ID
+	s.Volume = AMBIENT_MISSILE_FLYBY_VOLUME
+	s.Looped = true
+	s.RollOffMode = Enum.RollOffMode.InverseTapered
+	s.RollOffMaxDistance = 1200
+	s.EmitterSize = 25
+	s.Parent = host
+	task.defer(function()
+		if not s.Parent then
+			return
+		end
+		if not s.IsLoaded then
+			pcall(function()
+				s.Loaded:Wait()
+			end)
+		end
+		if s.Parent then
+			s:Play()
+		end
+	end)
+	return s
+end
+
 local function addFxToTemplateBody(body: BasePart)
 	if body:FindFirstChild("_AmbientFxInstalled") then
 		return
@@ -263,6 +297,8 @@ local function addFxToTemplateBody(body: BasePart)
 	flame.LightInfluence = 0
 	flame.Rotation = NumberRange.new(-180, 180)
 	flame.Parent = tailAtt
+
+	attachAmbientFlybySound(body)
 end
 
 local function buildMissileBody(): (BasePart, BasePart, Attachment)
@@ -341,6 +377,8 @@ local function buildMissileBody(): (BasePart, BasePart, Attachment)
 	bodyLight.Range = 16
 	bodyLight.Brightness = 1.5
 	bodyLight.Parent = body
+
+	attachAmbientFlybySound(body)
 
 	return body, nose, tailAtt
 end
@@ -477,6 +515,10 @@ local function launchMissile()
 
 	local function hideAndCleanup(lifetime: number)
 		for _, d in ipairs(rootVisual:GetDescendants()) do
+			if d:IsA("Sound") then
+				d:Stop()
+				d:Destroy()
+			end
 			if d:IsA("ParticleEmitter") or d:IsA("Trail") then
 				d.Enabled = false
 			end

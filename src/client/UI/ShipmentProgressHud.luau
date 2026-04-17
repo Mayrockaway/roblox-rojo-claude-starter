@@ -332,7 +332,7 @@ local function ensureRuntimeHintLabel(panel: Instance): TextLabel
 		tl.Name = "Line"
 		tl.BackgroundTransparency = 1
 		tl.Size = UDim2.new(1, 0, 1, 0)
-		tl.Font = Enum.Font.GothamMedium
+		tl.Font = Enum.Font.Merriweather
 		tl.TextSize = 18
 		tl.TextColor3 = COLORS.cruise
 		tl.TextWrapped = true
@@ -353,7 +353,7 @@ local function ensureRuntimeHintLabel(panel: Instance): TextLabel
 	tl.BackgroundTransparency = 1
 	tl.Size = UDim2.new(1, 0, 0, 28)
 	tl.AutomaticSize = Enum.AutomaticSize.Y
-	tl.Font = Enum.Font.GothamMedium
+	tl.Font = Enum.Font.Merriweather
 	tl.TextSize = 18
 	tl.TextColor3 = COLORS.cruise
 	tl.TextWrapped = true
@@ -608,7 +608,7 @@ local function crowdBuildMarker(userId: number, displayName: string): ImageButto
 	root.BorderSizePixel = 0
 	root.AutoButtonColor = false
 	root.AnchorPoint = Vector2.new(0.5, 0)
-	root.Size = UDim2.fromOffset(76, 54)
+	root.Size = UDim2.fromOffset(100, 72)
 	root.ZIndex = 13
 	-- `UIListLayout` child below clashes with a sized ImageButton hit-region, so
 	-- we keep the layout on an inner Frame instead.
@@ -633,7 +633,7 @@ local function crowdBuildMarker(userId: number, displayName: string): ImageButto
 	local icon = Instance.new("ImageLabel")
 	icon.Name = "Avatar"
 	icon.BackgroundTransparency = 1
-	icon.Size = UDim2.fromOffset(28, 28)
+	icon.Size = UDim2.fromOffset(40, 40)
 	icon.LayoutOrder = 1
 	icon.ScaleType = Enum.ScaleType.Fit
 	icon.Active = false
@@ -665,7 +665,7 @@ local function crowdBuildMarker(userId: number, displayName: string): ImageButto
 			return Players:GetUserThumbnailAsync(
 				userId,
 				Enum.ThumbnailType.HeadShot,
-				Enum.ThumbnailSize.Size48x48
+				Enum.ThumbnailSize.Size100x100
 			)
 		end)
 		if ok and typeof(url) == "string" and icon.Parent then

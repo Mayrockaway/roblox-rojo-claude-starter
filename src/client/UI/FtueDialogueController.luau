@@ -12,6 +12,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
+local FtueTpHomePointerState = require(script.Parent:WaitForChild("FtueTpHomePointerState"))
+local FtueTpHomePointerSignals = require(script.Parent:WaitForChild("FtueTpHomePointerSignals"))
+local FtueDispatchPointerSignals = require(script.Parent:WaitForChild("FtueDispatchPointerSignals"))
 local UiSfx = require(script.Parent.Parent:WaitForChild("UiSfx"))
 
 local ACK_STEPS: { [string]: boolean } = {
@@ -157,6 +160,23 @@ local function findDialogueScreenGui(playerGui: PlayerGui): ScreenGui?
 		return b
 	end
 	return nil
+end
+
+--- Hide dialogue chrome but keep `Canvas.Pointers` visible (Teleport Home pointer after FTUE ends).
+local function hideNonPointersUnderCanvas(sg: ScreenGui, pointersOnly: boolean)
+	local canvas = sg:FindFirstChild("Canvas")
+	if not canvas then
+		return
+	end
+	for _, ch in ipairs(canvas:GetChildren()) do
+		if ch:IsA("GuiObject") then
+			if ch.Name == "Pointers" or ch.Name == "pointers" then
+				ch.Visible = true
+			else
+				ch.Visible = not pointersOnly
+			end
+		end
+	end
 end
 
 function FtueDialogueController.start(
@@ -319,24 +339,37 @@ function FtueDialogueController.start(
 		local step = normalizeStep(stepIn)
 		if FtueConfig.Enabled ~= true then
 			sg.Enabled = false
+			hideNonPointersUnderCanvas(sg, false)
 			dismissedStep = nil
 			lastDialogueOpenSoundStep = nil
 			applyFtuePortrait(sg, nil)
 			return
 		end
 		if step == nil or step == "" then
+			if FtueTpHomePointerState.shouldUsePointerOnlyDialogueMode() then
+				sg.Enabled = true
+				hideNonPointersUnderCanvas(sg, true)
+				dismissedStep = nil
+				lastDialogueOpenSoundStep = nil
+				applyFtuePortrait(sg, nil)
+				return
+			end
 			sg.Enabled = false
+			hideNonPointersUnderCanvas(sg, false)
 			dismissedStep = nil
 			lastDialogueOpenSoundStep = nil
 			applyFtuePortrait(sg, nil)
 			return
 		end
 		if step == FtueConfig.Step.Done then
+			FtueTpHomePointerState.markLegActive()
+			FtueDispatchPointerSignals.fireFtuePointersRefresh()
 			if dismissedStep ~= nil and dismissedStep ~= step then
 				dismissedStep = nil
 			end
 			if dismissedStep == step then
 				sg.Enabled = false
+				hideNonPointersUnderCanvas(sg, false)
 				return
 			end
 			if
@@ -345,6 +378,7 @@ function FtueDialogueController.start(
 			then
 				resolveTextHostsNow()
 			end
+			hideNonPointersUnderCanvas(sg, false)
 			sg.Enabled = true
 			maybePlayFtueDialogueOpen(step)
 			local t, b = copyForStep(step)
@@ -376,6 +410,7 @@ function FtueDialogueController.start(
 		end
 		if dismissedStep == step then
 			sg.Enabled = false
+			hideNonPointersUnderCanvas(sg, false)
 			return
 		end
 		if
@@ -384,6 +419,7 @@ function FtueDialogueController.start(
 		then
 			resolveTextHostsNow()
 		end
+		hideNonPointersUnderCanvas(sg, false)
 		sg.Enabled = true
 		maybePlayFtueDialogueOpen(step)
 		local t, b = copyForStep(step)
@@ -450,7 +486,9 @@ function FtueDialogueController.start(
 			local attr = player:GetAttribute(Constants.FtueStepAttribute)
 			if typeof(attr) == "string" and attr == FtueConfig.Step.Done then
 				dismissedStep = FtueConfig.Step.Done
-				sg.Enabled = false
+				FtueTpHomePointerState.markLegActive()
+				sg.Enabled = true
+				hideNonPointersUnderCanvas(sg, true)
 				requestFtueAcknowledge:FireServer()
 				return
 			end
@@ -467,16 +505,30 @@ function FtueDialogueController.start(
 			local attr = player:GetAttribute(Constants.FtueStepAttribute)
 			if typeof(attr) == "string" and attr == FtueConfig.Step.Done then
 				dismissedStep = FtueConfig.Step.Done
-				sg.Enabled = false
+				FtueTpHomePointerState.markLegActive()
+				sg.Enabled = true
+				hideNonPointersUnderCanvas(sg, true)
 				requestFtueAcknowledge:FireServer()
 				return
 			end
 			requestFtueSkip:FireServer()
 			sg.Enabled = false
+			hideNonPointersUnderCanvas(sg, false)
 		end)
 	else
 		warn("[FTUE] No skip/close button found (SkipButton, CloseButton, …).")
 	end
+
+	FtueTpHomePointerSignals.subscribeTeleportHomePressed(function()
+		local d = findDialogueScreenGui(playerGui)
+		if not d then
+			return
+		end
+		if not FtueTpHomePointerState.shouldShowPointer() then
+			d.Enabled = false
+			hideNonPointersUnderCanvas(d, false)
+		end
+	end)
 
 	oilActionResult.OnClientEvent:Connect(function(payload: any)
 		if typeof(payload) ~= "table" then

@@ -52,6 +52,23 @@ playerGui.ChildAdded:Connect(function(ch)
 	end
 end)
 
+local playerScripts = player:WaitForChild("PlayerScripts")
+local resolveClientModuleScript: ModuleScript? = nil
+for _ = 1, 300 do
+	local r = playerScripts:FindFirstChild("ResolveClientModule", true)
+	if r and r:IsA("ModuleScript") then
+		resolveClientModuleScript = r
+		break
+	end
+	task.wait(0.05)
+end
+if not resolveClientModuleScript then
+	error("[init.client] Missing ResolveClientModule under PlayerScripts (sync Rojo `src/client`).")
+end
+local resolveClientModule = require(resolveClientModuleScript)
+local ClientAudioPreferences = require(resolveClientModule(script, "ClientAudioPreferences"))
+ClientAudioPreferences.init()
+
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local Constants = require(Shared:WaitForChild("Constants"))
@@ -490,6 +507,9 @@ end
 local function setStatus(message: string, ok: boolean?)
 	local line = resolveShipmentHintLine()
 	if line then
+		if line:IsA("TextLabel") or line:IsA("TextButton") then
+			line.Font = Enum.Font.Merriweather
+		end
 		line.RichText = false
 		line.Text = message
 		if ok == true then
@@ -571,7 +591,7 @@ local function refreshPirateHireTargets()
 					btn.BackgroundColor3 = Color3.fromRGB(35, 42, 54)
 					btn.TextColor3 = Color3.fromRGB(239, 244, 255)
 					btn.TextXAlignment = Enum.TextXAlignment.Left
-					btn.Font = Enum.Font.Gotham
+					btn.Font = Enum.Font.Merriweather
 					btn.TextSize = 14
 					local dn = tostring(target.displayName or target.name or ("User " .. tostring(userId)))
 					local un = tostring(target.name or "")
@@ -653,7 +673,7 @@ local function openPirateHireUi(payload: any)
 	info.BackgroundTransparency = 1
 	info.Size = UDim2.new(1, -16, 0, 48)
 	info.Position = UDim2.fromOffset(8, 44)
-	info.Font = Enum.Font.Gotham
+	info.Font = Enum.Font.Merriweather
 	info.TextWrapped = true
 	info.TextXAlignment = Enum.TextXAlignment.Left
 	info.TextYAlignment = Enum.TextYAlignment.Top
@@ -669,7 +689,7 @@ local function openPirateHireUi(payload: any)
 	askButton.Position = UDim2.fromOffset(8, 98)
 	askButton.BackgroundColor3 = Color3.fromRGB(56, 70, 92)
 	askButton.TextColor3 = Color3.fromRGB(245, 249, 255)
-	askButton.Font = Enum.Font.Gotham
+	askButton.Font = Enum.Font.Merriweather
 	askButton.TextSize = 14
 	askButton.Text = "Ask a question"
 	askButton.Parent = panel
@@ -708,7 +728,7 @@ local function openPirateHireUi(payload: any)
 	confirmButton.Position = UDim2.new(1, -314, 1, -44)
 	confirmButton.BackgroundColor3 = Color3.fromRGB(158, 53, 53)
 	confirmButton.TextColor3 = Color3.fromRGB(253, 242, 242)
-	confirmButton.Font = Enum.Font.GothamBold
+	confirmButton.Font = Enum.Font.Merriweather
 	confirmButton.TextSize = 14
 	confirmButton.Text = "Hire a hit"
 	confirmButton.Parent = panel
@@ -731,7 +751,7 @@ local function openPirateHireUi(payload: any)
 	closeButton.Position = UDim2.new(1, -158, 1, -44)
 	closeButton.BackgroundColor3 = Color3.fromRGB(48, 56, 70)
 	closeButton.TextColor3 = Color3.fromRGB(238, 244, 251)
-	closeButton.Font = Enum.Font.Gotham
+	closeButton.Font = Enum.Font.Merriweather
 	closeButton.TextSize = 14
 	closeButton.Text = "Close"
 	closeButton.Parent = panel
@@ -1264,7 +1284,7 @@ local function ensureFocusBillboard()
 	focusLabel.BackgroundTransparency = 0.2
 	focusLabel.BackgroundColor3 = Color3.fromRGB(21, 27, 38)
 	focusLabel.TextColor3 = Color3.fromRGB(239, 239, 239)
-	focusLabel.Font = Enum.Font.GothamBold
+	focusLabel.Font = Enum.Font.Merriweather
 	focusLabel.TextSize = 12
 	focusLabel.Parent = focusBillboard
 end
@@ -1595,7 +1615,7 @@ local function ensureHammerHover()
 	lbl.BackgroundTransparency = 0.15
 	lbl.TextColor3 = Color3.fromRGB(255, 210, 80)
 	lbl.TextStrokeTransparency = 0
-	lbl.Font = Enum.Font.GothamBold
+	lbl.Font = Enum.Font.Merriweather
 	lbl.TextScaled = true
 	lbl.Text = ""
 	lbl.Parent = bb
@@ -1999,6 +2019,9 @@ end)
 
 -- Helper: play a one-shot SFX from Assets.SFX (non-positional, only for this client)
 local function playEventSFX(sfxName: string, volume: number?)
+	if not ClientAudioPreferences.isSfxEnabled() then
+		return
+	end
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	local sfxFolder = assets and assets:FindFirstChild("SFX")
 	local template = sfxFolder and sfxFolder:FindFirstChild(sfxName)
@@ -2215,8 +2238,11 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 	if kind == "MissileStrikeEvent" then
 		StraitWaypointWorldFx.OnMissileStrikePayload(data)
 		local isOwner = data.ownerUserId == player.UserId
-		if isOwner and (tonumber(data.missileIndex) or 1) == 1 then playEventSFX("MissileStrike") end
-		local outcome = tostring(data.outcome or "?")
+		-- Play catalog "MissileStrike" when this missile actually connects (not only barrage slot 1 — first rocket can miss).
+		local outcome = tostring(data.outcome or "")
+		if isOwner and (outcome == "hit" or outcome == "smallHit") then
+			playEventSFX("MissileStrike")
+		end
 		if outcome == "hit" then
 			setStatus(isOwner and "MISSILE STRIKE — Ship destroyed!" or "A vessel was destroyed by a missile!", false)
 			if isOwner then task.delay(2, function() playEventSFX("ShipDestroyed") end) end
@@ -2812,7 +2838,7 @@ nukeCountdownEvent.OnClientEvent:Connect(function(data)
 		symbol.Text = "\xe2\x98\xa2" -- ☢
 		symbol.TextColor3 = Color3.fromRGB(255, 50, 50)
 		symbol.TextSize = 80
-		symbol.Font = Enum.Font.GothamBlack
+		symbol.Font = Enum.Font.Merriweather
 		symbol.Parent = screenGui
 
 		-- Warning text
@@ -2823,7 +2849,7 @@ nukeCountdownEvent.OnClientEvent:Connect(function(data)
 		warning.Text = "NUKE INCOMING"
 		warning.TextColor3 = Color3.fromRGB(255, 50, 50)
 		warning.TextSize = 40
-		warning.Font = Enum.Font.GothamBlack
+		warning.Font = Enum.Font.Merriweather
 		warning.TextStrokeTransparency = 0
 		warning.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 		warning.Parent = screenGui
@@ -2835,7 +2861,7 @@ nukeCountdownEvent.OnClientEvent:Connect(function(data)
 		subtext.Text = "ALL BOATS ON STRAIT AT RISK OF DESTRUCTION"
 		subtext.TextColor3 = Color3.fromRGB(255, 200, 100)
 		subtext.TextSize = 18
-		subtext.Font = Enum.Font.GothamBold
+		subtext.Font = Enum.Font.Merriweather
 		subtext.TextStrokeTransparency = 0.3
 		subtext.Parent = screenGui
 
@@ -2846,7 +2872,7 @@ nukeCountdownEvent.OnClientEvent:Connect(function(data)
 		countdown.Text = ""
 		countdown.TextColor3 = Color3.fromRGB(255, 255, 255)
 		countdown.TextSize = 72
-		countdown.Font = Enum.Font.GothamBlack
+		countdown.Font = Enum.Font.Merriweather
 		countdown.TextStrokeTransparency = 0
 		countdown.Visible = false
 		countdown.Text = ""
@@ -3174,7 +3200,7 @@ airStrikeEvent.OnClientEvent:Connect(function(data)
 		warningLabel.BackgroundTransparency = 1
 		warningLabel.Text = "AIRSTRIKE INCOMING"
 		warningLabel.TextColor3 = Color3.fromRGB(255, 80, 50)
-		warningLabel.Font = Enum.Font.GothamBlack
+		warningLabel.Font = Enum.Font.Merriweather
 		warningLabel.TextSize = 42
 		warningLabel.TextStrokeTransparency = 0
 		warningLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
@@ -3186,7 +3212,7 @@ airStrikeEvent.OnClientEvent:Connect(function(data)
 		targetLabel.BackgroundTransparency = 1
 		targetLabel.Text = isVictim and "YOUR SHIP IS THE TARGET!" or string.format("Target: %s", victimName)
 		targetLabel.TextColor3 = isVictim and Color3.fromRGB(255, 50, 50) or Color3.fromRGB(255, 200, 100)
-		targetLabel.Font = Enum.Font.GothamBold
+		targetLabel.Font = Enum.Font.Merriweather
 		targetLabel.TextSize = 20
 		targetLabel.TextStrokeTransparency = 0.3
 		targetLabel.Parent = warningGui
@@ -3550,7 +3576,7 @@ armyGeneralOpenEvent.OnClientEvent:Connect(function(data)
 	title.BackgroundTransparency = 1
 	title.Text = "Military Operations"
 	title.TextColor3 = Color3.fromRGB(255, 220, 100)
-	title.Font = Enum.Font.GothamBlack
+	title.Font = Enum.Font.Merriweather
 	title.TextSize = 22
 	title.Parent = panel
 
@@ -3560,7 +3586,7 @@ armyGeneralOpenEvent.OnClientEvent:Connect(function(data)
 	nukeBtn.Position = UDim2.new(0.075, 0, 0, 55)
 	nukeBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
 	nukeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	nukeBtn.Font = Enum.Font.GothamBlack
+	nukeBtn.Font = Enum.Font.Merriweather
 	nukeBtn.TextSize = 18
 	nukeBtn.AutoButtonColor = true
 	nukeBtn.Parent = panel
@@ -3581,7 +3607,7 @@ armyGeneralOpenEvent.OnClientEvent:Connect(function(data)
 	nukeDesc.BackgroundTransparency = 1
 	nukeDesc.Text = "Destroys ALL boats in the strait. 5 min cooldown."
 	nukeDesc.TextColor3 = Color3.fromRGB(180, 180, 180)
-	nukeDesc.Font = Enum.Font.Gotham
+	nukeDesc.Font = Enum.Font.Merriweather
 	nukeDesc.TextSize = 12
 	nukeDesc.TextWrapped = true
 	nukeDesc.Parent = panel
@@ -3592,7 +3618,7 @@ armyGeneralOpenEvent.OnClientEvent:Connect(function(data)
 	airBtn.Position = UDim2.new(0.075, 0, 0, 155)
 	airBtn.BackgroundColor3 = Color3.fromRGB(56, 70, 120)
 	airBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	airBtn.Font = Enum.Font.GothamBold
+	airBtn.Font = Enum.Font.Merriweather
 	airBtn.TextSize = 16
 	airBtn.Text = string.format("CALL AIRSTRIKE ($%d)", airstrikeCost)
 	airBtn.AutoButtonColor = true
@@ -3607,7 +3633,7 @@ armyGeneralOpenEvent.OnClientEvent:Connect(function(data)
 	airDesc.BackgroundTransparency = 1
 	airDesc.Text = "Target a specific player's boat. 70% hit chance."
 	airDesc.TextColor3 = Color3.fromRGB(180, 180, 180)
-	airDesc.Font = Enum.Font.Gotham
+	airDesc.Font = Enum.Font.Merriweather
 	airDesc.TextSize = 12
 	airDesc.TextWrapped = true
 	airDesc.Parent = panel
@@ -3631,7 +3657,7 @@ armyGeneralOpenEvent.OnClientEvent:Connect(function(data)
 	closeBtn.Position = UDim2.new(0.5, -40, 1, -40)
 	closeBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
 	closeBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.Font = Enum.Font.Merriweather
 	closeBtn.TextSize = 14
 	closeBtn.Text = "Close"
 	closeBtn.Parent = panel
@@ -3668,7 +3694,7 @@ armyGeneralOpenEvent.OnClientEvent:Connect(function(data)
 			btn.Position = UDim2.fromOffset(4, (i - 1) * 32)
 			btn.BackgroundColor3 = target.hasShipment and Color3.fromRGB(40, 55, 80) or Color3.fromRGB(35, 35, 40)
 			btn.TextColor3 = target.hasShipment and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(100, 100, 100)
-			btn.Font = Enum.Font.GothamBold
+			btn.Font = Enum.Font.Merriweather
 			btn.TextSize = 12
 			btn.Text = target.displayName .. (target.hasShipment and " (on strait)" or " (no shipment)")
 			btn.AutoButtonColor = true

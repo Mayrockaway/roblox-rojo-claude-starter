@@ -234,7 +234,7 @@ local selected: { [string]: number } = {
 local latestCash = 0
 local shipmentCostLabel: TextLabel? = nil
 local totalBarrelsLabel: TextLabel? = nil
-local cargoSubtotalLabel: TextLabel? = nil
+local shipCapacityLabel: TextLabel? = nil
 local warehouseCapacityLabel: TextLabel? = nil
 local warehouseStoredTotal = 0
 local warehouseCapTotal = 0
@@ -503,12 +503,10 @@ local function refreshFooter()
 	if totalBarrelsLabel then
 		totalBarrelsLabel.Text = string.format("Total Barrels: %d", totalBarrels)
 	end
-	if cargoSubtotalLabel then
-		if totalBarrels > 0 then
-			cargoSubtotalLabel.Text = string.format("%d barrel%s selected", totalBarrels, if totalBarrels == 1 then "" else "s")
-		else
-			cargoSubtotalLabel.Text = "No barrels selected"
-		end
+	if shipCapacityLabel then
+		local load = sumSelectedOilUnits()
+		local cap = math.max(0, math.floor(maxShipCapacityOilUnits()))
+		shipCapacityLabel.Text = string.format("%d/%d Ship Capacity", load, cap)
 	end
 	if warehouseCapacityLabel then
 		if hasWarehouseTotals then
@@ -644,7 +642,7 @@ local function disconnectAll()
 	table.clear(shipAmountTextBoxTier)
 	shipmentCostLabel = nil
 	totalBarrelsLabel = nil
-	cargoSubtotalLabel = nil
+	shipCapacityLabel = nil
 	warehouseCapacityLabel = nil
 	warehouseStoredTotal = 0
 	warehouseCapTotal = 0
@@ -692,18 +690,49 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 		end
 	end
 	local cargoSection = screen:FindFirstChild("CargoSection", true)
+		or screen:FindFirstChild("ShipOil_CargoWash", true)
 	local cargoRows = cargoSection and cargoSection:FindFirstChild("CargoRows")
-	local sub = cargoSection and cargoSection:FindFirstChild("CargoSubtotalRow", true)
-	if sub then
-		if sub:IsA("TextLabel") then
-			cargoSubtotalLabel = sub
-		else
-			local tl = sub:FindFirstChildWhichIsA("TextLabel", true)
-			if tl and tl:IsA("TextLabel") then
-				cargoSubtotalLabel = tl
+
+	--- Preferred Studio: `ShipCapacityBand` → `ShipCapacity`. Legacy: `CargoSubtotalBand` / `CargoSubtotalRow` / flat label.
+	local function resolveShipCapacityTextLabel(root: Instance?): TextLabel?
+		if not root then
+			return nil
+		end
+		local band = root:FindFirstChild("ShipCapacityBand", true)
+			or root:FindFirstChild("CargoSubtotalBand", true)
+		if band then
+			local named = band:FindFirstChild("ShipCapacity")
+			if named and named:IsA("TextLabel") then
+				return named
+			end
+			local legacyRow = band:FindFirstChild("CargoSubtotalRow", true)
+				or band:FindFirstChild("SubtotalRow", true)
+			if legacyRow then
+				if legacyRow:IsA("TextLabel") then
+					return legacyRow
+				end
+				local tl = legacyRow:FindFirstChildWhichIsA("TextLabel", true)
+				if tl and tl:IsA("TextLabel") then
+					return tl
+				end
 			end
 		end
+		local flat = root:FindFirstChild("CargoSubtotalRow", true)
+		if flat then
+			if flat:IsA("TextLabel") then
+				return flat
+			end
+			local tl = flat:FindFirstChildWhichIsA("TextLabel", true)
+			if tl and tl:IsA("TextLabel") then
+				return tl
+			end
+		end
+		return nil
 	end
+
+	shipCapacityLabel = resolveShipCapacityTextLabel(cargoSection)
+		or resolveShipCapacityTextLabel(screen)
+
 	local whCap = cargoSection and cargoSection:FindFirstChild("WarehouseCapacityLabel", true)
 	if whCap and whCap:IsA("TextLabel") then
 		warehouseCapacityLabel = whCap

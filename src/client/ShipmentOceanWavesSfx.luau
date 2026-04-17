@@ -4,6 +4,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local ROLLOFF_MAX = 320
@@ -125,6 +126,10 @@ local function findOceanTemplate(): Sound?
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	local rsSfx = assets and assets:FindFirstChild("SFX")
 	if rsSfx then
+		local direct = rsSfx:FindFirstChild("OceanWaves")
+		if direct and direct:IsA("Sound") then
+			return direct
+		end
 		for _, c in ipairs(rsSfx:GetChildren()) do
 			if c:IsA("Sound") and string.lower(c.Name) == key then
 				return c
@@ -140,6 +145,44 @@ local function findOceanTemplate(): Sound?
 		end
 	end
 	return nil
+end
+
+--- Owner always gets waves; spectators only when already seated on that shipment's boat (Teleport-to-ship join).
+local function shouldHandleShipmentStarted(data: any): boolean
+	local ownerUid = ownerIdFromData(data)
+	local sid = shipmentIdFromData(data)
+	if not sid then
+		return false
+	end
+	if typeof(ownerUid) == "number" and ownerUid == player.UserId then
+		return true
+	end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local seat = hum and hum.SeatPart
+	if not seat then
+		return false
+	end
+	local boat = seat:FindFirstAncestorWhichIsA("Model")
+	return boat ~= nil
+		and boat.Name == "ActiveShipmentBoat"
+		and tostring(boat:GetAttribute("ShipmentId") or "") == sid
+end
+
+local function playAfterLoaded(s: Sound)
+	task.defer(function()
+		if not s.Parent then
+			return
+		end
+		if not s.IsLoaded then
+			pcall(function()
+				s.Loaded:Wait()
+			end)
+		end
+		if s.Parent then
+			s:Play()
+		end
+	end)
 end
 
 -- Same host strategy as DrillingSpatialSfx (parts can replicate after the Model).
@@ -194,7 +237,7 @@ local function attachLoopToBoat(boat: Model, shipmentId: string, template: Sound
 	s.RollOffMinDistance = ROLLOFF_MIN
 	s.EmitterSize = EMITTER_SIZE
 	s.Parent = host
-	s:Play()
+	playAfterLoaded(s)
 	loopSound = s
 
 	boatDestroyConn = boat.Destroying:Connect(function()
@@ -204,13 +247,16 @@ local function attachLoopToBoat(boat: Model, shipmentId: string, template: Sound
 	end)
 end
 
-local function runVoyageWaves(shipmentId: string)
+local function runVoyageWaves(shipmentId: string, isOwner: boolean)
 	if activeShipmentId ~= shipmentId then
 		return
 	end
 
 	local boat = waitActiveShipmentBoat(shipmentId, 45)
 	if not boat or activeShipmentId ~= shipmentId then
+		if isOwner and RunService:IsStudio() then
+			warn("[ShipmentOceanWavesSfx] Timed out waiting for ActiveShipmentBoat (owner). shipmentId=", shipmentId)
+		end
 		return
 	end
 
@@ -227,11 +273,6 @@ end
 local ShipmentOceanWavesSfx = {}
 
 function ShipmentOceanWavesSfx.onVisualPacket(kind: string, data: any)
-	local uid = ownerIdFromData(data)
-	if typeof(uid) ~= "number" or uid ~= player.UserId then
-		return
-	end
-
 	if kind == "ShipmentResolved" then
 		local sid = shipmentIdFromData(data)
 		if sid and activeShipmentId and sid ~= activeShipmentId then
@@ -242,14 +283,18 @@ function ShipmentOceanWavesSfx.onVisualPacket(kind: string, data: any)
 	end
 
 	if kind == "ShipmentStarted" then
+		if not shouldHandleShipmentStarted(data) then
+			return
+		end
 		stopWaves()
 		local sid = shipmentIdFromData(data)
 		if not sid then
 			return
 		end
+		local isOwner = ownerIdFromData(data) == player.UserId
 		activeShipmentId = sid
 		voyageThread = task.spawn(function()
-			runVoyageWaves(sid)
+			runVoyageWaves(sid, isOwner)
 			voyageThread = nil
 		end)
 	end

@@ -8,6 +8,8 @@ local Workspace = game:GetService("Workspace")
 
 local CLONE_NAME = "OTS_ClientBGM"
 
+local defaultBgmVolume = 0.07
+
 local function templateFromWorkspace(): Sound?
 	local sfx = Workspace:FindFirstChild("SFX")
 	local bgm = sfx and sfx:FindFirstChild("BGM")
@@ -45,11 +47,27 @@ function BgmPlayer.startFromTemplate(template: Sound)
 	if SoundService:FindFirstChild(CLONE_NAME) then
 		return
 	end
+	defaultBgmVolume = template.Volume
 	local s = template:Clone()
 	s.Name = CLONE_NAME
 	s.Playing = false
 	s.Parent = SoundService
 	s:Play()
+end
+
+--- Mute/unmute the client BGM clone (`SoundService.OTS_ClientBGM`). Does not delete the sound.
+function BgmPlayer.setMusicEnabled(enabled: boolean)
+	local s = SoundService:FindFirstChild(CLONE_NAME)
+	if not (s and s:IsA("Sound")) then
+		return
+	end
+	if enabled then
+		s.Volume = defaultBgmVolume
+		s.Playing = true
+	else
+		s.Volume = 0
+		s.Playing = false
+	end
 end
 
 function BgmPlayer.startAsync()

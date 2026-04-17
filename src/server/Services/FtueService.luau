@@ -222,12 +222,33 @@ function FtueService:SyncFromOilState(userId: number)
 		return
 	end
 
-	--- Legacy row: dismissed Done but `ftueStep` still `"Done"` in DataStore.
-	if doneAck and stepStr == FtueConfig.Step.Done then
+	--- `ftueCompleted` but `ftueStep` still set (stale save): re-run completion so persist + perks match.
+	if completed == true and typeof(stepStr) == "string" then
+		if self._oilState and typeof((self._oilState :: any).SetFtueProgress) == "function" then
+			(self._oilState :: any):SetFtueProgress(userId, nil)
+		end
 		self:_clearRestrictionAttributes(player)
 		player:SetAttribute(Constants.FtueStepAttribute, nil)
 		fireState(player, nil)
-		ftueDbg("SyncFromOilState uid=%d branch=legacy doneAck+ftueStep==Done -> FtueStateUpdate(nil)", userId)
+		ftueDbg(
+			"SyncFromOilState uid=%d branch=sanitize ftueCompleted+stale ftueStep -> SetFtueProgress(nil)",
+			userId
+		)
+		return
+	end
+
+	--- Legacy row: Complete! acknowledged but `ftueStep` still `"Done"` — finalize oil profile (`ftueCompleted`, nil step).
+	if doneAck and stepStr == FtueConfig.Step.Done then
+		if self._oilState and typeof((self._oilState :: any).SetFtueProgress) == "function" then
+			(self._oilState :: any):SetFtueProgress(userId, nil)
+		end
+		self:_clearRestrictionAttributes(player)
+		player:SetAttribute(Constants.FtueStepAttribute, nil)
+		fireState(player, nil)
+		ftueDbg(
+			"SyncFromOilState uid=%d branch=legacy doneAck+ftueStep==Done -> SetFtueProgress(nil)+FtueStateUpdate(nil)",
+			userId
+		)
 		return
 	end
 
@@ -283,20 +304,37 @@ local function onAcknowledge(self: any, player: Player)
 	if FtueConfig.Enabled ~= true then
 		return
 	end
+	local ost = self._oilState and self._oilState:GetState(player.UserId)
+	if not ost then
+		ftueDbg("onAcknowledge uid=%d abort: no oil state", player.UserId)
+		return
+	end
 	local raw = player:GetAttribute(Constants.FtueStepAttribute)
 	local step = ""
 	if typeof(raw) == "string" then
 		step = (raw :: string):gsub("^%s+", ""):gsub("%s+$", "")
 	end
 	if step == "" then
-		local ost = self._oilState and self._oilState:GetState(player.UserId)
-		local s = ost and typeof((ost :: any).ftueStep) == "string" and (ost :: any).ftueStep
+		local s = typeof((ost :: any).ftueStep) == "string" and (ost :: any).ftueStep
 		if typeof(s) == "string" then
 			step = (s :: string):gsub("^%s+", ""):gsub("%s+$", "")
 		end
 	end
 	if step == "" then
 		ftueDbg("onAcknowledge uid=%d abort: empty step (attr+oil)", player.UserId)
+		return
+	end
+	local oilStep = typeof((ost :: any).ftueStep) == "string" and (ost :: any).ftueStep or nil
+	if step == FtueConfig.Step.Intro and oilStep ~= FtueConfig.Step.Intro then
+		ftueDbg("onAcknowledge uid=%d reject Intro: oil.ftueStep=%s", player.UserId, tostring(oilStep))
+		return
+	end
+	if step == FtueConfig.Step.WaitSell and oilStep ~= FtueConfig.Step.WaitSell then
+		ftueDbg("onAcknowledge uid=%d reject WaitSell: oil.ftueStep=%s", player.UserId, tostring(oilStep))
+		return
+	end
+	if step == FtueConfig.Step.Done and oilStep ~= FtueConfig.Step.Done then
+		ftueDbg("onAcknowledge uid=%d reject Complete!: oil.ftueStep=%s", player.UserId, tostring(oilStep))
 		return
 	end
 	ftueDbg("onAcknowledge uid=%d resolvedStep=%s (Continue/Complete!)", player.UserId, step)
@@ -328,6 +366,13 @@ end
 
 local function onSkip(self: any, player: Player)
 	if FtueConfig.Enabled ~= true then
+		return
+	end
+	local ost = self._oilState and self._oilState:GetState(player.UserId)
+	if not ost then
+		return
+	end
+	if (ost :: any).ftueCompleted == true then
 		return
 	end
 	ftueDbg("onSkip uid=%d -> _setStep(Done) (final modal)", player.UserId)

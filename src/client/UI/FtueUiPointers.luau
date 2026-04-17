@@ -15,6 +15,8 @@ local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfi
 local ShipOilPanel = require(script.Parent:WaitForChild("HudPanels"):WaitForChild("ShipOilPanel"))
 local SellOilPanel = require(script.Parent:WaitForChild("HudPanels"):WaitForChild("SellOilPanel"))
 local FtueDispatchPointerSignals = require(script.Parent:WaitForChild("FtueDispatchPointerSignals"))
+local FtueTpHomePointerState = require(script.Parent:WaitForChild("FtueTpHomePointerState"))
+local FtueTpHomePointerSignals = require(script.Parent:WaitForChild("FtueTpHomePointerSignals"))
 
 local FtueUiPointers = {}
 
@@ -34,10 +36,14 @@ local ALL_POINTER_ROOT_NAMES = {
 	"SellBarrelPointerRoot",
 	"SellButtonPointerRoot",
 	"OilPricePointerRoot",
+	"TPHomePointerRoot",
 }
 
 local SHIP_OIL_PANEL_GUI = "ShipOilPanelGui"
 local SELL_OIL_PANEL_GUI = "SellOilPanelGui"
+local HUD_SCREEN_GUI = "HUD"
+
+local warnedMissingTpHomeRoot = false
 
 --- Prefer modal `ScreenGui` for roots that must align with cargo / CTA (author under that panel in Studio).
 local PANEL_FIRST_ROOT: { [string]: string } = {
@@ -68,6 +74,14 @@ local function resolveActivePointerRootName(step: string): string?
 		end
 	end
 	return POINTER_ROOT_BY_STEP[step]
+end
+
+--- Teleport Home hint: from `Done` through post-FTUE until the player uses Teleport Home.
+local function resolveTpHomePointerRootName(): string?
+	if FtueTpHomePointerState.shouldShowPointer() then
+		return "TPHomePointerRoot"
+	end
+	return nil
 end
 
 local AMP_OFFSET_PX = 12
@@ -130,6 +144,15 @@ end
 
 --- One `*PointerRoot` instance: modal-hosted first (if configured), else `FTUEDialogueGui.Canvas.Pointers`.
 local function findPointerRootFrame(playerGui: PlayerGui, rootName: string): GuiObject?
+	if rootName == "TPHomePointerRoot" then
+		local hud = playerGui:FindFirstChild(HUD_SCREEN_GUI, true)
+		if hud and hud:IsA("ScreenGui") then
+			local frHud = hud:FindFirstChild(rootName, true)
+			if frHud and frHud:IsA("GuiObject") then
+				return frHud
+			end
+		end
+	end
 	local panelFirst = PANEL_FIRST_ROOT[rootName]
 	if typeof(panelFirst) == "string" then
 		local sg = playerGui:FindFirstChild(panelFirst, true)
@@ -141,11 +164,19 @@ local function findPointerRootFrame(playerGui: PlayerGui, rootName: string): Gui
 		end
 	end
 	local dialogue = findDialogueScreenGui(playerGui)
-	local folder = dialogue and findPointersFolder(dialogue)
-	if folder then
-		local fr = folder:FindFirstChild(rootName)
-		if fr and fr:IsA("GuiObject") then
-			return fr
+	if dialogue then
+		if rootName == "TPHomePointerRoot" then
+			local frDlg = dialogue:FindFirstChild(rootName, true)
+			if frDlg and frDlg:IsA("GuiObject") then
+				return frDlg
+			end
+		end
+		local folder = findPointersFolder(dialogue)
+		if folder then
+			local fr = folder:FindFirstChild(rootName, true)
+			if fr and fr:IsA("GuiObject") then
+				return fr
+			end
 		end
 	end
 	return nil
@@ -240,7 +271,21 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 		end
 
 		local step = currentFtueStep()
-		local activeRootName = resolveActivePointerRootName(step)
+		if step == FtueConfig.Step.Done then
+			FtueTpHomePointerState.markLegActive()
+		end
+
+		local activeRootName = resolveTpHomePointerRootName() or resolveActivePointerRootName(step)
+		if activeRootName == "TPHomePointerRoot" then
+			local test = findPointerRootFrame(playerGui, "TPHomePointerRoot")
+			if not test and not warnedMissingTpHomeRoot then
+				warnedMissingTpHomeRoot = true
+				warn(
+					"[FTUE] TPHomePointerRoot not found under PlayerGui (expected under FTUEDialogueGui.Canvas.Pointers or HUD). "
+						.. "Author `TPHomePointerRoot` + child `TPHomePointer` in Studio."
+				)
+			end
+		end
 
 		for _, rootName in ipairs(ALL_POINTER_ROOT_NAMES) do
 			local frAny = findPointerRootFrame(playerGui, rootName)
@@ -289,8 +334,13 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 	end)
 	if ftueStateUpdate then
 		ftueStateUpdate.OnClientEvent:Connect(function(payload: any)
-			if typeof(payload) == "table" and typeof((payload :: any).step) == "string" then
-				stepFromRemote = normStep((payload :: any).step)
+			if typeof(payload) == "table" then
+				local s = (payload :: any).step
+				if s == nil then
+					stepFromRemote = ""
+				elseif typeof(s) == "string" then
+					stepFromRemote = normStep(s)
+				end
 			end
 			task.defer(refresh)
 		end)
@@ -334,12 +384,16 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 		if inst.Name == "Pointers" then
 			task.defer(refresh)
 		end
-		if inst.Name == SHIP_OIL_PANEL_GUI or inst.Name == SELL_OIL_PANEL_GUI then
+		if inst.Name == SHIP_OIL_PANEL_GUI or inst.Name == SELL_OIL_PANEL_GUI or inst.Name == HUD_SCREEN_GUI then
 			task.defer(refresh)
 		end
 	end)
 
 	FtueDispatchPointerSignals.subscribeRefresh(function()
+		refresh()
+	end)
+
+	FtueTpHomePointerSignals.subscribeTeleportHomePressed(function()
 		refresh()
 	end)
 end

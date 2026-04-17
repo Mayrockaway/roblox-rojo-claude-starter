@@ -39,7 +39,7 @@ function StraitEventPlaytestBanner.show(playerGui: PlayerGui, title: string)
 	label.BackgroundTransparency = 1
 	label.Text = title
 	label.TextColor3 = Color3.fromRGB(255, 255, 255)
-	label.Font = Enum.Font.GothamBlack
+	label.Font = Enum.Font.Merriweather
 	label.TextSize = 52
 	label.TextWrapped = true
 	label.TextXAlignment = Enum.TextXAlignment.Center
