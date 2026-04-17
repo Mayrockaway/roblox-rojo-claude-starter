@@ -46,7 +46,9 @@ HUD [ScreenGui]
    │  ├─ CashStrip → CashIcon, CashText
    │  ├─ ShopButton
    │  ├─ ShipOilButton
-   │  └─ SellOilButton
+   │  ├─ SellOilButton
+   │  ├─ ManageShipButton
+   │  └─ SettingsButton *(clone/sibling of **`ManageShipButton`** row chrome; opens **`Settings`** ScreenGui.)*
    ├─ EquipmentHotbar [Frame] *(**must** be a **direct** child of `Canvas` — not under `LeftStack`; otherwise the strip anchors in the left column. **`EquipmentHotbarController`** clones slots into `SlotStrip`.)*
    │  ├─ SlotStrip [Frame] — optional authored **`UIListLayout`** (Horizontal) for Edit preview; **Play** removes it and **centers slot clones** in Lua. Child slots are **runtime clones** only (`HotbarSlot_*`).
    │  └─ SlotTemplate [Frame] — **`Visible = false`**; **do not** parent under `SlotStrip`. Names below are **required** for wiring.
@@ -114,7 +116,7 @@ Author this block **in Studio** (not via `ShipmentProgressHud` creating instance
 - `OilPriceButton.PriceText`: `Oil: $--/bbl`
 - `StraitText`: `Strait: Closed` (or split pill/indicator per final art)
 - `CashText`: `Cash: $0`
-- Buttons: `Shop`, `Ship Oil`, `Sell Oil`, teleport strings as named.
+- Buttons: `Shop`, `Ship Oil`, `Sell Oil`, `Manage Ship`, `Settings`, teleport strings as named.
 
 ## MCP read snapshot (reference only)
 

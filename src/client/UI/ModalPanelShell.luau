@@ -2,7 +2,7 @@
 -- Shared modal shell wiring: named close `GuiButton`s only.
 -- Backdrop / dimmer click-to-dismiss was removed — it conflicted with panel controls (e.g. footer CTAs). Close via **X** (or other named buttons).
 
-local CLOSE_BUTTON_NAMES: { string } = { "CloseButton", "HeaderCloseButton", "ClosePanelButton" }
+local CLOSE_BUTTON_NAMES: { string } = { "CloseButton", "HeaderCloseButton", "ClosePanelButton", "Close" }
 
 local closeWired: { [ScreenGui]: boolean } = {}
 
