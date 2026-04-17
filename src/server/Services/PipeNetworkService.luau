@@ -22,15 +22,25 @@ end
 function PipeNetworkService:MarkConnectivityForTick(state)
 	if not state then return end
 
-	-- Build pipe lookup: cellKey -> { row, col }. Pipes are the ONLY traversable nodes.
-	local pipes = {}
+	-- Build traversable node lookup: pipes AND drills can carry connectivity.
+	-- cellKey -> { row, col }
+	local nodes = {}
 	if typeof(state.pipesByCellKey) == "table" then
 		for key, pipe in pairs(state.pipesByCellKey) do
-			pipes[key] = { row = pipe.row, col = pipe.col }
+			nodes[key] = { row = pipe.row, col = pipe.col }
+		end
+	end
+	-- Add drill cells as traversable nodes (so pump-to-pump chains work)
+	for _, drill in pairs(state.drillsById or {}) do
+		if drill.cellRow and drill.cellCol then
+			local key = makeKey(drill.cellRow, drill.cellCol)
+			if not nodes[key] then
+				nodes[key] = { row = drill.cellRow, col = drill.cellCol }
+			end
 		end
 	end
 
-	-- BFS through pipe cells only, starting from any pipe that is 4-adjacent to a drum cell.
+	-- BFS through all traversable nodes, starting from any node 4-adjacent to a drum cell.
 	local reached = {}
 	local queue = {}
 	if typeof(state.drumsById) == "table" then
@@ -39,7 +49,7 @@ function PipeNetworkService:MarkConnectivityForTick(state)
 				local deltas = { {1,0}, {-1,0}, {0,1}, {0,-1} }
 				for _, d in ipairs(deltas) do
 					local nKey = makeKey(drum.row + d[1], drum.col + d[2])
-					if pipes[nKey] and not reached[nKey] then
+					if nodes[nKey] and not reached[nKey] then
 						reached[nKey] = true
 						table.insert(queue, nKey)
 					end
@@ -48,17 +58,17 @@ function PipeNetworkService:MarkConnectivityForTick(state)
 		end
 	end
 
-	-- Walk pipe-to-pipe (drum-adjacent seeds expand)
+	-- Walk node-to-node (pipes + drills)
 	local head = 1
 	while head <= #queue do
 		local key = queue[head]
 		head += 1
-		local cell = pipes[key]
+		local cell = nodes[key]
 		if cell then
 			local deltas = { {1,0}, {-1,0}, {0,1}, {0,-1} }
 			for _, d in ipairs(deltas) do
 				local nKey = makeKey(cell.row + d[1], cell.col + d[2])
-				if pipes[nKey] and not reached[nKey] then
+				if nodes[nKey] and not reached[nKey] then
 					reached[nKey] = true
 					table.insert(queue, nKey)
 				end
@@ -66,17 +76,13 @@ function PipeNetworkService:MarkConnectivityForTick(state)
 		end
 	end
 
-	-- Mark drills: a drill is connected iff one of its 4-adjacent cells is a reached pipe.
+	-- Mark drills: a drill is connected iff its own cell was reached by BFS.
 	for _, drill in pairs(state.drillsById or {}) do
 		drill.connected = false
 		if drill.cellRow and drill.cellCol then
-			local deltas = { {1,0}, {-1,0}, {0,1}, {0,-1} }
-			for _, d in ipairs(deltas) do
-				local nKey = makeKey(drill.cellRow + d[1], drill.cellCol + d[2])
-				if reached[nKey] then
-					drill.connected = true
-					break
-				end
+			local key = makeKey(drill.cellRow, drill.cellCol)
+			if reached[key] then
+				drill.connected = true
 			end
 		end
 	end

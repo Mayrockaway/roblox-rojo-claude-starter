@@ -39,9 +39,9 @@ local OilTankConfig = {
 
 	-- Liquid Part color per oil type
 	OilColors = {
-		HeavyCrude = Color3.fromRGB(40, 40, 40),
-		LightSweet = Color3.fromRGB(140, 110, 60),
-		PremiumRefined = Color3.fromRGB(230, 200, 70),
+		HeavyCrude = Color3.fromRGB(30, 30, 30),       -- black
+		LightSweet = Color3.fromRGB(240, 200, 70),      -- yellow (matches pipe color)
+		PremiumRefined = Color3.fromRGB(180, 80, 255),   -- pink/purple (matches pipe color)
 	},
 }
 

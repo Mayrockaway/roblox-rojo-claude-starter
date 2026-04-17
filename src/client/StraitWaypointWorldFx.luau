@@ -1306,6 +1306,62 @@ local TweenService = game:GetService("TweenService")
 local StraitWaypointWorldFx = {}
 validateStraitEventAssets()
 
+--- Explode a boat into its pieces. Clones every visible BasePart from the boat,
+--- unanchors them, flings them outward with random velocity, then destroys the
+--- original boat. Works with any ship model (Tanker, different skins, etc.).
+--- Call from any event handler after the boat is "destroyed" server-side.
+function StraitWaypointWorldFx.ExplodeBoatIntoPieces(boat: Instance, epicenter: Vector3?)
+	if not boat or not boat.Parent then return end
+	local center = epicenter or (boat:IsA("Model") and boat:GetPivot().Position) or Vector3.new(0, 10, 0)
+	local rng = Random.new()
+	local pieces = {}
+
+	for _, d in ipairs(boat:GetDescendants()) do
+		if d:IsA("BasePart") and d.Transparency < 0.9 and d.Size.Magnitude > 0.5 then
+			-- Clone the visible part as debris
+			local piece = Instance.new("Part")
+			piece.Name = "BoatDebris"
+			piece.Size = Vector3.new(
+				math.min(d.Size.X, 8),
+				math.min(d.Size.Y, 8),
+				math.min(d.Size.Z, 8)
+			)
+			piece.Material = d.Material
+			piece.Color = d.Color
+			piece.CFrame = d.CFrame * CFrame.Angles(rng:NextNumber(-0.5, 0.5), rng:NextNumber(-0.5, 0.5), rng:NextNumber(-0.5, 0.5))
+			piece.Anchored = false
+			piece.CanCollide = false
+			piece.CanQuery = false
+			piece.CanTouch = false
+			piece.Parent = Workspace
+
+			-- Fling outward + upward from epicenter
+			local awayDir = (d.Position - center)
+			awayDir = Vector3.new(awayDir.X, 0, awayDir.Z)
+			if awayDir.Magnitude < 1 then
+				awayDir = Vector3.new(rng:NextNumber(-1, 1), 0, rng:NextNumber(-1, 1))
+			end
+			awayDir = awayDir.Unit
+
+			local bv = Instance.new("BodyVelocity")
+			bv.Velocity = awayDir * rng:NextNumber(30, 80) + Vector3.new(0, rng:NextNumber(20, 60), 0)
+			bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+			bv.P = 1000
+			bv.Parent = piece
+			Debris:AddItem(bv, 0.4)
+			Debris:AddItem(piece, 6)
+
+			table.insert(pieces, piece)
+			-- Cap at 25 pieces for performance
+			if #pieces >= 25 then break end
+		end
+	end
+
+	-- Destroy the original boat model
+	boat:Destroy()
+	return pieces
+end
+
 function StraitWaypointWorldFx.OnStraitWaypointPayload(data: { [string]: any })
 	local pos = vector3FromWorldPosition(data.worldPosition)
 	if not pos then
@@ -1598,6 +1654,16 @@ function StraitWaypointWorldFx.OnMissileStrikePayload(data: { [string]: any })
 						)
 					end
 				end)
+			end
+
+			-- Direct hit: explode the boat into pieces
+			if isDirectHit then
+				local boat = findActiveShipmentBoatByShipmentId(shipmentId)
+				if boat then
+					task.delay(0.3, function()
+						StraitWaypointWorldFx.ExplodeBoatIntoPieces(boat, targetPos)
+					end)
+				end
 			end
 
 			-- Fling barrels on small hit
@@ -2393,33 +2459,10 @@ function StraitWaypointWorldFx.OnMineStrikePayload(data: { [string]: any })
 				end)
 			end
 
-			-- Debris flying everywhere — ship parts, barrels, wood
+			-- Explode the boat into pieces
 			local boat = findActiveShipmentBoatByShipmentId(shipmentId)
 			if boat then
-				local rng = Random.new()
-				local debrisCount = 0
-				for _, d in ipairs(boat:GetDescendants()) do
-					if debrisCount >= 12 then break end
-					if d:IsA("BasePart") then
-						local fling = Instance.new("Part")
-						fling.Name = "MineDebris"
-						fling.Size = Vector3.new(rng:NextNumber(1, 4), rng:NextNumber(1, 3), rng:NextNumber(1, 4))
-						fling.Material = Enum.Material.Metal
-						fling.Color = d.Color
-						fling.Anchored = false
-						fling.CanCollide = false
-						fling.CFrame = CFrame.new(d.Position) * CFrame.Angles(rng:NextNumber(-2, 2), rng:NextNumber(-2, 2), rng:NextNumber(-2, 2))
-						fling.Parent = Workspace
-						local bv = Instance.new("BodyVelocity")
-						bv.Velocity = Vector3.new(rng:NextNumber(-50, 50), rng:NextNumber(40, 80), rng:NextNumber(-50, 50))
-						bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-						bv.P = 1000
-						bv.Parent = fling
-						Debris:AddItem(bv, 0.3)
-						Debris:AddItem(fling, 6)
-						debrisCount += 1
-					end
-				end
+				StraitWaypointWorldFx.ExplodeBoatIntoPieces(boat, hitPos)
 			end
 
 			Debris:AddItem(explosion, 12)
