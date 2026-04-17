@@ -1,0 +1,81 @@
+{
+  "colorCorrection": {
+    "Enabled": true,
+    "Saturation": 0.10000000149011612,
+    "Contrast": 0.10000000149011612,
+    "TintColor": {
+      "b": 0.7686275243759155,
+      "g": 0.9411765336990356,
+      "_t": "C3",
+      "r": 1
+    },
+    "Brightness": 0
+  },
+  "lighting": {
+    "ExposureCompensation": 0,
+    "ColorShift_Bottom": {
+      "b": 0,
+      "g": 0,
+      "_t": "C3",
+      "r": 0
+    },
+    "FogColor": {
+      "b": 0.7529411911964417,
+      "g": 0.7529411911964417,
+      "_t": "C3",
+      "r": 0.7529411911964417
+    },
+    "FogEnd": 100000,
+    "FogStart": 0,
+    "EnvironmentDiffuseScale": 1,
+    "EnvironmentSpecularScale": 0.4000000059604645,
+    "ShadowSoftness": 0.5,
+    "GeographicLatitude": 41.733299255371097,
+    "Ambient": {
+      "b": 0.27450981736183169,
+      "g": 0.27450981736183169,
+      "_t": "C3",
+      "r": 0.27450981736183169
+    },
+    "OutdoorAmbient": {
+      "b": 0.8823529481887817,
+      "g": 1,
+      "_t": "C3",
+      "r": 0.8666666746139526
+    },
+    "GlobalShadows": true,
+    "Brightness": 1,
+    "ColorShift_Top": {
+      "b": 0,
+      "g": 0,
+      "_t": "C3",
+      "r": 0
+    },
+    "ClockTime": 7
+  },
+  "bloom": {
+    "Threshold": 2,
+    "Enabled": true,
+    "Intensity": 0.5,
+    "Size": 24
+  },
+  "sunrays": null,
+  "atmosphere": {
+    "Density": 0.21400000154972077,
+    "Haze": 0.0010000000474974514,
+    "Color": {
+      "b": 1,
+      "g": 1,
+      "_t": "C3",
+      "r": 1
+    },
+    "Decay": {
+      "b": 0.14901961386203767,
+      "g": 0.32156863808631899,
+      "_t": "C3",
+      "r": 0.38823533058166506
+    },
+    "Glare": 0.800000011920929,
+    "Offset": 0.125
+  }
+}

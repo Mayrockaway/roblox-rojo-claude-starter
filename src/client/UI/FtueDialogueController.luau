@@ -1,6 +1,12 @@
 --!strict
 -- Binds `PlayerGui` FTUE ScreenGui: finds Title, Body, ContinueButton, SkipButton (any depth).
 -- Title/Body may be swapped via `FtueConfig.DialogueSwapTitleBodySlots`. Behavior only — Studio owns layout.
+--
+-- **Portrait images (optional)** — author in Studio, assign assets in `FtueConfig.PortraitImageByStep`:
+--   `FTUEDialogueGui` → … → `PortraitFrame` (Frame; your fixed card size + corner radius)
+--     └── `PortraitImage` (ImageLabel) — Size (1,0),(1,0) scale, Position (0,0), ImageTransparency 0,
+--         BackgroundTransparency 1, ScaleType Fit or Crop (Fit = whole image visible; Crop = fill frame).
+--   Omit `PortraitFrame` / `PortraitImage` if unused. Code only sets `Image` + `Visible` on the image and frame.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -112,6 +118,33 @@ local function normalizeStep(step: any): string?
 		return nil
 	end
 	return s
+end
+
+local PORTRAIT_FRAME_NAME = "PortraitFrame"
+local PORTRAIT_IMAGE_NAME = "PortraitImage"
+
+local function applyFtuePortrait(screenGui: ScreenGui, step: string?)
+	local map = (FtueConfig :: any).PortraitImageByStep
+	if typeof(map) ~= "table" then
+		return
+	end
+	local frame = screenGui:FindFirstChild(PORTRAIT_FRAME_NAME, true)
+	if not frame or not frame:IsA("GuiObject") then
+		return
+	end
+	local img = frame:FindFirstChild(PORTRAIT_IMAGE_NAME, true)
+	if not (img and img:IsA("ImageLabel")) then
+		return
+	end
+	local id = typeof(step) == "string" and (map :: any)[step]
+	if typeof(id) ~= "string" or id == "" then
+		img.Visible = false
+		(frame :: GuiObject).Visible = false
+		return
+	end
+	(img :: ImageLabel).Image = id
+	img.Visible = true
+	(frame :: GuiObject).Visible = true
 end
 
 local function findDialogueScreenGui(playerGui: PlayerGui): ScreenGui?
@@ -234,6 +267,18 @@ function FtueDialogueController.start(
 
 	local dismissedStep: string? = nil
 	local lastKachingStep: string? = nil
+	--- Avoid replaying the "panel open" SFX when `applyStep` runs multiple times for the same FTUE step.
+	local lastDialogueOpenSoundStep: string? = nil
+	local function maybePlayFtueDialogueOpen(forStep: string?)
+		if typeof(forStep) ~= "string" or forStep == "" then
+			return
+		end
+		if lastDialogueOpenSoundStep == forStep then
+			return
+		end
+		lastDialogueOpenSoundStep = forStep
+		UiSfx.playFtueDialogueOpen()
+	end
 	local function maybePlayFtueKaching(forStep: string?)
 		if forStep ~= FtueConfig.Step.Dispatch and forStep ~= FtueConfig.Step.Done then
 			return
@@ -275,11 +320,15 @@ function FtueDialogueController.start(
 		if FtueConfig.Enabled ~= true then
 			sg.Enabled = false
 			dismissedStep = nil
+			lastDialogueOpenSoundStep = nil
+			applyFtuePortrait(sg, nil)
 			return
 		end
 		if step == nil or step == "" then
 			sg.Enabled = false
 			dismissedStep = nil
+			lastDialogueOpenSoundStep = nil
+			applyFtuePortrait(sg, nil)
 			return
 		end
 		if step == FtueConfig.Step.Done then
@@ -297,6 +346,7 @@ function FtueDialogueController.start(
 				resolveTextHostsNow()
 			end
 			sg.Enabled = true
+			maybePlayFtueDialogueOpen(step)
 			local t, b = copyForStep(step)
 			local swap = FtueConfig.DialogueSwapTitleBodySlots == true
 			local titleSlot = if swap then bodyHost else titleHost
@@ -318,6 +368,7 @@ function FtueDialogueController.start(
 				setContinueButtonText(continueBtn, FtueConfig.DoneContinueButtonText)
 				hideDuplicateContinueLabels(continueBtn)
 			end
+			applyFtuePortrait(sg, step)
 			return
 		end
 		if dismissedStep ~= nil and dismissedStep ~= step then
@@ -334,6 +385,7 @@ function FtueDialogueController.start(
 			resolveTextHostsNow()
 		end
 		sg.Enabled = true
+		maybePlayFtueDialogueOpen(step)
 		local t, b = copyForStep(step)
 		local swap = FtueConfig.DialogueSwapTitleBodySlots == true
 		local titleSlot = if swap then bodyHost else titleHost
@@ -358,6 +410,7 @@ function FtueDialogueController.start(
 		if skipBtn then
 			skipBtn.Visible = true
 		end
+		applyFtuePortrait(sg, step)
 	end
 
 	local function applyStepFromPlayer()

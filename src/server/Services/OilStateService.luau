@@ -472,6 +472,7 @@ function OilStateService:Init(remoteService, plotService)
 	self._boatDockService = nil :: any
 	self._skinChangedHandler = nil :: ((number, string) -> ())?
 	self._stateReadyForTimersCallback = nil :: ((number, { any }, { any }) -> ())?
+	self._pipeNetworkService = nil :: any
 	self._dataStore = nil
 	self._devSkipSaveOnNextDrop = {} :: { [number]: boolean }
 	local okStore, storeOrErr = pcall(function()
@@ -489,6 +490,34 @@ function OilStateService:SetFtueService(ftueService: any)
 	_ftueService = ftueService
 end
 
+function OilStateService:SetPipeNetworkService(pipeNetworkService: any)
+	self._pipeNetworkService = pipeNetworkService
+end
+
+--- Clears tutorial-only placement flags so hammer sellback / removal works after FTUE (and old saves cannot keep protection).
+function OilStateService:_clearFtuePlacementNoSellback(state: any): boolean
+	local changed = false
+	for _, pump in pairs(state.drillsById or {}) do
+		if pump.ftueFreeNoSellback == true then
+			pump.ftueFreeNoSellback = false
+			changed = true
+		end
+	end
+	for _, pipe in pairs(state.pipesByCellKey or {}) do
+		if pipe.ftueFreeNoSellback == true then
+			pipe.ftueFreeNoSellback = false
+			changed = true
+		end
+	end
+	for _, active in pairs(state.activeDrills or {}) do
+		if active.ftueFreeNoSellback == true then
+			active.ftueFreeNoSellback = false
+			changed = true
+		end
+	end
+	return changed
+end
+
 --- Persists FTUE step with oil profile (`_markDirty`). Called from `FtueService` only.
 function OilStateService:SetFtueProgress(userId: number, step: string?)
 	local state = self._statesByUserId[userId]
@@ -498,6 +527,9 @@ function OilStateService:SetFtueProgress(userId: number, step: string?)
 	state.ftueStep = step
 	--- `ftueCompleted` = tutorial **fully** finished (after Complete! on Done); `ftueStep == Done` is still in-progress.
 	state.ftueCompleted = (step == nil)
+	if step == nil then
+		self:_clearFtuePlacementNoSellback(state)
+	end
 	-- Tutorial escort vessel is only for the first dispatch during `Dispatch`; never after FTUE completes or past that leg.
 	if state.ftueCompleted or step == FtueConfig.Step.Done or step == FtueConfig.Step.WaitShipment then
 		state.ftueEscortShipmentRemaining = 0
@@ -514,6 +546,9 @@ function OilStateService:SetFtueProgress(userId: number, step: string?)
 		)
 	end
 	self:_markDirty(userId)
+	if step == nil then
+		self:PushState(userId)
+	end
 end
 
 --- After the player dismisses the final FTUE "Done" dialogue; keeps `FtueStep` from re-applying that screen on reload.
@@ -1626,6 +1661,25 @@ function OilStateService:TryPlacePump(userId: number, payload): (boolean, string
 	state.drillsById[pumpId] = pump
 	state.activeDrillCount += 1
 	self:_markDirty(userId)
+
+	-- FTUE free pump: connectivity was only updated on the next production tick (~1s), and flow is fractional
+	-- (e.g. 0.2/s) so the first inventory barrel could take many seconds. Refresh pipes now + grant 1 barrel
+	-- of this tile's oil so the HUD updates immediately after placement.
+	if ftueFreeNoSellbackPump and self._pipeNetworkService then
+		(self._pipeNetworkService :: any):MarkConnectivityForTick(state)
+		local grantTier = typeof(tile.oilType) == "string" and tile.oilType or "HeavyCrude"
+		if OilTankConfig.OilColors[grantTier] == nil then
+			grantTier = "HeavyCrude"
+		end
+		local cap = tankCapacity(state, grantTier)
+		local have = state.oilByTier[grantTier] or 0
+		if cap > have then
+			state.oilByTier[grantTier] = have + 1
+			state.totalOil += 1
+			self:_markDirty(userId)
+			self:PushState(userId)
+		end
+	end
 
 	if FtueConfig.Enabled and _ftueService and typeof((_ftueService :: any).OnFtueTutorialPumpPlaced) == "function" then
 		(_ftueService :: any):OnFtueTutorialPumpPlaced(userId, ck)
@@ -3213,6 +3267,12 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		end
 		if not removed then
 			break
+		end
+	end
+
+	if (state :: any).ftueCompleted == true then
+		if self:_clearFtuePlacementNoSellback(state) then
+			self:_markDirty(state.ownerUserId)
 		end
 	end
 end

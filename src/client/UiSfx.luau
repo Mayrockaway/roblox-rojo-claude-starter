@@ -10,6 +10,8 @@ export type UiSfxApi = {
 	playSetSail: () -> (),
 	playKaching: () -> (),
 	playUiDenied: () -> (),
+	--- FTUE dialogue panel opens for a new step (`FtueDialogueController`).
+	playFtueDialogueOpen: () -> (),
 }
 
 local function findTemplate(canonicalName: string): Sound?
@@ -62,6 +64,9 @@ end
 
 --- UI error / deny (does not rely on `ReplicatedStorage` template instances).
 local UI_DENIED_SOUND_ID = "rbxassetid://80835117736204"
+--- FTUE: new dialogue step panel (`FtueDialogueController`).
+local FTUE_DIALOGUE_OPEN_SOUND_ID = "rbxassetid://117079675822991"
+local FTUE_DIALOGUE_OPEN_VOLUME = 0.2
 
 local function playOneShotByAssetId(assetId: string, volume: number)
 	local s = Instance.new("Sound")
@@ -89,6 +94,9 @@ local UiSfx: UiSfxApi = {
 	end,
 	playUiDenied = function()
 		playOneShotByAssetId(UI_DENIED_SOUND_ID, 0.325)
+	end,
+	playFtueDialogueOpen = function()
+		playOneShotByAssetId(FTUE_DIALOGUE_OPEN_SOUND_ID, FTUE_DIALOGUE_OPEN_VOLUME)
 	end,
 }
 

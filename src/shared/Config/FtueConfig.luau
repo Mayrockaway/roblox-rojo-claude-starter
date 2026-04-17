@@ -113,6 +113,20 @@ local FtueConfig = {
 	ClientHintPlacePipeOnTile = "Place the pipe on the marked tile.",
 	--- `FtueDialogueController`: label on Continue when step is Done.
 	DoneContinueButtonText = "Complete!",
+
+	--- Optional portrait images for the dialogue panel (`PortraitFrame` / `PortraitImage` in FTUEDialogueGui).
+	--- Keys are `Step` ids. Use full `rbxassetid://` strings. Omit a step or use `""` to hide the portrait for that step.
+	PortraitImageByStep = {
+		Intro = "rbxassetid://99271397617804",
+		WaitDrill = "rbxassetid://126717781834408",
+		WaitPipe = "rbxassetid://126717781834408",
+		WaitPump = "rbxassetid://99271397617804",
+		Dispatch = "rbxassetid://100457827077123",
+		WaitShipment = "rbxassetid://108133563405448",
+		Sell = "rbxassetid://81692205983376",
+		WaitSell = "rbxassetid://99271397617804",
+		Done = "rbxassetid://100457827077123",
+	} :: { [string]: string },
 }
 
 return FtueConfig
