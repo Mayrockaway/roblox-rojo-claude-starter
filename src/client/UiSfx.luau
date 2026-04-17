@@ -9,6 +9,7 @@ local Workspace = game:GetService("Workspace")
 export type UiSfxApi = {
 	playSetSail: () -> (),
 	playKaching: () -> (),
+	playUiDenied: () -> (),
 }
 
 local function findTemplate(canonicalName: string): Sound?
@@ -30,6 +31,12 @@ local function findTemplate(canonicalName: string): Sound?
 			end
 		end
 	end
+	-- Studio / alternate hierarchy: any Sound under ReplicatedStorage with matching name.
+	for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+		if d:IsA("Sound") and string.lower(d.Name) == key then
+			return d
+		end
+	end
 	return nil
 end
 
@@ -42,9 +49,33 @@ local function playOneShot(canonicalName: string)
 	s.Name = "UiSfx_" .. canonicalName
 	s.Looped = false
 	s.Playing = false
+	s.RollOffMode = Enum.RollOffMode.Linear
 	s.Parent = SoundService
 	s.Ended:Once(function()
 		s:Destroy()
+	end)
+	pcall(function()
+		s.TimePosition = 0
+	end)
+	s:Play()
+end
+
+--- UI error / deny (does not rely on `ReplicatedStorage` template instances).
+local UI_DENIED_SOUND_ID = "rbxassetid://80835117736204"
+
+local function playOneShotByAssetId(assetId: string, volume: number)
+	local s = Instance.new("Sound")
+	s.Name = "UiSfx_Asset"
+	s.SoundId = assetId
+	s.Volume = volume
+	s.Looped = false
+	s.RollOffMode = Enum.RollOffMode.Linear
+	s.Parent = SoundService
+	s.Ended:Once(function()
+		s:Destroy()
+	end)
+	pcall(function()
+		s.TimePosition = 0
 	end)
 	s:Play()
 end
@@ -55,6 +86,9 @@ local UiSfx: UiSfxApi = {
 	end,
 	playKaching = function()
 		playOneShot("Kaching")
+	end,
+	playUiDenied = function()
+		playOneShotByAssetId(UI_DENIED_SOUND_ID, 0.325)
 	end,
 }
 

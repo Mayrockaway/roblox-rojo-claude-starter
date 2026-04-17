@@ -51,7 +51,7 @@ This document describes **fantasy**, **player feel**, and **how each row maps to
 
 ## Summary — active catalog (`Catalog.Events`)
 
-Waypoints are still **lane ordinals 3, 6, 9** (`StraitEventConfig.LaneWaypointTriggers`).
+Waypoints follow **`StraitEventConfig.LaneWaypointTriggers`** (lane ordinals **2–9**).
 
 | Severity | `id` | `displayName` | Server / client pipeline | Impacts (high level) |
 |----------|------|-----------------|--------------------------|----------------------|

@@ -6,9 +6,27 @@
 -- Optional: EVENT_FX[id] for attach logic (e.g. weld to boat). No generic severity particle fallbacks.
 
 local Debris = game:GetService("Debris")
+local PhysicsService = game:GetService("PhysicsService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
+
+--- Local cosmetic NPCs (Pirate / Coast Guard): must not shove the player. `Humanoid` resets
+--- `CanCollide` on body parts every frame; `ShipmentShip` still collides with `Default` (character).
+local STRAIT_FX_NPC_GROUP = "StraitWaypointFxNpc"
+local straitFxNpcGroupReady = false
+
+local function ensureStraitFxNpcCollisionGroup()
+	if straitFxNpcGroupReady then
+		return
+	end
+	straitFxNpcGroupReady = true
+	pcall(function()
+		PhysicsService:RegisterCollisionGroup(STRAIT_FX_NPC_GROUP)
+		PhysicsService:CollisionGroupSetCollidable(STRAIT_FX_NPC_GROUP, "Default", false)
+		PhysicsService:CollisionGroupSetCollidable(STRAIT_FX_NPC_GROUP, "Players", false)
+	end)
+end
 
 -- Bounded waits: avoid infinite yield if ReplicatedStorage is slow or Shared is missing in a test place.
 local ParticleFxScale: {
@@ -165,6 +183,28 @@ local function stripRuntimeScripts(root: Instance)
 	for _, d in ipairs(root:GetDescendants()) do
 		if d:IsA("Script") or d:IsA("LocalScript") then
 			d:Destroy()
+		end
+	end
+end
+
+--- Remove Humanoid (it reapplies CanCollide), ghost all parts, no collision with local player.
+local function prepareStraitEventNpcInstance(root: Instance)
+	ensureStraitFxNpcCollisionGroup()
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("Humanoid") then
+			d:Destroy()
+		end
+	end
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Anchored = true
+			d.CanCollide = false
+			d.CanQuery = false
+			d.CanTouch = false
+			d.Massless = true
+			pcall(function()
+				d.CollisionGroup = STRAIT_FX_NPC_GROUP
+			end)
 		end
 	end
 end
@@ -2486,24 +2526,6 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 			end
 		end
 
-		local function prepStatic(instance: Instance)
-			-- Kill any Humanoid first — it would otherwise reset CanCollide=true on
-			-- body parts every frame, letting the NPC physically push the player boat.
-			for _, d in ipairs(instance:GetDescendants()) do
-				if d:IsA("Humanoid") then d:Destroy() end
-			end
-			for _, d in ipairs(instance:GetDescendants()) do
-				if d:IsA("BasePart") then
-					d.Anchored = true
-					d.CanCollide = false
-					d.CanQuery = false
-					d.CanTouch = false
-					d.Massless = true
-					pcall(function() d.CollisionGroup = "ShipmentShip" end)
-				end
-			end
-		end
-
 		local function movePirate(pirate, targetCF: CFrame, duration: number, arcHeight: number?)
 			animateMove(pirate.npc, pirate.cf, targetCF, duration, arcHeight)
 			pirate.cf = targetCF
@@ -2597,7 +2619,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		local spawnPos = parkPos + fwd * SPAWN_AHEAD_DIST
 
 		local pirateBoat = pirateShipTemplate:Clone()
-		prepStatic(pirateBoat)
+		prepareStraitEventNpcInstance(pirateBoat)
 		pirateBoat.Parent = Workspace
 		pirateBoat:PivotTo(uprightLookAt(spawnPos, rootPos))
 		Debris:AddItem(pirateBoat, 30)
@@ -2606,7 +2628,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		local pirateMid = (PIRATE_COUNT + 1) / 2
 		for i = 1, PIRATE_COUNT do
 			local npc = pirateNpcTemplate:Clone()
-			prepStatic(npc)
+			prepareStraitEventNpcInstance(npc)
 			npc.Parent = pirateBoat
 			local along = fwd * ((i - pirateMid) * PIRATE_SPACING)
 			local spawnNpcPos = spawnPos + Vector3.new(0, PIRATE_BOAT_DECK_Y, 0) + along
@@ -2889,14 +2911,6 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 			if obj:IsA("Model") then obj:PivotTo(cf) else obj.CFrame = cf end
 		end
 
-		local function prepStatic(inst: Instance)
-			for _, d in ipairs(inst:GetDescendants()) do
-				if d:IsA("BasePart") then
-					d.Anchored = true; d.CanCollide = false; d.CanQuery = false; d.CanTouch = false
-				end
-			end
-		end
-
 		-- Walking animation: constant speed + vertical bob = looks like actual footsteps
 		local WALK_SPEED   = 9   -- studs/sec on deck
 		local RETURN_SPEED = 14  -- studs/sec when jogging back
@@ -2963,7 +2977,7 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 
 		-- Clone CG boat and animate approach (officers spawn AFTER park so they don't float)
 		local cgBoat = cgShipTemplate:Clone()
-		prepStatic(cgBoat)
+		prepareStraitEventNpcInstance(cgBoat)
 		cgBoat.Parent = Workspace
 		cgBoat:PivotTo(flatLookAt(spawnPos, spawnPos - perp))
 		Debris:AddItem(cgBoat, 42)
@@ -3007,7 +3021,7 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 		local officers = {}
 		for i = 1, OFFICER_COUNT do
 			local npc    = cgNpcTemplate:Clone()
-			prepStatic(npc)
+			prepareStraitEventNpcInstance(npc)
 			local along  = fwd * ((i - officerMid) * OFFICER_SPACING)
 			local npcPos = cgParkedPos + Vector3.new(0, CG_BOAT_DECK_Y, 0) + along
 			local npcCF  = flatLookAt(npcPos, rootPos)
@@ -3240,20 +3254,12 @@ function StraitWaypointWorldFx.OnUSShipSlapPayload(data: { [string]: any })
 			return CFrame.lookAt(pos, Vector3.new(toward.X, pos.Y, toward.Z))
 		end
 
-		local function prepStatic(inst: Instance)
-			for _, d in ipairs(inst:GetDescendants()) do
-				if d:IsA("BasePart") then
-					d.Anchored = true; d.CanCollide = false; d.CanQuery = false; d.CanTouch = false
-				end
-			end
-		end
-
 		local PARK_LATERAL  = 120
 		local SPAWN_LATERAL = 300
 
 		-- USShip: pivot is at mesh center, raise by half-height so bottom sits at waterY
 		local usShip = usShipTemplate:Clone()
-		prepStatic(usShip)
+		prepareStraitEventNpcInstance(usShip)
 		usShip.Parent = Workspace
 		local _, usBbSz = usShip:GetBoundingBox()
 		local shipY = waterY + usBbSz.Y / 2
@@ -3276,7 +3282,7 @@ function StraitWaypointWorldFx.OnUSShipSlapPayload(data: { [string]: any })
 
 		-- Clone GiantArm and rise it from USShip deck
 		local arm = armTemplate:Clone()
-		prepStatic(arm)
+		prepareStraitEventNpcInstance(arm)
 		arm.Parent = Workspace
 		Debris:AddItem(arm, 20)
 

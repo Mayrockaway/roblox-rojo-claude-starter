@@ -9,6 +9,8 @@ export type ResolvedShipStats = {
 	eventRisk: number,
 }
 
+local ShipUpgradeConfig = require(script.Parent:WaitForChild("ShipUpgradeConfig"))
+
 local ShipStats = {}
 
 -- USD per whole barrel shipped (manifest tier keys = `HeavyCrude` / `LightSweet` / `PremiumRefined`).
@@ -31,22 +33,22 @@ function ShipStats.ComputeDispatchFeeFromManifestOilUnits(manifest: { [string]: 
 end
 
 --[[
-  Capacity: oil units (same semantics as legacy BoatConfig `capacity`).
-  Speed level lowers travel time; capacity level raises cap and fee.
+  Capacity: oil units — from `ShipUpgradeConfig` chunky tier table (few levels, big jumps).
+  Speed level lowers travel time; capacity level raises cargo cap and affects event risk.
 ]]
 function ShipStats.Resolve(shipSpeedLevel: number, shipCapacityLevel: number): ResolvedShipStats
-	local speedL = math.clamp(math.floor(shipSpeedLevel), 1, 10)
-	local capL = math.clamp(math.floor(shipCapacityLevel), 1, 25)
+	local maxSpd = ShipUpgradeConfig.MaxSpeedLevel
+	local speedSpan = math.max(1, maxSpd - 1)
+	local speedL = math.clamp(math.floor(shipSpeedLevel), 1, maxSpd)
+	local capL = math.clamp(math.floor(shipCapacityLevel), 1, ShipUpgradeConfig.MaxCapacityLevel)
 
-	local capMin, capMax = 8, 45
-	local capacity = math.floor(capMin + (capMax - capMin) * (capL - 1) / 24 + 0.5)
+	local capacity = ShipUpgradeConfig.GetCargoCapacity(capL)
+	local travelSeconds = ShipUpgradeConfig.GetTravelSeconds(speedL)
 
-	local travelSlow, travelFast = 90, 42
-	local travelSeconds = travelSlow - (travelSlow - travelFast) * (speedL - 1) / 9
-
+	local maxCapL = math.max(2, ShipUpgradeConfig.MaxCapacityLevel)
 	local riskHigh, riskLow = 0.34, 0.17
-	local eventRisk = riskHigh
-		- (riskHigh - riskLow) * (0.55 * (capL - 1) / 24 + 0.45 * (speedL - 1) / 9)
+	local capNorm = (capL - 1) / (maxCapL - 1)
+	local eventRisk = riskHigh - (riskHigh - riskLow) * (0.55 * capNorm + 0.45 * (speedL - 1) / speedSpan)
 	eventRisk = math.clamp(eventRisk, riskLow, riskHigh)
 
 	return {

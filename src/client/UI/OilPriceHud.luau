@@ -1,7 +1,10 @@
 --!strict
 -- Top HUD **`OilPricePanel`**: spot **`basePrice`** + strip **`PriceIndicator`** mood vs **global** spot band (**`globalBaseMin`–`globalBaseMax`**) from `PricingConfig` (all strait bands combined).
 -- **`OilPriceInfoPanelGui`**: each row’s **`Marker`** + **`PriceValue`** use the same **global** band × tier multiplier — “all possible” tier $/bbl for any strait, not the current strait only.
--- Runtime: **`Text`**, **`TextColor3`**, **`Position`**, **`AnchorPoint`**, **`BackgroundColor3`**, **`UIStroke.Color`**; clears legacy **`_OilPriceHistoryTicks`** if present (see `ui-architecture` §6).
+-- Runtime: **`Text`**, **`TextColor3`**, **`BackgroundColor3`**, **`UIStroke.Color`**; **`UIScale`** tweens on **`OilPricePanel`** for micro price updates vs strait changes (see `ui-architecture` §6 — no runtime layout hacks on authored shells).
+-- Clears legacy **`_OilPriceHistoryTicks`** if present.
+
+local TweenService = game:GetService("TweenService")
 
 export type MarketSnapshot = {
 	basePrice: number?,
@@ -33,7 +36,95 @@ local COL_UNKNOWN = Color3.fromRGB(150, 150, 155)
 
 local LEGACY_HISTORY_FOLDER = "_OilPriceHistoryTicks"
 
+local ANIM_SCALE_NAME = "OilPricePanelAnimScale"
+
+local lastSnapshotBase: number? = nil
+local lastSnapshotStrait: string? = nil
+local lastStraitPulseAt = 0.0
+local activeScaleTween: Tween? = nil
+
 local OilPriceHud = {}
+
+local function findOilPricePanel(canvas: Frame): Frame?
+	local topRow = canvas:FindFirstChild("TopRow")
+	local panel = topRow and topRow:FindFirstChild("OilPricePanel")
+	if panel and panel:IsA("Frame") then
+		return panel
+	end
+	return nil
+end
+
+local function getOrCreateAnimScale(panel: GuiObject): UIScale
+	local s = panel:FindFirstChild(ANIM_SCALE_NAME)
+	if s and s:IsA("UIScale") then
+		return s
+	end
+	local sc = Instance.new("UIScale")
+	sc.Name = ANIM_SCALE_NAME
+	sc.Scale = 1
+	sc.Parent = panel
+	return sc
+end
+
+local function cancelOilPricePanelScaleTween()
+	if activeScaleTween then
+		activeScaleTween:Cancel()
+		activeScaleTween = nil
+	end
+end
+
+local function playOilPricePanelJitter(panel: Frame)
+	cancelOilPricePanelScaleTween()
+	local sc = getOrCreateAnimScale(panel)
+	sc.Scale = 1
+	local up = TweenService:Create(sc, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		Scale = 1.045,
+	})
+	activeScaleTween = up
+	up.Completed:Connect(function(playback: Enum.PlaybackState)
+		if playback == Enum.PlaybackState.Cancelled then
+			return
+		end
+		local down = TweenService:Create(sc, TweenInfo.new(0.38, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Scale = 1,
+		})
+		activeScaleTween = down
+		down.Completed:Connect(function(pb: Enum.PlaybackState)
+			if pb ~= Enum.PlaybackState.Cancelled then
+				activeScaleTween = nil
+			end
+		end)
+		down:Play()
+	end)
+	up:Play()
+end
+
+local function playOilPricePanelStraitPulse(panel: Frame)
+	cancelOilPricePanelScaleTween()
+	lastStraitPulseAt = os.clock()
+	local sc = getOrCreateAnimScale(panel)
+	sc.Scale = 1
+	local punch = TweenService:Create(sc, TweenInfo.new(0.48, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Scale = 1.14,
+	})
+	activeScaleTween = punch
+	punch.Completed:Connect(function(playback: Enum.PlaybackState)
+		if playback == Enum.PlaybackState.Cancelled then
+			return
+		end
+		local settle = TweenService:Create(sc, TweenInfo.new(0.78, Enum.EasingStyle.Elastic, Enum.EasingDirection.Out), {
+			Scale = 1,
+		})
+		activeScaleTween = settle
+		settle.Completed:Connect(function(pb: Enum.PlaybackState)
+			if pb ~= Enum.PlaybackState.Cancelled then
+				activeScaleTween = nil
+			end
+		end)
+		settle:Play()
+	end)
+	punch:Play()
+end
 
 local function findHudCanvas(playerGui: PlayerGui): Frame?
 	local hud = playerGui:FindFirstChild("HUD")
@@ -236,11 +327,17 @@ function OilPriceHud.refresh(playerGui: PlayerGui, snapshot: MarketSnapshot)
 		return
 	end
 	local priceText, indicator = findOilPriceStrip(canvas)
+	local panel = findOilPricePanel(canvas)
 	local prices = snapshot.prices
 	if typeof(prices) ~= "table" then
 		prices = {}
 	end
 	local base = math.max(0, math.floor(tonumber(snapshot.basePrice) or 0))
+	local strait = tostring(snapshot.straitState or "Open")
+
+	local prevBase = lastSnapshotBase
+	local prevStrait = lastSnapshotStrait
+
 	if priceText then
 		priceText.Text = formatStripSpotLine(base)
 	end
@@ -251,6 +348,20 @@ function OilPriceHud.refresh(playerGui: PlayerGui, snapshot: MarketSnapshot)
 		applyPriceIndicatorTint(indicator, mood)
 	end
 	refreshInfoPanel(playerGui, snapshot)
+
+	if panel then
+		local straitChanged = prevStrait ~= nil and strait ~= prevStrait
+		local baseChanged = prevBase ~= nil and base ~= prevBase
+		local suppressJitter = (os.clock() - lastStraitPulseAt) < 1.95
+		if straitChanged then
+			playOilPricePanelStraitPulse(panel)
+		elseif baseChanged and not suppressJitter then
+			playOilPricePanelJitter(panel)
+		end
+	end
+
+	lastSnapshotBase = base
+	lastSnapshotStrait = strait
 end
 
 return OilPriceHud

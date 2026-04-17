@@ -75,6 +75,11 @@ local RemoteNames = {
 
 	-- Dev-only: server-side diagnostic line shipped to all client consoles.
 	DevLog = "DevLog",
+
+	-- FTUE (`FtueService` + `FtueDialogueController`).
+	RequestFtueAcknowledge = "RequestFtueAcknowledge",
+	RequestFtueSkip = "RequestFtueSkip",
+	FtueStateUpdate = "FtueStateUpdate",
 }
 
 return RemoteNames

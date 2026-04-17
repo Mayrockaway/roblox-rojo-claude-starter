@@ -29,6 +29,59 @@ local SKIN_SWAP_COOLDOWN_SECONDS = 3
 local IDLE_Y_OFFSET = 0 -- DockAnchor lands exactly on the slot part's red square
 local DEBUG_DOCK_SPAWN = true
 
+--- Pier / spawn geometry under `dOCKS` (excluding `dOCKS.Boats`). `OilShipmentService` voyage hull uses
+--- `ShipmentShip`; those parts do not collide with `MarinaDock`, but still collide with `Default` (character).
+local MARINA_DOCK_GROUP = "MarinaDock"
+
+local function getDocksRoot(): Instance?
+	return Workspace:FindFirstChild("dOCKS")
+		or Workspace:FindFirstChild("Docks")
+		or Workspace:FindFirstChild("DOCKS")
+end
+
+local function applyMarinaDockCollisionRules()
+	pcall(function()
+		PhysicsService:RegisterCollisionGroup(MARINA_DOCK_GROUP)
+	end)
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable("ShipmentShip", MARINA_DOCK_GROUP, false)
+	end)
+	-- Characters stay on deck (ShipmentShip vs Default); explicit no-ops are unnecessary but document intent.
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(MARINA_DOCK_GROUP, "Default", true)
+	end)
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(MARINA_DOCK_GROUP, "Players", true)
+	end)
+end
+
+function BoatDockService:_tagMarinaDockParts(docksRoot: Instance)
+	local boatsFolder = docksRoot:FindFirstChild("Boats")
+	local function tagIfDockPart(inst: Instance)
+		if not inst:IsA("BasePart") then
+			return
+		end
+		if boatsFolder and inst:IsDescendantOf(boatsFolder) then
+			return
+		end
+		pcall(function()
+			(inst :: BasePart).CollisionGroup = MARINA_DOCK_GROUP
+		end)
+	end
+	for _, d in ipairs(docksRoot:GetDescendants()) do
+		tagIfDockPart(d)
+	end
+	local dockDescendantConn = docksRoot.DescendantAdded:Connect(function(inst)
+		task.defer(function()
+			if inst.Parent == nil then
+				return
+			end
+			tagIfDockPart(inst)
+		end)
+	end)
+	table.insert(self._connections, dockDescendantConn)
+end
+
 export type BoatState = "idle" | "sailing" | "cooldown" | "swapping"
 
 function BoatDockService:Init(remoteService, oilStateService)
@@ -42,13 +95,20 @@ function BoatDockService:Init(remoteService, oilStateService)
 	self._stateByUser = {} :: { [number]: BoatState }
 	self._cooldownEnds = {} :: { [number]: number? }     -- userId -> os.clock() timestamp
 
-	-- Collision group: ships don't collide with each other (idempotent).
+	-- Collision: voyage hulls (`ShipmentShip` in OilShipmentService) ignore each other and ignore dock meshes.
 	pcall(function()
 		PhysicsService:RegisterCollisionGroup("ShipmentShip")
 	end)
 	pcall(function()
 		PhysicsService:CollisionGroupSetCollidable("ShipmentShip", "ShipmentShip", false)
 	end)
+	applyMarinaDockCollisionRules()
+	local docksRoot = getDocksRoot()
+	if docksRoot then
+		self:_tagMarinaDockParts(docksRoot)
+	else
+		warn("[BoatDockService] No workspace.dOCKS — MarinaDock tagging skipped.")
+	end
 
 	self:_discoverSlots()
 end

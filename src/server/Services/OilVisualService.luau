@@ -92,6 +92,8 @@ type SellPromptSpec = {
 	cellKey: string?,
 	drumId: number?,
 	prospectId: number?,
+	--- FTUE tutorial placements: no sell-back prompt (and server rejects hammer salvage).
+	noSellback: boolean?,
 }
 
 local sellBackPromptConnections: { [ProximityPrompt]: RBXScriptConnection } = {}
@@ -268,8 +270,28 @@ local function configureSellBackPrompt(prompt: ProximityPrompt, spec: SellPrompt
 	end
 end
 
+local function removeSellBackPromptFromHost(host: Instance)
+	local adornee = basePartForSellPrompt(host)
+	if not adornee then
+		return
+	end
+	local att = adornee:FindFirstChild(SELL_BACK_ATTACH) :: Attachment?
+	if not att then
+		return
+	end
+	local prompt = att:FindFirstChild(SELL_BACK_PROMPT)
+	if prompt and prompt:IsA("ProximityPrompt") then
+		disconnectSellBackPrompt(prompt)
+		prompt:Destroy()
+	end
+end
+
 local function ensureSellBackPromptOnHost(service: OilVisualService, host: Instance, spec: SellPromptSpec)
 	if not host or not host.Parent then
+		return
+	end
+	if spec.noSellback == true then
+		removeSellBackPromptFromHost(host)
 		return
 	end
 	local adornee = basePartForSellPrompt(host)
@@ -575,7 +597,12 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			anchorAllBaseParts(model)
 		end
 		if model then
-			ensureSellBackPromptOnHost(self, model, { ownerUserId = ownerUserId, hammerKind = "drill", drillId = drillId })
+			ensureSellBackPromptOnHost(self, model, {
+				ownerUserId = ownerUserId,
+				hammerKind = "drill",
+				drillId = drillId,
+				noSellback = entry.ftueFreeNoSellback == true,
+			})
 		end
 	end
 	for _, child in ipairs(folder:GetChildren()) do
@@ -838,7 +865,12 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				model:SetAttribute("AppliedVariant", variant)
 			end
 
-			ensureSellBackPromptOnHost(self, model, { ownerUserId = ownerUserId, hammerKind = "pump", drillId = drillId })
+			ensureSellBackPromptOnHost(self, model, {
+				ownerUserId = ownerUserId,
+				hammerKind = "pump",
+				drillId = drillId,
+				noSellback = drill.ftueFreeNoSellback == true,
+			})
 		end
 	end
 
@@ -1055,7 +1087,12 @@ function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, d
 					prompt:Destroy()
 				end
 			else
-				ensureSellBackPromptOnHost(self, model, { ownerUserId = ownerUserId, hammerKind = "pipe", cellKey = pipe.cellKey })
+				ensureSellBackPromptOnHost(self, model, {
+					ownerUserId = ownerUserId,
+					hammerKind = "pipe",
+					cellKey = pipe.cellKey,
+					noSellback = pipe.ftueFreeNoSellback == true,
+				})
 			end
 		end
 	end

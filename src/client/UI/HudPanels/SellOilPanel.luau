@@ -1,9 +1,12 @@
 --!strict
 -- Sell oil / warehouse modal (`StarterGui.SellOilPanelGui` → `PlayerGui`).
 -- Stored counts = warehouse barrels; prices from `MarketPriceUpdate` / `RequestMarketSnapshot`.
+-- `WarehouseHeader.WarehouseTitle` = strait **`WarehouseService`** used/total capacity (`WarehouseStateUpdate`).
 -- Heavy crude row = `HeavyCrude` only (all sub–light-sweet product).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
@@ -11,7 +14,12 @@ local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
-local UiSfx = require(script.Parent.Parent.Parent:WaitForChild("UiSfx")) :: { playSetSail: () -> (), playKaching: () -> () }
+local FtueDispatchPointerSignals = require(script.Parent.Parent:WaitForChild("FtueDispatchPointerSignals"))
+local UiSfx = require(script.Parent.Parent.Parent:WaitForChild("UiSfx")) :: {
+	playSetSail: () -> (),
+	playKaching: () -> (),
+	playUiDenied: () -> (),
+}
 
 local SCREEN_NAME = "SellOilPanelGui"
 
@@ -42,6 +50,86 @@ local SellOilPanel = {}
 local wiredScreen: ScreenGui? = nil
 local connections: { RBXScriptConnection } = {}
 
+local STATUS_TOAST_TEXT_RED = Color3.fromRGB(220, 40, 40)
+local ERROR_NOTIFICATION_NAME = "ErrorNotification"
+
+local errorNotificationLabel: TextLabel? = nil
+local errorNotificationSeq = 0
+
+local function ensureErrorNotificationLabel(screen: ScreenGui): TextLabel?
+	local canvas = screen:FindFirstChild("Canvas")
+	if not canvas then
+		return nil
+	end
+	local existing = canvas:FindFirstChild(ERROR_NOTIFICATION_NAME)
+	if existing and existing:IsA("TextLabel") then
+		return existing
+	end
+	local toast = Instance.new("TextLabel")
+	toast.Name = ERROR_NOTIFICATION_NAME
+	toast.BackgroundTransparency = 1
+	toast.BorderSizePixel = 0
+	toast.AnchorPoint = Vector2.new(0.5, 1)
+	toast.Position = UDim2.new(0.5, 0, 0.88, 0)
+	toast.Size = UDim2.new(0.5, 0, 0, 0)
+	toast.AutomaticSize = Enum.AutomaticSize.Y
+	toast.ZIndex = 50
+	toast.Visible = false
+	toast.Text = ""
+	toast.TextColor3 = STATUS_TOAST_TEXT_RED
+	toast.TextScaled = true
+	toast.TextWrapped = true
+	toast.Font = Enum.Font.Merriweather
+	toast.TextXAlignment = Enum.TextXAlignment.Center
+	toast.TextYAlignment = Enum.TextYAlignment.Bottom
+	local tc = Instance.new("UITextSizeConstraint")
+	tc.MaxTextSize = 22
+	tc.MinTextSize = 10
+	tc.Parent = toast
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(40, 10, 10)
+	stroke.Thickness = 1.25
+	stroke.Parent = toast
+	toast.Parent = canvas
+	return toast
+end
+
+local function hideErrorNotification()
+	errorNotificationSeq += 1
+	if errorNotificationLabel then
+		errorNotificationLabel.Visible = false
+	end
+end
+
+local function showErrorNotification(message: string, holdSeconds: number)
+	local label = errorNotificationLabel
+	if not label or not label.Parent then
+		return
+	end
+	errorNotificationSeq += 1
+	local seq = errorNotificationSeq
+	label.Text = message
+	label.TextTransparency = 0
+	label.Visible = true
+	task.delay(holdSeconds, function()
+		if seq ~= errorNotificationSeq or not label.Parent then
+			return
+		end
+		local tw = TweenService:Create(label, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+			TextTransparency = 1,
+		})
+		tw:Play()
+		tw.Completed:Wait()
+		if seq ~= errorNotificationSeq or not label.Parent then
+			return
+		end
+		label.Visible = false
+		label.TextTransparency = 0
+	end)
+end
+
+type AmountField = TextLabel | TextBox
+
 type RowBinding = {
 	kind: "crude" | "tier",
 	tier: string?,
@@ -49,18 +137,24 @@ type RowBinding = {
 	typeNameLabel: TextLabel?,
 	storedLabel: TextLabel,
 	priceLabel: TextLabel,
-	amountLabel: TextLabel,
+	amountField: AmountField,
 	minus: GuiButton,
 	plus: GuiButton,
 	subtotalRight: TextLabel?,
 }
 
 local function rowDisplayTitle(bind: RowBinding): string?
+	local tierKey: string?
 	if bind.kind == "crude" then
-		return QualityConfig.hudShortLabel("HeavyCrude")
+		tierKey = "HeavyCrude"
+	elseif bind.kind == "tier" and bind.tier then
+		tierKey = bind.tier
 	end
-	if bind.kind == "tier" and bind.tier then
-		return QualityConfig.hudShortLabel(bind.tier)
+	if tierKey then
+		local def = QualityConfig.Tiers[tierKey :: any]
+		if def then
+			return def.displayName
+		end
 	end
 	return nil
 end
@@ -75,22 +169,30 @@ local function inferTierKeyFromTypeNameText(text: string): string?
 	return nil
 end
 
---- Studio may rename row frames; resolve tier from **canonical names** or optional **`SellOilTier`** attribute (`HeavyCrude` | `LightSweet` | `PremiumRefined`).
+--- `SellOilTier` on the row wins over `Name` so tier data matches visual order if frame names drift.
+local function rowConfigFromSellOilTierAttr(a: string): RowUiConfig?
+	if a == "HeavyCrude" then
+		return { kind = "crude" }
+	elseif a == "LightSweet" then
+		return { kind = "tier", tier = "LightSweet" }
+	elseif a == "PremiumRefined" then
+		return { kind = "tier", tier = "PremiumRefined" }
+	end
+	return nil
+end
+
+--- Studio may rename row frames; resolve tier from **`SellOilTier`** attribute, **canonical names**, or **`TypeName`** text vs `QualityConfig.Tiers`.
 local function resolveRowUiConfig(row: GuiObject): RowUiConfig?
+	local attr = row:GetAttribute("SellOilTier")
+	if typeof(attr) == "string" then
+		local fromAttr = rowConfigFromSellOilTierAttr(attr :: string)
+		if fromAttr then
+			return fromAttr
+		end
+	end
 	local byName = ROW_UI[row.Name]
 	if byName then
 		return byName
-	end
-	local attr = row:GetAttribute("SellOilTier")
-	if typeof(attr) == "string" then
-		local a = attr :: string
-		if a == "HeavyCrude" then
-			return { kind = "crude" }
-		elseif a == "LightSweet" then
-			return { kind = "tier", tier = "LightSweet" }
-		elseif a == "PremiumRefined" then
-			return { kind = "tier", tier = "PremiumRefined" }
-		end
 	end
 	local infoCol = row:FindFirstChild("InfoColumn", true)
 	local typeName = infoCol and infoCol:FindFirstChild("TypeName", true)
@@ -135,23 +237,54 @@ local selected: { [string]: number } = {
 }
 
 local totalProfitLabel: TextLabel? = nil
+local warehouseTitleLabel: TextLabel? = nil
+local warehouseStoredTotal = 0
+local warehouseCapTotal = 0
+local hasWarehouseTotals = false
 local sellButton: GuiButton? = nil
 local requestSellWarehouseBarrels: RemoteEvent? = nil
 local lastSellFire = 0.0
+
+--- Last values sent to FTUE pointer sequencing (debounced).
+local lastFtueSellPeekOpen: boolean? = nil
+local lastFtueSellPeekBarrels: number? = nil
 
 local function remotesFolder(): Folder
 	return Shared:WaitForChild("Remotes") :: Folder
 end
 
-local function mergeWarehouseFromPayload(data: any): boolean
-	if typeof(data) ~= "table" or typeof(data.barrels) ~= "table" then
+local function mergeWarehouseTotalsFromPayload(data: any): boolean
+	if typeof(data) ~= "table" then
 		return false
 	end
-	local b = data.barrels :: { [string]: any }
-	for _, k in ipairs(TIER_KEYS) do
-		warehouseBarrelsByTier[k] = math.max(0, math.floor(tonumber(b[k]) or 0))
+	local totRaw = (data :: any).totalBarrels
+	local capRaw = (data :: any).capacity
+	if totRaw == nil and capRaw == nil then
+		return false
+	end
+	hasWarehouseTotals = true
+	if typeof(totRaw) == "number" then
+		warehouseStoredTotal = math.max(0, math.floor(totRaw))
+	end
+	if typeof(capRaw) == "number" then
+		warehouseCapTotal = math.max(0, math.floor(capRaw))
 	end
 	return true
+end
+
+local function mergeWarehouseFromPayload(data: any): boolean
+	local any = false
+	if typeof(data) == "table" and typeof(data.barrels) == "table" then
+		local b = data.barrels :: { [string]: any }
+		for _, k in ipairs(TIER_KEYS) do
+			warehouseBarrelsByTier[k] = math.max(0, math.floor(tonumber(b[k]) or 0))
+		end
+		any = true
+	end
+	if mergeWarehouseTotalsFromPayload(data) then
+		any = true
+	end
+	return any
 end
 
 local function mergePricesFromMarketSnapshot(data: any): boolean
@@ -175,6 +308,32 @@ end
 
 local function crudeBlendSelected(): number
 	return selected.HeavyCrude or 0
+end
+
+local function sumSelectedSellBarrels(): number
+	return crudeBlendSelected() + (selected.LightSweet or 0) + (selected.PremiumRefined or 0)
+end
+
+--- For `FtueUiPointers` during the **Sell** FTUE step.
+function SellOilPanel.peekOpenAndBarrelsForSellFtue(): (boolean, number)
+	if not wiredScreen or not wiredScreen.Parent then
+		return false, 0
+	end
+	return wiredScreen.Enabled, sumSelectedSellBarrels()
+end
+
+local function maybeFireFtueSellPointerRefresh()
+	if not wiredScreen then
+		return
+	end
+	local open = wiredScreen.Enabled
+	local barrels = sumSelectedSellBarrels()
+	if lastFtueSellPeekOpen == open and lastFtueSellPeekBarrels == barrels then
+		return
+	end
+	lastFtueSellPeekOpen = open
+	lastFtueSellPeekBarrels = barrels
+	FtueDispatchPointerSignals.fireSellOilUiChanged()
 end
 
 local function clampCrudeSelectionToWarehouse()
@@ -232,6 +391,27 @@ local function totalSelectedPayout(): number
 	return t
 end
 
+local function parseUnsignedBarrelInput(text: string): number
+	local n = tonumber(text)
+	if n == nil then
+		local digits = string.match(text, "%d+")
+		n = digits and tonumber(digits) or 0
+	end
+	return math.max(0, math.floor(n :: number))
+end
+
+local function setAmountFieldText(field: AmountField, value: number)
+	local t = tostring(value)
+	if field:IsA("TextBox") then
+		field.Text = t
+	else
+		(field :: TextLabel).Text = t
+	end
+end
+
+--- Wired AmountLabel TextBoxes → manifest tier key (HeavyCrude for crude row).
+local sellAmountTextBoxTier: { [TextBox]: string } = {}
+
 local function findSubtotalRight(totalsPanel: Instance?, dataTier: string): TextLabel?
 	if not totalsPanel then
 		return nil
@@ -252,21 +432,61 @@ local function findSubtotalRight(totalsPanel: Instance?, dataTier: string): Text
 	return nil
 end
 
+--- Matches authored `StoredLabel` gold; `SELL_OIL_PANEL.md` accent ~212, 178, 122.
+local FALLBACK_STORED_LABEL_GOLD = Color3.fromRGB(212, 178, 122)
+
+local function storedLabelGoldForTitle(): Color3
+	for _, bind in ipairs(rowBindings) do
+		if bind.storedLabel.Parent then
+			return bind.storedLabel.TextColor3
+		end
+	end
+	return FALLBACK_STORED_LABEL_GOLD
+end
+
+local function color3ToRichTextHex(c: Color3): string
+	return string.format(
+		"#%02X%02X%02X",
+		math.clamp(math.floor(c.R * 255 + 0.5), 0, 255),
+		math.clamp(math.floor(c.G * 255 + 0.5), 0, 255),
+		math.clamp(math.floor(c.B * 255 + 0.5), 0, 255)
+	)
+end
+
+local function refreshWarehouseTitle()
+	if not warehouseTitleLabel then
+		return
+	end
+	warehouseTitleLabel.RichText = true
+	local hex = color3ToRichTextHex(storedLabelGoldForTitle())
+	if hasWarehouseTotals then
+		warehouseTitleLabel.Text = string.format(
+			'Warehouse <font color="%s">%d/%d</font>',
+			hex,
+			warehouseStoredTotal,
+			warehouseCapTotal
+		)
+	else
+		warehouseTitleLabel.Text = string.format('Warehouse <font color="%s">—/—</font>', hex)
+	end
+end
+
 local function refreshRowUi()
+	clampSelectionsToInventory()
 	for _, bind in ipairs(rowBindings) do
 		bind.priceLabel.Text = rowPriceText(bind)
 		if bind.kind == "crude" then
 			local inv = maxCrudeWarehouseBarrels()
 			bind.storedLabel.Text = string.format("Stored: %d barrels", inv)
 			clampCrudeSelectionToWarehouse()
-			bind.amountLabel.Text = tostring(crudeBlendSelected())
+			setAmountFieldText(bind.amountField, crudeBlendSelected())
 		elseif bind.kind == "tier" and bind.tier then
 			local tier = bind.tier
 			local inv = maxBarrelsInWarehouseForTier(tier)
 			bind.storedLabel.Text = string.format("Stored: %d barrels", inv)
 			local s = math.min(selected[tier] or 0, inv)
 			selected[tier] = s
-			bind.amountLabel.Text = tostring(s)
+			setAmountFieldText(bind.amountField, s)
 		end
 		if bind.typeNameLabel then
 			local title = rowDisplayTitle(bind)
@@ -282,10 +502,20 @@ local function refreshRowUi()
 		totalProfitLabel.Text = string.format("$%d", totalSelectedPayout())
 	end
 	if sellButton then
-		local n = crudeBlendSelected() + (selected.LightSweet or 0) + (selected.PremiumRefined or 0)
-		sellButton.Active = n > 0
+		local n = sumSelectedSellBarrels()
+		sellButton.Active = true
 		sellButton.AutoButtonColor = n > 0
 	end
+	refreshWarehouseTitle()
+	maybeFireFtueSellPointerRefresh()
+end
+
+local function applyTypedSellTier(tier: string, raw: string)
+	local want = parseUnsignedBarrelInput(raw)
+	local inv = maxBarrelsInWarehouseForTier(tier)
+	selected[tier] = math.min(want, inv)
+	clampSelectionsToInventory()
+	refreshRowUi()
 end
 
 local function bumpTier(tier: string, delta: number)
@@ -304,16 +534,18 @@ local function bumpCrudeBlend(delta: number)
 end
 
 local function trySell()
+	local h = selected.HeavyCrude or 0
+	local ls, pr = selected.LightSweet or 0, selected.PremiumRefined or 0
+	if h + ls + pr <= 0 then
+		UiSfx.playUiDenied()
+		showErrorNotification("Select at least one barrel to sell.", 4)
+		return
+	end
 	local now = os.clock()
 	if now - lastSellFire < 0.45 then
 		return
 	end
 	lastSellFire = now
-	local h = selected.HeavyCrude or 0
-	local ls, pr = selected.LightSweet or 0, selected.PremiumRefined or 0
-	if h + ls + pr <= 0 then
-		return
-	end
 	local ev = requestSellWarehouseBarrels
 	if ev then
 		UiSfx.playKaching()
@@ -331,21 +563,41 @@ local function disconnectAll()
 	end
 	table.clear(connections)
 	table.clear(rowBindings)
+	table.clear(sellAmountTextBoxTier)
 	totalProfitLabel = nil
+	warehouseTitleLabel = nil
+	warehouseStoredTotal = 0
+	warehouseCapTotal = 0
+	hasWarehouseTotals = false
 	sellButton = nil
 	requestSellWarehouseBarrels = nil
 	wiredScreen = nil
+	lastFtueSellPeekOpen = nil
+	lastFtueSellPeekBarrels = nil
+	hideErrorNotification()
+	errorNotificationLabel = nil
 end
 
-local function wireSellOil(screen: ScreenGui)
+local function wireSellOil(screen: ScreenGui, closePanel: (() -> ())?)
 	if wiredScreen == screen then
 		return
 	end
 	disconnectAll()
 	wiredScreen = screen
 
+	errorNotificationLabel = ensureErrorNotificationLabel(screen)
+	if errorNotificationLabel then
+		errorNotificationLabel.Visible = false
+		errorNotificationLabel.TextTransparency = 0
+	end
+
 	local panel = screen:FindFirstChild("Panel", true)
 	local body = panel and panel:FindFirstChild("Body", true)
+	local whHeader = body and body:FindFirstChild("WarehouseHeader", true)
+	local whTitle = whHeader and whHeader:FindFirstChild("WarehouseTitle", true)
+	if whTitle and whTitle:IsA("TextLabel") then
+		warehouseTitleLabel = whTitle
+	end
 	local content = body and body:FindFirstChild("Content", true)
 	local oilRows = content and content:FindFirstChild("OilRows")
 	local summaryStrip = content and content:FindFirstChild("SummaryStrip", true)
@@ -373,6 +625,7 @@ local function wireSellOil(screen: ScreenGui)
 
 	local crudeRowWired = false
 	if oilRows and oilRows:IsA("Instance") then
+		local rowCandidates: { { ch: GuiObject, cfg: RowUiConfig } } = {}
 		for _, ch in ipairs(oilRows:GetChildren()) do
 			if not ch:IsA("GuiObject") then
 				continue
@@ -381,6 +634,17 @@ local function wireSellOil(screen: ScreenGui)
 			if not cfg then
 				continue
 			end
+			table.insert(rowCandidates, { ch = ch, cfg = cfg })
+		end
+		table.sort(rowCandidates, function(a, b)
+			if a.ch.LayoutOrder ~= b.ch.LayoutOrder then
+				return a.ch.LayoutOrder < b.ch.LayoutOrder
+			end
+			return a.ch.Name < b.ch.Name
+		end)
+		for _, entry in ipairs(rowCandidates) do
+			local ch = entry.ch
+			local cfg = entry.cfg
 			if cfg.kind == "crude" then
 				if crudeRowWired then
 					continue
@@ -389,7 +653,8 @@ local function wireSellOil(screen: ScreenGui)
 			end
 			local infoCol = ch:FindFirstChild("InfoColumn", true)
 			local typeName = infoCol and infoCol:FindFirstChild("TypeName", true)
-			local stored = infoCol and infoCol:FindFirstChild("StoredLabel", true)
+			local stored = ch:FindFirstChild("StoredLabel", true)
+				or (infoCol and infoCol:FindFirstChild("StoredLabel", true))
 			local priceLabel = ch:FindFirstChild("PriceLabel", true)
 			local stepper = ch:FindFirstChild("Stepper", true)
 			if not (stored and stored:IsA("TextLabel") and priceLabel and priceLabel:IsA("TextLabel") and stepper) then
@@ -398,8 +663,22 @@ local function wireSellOil(screen: ScreenGui)
 			local minus = stepper:FindFirstChild("MinusButton", true)
 			local plus = stepper:FindFirstChild("PlusButton", true)
 			local amt = stepper:FindFirstChild("AmountLabel", true)
-			if not (minus and minus:IsA("GuiButton") and plus and plus:IsA("GuiButton") and amt and amt:IsA("TextLabel")) then
+			if not (minus and minus:IsA("GuiButton") and plus and plus:IsA("GuiButton") and amt) then
 				continue
+			end
+			if not (amt:IsA("TextBox") or amt:IsA("TextLabel")) then
+				continue
+			end
+			local amountField = amt :: AmountField
+			local tierForAmount: string
+			if cfg.kind == "crude" then
+				tierForAmount = "HeavyCrude"
+			else
+				tierForAmount = cfg.tier :: string
+			end
+			if amt:IsA("TextBox") then
+				amt.ClearTextOnFocus = false
+				sellAmountTextBoxTier[amt :: TextBox] = tierForAmount
 			end
 			local dataTier = dataTierForRowConfig(cfg)
 			local bind: RowBinding = {
@@ -409,7 +688,7 @@ local function wireSellOil(screen: ScreenGui)
 				typeNameLabel = if typeName and typeName:IsA("TextLabel") then typeName :: TextLabel else nil,
 				storedLabel = stored :: TextLabel,
 				priceLabel = priceLabel :: TextLabel,
-				amountLabel = amt :: TextLabel,
+				amountField = amountField,
 				minus = minus :: GuiButton,
 				plus = plus :: GuiButton,
 				subtotalRight = findSubtotalRight(totalsPanel, dataTier),
@@ -422,6 +701,11 @@ local function wireSellOil(screen: ScreenGui)
 				table.insert(connections, bind.plus.Activated:Connect(function()
 					bumpCrudeBlend(1)
 				end))
+				if amt:IsA("TextBox") then
+					table.insert(connections, amt.FocusLost:Connect(function()
+						applyTypedSellTier("HeavyCrude", amt.Text)
+					end))
+				end
 			elseif cfg.kind == "tier" then
 				local tier = cfg.tier
 				table.insert(connections, bind.minus.Activated:Connect(function()
@@ -430,9 +714,33 @@ local function wireSellOil(screen: ScreenGui)
 				table.insert(connections, bind.plus.Activated:Connect(function()
 					bumpTier(tier, 1)
 				end))
+				if amt:IsA("TextBox") then
+					table.insert(connections, amt.FocusLost:Connect(function()
+						applyTypedSellTier(tier, amt.Text)
+					end))
+				end
 			end
 		end
 	end
+
+	table.insert(connections, UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+		if gameProcessed then
+			return
+		end
+		if input.KeyCode ~= Enum.KeyCode.Return and input.KeyCode ~= Enum.KeyCode.KeypadEnter then
+			return
+		end
+		local tb = UserInputService:GetFocusedTextBox()
+		if not tb then
+			return
+		end
+		local tKey = sellAmountTextBoxTier[tb]
+		if not tKey then
+			return
+		end
+		applyTypedSellTier(tKey, tb.Text)
+		tb:ReleaseFocus()
+	end))
 
 	if sellButton then
 		table.insert(connections, sellButton.Activated:Connect(trySell))
@@ -462,10 +770,14 @@ local function wireSellOil(screen: ScreenGui)
 		if typeof(data) == "table" and typeof(data.shipmentId) == "string" then
 			return
 		end
+		hideErrorNotification()
 		for _, k in ipairs(TIER_KEYS) do
 			selected[k] = 0
 		end
 		refreshRowUi()
+		if wiredScreen == screen and screen.Enabled and closePanel then
+			closePanel()
+		end
 	end))
 
 	local snapWh = rf:FindFirstChild(RemoteNames.RequestWarehouseSnapshot)
@@ -490,6 +802,11 @@ local function wireSellOil(screen: ScreenGui)
 
 	clampSelectionsToInventory()
 	refreshRowUi()
+
+	table.insert(connections, screen:GetPropertyChangedSignal("Enabled"):Connect(function()
+		maybeFireFtueSellPointerRefresh()
+	end))
+	maybeFireFtueSellPointerRefresh()
 end
 
 function SellOilPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelController?
@@ -497,7 +814,9 @@ function SellOilPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelControll
 	if not ctrl then
 		return nil
 	end
-	wireSellOil(ctrl.ScreenGui)
+	wireSellOil(ctrl.ScreenGui, function()
+		ctrl.Close()
+	end)
 	return ctrl
 end
 

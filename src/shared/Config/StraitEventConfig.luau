@@ -6,7 +6,7 @@ export type PublicStraitBracket = "Open" | "Restricted" | "Closed"
 
 local StraitEventConfig = {
 	-- Lane waypoint ordinals (sorted names under each route); path index = 1 + n (dock is path[1]).
-	LaneWaypointTriggers = { 3, 6, 9 } :: { number },
+	LaneWaypointTriggers = { 2, 3, 4, 5, 6, 7, 8, 9 } :: { number },
 
 	-- Universal hold at waypoint for strait VFX (events without a longer explicit pause).
 	DefaultWaypointPauseSeconds = 5,
@@ -15,16 +15,17 @@ local StraitEventConfig = {
 
 	-- P(trigger) at each trigger point, independent rolls.
 	OccurrenceChance = {
-		Open = 0.10,
-		Restricted = 0.50,
-		Closed = 0.80,
+		Open = 0.15,
+		Restricted = 0.40,
+		Closed = 0.60,
 	} :: { [PublicStraitBracket]: number },
 
-	-- Restricted: P(High | hit); remainder splits 50/50 Low vs Medium.
-	RestrictedHighChance = 0.25,
+	-- Restricted: P(High | hit); of the remainder, P(Low) = this and P(Medium) = 1 - this (Medium-weighted).
+	RestrictedHighChance = 0.15,
+	RestrictedLowVersusMediumChance = 0.45, -- Low 45% / Medium 55% after High gate
 
 	-- Closed: P(Medium | hit); else High.
-	ClosedMediumChance = 0.50,
+	ClosedMediumChance = 0.60,
 }
 
 function StraitEventConfig.PublicBracketFromEngineState(engineState: string): PublicStraitBracket
@@ -56,7 +57,7 @@ function StraitEventConfig.RollSeverity(bracket: PublicStraitBracket, rng: Rando
 		if rng:NextNumber() < StraitEventConfig.RestrictedHighChance then
 			return "High"
 		end
-		return if rng:NextNumber() < 0.5 then "Low" else "Medium"
+		return if rng:NextNumber() < StraitEventConfig.RestrictedLowVersusMediumChance then "Low" else "Medium"
 	else
 		return if rng:NextNumber() < StraitEventConfig.ClosedMediumChance then "Medium" else "High"
 	end

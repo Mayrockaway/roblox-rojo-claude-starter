@@ -11,11 +11,54 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local mouse = player:GetMouse()
 
+--- FTUE overlays / pointer ScreenGuis must match **`HUD.IgnoreGuiInset`** or scale-based positions
+--- sit in a different viewport (safe-area vs full screen) and look misaligned next to HUD.
+--- Modal `ScreenGuis` pointed at during FTUE (e.g. Ship Oil) must use the **same** inset as the pointer layer
+--- (`FTUEDialogueGui`) or authored `UDim2` positions will not line up in play vs devices with safe areas.
+local function syncFtueOverlayInsetWithHud()
+	local hud = playerGui:FindFirstChild("HUD", true)
+	if not (hud and hud:IsA("ScreenGui")) then
+		return
+	end
+	local inset = hud.IgnoreGuiInset
+	-- FTUE pointers live under `Canvas.Pointers` inside `FTUEDialogueGui` (not separate top-level ScreenGuis).
+	for _, n in ipairs({
+		"FTUEDialogueGui",
+		"FtueDialogueGui",
+		"ShipOilPanelGui",
+		"SellOilPanelGui",
+	}) do
+		local sg = playerGui:FindFirstChild(n, true)
+		if sg and sg:IsA("ScreenGui") then
+			sg.IgnoreGuiInset = inset
+		end
+	end
+end
+
+task.defer(syncFtueOverlayInsetWithHud)
+task.spawn(function()
+	for _ = 1, 120 do
+		syncFtueOverlayInsetWithHud()
+		local hud = playerGui:FindFirstChild("HUD", true)
+		if hud and hud:IsA("ScreenGui") then
+			break
+		end
+		task.wait(0.25)
+	end
+end)
+playerGui.ChildAdded:Connect(function(ch)
+	if ch:IsA("ScreenGui") then
+		task.defer(syncFtueOverlayInsetWithHud)
+	end
+end)
+
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local Constants = require(Shared:WaitForChild("Constants"))
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
+local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
 local PlacementAnchor = require(Shared:WaitForChild("Utils"):WaitForChild("PlacementAnchor"))
+local PlotCellTileResolve = require(Shared:WaitForChild("Utils"):WaitForChild("PlotCellTileResolve"))
 
 type StraitWaypointFxModule = {
 	OnStraitWaypointPayload: (data: { [string]: any }) -> (),
@@ -135,6 +178,9 @@ local biomeRevealEvent = waitRemote(RemoteNames.BiomeRevealEvent) :: RemoteEvent
 local requestDispatchShipment = waitRemote(RemoteNames.RequestDispatchShipment) :: RemoteEvent
 local oilStateUpdate = waitRemote(RemoteNames.OilStateUpdate) :: RemoteEvent
 local oilActionResult = waitRemote(RemoteNames.OilActionResult) :: RemoteEvent
+local requestFtueAcknowledge = waitRemote(RemoteNames.RequestFtueAcknowledge) :: RemoteEvent
+local requestFtueSkip = waitRemote(RemoteNames.RequestFtueSkip) :: RemoteEvent
+local ftueStateUpdate = waitRemote(RemoteNames.FtueStateUpdate) :: RemoteEvent
 local shipmentVisualEvent = waitRemote(RemoteNames.ShipmentVisualEvent) :: RemoteEvent
 local requestDevSetStraitBracket = waitRemote(RemoteNames.RequestDevSetStraitBracket) :: RemoteEvent
 local globalStateUpdate = waitRemote(RemoteNames.GlobalStateUpdate) :: RemoteEvent
@@ -333,13 +379,16 @@ local _clientGridCache = nil
 local function plotGridConstants()
 	if _clientGridCache then return unpack(_clientGridCache) end
 
-	local sectionCols = (config.chunks and config.chunks.cols) or 3
-	local sectionRows = (config.chunks and config.chunks.rows) or 4
-	local sectionSize = (config.chunks and config.chunks.size) or 40
+	-- Must match server `OilConfig.Chunks` (not legacy `config.chunks` defaults) so cell keys align with FTUE / drills.
+	local oc = OilConfig.Chunks
+	local sectionCols = oc.GridCols
+	local sectionRows = oc.GridRows
+	local sectionSize = oc.Size
 	local subTilesPerSide = math.floor(sectionSize / SUB_TILE_SIZE)
 
-	-- Derive center from actual plot sections instead of hardcoding
-	local centerX, centerZ = -840, -1020
+	-- Derive center from actual plot sections; default (0,0) matches `OilStateService.plotGridOrigin`
+	-- when sections have no CenterX/CenterZ (legacy hardcoded -840,-1020 broke grid vs server).
+	local centerX, centerZ = 0, 0
 	if ownedPlot then
 		local ground = ownedPlot:FindFirstChild("PlotGround")
 		if ground then
@@ -948,17 +997,33 @@ local function isPlacementValid(chunkId: string, hitPos: Vector3, equipKind: str
 	end
 	if kind == "Drill" then
 		local want = readLocalFtueCellKey(Constants.FtueRestrictDrillCellKeyAttribute)
-		if want then
-			local row, col = clientWorldToCell(hitPos.X, hitPos.Z)
-			if not clientCellInBounds(row, col) or cellKeyOf(row, col) ~= want then
+		if want and ownedPlot then
+			local ch = chunkStateById[chunkId]
+			local ck = PlotCellTileResolve.globalCellKeyFromChunkHit(
+				ownedPlot,
+				chunkId,
+				hitPos.X,
+				hitPos.Z,
+				ch and ch.row,
+				ch and ch.col
+			)
+			if ck ~= want then
 				return false
 			end
 		end
 	elseif kind == "Pump" then
 		local want = readLocalFtueCellKey(Constants.FtueRestrictPumpCellKeyAttribute)
-		if want then
-			local row, col = clientWorldToCell(hitPos.X, hitPos.Z)
-			if not clientCellInBounds(row, col) or cellKeyOf(row, col) ~= want then
+		if want and ownedPlot then
+			local ch = chunkStateById[chunkId]
+			local ck = PlotCellTileResolve.globalCellKeyFromChunkHit(
+				ownedPlot,
+				chunkId,
+				hitPos.X,
+				hitPos.Z,
+				ch and ch.row,
+				ch and ch.col
+			)
+			if ck ~= want then
 				return false
 			end
 		end
@@ -1601,20 +1666,36 @@ local function tryPrimaryAction()
 	}
 	if kind == "Drill" then
 		local wantDrill = readLocalFtueCellKey(Constants.FtueRestrictDrillCellKeyAttribute)
-		if wantDrill then
-			local row, col = clientWorldToCell(hitPos.X, hitPos.Z)
-			if not clientCellInBounds(row, col) or cellKeyOf(row, col) ~= wantDrill then
-				setStatus("Place the drill on the marked tile.", false)
+		if wantDrill and ownedPlot then
+			local ch = chunkStateById[chunkId]
+			local ck = PlotCellTileResolve.globalCellKeyFromChunkHit(
+				ownedPlot,
+				chunkId,
+				hitPos.X,
+				hitPos.Z,
+				ch and ch.row,
+				ch and ch.col
+			)
+			if ck ~= wantDrill then
+				setStatus(FtueConfig.ClientHintPlaceDrillOnTile, false)
 				return
 			end
 		end
 		requestStartDrill:FireServer(payload)
 	elseif kind == "Pump" then
 		local wantPump = readLocalFtueCellKey(Constants.FtueRestrictPumpCellKeyAttribute)
-		if wantPump then
-			local row, col = clientWorldToCell(hitPos.X, hitPos.Z)
-			if not clientCellInBounds(row, col) or cellKeyOf(row, col) ~= wantPump then
-				setStatus("Place the collector on the marked tile.", false)
+		if wantPump and ownedPlot then
+			local ch = chunkStateById[chunkId]
+			local ck = PlotCellTileResolve.globalCellKeyFromChunkHit(
+				ownedPlot,
+				chunkId,
+				hitPos.X,
+				hitPos.Z,
+				ch and ch.row,
+				ch and ch.col
+			)
+			if ck ~= wantPump then
+				setStatus(FtueConfig.ClientHintPlacePumpOnTile, false)
 				return
 			end
 		end
@@ -1648,6 +1729,8 @@ local function applySnapshot(snapshot: any): boolean
 			config[k] = v
 		end
 	end
+	-- Grid cache must rebuild if snapshot arrived late or chunk dimensions changed.
+	_clientGridCache = nil
 	rebuildStateMaps()
 	updateUi()
 	return typeof(state) == "table" and next(chunkStateById) ~= nil
@@ -1763,6 +1846,9 @@ end)
 
 oilActionResult.OnClientEvent:Connect(function(payload)
 	if typeof(payload) ~= "table" then
+		return
+	end
+	if payload.code == "ERR_FTUE_WRONG_TILE" then
 		return
 	end
 	local okOpt: boolean? = nil
@@ -1944,6 +2030,7 @@ pirateHireResultEvent.OnClientEvent:Connect(function(payload)
 	end
 end)
 
+-- Server uses FireClient per recipient; banner only reaches impacted players.
 pirateHitAlertEvent.OnClientEvent:Connect(function(payload)
 	if typeof(payload) ~= "table" then
 		return
@@ -1966,6 +2053,11 @@ local STRAIT_PLAYTEST_BANNER_KINDS: { [string]: boolean } = {
 
 local function showStraitPlaytestBannerIfNeeded(kind: string, data: { [string]: any })
 	if not STRAIT_PLAYTEST_BANNER_KINDS[kind] then
+		return
+	end
+	-- ShipmentVisualEvent is FireAllClients; show the large playtest title only to the ship owner.
+	local ownerUid = data.ownerUserId or data.playerUserId
+	if typeof(ownerUid) ~= "number" or ownerUid ~= player.UserId then
 		return
 	end
 	if kind == "MissileStrikeEvent" then
@@ -2486,6 +2578,80 @@ task.spawn(function()
 			marketState.typeMultipliers = snapshot.typeMultipliers
 		end
 		updateMarketUi()
+	end
+end)
+
+-- FTUE modules live under `PlayerScripts.Client.UI` (Rojo: `src/client/UI`), i.e. `script.Parent.UI` — not `script.UI`.
+task.defer(function()
+	local uiRoot = (script.Parent and script.Parent:FindFirstChild("UI")) or getHudUiFolder()
+	if not uiRoot then
+		warn("[FTUE] Client UI folder missing — cannot load FtueDialogueController (expect script.Parent.UI)")
+		return
+	end
+	local mod = uiRoot:FindFirstChild("FtueDialogueController")
+	if not (mod and mod:IsA("ModuleScript")) then
+		warn("[FTUE] FtueDialogueController ModuleScript not found under " .. uiRoot:GetFullName())
+		return
+	end
+	local ok, FtueDialogueController = pcall(require, mod)
+	if not ok then
+		warn("[FTUE] FtueDialogueController require failed: " .. tostring(FtueDialogueController))
+		return
+	end
+	local startDlg = (FtueDialogueController :: any).start
+	if typeof(FtueDialogueController) == "table" and typeof(startDlg) == "function" then
+		print("[FTUE] Starting FtueDialogueController")
+		startDlg(player, playerGui, requestFtueAcknowledge, requestFtueSkip, ftueStateUpdate, oilActionResult)
+	else
+		warn("[FTUE] FtueDialogueController has no start()")
+	end
+end)
+
+	task.defer(function()
+		local uiRoot = (script.Parent and script.Parent:FindFirstChild("UI")) or getHudUiFolder()
+		if not uiRoot then
+			warn("[FTUE] Client UI folder missing — cannot load FtueUiPointers")
+			return
+		end
+		local modPtr = uiRoot:FindFirstChild("FtueUiPointers")
+		if not (modPtr and modPtr:IsA("ModuleScript")) then
+			warn("[FTUE] FtueUiPointers ModuleScript not found under " .. uiRoot:GetFullName())
+			return
+		end
+		local okP, FtueUiPointers = pcall(require, modPtr)
+		if not okP then
+			warn("[FTUE] FtueUiPointers require failed: " .. tostring(FtueUiPointers))
+			return
+		end
+		if typeof(FtueUiPointers) == "table" and typeof((FtueUiPointers :: any).start) == "function" then
+			(FtueUiPointers :: any).start(player, playerGui, ftueStateUpdate)
+		else
+			warn("[FTUE] FtueUiPointers has no start()")
+		end
+	end)
+
+	task.defer(function()
+		local uiRoot = (script.Parent and script.Parent:FindFirstChild("UI")) or getHudUiFolder()
+		if not uiRoot then
+			warn("[FTUE] Client UI folder missing — cannot load FtueTutorialTileHighlight")
+			return
+		end
+		local mod = uiRoot:FindFirstChild("FtueTutorialTileHighlight")
+	if not (mod and mod:IsA("ModuleScript")) then
+		warn("[FTUE] FtueTutorialTileHighlight ModuleScript not found under " .. uiRoot:GetFullName())
+		return
+	end
+	local ok, FtueTutorialTileHighlight = pcall(require, mod)
+	if not ok then
+		warn("[FTUE] FtueTutorialTileHighlight require failed: " .. tostring(FtueTutorialTileHighlight))
+		return
+	end
+	local startHl = (FtueTutorialTileHighlight :: any).start
+	if typeof(FtueTutorialTileHighlight) == "table" and typeof(startHl) == "function" then
+		print("[FTUE] Starting FtueTutorialTileHighlight")
+		startHl(player)
+	else
+		warn("[FTUE] FtueTutorialTileHighlight has no start()")
 	end
 end)
 

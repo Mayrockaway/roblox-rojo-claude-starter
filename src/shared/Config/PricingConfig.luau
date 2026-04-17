@@ -1,9 +1,9 @@
 --!strict
 
 local PricingConfig = {
-	-- Sub-cycle fluctuation interval (seconds)
-	MicroTickSeconds = 45,
-	MicroTickJitterSeconds = 10,
+	-- Sub-cycle fluctuation interval (seconds). Server uses `max(10, MicroTickSeconds ± jitter)` between rolls.
+	MicroTickSeconds = 18,
+	MicroTickJitterSeconds = 6,
 
 	-- How many past base prices to track for trend arrows
 	TrendMemory = 3,

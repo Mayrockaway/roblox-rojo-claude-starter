@@ -18,9 +18,14 @@ local NotifyShopToolConsumedSafe = require(script.Parent.Parent.Utils.NotifyShop
 
 local DrillingService = {}
 
+function DrillingService:SetFtueService(ftueService: any)
+	self._ftueService = ftueService
+end
+
 function DrillingService:Init(remoteService, oilStateService)
 	self._remoteService = remoteService
 	self._oilStateService = oilStateService
+	self._ftueService = nil :: any
 	self._connections = {}
 	-- Pending completion tasks keyed by "userId:drillId"
 	self._pendingCompletions = {}
@@ -61,6 +66,10 @@ function DrillingService:_scheduleDrillCompletion(userId: number, drillId: numbe
 			return
 		end
 		self:_fireDrillCompleted(userId, done)
+		local ftue = self._ftueService
+		if ftue and typeof((ftue :: any).OnFtueTutorialDrillFinished) == "function" then
+			(ftue :: any):OnFtueTutorialDrillFinished(userId, done)
+		end
 		self._oilStateService:PushState(userId)
 	end
 	if delaySeconds <= 0 then

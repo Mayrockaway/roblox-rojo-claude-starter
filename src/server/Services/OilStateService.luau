@@ -15,10 +15,14 @@ local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"
 local ShipUpgradeConfig = require(Shared:WaitForChild("Config"):WaitForChild("ShipUpgradeConfig"))
 local ShipProfileMigration = require(Shared:WaitForChild("Config"):WaitForChild("ShipProfileMigration"))
 local OilTankConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilTankConfig"))
+local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local DevLog = require(Shared:WaitForChild("DevLog"))
 
 local OilStateService = {}
+
+--- Set once from `init.server` after `FtueService` is required; used for placement → FTUE hooks.
+local _ftueService: any = nil
 
 local SAVE_INTERVAL_SECONDS = 25
 --- Avoid stacking multiple `SetAsync` calls for the same profile key in one burst (queue / throttling).
@@ -51,6 +55,21 @@ end
 
 local function floorPositive(value: number): number
 	return math.max(0, math.floor(value))
+end
+
+--- Fresh economy when FTUE is on uses `FtueConfig`; otherwise `OilConfig.StartingCash` ($500 legacy default).
+local function initialStartingCash(): number
+	if FtueConfig.Enabled == true then
+		return floorPositive(tonumber(FtueConfig.StartingCash) or 0)
+	end
+	return OilConfig.StartingCash
+end
+
+local function initialFtueEscortShipmentRemaining(): number
+	if FtueConfig.Enabled == true then
+		return 1
+	end
+	return 0
 end
 
 local function isDatastoreStudioAccessError(err: any): boolean
@@ -88,8 +107,11 @@ end
 
 local function buildDefaultPersisted()
 	return {
-		version = 6,
-		cash = OilConfig.StartingCash,
+		version = 7,
+		cash = initialStartingCash(),
+		ftueEscortShipmentRemaining = initialFtueEscortShipmentRemaining(),
+		ftueDispatchCashGranted = false,
+		ftueTutorialCompleteCashGranted = false,
 		storageCapacity = OilConfig.StartingStorageCapacity,
 		oilByTier = {
 			HeavyCrude = 0,
@@ -112,6 +134,9 @@ local function buildDefaultPersisted()
 		shipSpeedLevel = 1,
 		shipCapacityLevel = 1,
 		shipSkinId = "DefaultTanker",
+		ftueStep = if FtueConfig.Enabled then FtueConfig.Step.Intro else nil,
+		ftueCompleted = not FtueConfig.Enabled,
+		ftueDoneScreenAcknowledged = false,
 	}
 end
 
@@ -460,6 +485,47 @@ function OilStateService:Init(remoteService, plotService)
 	end
 end
 
+function OilStateService:SetFtueService(ftueService: any)
+	_ftueService = ftueService
+end
+
+--- Persists FTUE step with oil profile (`_markDirty`). Called from `FtueService` only.
+function OilStateService:SetFtueProgress(userId: number, step: string?)
+	local state = self._statesByUserId[userId]
+	if not state then
+		return
+	end
+	state.ftueStep = step
+	--- `ftueCompleted` = tutorial **fully** finished (after Complete! on Done); `ftueStep == Done` is still in-progress.
+	state.ftueCompleted = (step == nil)
+	-- Tutorial escort vessel is only for the first dispatch during `Dispatch`; never after FTUE completes or past that leg.
+	if state.ftueCompleted or step == FtueConfig.Step.Done or step == FtueConfig.Step.WaitShipment then
+		state.ftueEscortShipmentRemaining = 0
+	end
+	if FtueConfig.DebugTrace == true then
+		warn(
+			string.format(
+				"[FTUE][OilState] SetFtueProgress uid=%d step=%s -> ftueStep=%s ftueCompleted=%s",
+				userId,
+				tostring(step),
+				tostring((state :: any).ftueStep),
+				tostring((state :: any).ftueCompleted)
+			)
+		)
+	end
+	self:_markDirty(userId)
+end
+
+--- After the player dismisses the final FTUE "Done" dialogue; keeps `FtueStep` from re-applying that screen on reload.
+function OilStateService:SetFtueDoneScreenAcknowledged(userId: number, acknowledged: boolean)
+	local state = self._statesByUserId[userId]
+	if not state then
+		return
+	end
+	(state :: any).ftueDoneScreenAcknowledged = acknowledged
+	self:_markDirty(userId)
+end
+
 --- Fired after a plot profile is loaded into memory: `(userId, drillCompletions, prospectCompletions)`.
 --- Used to replay completed timers that finished while offline and to schedule remaining delays.
 function OilStateService:SetStateReadyForTimersCallback(cb: (number, { any }, { any }) -> ())
@@ -484,6 +550,9 @@ function OilStateService:Start()
 
 	table.insert(self._connections, self._plotService:OnPlotAssigned(function(userId: number, plot: Model)
 		self:_ensurePlayerState(userId, plot)
+		if _ftueService and typeof((_ftueService :: any).SyncFromOilState) == "function" then
+			(_ftueService :: any):SyncFromOilState(userId)
+		end
 		self:PushState(userId)
 	end))
 
@@ -507,6 +576,9 @@ function OilStateService:Start()
 		local plot = self._plotService:GetOwnedPlot(player.UserId)
 		if plot then
 			self:_ensurePlayerState(player.UserId, plot)
+			if _ftueService and typeof((_ftueService :: any).SyncFromOilState) == "function" then
+				(_ftueService :: any):SyncFromOilState(player.UserId)
+			end
 			self:PushState(player.UserId)
 		end
 	end
@@ -731,6 +803,7 @@ function OilStateService:GetStateForClient(userId: number)
 			cellCol = drill.cellCol,
 			bufferTotal = bufferTotal,
 			bufferCap = (OilConfig.DrillBufferCapacity or 20) * #TIER_ORDER,
+			ftueFreeNoSellback = drill.ftueFreeNoSellback == true,
 		})
 	end
 
@@ -787,6 +860,7 @@ function OilStateService:GetStateForClient(userId: number)
 						endTime = et,
 						remaining = math.max(0, et - nowT),
 						oilType = e.oilType,
+						ftueFreeNoSellback = e.ftueFreeNoSellback == true,
 					})
 				else
 					-- Do not mutate `state.activeDrills` here: a transient missing/stale `state.plot` would
@@ -812,6 +886,7 @@ function OilStateService:GetStateForClient(userId: number)
 			sectionId = pipe.sectionId,
 			position = { x = pipe.position.X, y = pipe.position.Y, z = pipe.position.Z },
 			isCorePipe = pipe.isCorePipe == true,
+			ftueFreeNoSellback = pipe.ftueFreeNoSellback == true,
 		})
 	end
 
@@ -1295,6 +1370,10 @@ function OilStateService:TryStartDrill(userId: number, payload): (boolean, strin
 	end
 
 	local ck = cellKey(cellR, cellC)
+	local ftueDrillCell = readFtueCellAttribute(userId, Constants.FtueRestrictDrillCellKeyAttribute)
+	if ftueDrillCell and ftueDrillCell ~= ck then
+		return false, "ERR_FTUE_WRONG_TILE", FtueConfig.WrongTileDrill, nil
+	end
 	-- Block placing a drill where a pump or another drill already is
 	for _, pump in pairs(state.drillsById) do
 		if pump.cellKey == ck then
@@ -1317,6 +1396,18 @@ function OilStateService:TryStartDrill(userId: number, payload): (boolean, strin
 	-- T1 at 1x is normal speed; T2 drills 10x faster, T3 drills 30x faster.
 	local baseSeconds = (tile and tonumber(tile.drillSeconds)) or tierCfg.fallbackSeconds or 10
 	local effectiveSeconds = math.max(0.5, baseSeconds / (tierCfg.timeDivisor or 1))
+	local plr = Players:GetPlayerByUserId(userId)
+	local ftueStep = plr and plr:GetAttribute(Constants.FtueStepAttribute)
+	local ftueFreeNoSellback = (
+		FtueConfig.Enabled == true
+		and ftueDrillCell ~= nil
+		and ftueDrillCell == ck
+		and typeof(ftueStep) == "string"
+		and ftueStep == FtueConfig.Step.WaitDrill
+	)
+	if ftueFreeNoSellback then
+		effectiveSeconds = math.max(0.5, tonumber(FtueConfig.FtueTutorialDrillSeconds) or 5)
+	end
 
 	local now = workspace:GetServerTimeNow()
 	local entry = {
@@ -1332,6 +1423,7 @@ function OilStateService:TryStartDrill(userId: number, payload): (boolean, strin
 		endTime = now + effectiveSeconds,
 		oilType = (tile and tile.oilType) or nil,
 		template = tierCfg.templateName,
+		ftueFreeNoSellback = ftueFreeNoSellback,
 	}
 	state.activeDrills[drillId] = entry
 	self:_markDirty(userId)
@@ -1367,6 +1459,7 @@ function OilStateService:CompleteDrill(userId: number, drillId: number): (boolea
 		drillId = drillId,
 		chunkId = entry.chunkId,
 		tileKey = entry.tileKey,
+		cellKey = entry.cellKey,
 		position = entry.position,
 		oilType = entry.oilType,
 		hasOil = hasOil,
@@ -1467,6 +1560,15 @@ function OilStateService:TryPlacePump(userId: number, payload): (boolean, string
 	if ftuePumpCell and ftuePumpCell ~= ck then
 		return false, "ERR_FTUE_WRONG_TILE", "Place the collector on the marked tile.", nil
 	end
+	local plrPump = Players:GetPlayerByUserId(userId)
+	local ftueStepPump = plrPump and plrPump:GetAttribute(Constants.FtueStepAttribute)
+	local ftueFreeNoSellbackPump = (
+		FtueConfig.Enabled == true
+		and ftuePumpCell ~= nil
+		and ftuePumpCell == ck
+		and typeof(ftueStepPump) == "string"
+		and ftueStepPump == FtueConfig.Step.WaitPump
+	)
 	for _, existing in pairs(state.drillsById) do
 		if existing.cellKey == ck then
 			return false, "ERR_CELL_OCCUPIED", "A pump is already placed here.", nil
@@ -1519,10 +1621,16 @@ function OilStateService:TryPlacePump(userId: number, payload): (boolean, string
 		localBuffer = emptyTierMap(),
 		connected = false,
 		placementCost = tierCfg.cost or 0,
+		ftueFreeNoSellback = ftueFreeNoSellbackPump,
 	}
 	state.drillsById[pumpId] = pump
 	state.activeDrillCount += 1
 	self:_markDirty(userId)
+
+	if FtueConfig.Enabled and _ftueService and typeof((_ftueService :: any).OnFtueTutorialPumpPlaced) == "function" then
+		(_ftueService :: any):OnFtueTutorialPumpPlaced(userId, ck)
+	end
+
 	return true, "OK", "Pump placed.", { drillId = pumpId, pumpId = pumpId, tier = tier, tileKey = tileKey }
 end
 
@@ -1641,6 +1749,9 @@ function OilStateService:TryHammerDestroy(userId: number, payload: any): (boolea
 		local drillId = tonumber(payload.targetId)
 		local pump = drillId and state.drillsById[drillId]
 		if not pump then return false, "ERR_BAD_TARGET", "Pump not found.", nil end
+		if pump.ftueFreeNoSellback == true then
+			return false, "ERR_PROTECTED_FTUE", "Tutorial equipment cannot be sold back.", nil
+		end
 		local cost = tonumber(pump.placementCost) or 0
 		refundedAmount = math.floor(cost * 0.10)
 		state.drillsById[drillId] = nil
@@ -1652,6 +1763,9 @@ function OilStateService:TryHammerDestroy(userId: number, payload: any): (boolea
 		if not pipe then return false, "ERR_BAD_TARGET", "Pipe not found.", nil end
 		if pipe.isCorePipe == true then
 			return false, "ERR_PROTECTED_PIPE", "Core pipe cannot be removed.", nil
+		end
+		if pipe.ftueFreeNoSellback == true then
+			return false, "ERR_PROTECTED_FTUE", "Tutorial equipment cannot be sold back.", nil
 		end
 		local cost = tonumber(pipe.placementCost) or tonumber(OilConfig.Pipes.Cost) or 0
 		refundedAmount = math.floor(cost * 0.10)
@@ -1670,6 +1784,9 @@ function OilStateService:TryHammerDestroy(userId: number, payload: any): (boolea
 		local drillId = tonumber(payload.targetId)
 		local active = drillId and state.activeDrills[drillId]
 		if not active then return false, "ERR_BAD_TARGET", "Drill op not found.", nil end
+		if active.ftueFreeNoSellback == true then
+			return false, "ERR_PROTECTED_FTUE", "Tutorial equipment cannot be sold back.", nil
+		end
 		local tierCfg = OilConfig.DrillTiers[active.tier]
 		refundedAmount = math.floor((tierCfg and tierCfg.cost or 0) * 0.10)
 		state.activeDrills[drillId] = nil
@@ -1775,6 +1892,10 @@ function OilStateService:TryPlacePipe(userId: number, payload): (boolean, string
 
 	-- One pipe per cell
 	local key = cellKey(row, col)
+	local ftuePipeCell = readFtueCellAttribute(userId, Constants.FtueRestrictPipeCellKeyAttribute)
+	if ftuePipeCell and ftuePipeCell ~= key then
+		return false, "ERR_FTUE_WRONG_TILE", FtueConfig.WrongTilePipe, nil
+	end
 	if state.pipesByCellKey[key] then
 		return false, "ERR_CELL_OCCUPIED", "There is already a pipe here.", nil
 	end
@@ -1796,6 +1917,16 @@ function OilStateService:TryPlacePipe(userId: number, payload): (boolean, string
 	end
 	local wy = if typeof(snappedY) == "number" then snappedY else 6
 
+	local plrPipe = Players:GetPlayerByUserId(userId)
+	local ftueStepPipe = plrPipe and plrPipe:GetAttribute(Constants.FtueStepAttribute)
+	local ftueFreeNoSellbackPipe = (
+		FtueConfig.Enabled == true
+		and ftuePipeCell ~= nil
+		and ftuePipeCell == key
+		and typeof(ftueStepPipe) == "string"
+		and ftueStepPipe == FtueConfig.Step.WaitPipe
+	)
+
 	state.pipesByCellKey[key] = {
 		pipeId = pipeId,
 		cellKey = key,
@@ -1803,9 +1934,15 @@ function OilStateService:TryPlacePipe(userId: number, payload): (boolean, string
 		col = col,
 		sectionId = sectionId,
 		position = Vector3.new(wx, wy, wz),
+		ftueFreeNoSellback = ftueFreeNoSellbackPipe,
 	}
 
 	self:_markDirty(userId)
+
+	if FtueConfig.Enabled and _ftueService and typeof((_ftueService :: any).OnFtueTutorialPipePlaced) == "function" then
+		(_ftueService :: any):OnFtueTutorialPipePlaced(userId, key)
+	end
+
 	return true, "OK", "Pipe placed.", { pipeId = pipeId, cellKey = key, row = row, col = col }
 end
 
@@ -1856,6 +1993,9 @@ function OilStateService:TryRemovePipe(userId: number, payload): (boolean, strin
 	end
 	if state.pipesByCellKey[key].isCorePipe == true then
 		return false, "ERR_PROTECTED_PIPE", "Core pipe cannot be removed."
+	end
+	if state.pipesByCellKey[key].ftueFreeNoSellback == true then
+		return false, "ERR_PROTECTED_FTUE", "Tutorial equipment cannot be removed this way."
 	end
 	state.pipesByCellKey[key] = nil
 	self:_markDirty(userId)
@@ -2226,7 +2366,10 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		ownerUserId = userId,
 		plotId = plotId,
 		plot = plot,
-		cash = OilConfig.StartingCash,
+		cash = initialStartingCash(),
+		ftueEscortShipmentRemaining = initialFtueEscortShipmentRemaining(),
+		ftueDispatchCashGranted = false,
+		ftueTutorialCompleteCashGranted = false,
 		-- Per-tank upgrade levels. storageCapacity is derived = sum of tank capacities.
 		tankTiers = defaultTankTiers(),
 		storageCapacity = 0, -- set below from tankTiers
@@ -2260,6 +2403,9 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		equipmentOwnedByItemId = {} :: { [string]: number },
 		--- When true, first inventory sync seeds `equipmentOwnedByItemId` from shop tools in Backpack (legacy profiles).
 		equipmentOwnedNeedsInventoryBackfill = false,
+		ftueStep = if FtueConfig.Enabled then FtueConfig.Step.Intro else nil,
+		ftueCompleted = not FtueConfig.Enabled,
+		ftueDoneScreenAcknowledged = false,
 	}
 
 	local persisted = self:_loadPersistedProfile(userId)
@@ -2497,6 +2643,86 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 	if typeof(persisted.cash) == "number" then
 		state.cash = floorPositive(persisted.cash)
 	end
+	if typeof((persisted :: any).ftueEscortShipmentRemaining) == "number" then
+		state.ftueEscortShipmentRemaining = math.clamp(math.floor((persisted :: any).ftueEscortShipmentRemaining), 0, 1)
+	else
+		state.ftueEscortShipmentRemaining = 0
+	end
+	if (persisted :: any).ftueDispatchCashGranted == true then
+		state.ftueDispatchCashGranted = true
+	else
+		state.ftueDispatchCashGranted = false
+	end
+	if (persisted :: any).ftueTutorialCompleteCashGranted == true then
+		state.ftueTutorialCompleteCashGranted = true
+	else
+		state.ftueTutorialCompleteCashGranted = false
+	end
+
+	-- FTUE step (v7+). Saves without these keys are pre-FTUE-progress profiles: skip tutorial.
+	local pFtue = persisted :: any
+	local hasFtueStepKey = typeof(pFtue.ftueStep) == "string"
+	local hasFtueCompletedKey = pFtue.ftueCompleted ~= nil
+	if not hasFtueStepKey and not hasFtueCompletedKey then
+		state.ftueCompleted = true
+		state.ftueStep = nil
+	elseif hasFtueStepKey then
+		local s = (pFtue.ftueStep :: string):gsub("^%s+", ""):gsub("%s+$", "")
+		if s == "" then
+			state.ftueStep = FtueConfig.Step.Intro
+			state.ftueCompleted = false
+		else
+			state.ftueStep = s
+			if s == FtueConfig.Step.Done then
+				--- Reaching the Done **step** is not "tutorial complete" until Complete! (`SetFtueProgress(nil)`).
+				if pFtue.ftueDoneScreenAcknowledged == true then
+					state.ftueStep = nil
+					state.ftueCompleted = true
+				else
+					state.ftueCompleted = false
+					--- Old bug: `ftueCompleted` was true while still on the Done modal — force modal to show.
+					if pFtue.ftueCompleted == true then
+						state.ftueCompleted = false
+					end
+				end
+			else
+				state.ftueCompleted = false
+			end
+		end
+	elseif pFtue.ftueCompleted == true then
+		state.ftueCompleted = true
+		state.ftueStep = nil
+	else
+		state.ftueCompleted = false
+		state.ftueStep = FtueConfig.Step.Intro
+	end
+
+	-- Done-screen dismissed (persisted). Legacy saves without key: infer from **fully** completed profile only.
+	if pFtue.ftueDoneScreenAcknowledged == true then
+		(state :: any).ftueDoneScreenAcknowledged = true
+	elseif pFtue.ftueDoneScreenAcknowledged == false then
+		(state :: any).ftueDoneScreenAcknowledged = false
+	else
+		(state :: any).ftueDoneScreenAcknowledged = (state.ftueCompleted == true and typeof((state :: any).ftueStep) ~= "string")
+	end
+
+	-- Tutorial escort ship only applies on the `Dispatch` step; clear stale flag after that leg or when FTUE is done.
+	if FtueConfig.Enabled then
+		local fs = (state :: any).ftueStep
+		if (state :: any).ftueCompleted == true then
+			state.ftueEscortShipmentRemaining = 0
+		elseif typeof(fs) == "string" then
+			if
+				fs == FtueConfig.Step.WaitShipment
+				or fs == FtueConfig.Step.Sell
+				or fs == FtueConfig.Step.WaitSell
+				or fs == FtueConfig.Step.Done
+			then
+				state.ftueEscortShipmentRemaining = 0
+			end
+		end
+	end
+
 	-- Legacy: earlier profiles stored a single `storageCapacity` global.
 	-- New model derives it from `tankTiers`. We ignore the legacy field unless tankTiers is missing,
 	-- in which case we let the default (tier 1 all around) stand — legacy capacity is unused.
@@ -2717,6 +2943,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 									endTime = et,
 									oilType = r.oilType,
 									template = tmpl,
+									ftueFreeNoSellback = r.ftueFreeNoSellback == true,
 								}
 							end
 						end
@@ -2888,6 +3115,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 										connected = rec.connected == true,
 										placementCost = floorPositive(tonumber(rec.placementCost) or tierCfg.cost or 0),
 										intakeAttachmentId = rec.intakeAttachmentId,
+										ftueFreeNoSellback = rec.ftueFreeNoSellback == true,
 									}
 									state.activeDrillCount += 1
 									restored += 1
@@ -2921,6 +3149,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 						sectionId = sectionId,
 						position = Vector3.new(x, 6, z),
 						isCorePipe = record.isCorePipe == true,
+						ftueFreeNoSellback = record.ftueFreeNoSellback == true,
 					}
 				end
 			end
@@ -3119,6 +3348,18 @@ end
 function OilStateService:_serializeState(state)
 	local persisted = buildDefaultPersisted()
 	persisted.cash = floorPositive(state.cash)
+	persisted.ftueEscortShipmentRemaining = math.clamp(math.floor(state.ftueEscortShipmentRemaining or 0), 0, 1)
+	persisted.ftueDispatchCashGranted = state.ftueDispatchCashGranted == true
+	persisted.ftueTutorialCompleteCashGranted = (state :: any).ftueTutorialCompleteCashGranted == true
+	if typeof((state :: any).ftueStep) == "string" then
+		(persisted :: any).ftueStep = (state :: any).ftueStep
+	elseif (state :: any).ftueCompleted == true then
+		(persisted :: any).ftueStep = nil
+	else
+		(persisted :: any).ftueStep = if FtueConfig.Enabled then FtueConfig.Step.Intro else FtueConfig.Step.Done
+	end
+	(persisted :: any).ftueCompleted = (state :: any).ftueCompleted == true
+	(persisted :: any).ftueDoneScreenAcknowledged = (state :: any).ftueDoneScreenAcknowledged == true
 	persisted.storageCapacity = math.max(1, floorPositive(state.storageCapacity))
 	persisted.oilByTier = copyTierMap(state.oilByTier)
 	persisted.tankTiers = {
@@ -3163,6 +3404,7 @@ function OilStateService:_serializeState(state)
 			intakeAttachmentId = drill.intakeAttachmentId,
 			connected = drill.connected == true,
 			placementCost = drill.placementCost,
+			ftueFreeNoSellback = drill.ftueFreeNoSellback == true,
 		})
 	end
 
@@ -3175,6 +3417,7 @@ function OilStateService:_serializeState(state)
 			col = pipe.col,
 			sectionId = pipe.sectionId,
 			isCorePipe = pipe.isCorePipe == true,
+			ftueFreeNoSellback = pipe.ftueFreeNoSellback == true,
 		})
 	end
 
@@ -3194,7 +3437,7 @@ function OilStateService:_serializeState(state)
 	persisted.nextProspectId = state.nextProspectId or 1
 	persisted.nextPipeId = state.nextPipeId
 	persisted.nextDrumId = state.nextDrumId
-	persisted.version = 6
+	persisted.version = 7
 
 	local activeDrillIds: { number } = {}
 	local seenActiveDrill: { [number]: boolean } = {}
@@ -3232,6 +3475,7 @@ function OilStateService:_serializeState(state)
 				endTime = ad.endTime,
 				oilType = ad.oilType,
 				template = ad.template,
+				ftueFreeNoSellback = ad.ftueFreeNoSellback == true,
 			})
 		end
 	end
@@ -3408,6 +3652,114 @@ function OilStateService:DevRemovePersistedOilProfile(userId: number)
 		end)
 	end
 	self._memoryStore[key] = nil
+end
+
+--- FTUE drill tile: **one cell past** the starter **front** core pipe (same rule as `_ensureDefaultPipesForPlayer`:
+--- `Lab Machine` `LookVector` from drum, else `drumRow - 1`). So: `Drum — front core pipe — drill`.
+--- The following `WaitPipe` step should target `GetFtuePipeTutorialCellKeyForPlot` (the front core pipe cell).
+function OilStateService:GetFtueDrillTargetCellKeyForPlot(plot: Model, state: any, userId: number): string?
+	local drumRow: number?, drumCol: number? = nil, nil
+	for _, drum in pairs(state.drumsById or {}) do
+		if typeof(drum) == "table" and drum.isCoreDrum == true then
+			local rr = tonumber(drum.row)
+			local cc = tonumber(drum.col)
+			if typeof(rr) == "number" and typeof(cc) == "number" then
+				drumRow, drumCol = rr, cc
+				break
+			end
+		end
+	end
+	if not drumRow or not drumCol then
+		local labModel = plot:FindFirstChild("Lab Machine")
+		if labModel and labModel:IsA("Model") then
+			drumRow, drumCol = findNearestPlotTileCell(plot, labModel:GetPivot().Position)
+		end
+	end
+	if not drumRow or not drumCol then
+		local startSectionRow = OilConfig.Chunks.StartingRow
+		local startSectionCol = OilConfig.Chunks.StartingCol
+		local s = staticGridConstants()
+		drumRow = (startSectionRow - 1) * s.subTilesPerSide + s.subTilesPerSide
+		drumCol = (startSectionCol - 1) * s.subTilesPerSide + math.ceil(s.subTilesPerSide / 2)
+	end
+	if not drumRow or not drumCol then
+		return nil
+	end
+
+	local frontRow: number?, frontCol: number? = nil, nil
+	local labModel = plot:FindFirstChild("Lab Machine")
+	if labModel and labModel:IsA("Model") then
+		frontRow, frontCol = pickNeighborCellByDirection(plot, drumRow, drumCol, labModel:GetPivot().LookVector)
+	end
+	if not frontRow or not frontCol then
+		frontRow, frontCol = drumRow - 1, drumCol
+	end
+	if not inBoundsCell(frontRow, frontCol) then
+		return nil
+	end
+
+	local dRow = frontRow - drumRow
+	local dCol = frontCol - drumCol
+	if dRow == 0 and dCol == 0 then
+		return nil
+	end
+	local drillRow = frontRow + dRow
+	local drillCol = frontCol + dCol
+	if not inBoundsCell(drillRow, drillCol) then
+		return nil
+	end
+
+	local pipes = state.pipesByCellKey or {}
+	local ck = cellKey(drillRow, drillCol)
+	local pipeOnDrill = pipes[ck]
+	if pipeOnDrill and pipeOnDrill.isCorePipe == true then
+		state.pipesByCellKey[ck] = nil
+		self:_markDirty(userId)
+	end
+	return ck
+end
+
+--- FTUE pipe placement (`WaitPipe`): the starter **front** core pipe cell — between drum and drill target.
+function OilStateService:GetFtuePipeTutorialCellKeyForPlot(plot: Model, state: any): string?
+	local drumRow: number?, drumCol: number? = nil, nil
+	for _, drum in pairs(state.drumsById or {}) do
+		if typeof(drum) == "table" and drum.isCoreDrum == true then
+			local rr = tonumber(drum.row)
+			local cc = tonumber(drum.col)
+			if typeof(rr) == "number" and typeof(cc) == "number" then
+				drumRow, drumCol = rr, cc
+				break
+			end
+		end
+	end
+	if not drumRow or not drumCol then
+		local labModel = plot:FindFirstChild("Lab Machine")
+		if labModel and labModel:IsA("Model") then
+			drumRow, drumCol = findNearestPlotTileCell(plot, labModel:GetPivot().Position)
+		end
+	end
+	if not drumRow or not drumCol then
+		local startSectionRow = OilConfig.Chunks.StartingRow
+		local startSectionCol = OilConfig.Chunks.StartingCol
+		local s = staticGridConstants()
+		drumRow = (startSectionRow - 1) * s.subTilesPerSide + s.subTilesPerSide
+		drumCol = (startSectionCol - 1) * s.subTilesPerSide + math.ceil(s.subTilesPerSide / 2)
+	end
+	if not drumRow or not drumCol then
+		return nil
+	end
+	local frontRow: number?, frontCol: number? = nil, nil
+	local labModel2 = plot:FindFirstChild("Lab Machine")
+	if labModel2 and labModel2:IsA("Model") then
+		frontRow, frontCol = pickNeighborCellByDirection(plot, drumRow, drumCol, labModel2:GetPivot().LookVector)
+	end
+	if not frontRow or not frontCol then
+		frontRow, frontCol = drumRow - 1, drumCol
+	end
+	if not inBoundsCell(frontRow, frontCol) then
+		return nil
+	end
+	return cellKey(frontRow, frontCol)
 end
 
 return OilStateService

@@ -6,7 +6,7 @@ Authoritative handoff for **oil shipment** strait events: design intent, tuning 
 
 ## 1. Goal
 
-- During each **oil shipment** voyage, evaluate **up to three** independent strait events at **fixed lane waypoints** (ordinals **3, 6, 9** along the sorted route polyline).
+- During each **oil shipment** voyage, evaluate **up to eight** independent strait events at **fixed lane waypoints** (ordinals **2–9** along the sorted route polyline; see `StraitEventConfig.LaneWaypointTriggers`).
 - Event **chance** and **severity pool** depend on the **current global strait state** at the moment the ship **crosses** each trigger (strait may change mid-voyage).
 - Outcomes are **server-authoritative**; **all clients** receive notifications so other players can see that something happened to a shipment.
 - **Legacy** time-random voyage hazard ticks on the shipment timeline are **removed** for oil in favor of this system.
@@ -48,11 +48,11 @@ Authoritative handoff for **oil shipment** strait events: design intent, tuning 
 
 - `OilShipmentService` builds `path[1] = dock`, then `path[2..]` = lane waypoint positions (parts under each lane folder, sorted by **numeric name**).
 - **Lane waypoint ordinal N** corresponds to **`path[1 + N]`**.
-- Triggers are at **N ∈ { 3, 6, 9 }** → **`path[4]`, `path[7]`, `path[10]`**.
+- Triggers are at **N ∈ { 2, 3, 4, 5, 6, 7, 8, 9 }** → **`path[3]` … `path[10]`**.
 - Cumulative distance along the polyline to vertex `path[k]` uses existing `segDists[k]`.
 - **Crossing:** fire when `prevTargetDist < segDists[pathIndex] <= targetDist` (handles frame skips).
 - Each ordinal fires **at most once** per shipment.
-- If a lane has **fewer than 9** waypoints, missing path indices are **omitted** (no trigger for that slot).
+- If a lane has **fewer than 10** vertices on the path (dock + waypoints), missing path indices are **omitted** (no trigger for that slot).
 
 ### 4.2 Strait state read time
 
@@ -66,25 +66,25 @@ Implementation: `StraitEventConfig.PublicBracketFromEngineState` (identity for t
 
 ### 4.4 Occurrence probability (per trigger, independent rolls)
 
-Each of the three waypoints rolls separately:
+Each trigger waypoint rolls separately:
 
 | Bracket | P(event at this waypoint) |
 |---------|----------------------------|
-| Open | **10%** |
-| Restricted | **50%** |
-| Closed | **80%** (fixed at 80%, not 80–90%) |
+| Open | **15%** |
+| Restricted | **40%** |
+| Closed | **60%** |
 
-**Closed** is intentionally harsh to discourage shipping during closure; tuning note in product: upgrades will later soften this.
+**Closed** remains punishing versus Open; per-waypoint occurrence was lowered versus the old 80% to offset **more trigger points** (2–9) and softer severity rolls.
 
 ### 4.5 Severity pool (given that an event fires)
 
 | Bracket | Severity rules |
 |---------|----------------|
 | Open | **Low only** |
-| Restricted | **25%** High; remaining **75%** split **50/50** Low vs Medium |
-| Closed | **No Low** — **50%** Medium, **50%** High |
+| Restricted | **15%** High; remaining **85%** split **45%** Low vs **55%** Medium |
+| Closed | **No Low** — **60%** Medium, **40%** High |
 
-(`RestrictedHighChance` and `ClosedMediumChance` live in `StraitEventConfig`.)
+(`RestrictedHighChance`, `RestrictedLowVersusMediumChance`, and `ClosedMediumChance` live in `StraitEventConfig`.)
 
 ### 4.6 Event selection
 
@@ -231,7 +231,7 @@ Defined in `StraitEvents/Catalog.luau`. **Design notes, merge history:** [EVENTS
 
 | Field | Effect |
 |-------|--------|
-| `ForceOccurrenceAtWaypoint = true` | Skip the occurrence roll; every valid 3/6/9 crossing still runs severity + catalog pick (best for “does the pipe work?”). |
+| `ForceOccurrenceAtWaypoint = true` | Skip the occurrence roll; every valid configured-lane-waypoint crossing still runs severity + catalog pick (best for “does the pipe work?”). |
 | `ForceBracket = "Closed"` (or `"Restricted"` / `"Open"`) | Ignore engine state for **bracket only**; combine with forced occurrence to test Closed severity mix every time. |
 | `LogWaypointTriggers = true` | **Server Output** (any environment): full strait waypoint diagnostics. |
 | `VerboseStraitWaypointLogsInStudio = true` (default) | In **Roblox Studio**, server prints the same diagnostics **without** setting `LogWaypointTriggers`. Use **View → Output** and confirm the **Server** filter. Set to `false` to silence Studio spam. |

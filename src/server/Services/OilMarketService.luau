@@ -7,6 +7,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local PricingConfig = require(Shared:WaitForChild("Config"):WaitForChild("PricingConfig"))
 local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
 
 local OIL_TYPES = { "HeavyCrude", "LightSweet", "PremiumRefined" }
 
@@ -17,6 +18,7 @@ function OilMarketService:Init(remoteService, straitStateService, warehouseServi
 	self._straitStateService = straitStateService
 	self._warehouseService = warehouseService
 	self._oilStateService = oilStateService
+	self._ftueService = nil :: any
 
 	self._rng = Random.new()
 	self._running = false
@@ -25,6 +27,10 @@ function OilMarketService:Init(remoteService, straitStateService, warehouseServi
 	self._currentPrices = {} -- derived per QualityConfig.Tiers keys
 	self._basePriceHistory = {} -- track base price for trend
 	self._nextMicroTickAt = 0
+end
+
+function OilMarketService:SetFtueService(ftueService: any)
+	self._ftueService = ftueService
 end
 
 function OilMarketService:Start()
@@ -201,6 +207,10 @@ function OilMarketService:HandleSellType(userId: number, oilType: string)
 	self._oilStateService:AddCash(userId, payout)
 	self._oilStateService:PushState(userId)
 
+	if self._ftueService and FtueConfig.Enabled and payout > 0 then
+		(self._ftueService :: any):OnFtueWarehouseSaleSuccess(userId, payout)
+	end
+
 	local displayName = QualityConfig.Tiers[oilType] and QualityConfig.Tiers[oilType].displayName or oilType
 	resultEvent:FireClient(player, {
 		ok = true,
@@ -264,6 +274,10 @@ function OilMarketService:HandleSellWarehouseBarrels(userId: number, payload: an
 	self._oilStateService:AddCash(userId, totalPayout)
 	self._oilStateService:PushState(userId)
 
+	if self._ftueService and FtueConfig.Enabled and totalPayout > 0 then
+		(self._ftueService :: any):OnFtueWarehouseSaleSuccess(userId, totalPayout)
+	end
+
 	resultEvent:FireClient(player, {
 		ok = true,
 		message = string.format("Sold %d barrels for $%d!", totalSell, totalPayout),
@@ -294,6 +308,10 @@ function OilMarketService:HandleSellAll(userId: number)
 	self._warehouseService:RemoveAllBarrels(userId)
 	self._oilStateService:AddCash(userId, totalPayout)
 	self._oilStateService:PushState(userId)
+
+	if self._ftueService and FtueConfig.Enabled and totalPayout > 0 then
+		(self._ftueService :: any):OnFtueWarehouseSaleSuccess(userId, totalPayout)
+	end
 
 	resultEvent:FireClient(player, {
 		ok = true,

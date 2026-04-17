@@ -492,4 +492,37 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 	})
 end
 
+--- FTUE / rewards: add owned shop stacks without charging cash; clones or merges into Backpack like a purchase.
+function EquipmentShopService:GrantFreeOwnedEquipment(player: Player, itemId: string, qty: number)
+	if not self._running then
+		return
+	end
+	if typeof(itemId) ~= "string" or itemId == "" or qty < 1 then
+		return
+	end
+	local item = self:_findItem(itemId)
+	if not item then
+		warn("[EquipmentShopService] GrantFreeOwnedEquipment: unknown itemId ", itemId)
+		return
+	end
+	local folder = self._templateFolder
+	if not folder then
+		warn("[EquipmentShopService] GrantFreeOwnedEquipment: no ServerStorage template folder")
+		return
+	end
+	local template = folder:FindFirstChild(item.toolTemplateName)
+	if not template or not template:IsA("Tool") then
+		warn(
+			string.format(
+				"[EquipmentShopService] GrantFreeOwnedEquipment: missing Tool template %q",
+				tostring(item.toolTemplateName)
+			)
+		)
+		return
+	end
+	self._oilStateService:AddShopEquipmentOwned(player.UserId, itemId, qty)
+	self:_reconcileOwnedShopTools(player)
+	self._oilStateService:PushState(player.UserId)
+end
+
 return EquipmentShopService

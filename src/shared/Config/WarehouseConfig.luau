@@ -5,7 +5,7 @@ local WarehouseConfig = {
 	SlotSpacing = 60,
 
 	Tiers = {
-		{ tier = 1,  capacity = 20,   footprint = 20, cost = 0 },
+		{ tier = 1,  capacity = 40,   footprint = 20, cost = 0 },
 		{ tier = 2,  capacity = 50,   footprint = 24, cost = 500 },
 		{ tier = 3,  capacity = 100,  footprint = 28, cost = 1500 },
 		{ tier = 4,  capacity = 180,  footprint = 32, cost = 4000 },

@@ -23,7 +23,9 @@ ShipOilPanelGui [ScreenGui]
             │  │  └─ **Preferred:** `ShipCargoRowHeavyCrude` | `ShipCargoRowLightSweet` | `ShipCargoRowPremiumRefined` — tiers **Heavy Crude**, **Light Sweet**, **Premium Refined** (`ShipOilPanel.luau` → `HeavyCrude` / `LightSweet` / `PremiumRefined`). **Legacy row names still bind:** `ShipCargoRowHeavy`, `ShipCargoRowLight`, `ShipCargoRowStandard`, `ShipCargoRowCrude`, `ShipCargoRowPremium`.
             │  │        OilIcon, NameColumn / CrudeTitle, RowSpacer+UIFlexItem.Fill,
             │  │        InventoryCount, Stepper
-            │  └─ CargoSubtotalRow  — right-aligned subtotal copy
+            │  └─ CargoSubtotalBand  — horizontal row (scale height matches former subtotal row)
+            │        ├─ WarehouseCapacityLabel  — gold **`TextLabel`**, placeholder **`— / —`** (stored / capacity); **`TextScaled`** + **`UITextSizeConstraint`** (8–16) + thin **`UIStroke`** — wire later
+            │        └─ CargoSubtotalRow  — right-aligned subtotal copy (unchanged; nested under band)
             ├─ RunUpgradesSection
             │  ├─ RunUpgradesHeader  ("Run Upgrades") — `TextScaled` + `UITextSizeConstraint`
             │  └─ RunUpgradeCards  — **horizontal** `UIListLayout`, scale `Padding`, `ItemLineAlignment.Stretch`

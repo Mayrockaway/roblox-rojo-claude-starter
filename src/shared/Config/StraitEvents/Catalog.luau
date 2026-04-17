@@ -1,6 +1,6 @@
 --!strict
 
--- **Single source of truth** for strait waypoint shipment events (triggers stay at lane ordinals 3/6/9 in `StraitEventConfig`).
+-- **Single source of truth** for strait waypoint shipment events (trigger ordinals from `StraitEventConfig.LaneWaypointTriggers`).
 -- Add new events here: flags drive server behavior; `MissileConfig` / `StormConfig` / … hold tuning; optional `StraitWaypointsFx/<id>` for generic FX.
 -- Human-oriented writeups: docs/features/strait-waypoint-events/EVENTS.md (keep in sync when changing rows).
 
@@ -42,7 +42,7 @@ local Catalog = {}
 
 -- Missile strike outcome config
 Catalog.MissileConfig = {
-	MissileCount = 4,       -- missiles fired per trigger (3 triggers × 4 = 12 total)
+	MissileCount = 4,       -- missiles fired per trigger (up to 8 triggers × 4 if all fire)
 	-- Per missile: roll hit → total loss; else small hit → partial loss; else miss.
 	-- HitChance chosen so P(no direct hit in 4) ≈ 50% (~50% survival vs total loss from barrage).
 	HitChance = 0.16,       -- ~50% chance at least one of 4 is a direct hit → total loss

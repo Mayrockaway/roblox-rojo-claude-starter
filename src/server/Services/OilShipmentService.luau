@@ -13,7 +13,9 @@ local Constants = require(Shared:WaitForChild("Constants"))
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local BoatConfig = require(Shared:WaitForChild("Config"):WaitForChild("BoatConfig"))
 local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
+local ShipUpgradeConfig = require(Shared:WaitForChild("Config"):WaitForChild("ShipUpgradeConfig"))
 local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
+local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
 local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
 local StraitEventCatalog = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("Catalog"))
 local ManifestIncidentTitle = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("ManifestIncidentTitle"))
@@ -59,6 +61,98 @@ end
 
 local function clamp01(value: number): number
 	return math.max(0, math.min(1, value))
+end
+
+--- Option A (carrot): max arc length the lead target may sit ahead of measured hull progress.
+--- `RouteProgress01`: max of bow FRONT_MARKER and commanded `s_lead` point vs finish (XZ),
+--- `1 - dist(pos, finish) / dist(dock, finish)`, monotonic. Strait logic still uses `s_hull`.
+local VOYAGE_MAX_LEAD_STUDS = 55
+--- Hull arc length within this of path end counts as arrived.
+local VOYAGE_COMPLETE_ARC_EPS_STUDS = 12
+--- If wall-clock exceeds `travelSeconds * this`, stuck failsafe may snap to finish.
+local VOYAGE_FAILSAFE_MAX_WALL_MULT = 2.15
+--- If hull arc gains less than `VOYAGE_FAILSAFE_STUCK_PROGRESS_STUDS` in this many seconds, snap.
+local VOYAGE_FAILSAFE_STUCK_SECONDS = 22
+local VOYAGE_FAILSAFE_STUCK_PROGRESS_STUDS = 2.5
+
+--- Closest point on polyline to `p`; returns arc length from `path[1]` along the path.
+local function projectWorldPosToArcLength(path: { Vector3 }, segDists: { number }, p: Vector3): number
+	if #path < 2 then
+		return 0
+	end
+	local bestS = 0
+	local bestD2 = math.huge
+	for i = 2, #path do
+		local a = path[i - 1]
+		local b = path[i]
+		local ab = b - a
+		local lab2 = ab:Dot(ab)
+		local t = if lab2 > 1e-9 then math.clamp((p - a):Dot(ab) / lab2, 0, 1) else 0
+		local closest = a + ab * t
+		local d2 = (p - closest).Magnitude ^ 2
+		local s = segDists[i - 1] + (closest - a).Magnitude
+		if d2 < bestD2 then
+			bestD2 = d2
+			bestS = s
+		end
+	end
+	return math.clamp(bestS, 0, segDists[#path])
+end
+
+--- Point and horizontal travel direction at arc length `dist` along the polyline.
+local function positionAndTangentAtArcLength(path: { Vector3 }, segDists: { number }, dist: number): (Vector3, Vector3)
+	local maxD = segDists[#path]
+	dist = math.clamp(dist, 0, maxD)
+	for i = 2, #path do
+		if segDists[i] >= dist then
+			local segLen = segDists[i] - segDists[i - 1]
+			local segAlpha = if segLen > 1e-6 then (dist - segDists[i - 1]) / segLen else 0
+			local segStart = path[i - 1]
+			local segEnd = path[i]
+			local pos = segStart:Lerp(segEnd, segAlpha)
+			local flat = Vector3.new(segEnd.X - segStart.X, 0, segEnd.Z - segStart.Z)
+			if flat.Magnitude < 1e-3 then
+				return pos, Vector3.new(0, 0, -1)
+			end
+			return pos, flat.Unit
+		end
+	end
+	local last = #path
+	if last >= 2 then
+		local seg = path[last] - path[last - 1]
+		local flat = Vector3.new(seg.X, 0, seg.Z)
+		if flat.Magnitude < 1e-3 then
+			return path[last], Vector3.new(0, 0, -1)
+		end
+		return path[last], flat.Unit
+	end
+	return path[1], Vector3.new(0, 0, -1)
+end
+
+local function getBoatPathSampleWorldPosition(boat: Model): Vector3
+	local wl = boat:FindFirstChild("WaterlineAnchor", true)
+	if wl and wl:IsA("BasePart") then
+		return wl.Position
+	end
+	return boat:GetPivot().Position
+end
+
+--- HUD: how close `worldPos` (XZ) is to the **finish** vs **dock → finish** span. Used with bow + lead point.
+local function shipToFinishHud01(path: { Vector3 }, worldPos: Vector3): number
+	if #path < 2 then
+		return 0
+	end
+	local axz = Vector3.new(path[1].X, 0, path[1].Z)
+	local bxz = Vector3.new(path[#path].X, 0, path[#path].Z)
+	local pxz = Vector3.new(worldPos.X, 0, worldPos.Z)
+	local dockToFinish = bxz - axz
+	local initialGap = dockToFinish.Magnitude
+	if initialGap < 4 then
+		return 1
+	end
+	local distShipToFinish = (bxz - pxz).Magnitude
+	-- At dispatch, ship sits at dock: distShipToFinish ≈ initialGap → ~0. At finish → ~1.
+	return 1 - math.clamp(distShipToFinish / initialGap, 0, 1)
 end
 
 local function getFirstBasePart(instance: Instance): BasePart?
@@ -110,6 +204,17 @@ local function resolveRigForBoatInstance(boat: Instance): ShipRig.RigDef
 		end
 	end
 	return ShipSkinCatalog.GetRigForTemplate("Tanker")
+end
+
+--- Bow / front marker toward the destination — HUD “distance to finish” must not use midship/waterline
+--- or the bar lags what players see (camera on bow approaching beach).
+local function getHudShipWorldPositionForFinishProgress(boat: Model): Vector3
+	local rig = resolveRigForBoatInstance(boat)
+	local bow = ShipRig.FindBasePart(boat, rig.frontMarkerName)
+	if bow then
+		return bow.Position
+	end
+	return getBoatPathSampleWorldPosition(boat)
 end
 
 local function findBoatSeat(boat: Instance): Seat?
@@ -235,8 +340,10 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 	self._activeShipmentByOwner = {} :: { [number]: string }
 	self._shipmentContexts = {} :: { [string]: { [string]: any } }
 	self._hitContractService = nil
+	self._ftueService = nil :: any
 
-	-- Collision group: ships don't collide with each other
+	-- Collision: `ShipmentShip` hull (see `_setupShip`) ignores other ships and `MarinaDock` pier geometry
+	-- (registered/tagged in `BoatDockService:Init`); still collides with `Default` so players walk decks.
 	local ok, _ = pcall(function()
 		PhysicsService:RegisterCollisionGroup("ShipmentShip")
 	end)
@@ -252,6 +359,10 @@ end
 
 function OilShipmentService:SetHitContractService(hitContractService)
 	self._hitContractService = hitContractService
+end
+
+function OilShipmentService:SetFtueService(ftueService: any)
+	self._ftueService = ftueService
 end
 
 function OilShipmentService:_discoverLanes()
@@ -520,9 +631,27 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 
 	local skinId = (typeof(state.shipSkinId) == "string" and ShipSkinCatalog.Skins[state.shipSkinId] and state.shipSkinId)
 		or "DefaultTanker"
-	local speedL = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, 10)
-	local capL = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, 25)
+	local speedL = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
+	local capL = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
 	local stats = ShipStats.Resolve(speedL, capL)
+	local travelSeconds = stats.travelSeconds
+	local tutorialEscort = false
+	local ftueStepNow = (state :: any).ftueStep
+	if
+		FtueConfig.Enabled == true
+		and (state.ftueEscortShipmentRemaining or 0) > 0
+		and ftueStepNow == FtueConfig.Step.Dispatch
+	then
+		tutorialEscort = true
+		local maxStats = ShipStats.Resolve(ShipUpgradeConfig.MaxSpeedLevel, capL)
+		travelSeconds = maxStats.travelSeconds * (tonumber(FtueConfig.FtueTutorialShipmentTravelTimeScale) or 0.5)
+		local tutSkin = FtueConfig.FtueTutorialShipmentSkinId
+		if typeof(tutSkin) == "string" and ShipSkinCatalog.Skins[tutSkin] then
+			skinId = tutSkin
+		end
+		state.ftueEscortShipmentRemaining = 0
+		self._oilStateService:_markDirty(player.UserId)
+	end
 
 	local okManifest, codeManifest, messageManifest, totalRequested = self._oilStateService:CanConsumeManifest(player.UserId, manifest)
 	if not okManifest then
@@ -573,8 +702,9 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		dispatchManifestOil = dispatchManifestOil,
 		totalLoaded = totalRequested,
 		dispatchFee = dispatchFee,
-		travelSeconds = stats.travelSeconds,
+		travelSeconds = travelSeconds,
 		eventRisk = stats.eventRisk,
+		ftueTutorialSuppressStraitIncidents = tutorialEscort,
 	}
 
 	self:_sendActionResult(player, true, "OK", "Shipment dispatched.", {
@@ -582,6 +712,13 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		shipSkinId = skinId,
 		totalLoaded = totalRequested,
 	})
+
+	if self._ftueService and FtueConfig.Enabled then
+		local stD = self._oilStateService:GetState(player.UserId)
+		if stD and (stD :: any).ftueStep == FtueConfig.Step.Dispatch then
+			(self._ftueService :: any):OnDispatchShipmentSuccess(player.UserId)
+		end
+	end
 
 	task.spawn(function()
 		self:_runShipment(shipment)
@@ -636,6 +773,18 @@ function OilShipmentService:_runShipment(shipment)
 	local startRaised = path[1]
 	local initDir = #path >= 2 and (path[2] - path[1]) or Vector3.new(0, 0, -1)
 
+	-- If the owner used Teleport to Ship and is still in `DeckSeat`, clear `SeatWeld` before
+	-- `boat:PivotTo` and hull `WeldConstraint`s in `_setupShip`. Otherwise the seat↔HRP weld can
+	-- drag the seat (or fight the new welds) and the ship/seat end up in the wrong place — see
+	-- `CharacterTeleport` module comment.
+	local ownerBeforeSetup = Players:GetPlayerByUserId(ownerUserId)
+	if ownerBeforeSetup and ownerBeforeSetup.Character then
+		local hum = ownerBeforeSetup.Character:FindFirstChildOfClass("Humanoid")
+		if hum and hum.SeatPart and hum.SeatPart:IsDescendantOf(boat) then
+			CharacterTeleport.unseatIfSitting(ownerBeforeSetup.Character)
+		end
+	end
+
 	-- Setup physics-driven ship
 	self:_setupShip(shipment.shipmentId, boat, startRaised, initDir)
 	self._activeShipmentByOwner[ownerUserId] = shipment.shipmentId
@@ -652,7 +801,7 @@ function OilShipmentService:_runShipment(shipment)
 		boat:SetAttribute("ShipmentId", shipment.shipmentId)
 		boat:SetAttribute("OwnerUserId", ownerUserId)
 		boat:SetAttribute("ShipSkinId", shipment.shipSkinId)
-		-- HUD progress bar: distance along dock→lane→finish polyline (0..1), not wall-clock.
+		-- HUD: ship→finish distance ratio (see `shipToFinishHud01` in voyage loop).
 		boat:SetAttribute("RouteProgress01", 0)
 	end
 
@@ -671,7 +820,8 @@ function OilShipmentService:_runShipment(shipment)
 		loaded = shipment.totalLoaded,
 		dispatchFee = shipment.dispatchFee,
 		voyageStartTime = tNow + dockHoldBeforeVoyage,
-		voyageEndTime = tNow + dockHoldBeforeVoyage + shipment.travelSeconds,
+		-- ETA hint only (progress is distance-based; voyages can run longer if stuck or shorter if fast).
+		voyageEndTime = tNow + dockHoldBeforeVoyage + shipment.travelSeconds * 1.5,
 	})
 	self:_emitManifestHudSnapshot(shipment, nil)
 
@@ -719,7 +869,6 @@ function OilShipmentService:_runShipment(shipment)
 
 	local triggerSlots = self:_buildStraitTriggerSlots(path, segDists)
 	local firedAtLaneWaypoint: { [number]: boolean } = {}
-	local prevTargetDist = 0.0
 
 	if self:_straitDebugLogEnabled() then
 		if #triggerSlots == 0 then
@@ -747,53 +896,75 @@ function OilShipmentService:_runShipment(shipment)
 		end
 	end
 
+	-- Distance-based progress (hull projected onto path) + lead "carrot" capped ahead of hull (Option A).
+	local s_lead = 0.0
+	local s_hull_prev = 0.0
+	local routeHudMonotone = 0.0
+	local voyageWallStart = workspace:GetServerTimeNow()
+	local lastDt = 1 / 60
+	local lastProgressClock = os.clock()
+	local peakProgress = 0.0
+
 	while true do
+		local dt = lastDt
+		if dt > 0.15 then
+			dt = 0.15
+		elseif dt < 1 / 240 then
+			dt = 1 / 240
+		end
+
 		local voyageAborted = false
 
 		if ctx then
-			local forcedLost = self:_maybeProcessForcedPirateHit(shipment, ownerUserId, voyageClock, boat, ctx)
+			local forcedLost = false
+			if (shipment :: any).ftueTutorialSuppressStraitIncidents ~= true then
+				forcedLost = self:_maybeProcessForcedPirateHit(shipment, ownerUserId, voyageClock, boat, ctx)
+			end
 			if forcedLost then
 				voyageAborted = true
 			end
 		end
 
-		local alpha = 0
+		local s_hull = s_hull_prev
 		if not voyageAborted then
-			local elapsed = workspace:GetServerTimeNow() - voyageClock.startTime
-			alpha = clamp01(elapsed / voyageTime)
+			local samplePos = if boat:IsA("Model") then getBoatPathSampleWorldPosition(boat) else boat:GetPivot().Position
+			local s_raw = projectWorldPosToArcLength(path, segDists, samplePos)
+			s_hull = math.max(s_hull_prev, math.min(s_raw, totalPathLen))
 
-			-- Map alpha (0..1) to a position along the polyline
-			local targetDist = alpha * totalPathLen
+			if s_hull > peakProgress + 0.25 then
+				peakProgress = s_hull
+				lastProgressClock = os.clock()
+			end
+
+			local nominalSpeed = totalPathLen / voyageTime
+			s_lead = math.min(s_lead + nominalSpeed * dt, totalPathLen, s_hull + VOYAGE_MAX_LEAD_STUDS)
+			s_lead = math.max(s_lead, s_hull)
+
+			local hullAlongPos = select(1, positionAndTangentAtArcLength(path, segDists, s_hull))
+			local currentPos, nextTan = positionAndTangentAtArcLength(path, segDists, s_lead)
 			if boat:IsA("Model") then
-				boat:SetAttribute("RouteProgress01", clamp01(targetDist / totalPathLen))
+				-- Physical bow (what the player sees) + commanded lead point on route (physics can lag carrot).
+				local hudBow = shipToFinishHud01(path, getHudShipWorldPositionForFinishProgress(boat))
+				local hudLead = shipToFinishHud01(path, currentPos)
+				routeHudMonotone = math.max(routeHudMonotone, hudBow, hudLead)
+				boat:SetAttribute("RouteProgress01", clamp01(routeHudMonotone))
 			end
-			local currentPos = path[#path]
-			local nextPos = path[#path]
-			for i = 2, #path do
-				if segDists[i] >= targetDist then
-					local segStart = path[i - 1]
-					local segEnd = path[i]
-					local segLen = segDists[i] - segDists[i - 1]
-					local segAlpha = if segLen > 0 then (targetDist - segDists[i - 1]) / segLen else 0
-					currentPos = segStart:Lerp(segEnd, clamp01(segAlpha))
-					nextPos = segEnd
-					break
-				end
-			end
-
-			-- Y kept from the path (= water surface Y set at voyage start). Per-ship
-			-- WaterlineAnchor correction in _updateShipPosition keeps the boat at this Y.
-			local raisedPos = Vector3.new(currentPos.X, currentPos.Y, currentPos.Z)
-			local flatDir = Vector3.new(nextPos.X - currentPos.X, 0, nextPos.Z - currentPos.Z)
 			if ctx then
-				ctx.lastWorldPosition = currentPos
+				ctx.lastWorldPosition = hullAlongPos
 			end
-
+			local flatDir = Vector3.new(nextTan.X, 0, nextTan.Z)
+			if flatDir.Magnitude < 1e-3 then
+				flatDir = Vector3.new(0, 0, -1)
+			else
+				flatDir = flatDir.Unit
+			end
+			local raisedPos = Vector3.new(currentPos.X, currentPos.Y, currentPos.Z)
 			self:_updateShipPosition(shipment.shipmentId, boat, raisedPos, flatDir)
 
+			local prevArc = s_hull_prev
 			for _, slot in ipairs(triggerSlots) do
 				local laneN = slot.laneWaypointIndex
-				if not firedAtLaneWaypoint[laneN] and prevTargetDist < slot.distance and targetDist >= slot.distance then
+				if not firedAtLaneWaypoint[laneN] and prevArc < slot.distance and s_hull >= slot.distance then
 					firedAtLaneWaypoint[laneN] = true
 					if self:_straitDebugLogEnabled() then
 						print(
@@ -810,7 +981,7 @@ function OilShipmentService:_runShipment(shipment)
 					if ctx then
 						ctx.eventInProgress = true
 					end
-					local lost = self:_handleStraitWaypointTrigger(shipment, ownerUserId, laneN, currentPos, voyageClock, boat)
+					local lost = self:_handleStraitWaypointTrigger(shipment, ownerUserId, laneN, hullAlongPos, voyageClock, boat)
 					if ctx then
 						ctx.eventInProgress = false
 					end
@@ -821,7 +992,7 @@ function OilShipmentService:_runShipment(shipment)
 				end
 			end
 
-			prevTargetDist = targetDist
+			s_hull_prev = s_hull
 		end
 
 		if voyageAborted then
@@ -840,14 +1011,35 @@ function OilShipmentService:_runShipment(shipment)
 			return
 		end
 
-		if alpha >= 1 then
-			self:_emitShipmentEvent("ShipmentVoyageComplete", {
-				ownerUserId = ownerUserId,
-				shipmentId = shipment.shipmentId,
-			})
-			break
+		if not voyageAborted then
+			local arrived = s_hull >= totalPathLen - VOYAGE_COMPLETE_ARC_EPS_STUDS
+			local wallElapsed = workspace:GetServerTimeNow() - voyageWallStart
+			local hardWall = wallElapsed > voyageTime * VOYAGE_FAILSAFE_MAX_WALL_MULT
+			local stuckNoMove = (os.clock() - lastProgressClock) > VOYAGE_FAILSAFE_STUCK_SECONDS
+				and s_hull < totalPathLen - VOYAGE_COMPLETE_ARC_EPS_STUDS
+			if (hardWall or stuckNoMove) and not arrived then
+				local endPos, endTan = positionAndTangentAtArcLength(path, segDists, totalPathLen)
+				local flatE = Vector3.new(endTan.X, 0, endTan.Z)
+				if flatE.Magnitude < 1e-3 then
+					flatE = Vector3.new(0, 0, -1)
+				else
+					flatE = flatE.Unit
+				end
+				if boat:IsA("Model") then
+					boat:SetAttribute("RouteProgress01", 1)
+				end
+				self:_updateShipPosition(shipment.shipmentId, boat, Vector3.new(endPos.X, endPos.Y, endPos.Z), flatE)
+			end
+			if arrived or hardWall or stuckNoMove then
+				self:_emitShipmentEvent("ShipmentVoyageComplete", {
+					ownerUserId = ownerUserId,
+					shipmentId = shipment.shipmentId,
+				})
+				break
+			end
 		end
-		task.wait() -- run every frame (~30fps) for smooth movement
+
+		lastDt = task.wait() -- run every frame (~30fps) for smooth movement
 	end
 
 	local deliveredManifest = {}
@@ -867,6 +1059,10 @@ function OilShipmentService:_runShipment(shipment)
 
 	self._oilStateService:DecrementShipmentCount(ownerUserId)
 	self._oilStateService:PushState(ownerUserId)
+
+	if self._ftueService and FtueConfig.Enabled and totalDelivered > 0 then
+		(self._ftueService :: any):OnShipmentDeliveredToWarehouse(ownerUserId, totalDelivered)
+	end
 
 	local shipLabelR = ShipSkinCatalog.GetSkin(shipment.shipSkinId).displayName
 	self:_emitShipmentEvent("ShipmentResolved", {
@@ -1471,6 +1667,9 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	voyageClock: { startTime: number },
 	boat: Instance
 ): boolean
+	if (shipment :: any).ftueTutorialSuppressStraitIncidents == true then
+		return false
+	end
 	local dbg = Constants.StraitEventsDebug
 	local log = self:_straitDebugLogEnabled()
 	local engineState = self:_getStraitEngineState()
@@ -2414,8 +2613,8 @@ function OilShipmentService:DebugDispatchMissile(player: Player)
 
 	local manifest = { HeavyCrude = 30, LightSweet = 0, PremiumRefined = 0 }
 	local st = self._oilStateService:GetState(userId)
-	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
-	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
+	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
+	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
 	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
 	local stats = ShipStats.Resolve(speedL, capL)
 
@@ -2463,8 +2662,8 @@ function OilShipmentService:DebugDispatchMine(player: Player)
 
 	local manifest = { HeavyCrude = 30, LightSweet = 0, PremiumRefined = 0 }
 	local st = self._oilStateService:GetState(userId)
-	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
-	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
+	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
+	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
 	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
 	local stats = ShipStats.Resolve(speedL, capL)
 
@@ -2510,8 +2709,8 @@ function OilShipmentService:DebugDispatchPirate(player: Player)
 
 	local manifest = { HeavyCrude = 25, LightSweet = 5, PremiumRefined = 0 }
 	local st = self._oilStateService:GetState(userId)
-	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
-	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
+	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
+	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
 	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
 	local stats = ShipStats.Resolve(speedL, capL)
 
@@ -2567,8 +2766,8 @@ function OilShipmentService:DebugDispatchStorm(player: Player)
 	dbg.ForceStorm = true
 
 	local st = self._oilStateService:GetState(userId)
-	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
-	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
+	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
+	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
 	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
 	local stats = ShipStats.Resolve(speedL, capL)
 
@@ -2623,8 +2822,8 @@ function OilShipmentService:DebugDispatchTornado(player: Player)
 	dbg.ForceTornado = true
 
 	local st = self._oilStateService:GetState(userId)
-	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
-	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
+	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
+	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
 	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
 	local stats = ShipStats.Resolve(speedL, capL)
 
@@ -2679,8 +2878,8 @@ function OilShipmentService:DebugDispatchCoastGuard(player: Player)
 	dbg.ForceCoastGuardInspection = true
 
 	local st = self._oilStateService:GetState(userId)
-	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
-	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
+	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
+	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
 	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
 	local stats = ShipStats.Resolve(speedL, capL)
 
@@ -2735,8 +2934,8 @@ function OilShipmentService:DebugDispatchUSShipSlap(player: Player)
 	dbg.ForceUSShipSlap = true
 
 	local st = self._oilStateService:GetState(userId)
-	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, 10) else 3
-	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, 25) else 5
+	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
+	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
 	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
 	local stats = ShipStats.Resolve(speedL, capL)
 

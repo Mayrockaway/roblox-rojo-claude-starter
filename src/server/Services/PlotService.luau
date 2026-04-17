@@ -4,6 +4,7 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local DevLog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("DevLog"))
+local Constants = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Constants"))
 local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 
 local PlotService = {}
@@ -86,6 +87,7 @@ function PlotService:Start()
 	-- or Roblox's default spawn (world origin, mid-ocean on this map) briefly places them
 	-- there and subsequent PivotTo calls can be overridden by character-loading logic.
 	Players.CharacterAutoLoads = false
+	Players.RespawnTime = Constants.RespawnDelayAfterDeathSeconds
 
 	table.insert(self._connections, Players.PlayerAdded:Connect(function(player)
 		self:_onPlayerAdded(player)
@@ -531,7 +533,7 @@ function PlotService:_ensureCharacterAddedConnection(player: Player)
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
 		if humanoid then
 			humanoid.Died:Connect(function()
-				task.wait(Players.RespawnTime or 5)
+				task.wait(Constants.RespawnDelayAfterDeathSeconds)
 				if player.Parent then
 					player:LoadCharacter()
 				end

@@ -50,7 +50,19 @@ local Constants = {
 	-- FTUE: set on `Player` while onboarding. Global plot cell key, same format as server (`R{row}C{col}`).
 	-- Empty / unset = no restriction. Server + client enforce drill / pump placement to that cell only.
 	FtueRestrictDrillCellKeyAttribute = "FtueRestrictDrillCellKey",
+	FtueRestrictPipeCellKeyAttribute = "FtueRestrictPipeCellKey",
 	FtueRestrictPumpCellKeyAttribute = "FtueRestrictPumpCellKey",
+	--- Replicated FTUE step id for `FtueDialogueController` (e.g. Intro, WaitDrill). Cleared when done.
+	FtueStepAttribute = "FtueStep",
+
+	-- After Humanoid.Died: seconds before `LoadCharacter()` (PlotService; CharacterAutoLoads=false).
+	-- Lower = faster respawn. Ignores `Players.RespawnTime` so tuning is explicit.
+	RespawnDelayAfterDeathSeconds = 1.5,
+
+	-- Server-spawned under-map kill plane (`KillZoneService`): horizontal box, anchored, non-colliding.
+	KillZoneUnderMapCenterY = -280,
+	KillZoneUnderMapThicknessY = 100,
+	KillZoneUnderMapHorizontalHalfExtent = 4000,
 
 	-- Dev strait UI (3 buttons). Server accepts only in Studio unless this is true.
 	StraitDevUiEnabled = false,
