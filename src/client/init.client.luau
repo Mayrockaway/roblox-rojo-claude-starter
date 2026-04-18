@@ -1416,6 +1416,12 @@ local function startHudModalWiring()
 		local HudPanelRouter = require(routerMod) :: { start: (PlayerGui) -> () }
 		HudPanelRouter.start(playerGui)
 
+		local ppoMod = uiFolder:FindFirstChild("ProximityPanelOpener")
+		if ppoMod and ppoMod:IsA("ModuleScript") then
+			local ProximityPanelOpener = require(ppoMod) :: { start: () -> () }
+			ProximityPanelOpener.start()
+		end
+
 		local tpMod = uiFolder:WaitForChild("HudTeleportRouter", 30)
 		if tpMod and tpMod:IsA("ModuleScript") then
 			local HudTeleportRouter = require(tpMod) :: { start: (PlayerGui) -> () }

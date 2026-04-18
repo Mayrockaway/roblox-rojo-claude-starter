@@ -62,8 +62,11 @@ local function findWarehouseTerminalAnchor(visual: Model): Instance?
 end
 
 local function stripAllProximityPromptsInWarehouse(visual: Model)
+	-- Prompts authored on the template (e.g. SellOilPrompt on UpgradeTerminal) opt out
+	-- of the legacy strip via attribute `KeepProximityPrompt = true`. See
+	-- `src/client/UI/ProximityPanelOpener.luau` for the trigger contract.
 	for _, d in ipairs(visual:GetDescendants()) do
-		if d:IsA("ProximityPrompt") then
+		if d:IsA("ProximityPrompt") and d:GetAttribute("KeepProximityPrompt") ~= true then
 			d:Destroy()
 		end
 	end

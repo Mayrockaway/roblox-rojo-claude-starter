@@ -12,6 +12,9 @@ local BUTTON_TO_REMOTE: { [string]: string } = {
 	TeleportShipButton = RemoteNames.RequestTeleportToShip,
 	TeleportWarehouseButton = RemoteNames.RequestTeleportToWarehouse,
 	TeleportDocksButton = RemoteNames.RequestTeleportToDocks,
+	-- Dev / FTUE shortcuts on `LeftStack`: alias the existing teleport remotes.
+	ShopsTestButton = RemoteNames.RequestTeleportToDocks,
+	SellOilTestButton = RemoteNames.RequestTeleportToWarehouse,
 }
 
 local HudTeleportRouter = {}

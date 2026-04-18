@@ -246,8 +246,62 @@ function PlotService:_initializePlots()
 
 		self:_ensureCoreMachineAnchorsAndSnap(plot)
 		self:_ensurePlotMarkers(plot)
+		self:_ensurePerPlotDecor(plot)
 		self:_refreshPlotVisual(plot)
 		self:_updatePlotNameBillboard(plot, nil)
+	end
+end
+
+--- Per-plot world decor cloned from `ReplicatedStorage.Assets.<name>` templates
+--- (`PlotDispatch`, `OilmanPlot`). The templates were authored against `Plot_01`,
+--- so each clone is shifted by `(plotPivot - plot01Pivot)` to land in the
+--- equivalent position on every plot. Idempotent: skips templates that already
+--- exist as direct children of `plot`.
+function PlotService:_ensurePerPlotDecor(plot: Model)
+	local PER_PLOT_TEMPLATES = { "PlotDispatch", "OilmanPlot" }
+
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	if not assets then
+		return
+	end
+
+	local plot01 = self._plotsFolder and self._plotsFolder:FindFirstChild("Plot_01")
+	if not (plot01 and plot01:IsA("Model")) then
+		warn("[PlotService] Per-plot decor: Plot_01 reference plot not found.")
+		return
+	end
+	local plot01Pivot = plot01:GetPivot().Position
+	local thisPivot = plot:GetPivot().Position
+	local delta = thisPivot - plot01Pivot
+
+	for _, name in ipairs(PER_PLOT_TEMPLATES) do
+		if plot:FindFirstChild(name) then
+			continue
+		end
+		local template = assets:FindFirstChild(name)
+		if not template then
+			warn(string.format("[PlotService] Per-plot decor: %s missing under ReplicatedStorage.Assets.", name))
+			continue
+		end
+		local clone = template:Clone()
+		clone.Name = name
+		clone.Parent = plot
+
+		-- Shift authored Plot_01 layout to this plot's frame. Folders cannot `PivotTo`,
+		-- so we fall back to translating each top-level Model / BasePart child.
+		if delta.Magnitude > 0.001 then
+			if clone:IsA("Model") then
+				clone:PivotTo(clone:GetPivot() + delta)
+			else
+				for _, child in ipairs(clone:GetChildren()) do
+					if child:IsA("Model") then
+						child:PivotTo(child:GetPivot() + delta)
+					elseif child:IsA("BasePart") then
+						child.CFrame = child.CFrame + delta
+					end
+				end
+			end
+		end
 	end
 end
 

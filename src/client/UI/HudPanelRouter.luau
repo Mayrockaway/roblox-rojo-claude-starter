@@ -42,6 +42,19 @@ local HudPanelRouter = {}
 
 local started = false
 
+-- Module-scoped registry, populated once `start()` finishes binding panels.
+-- Exposed via `openScreen` / `closeAll` for non-HUD-button triggers (e.g. ProximityPrompts).
+local controllersByScreen: { [string]: HudPanelTypes.HudPanelController } = {}
+local controllersList: { HudPanelTypes.HudPanelController } = {}
+
+local function closeAllExceptCtrl(keep: HudPanelTypes.HudPanelController?)
+	for _, c in ipairs(controllersList) do
+		if c ~= keep then
+			c.Close()
+		end
+	end
+end
+
 local function passthroughDecorationsToTrigger(btn: GuiButton)
 	for _, d in ipairs(btn:GetDescendants()) do
 		if d:IsA("GuiObject") and not d:IsA("GuiButton") then
@@ -87,8 +100,10 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 
 			ActiveManifestController.start(playerGui)
 
-			local byScreen: { [string]: HudPanelTypes.HudPanelController } = {}
-			local controllers: { HudPanelTypes.HudPanelController } = {}
+			-- Populate module-scoped registry so external callers (e.g. ProximityPanelOpener)
+			-- can open panels by `screenName` without re-binding controllers.
+			local byScreen = controllersByScreen
+			local controllers = controllersList
 
 			local function ensurePanel(screenName: string)
 				if byScreen[screenName] then
@@ -109,13 +124,7 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 				ensurePanel(screenName)
 			end
 
-			local function closeAllExcept(keep: HudPanelTypes.HudPanelController?)
-				for _, c in ipairs(controllers) do
-					if c ~= keep then
-						c.Close()
-					end
-				end
-			end
+			local closeAllExcept = closeAllExceptCtrl
 
 			local function wireTrigger(btn: GuiButton, ctrl: HudPanelTypes.HudPanelController)
 				passthroughDecorationsToTrigger(btn)
@@ -223,6 +232,27 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 			" — add missing StarterGui ScreenGuis to PlayerGui (Rojo does not sync StarterGui)."
 		)
 	end)
+end
+
+--- Toggle a modal panel by its `ScreenGui.Name` (matches `<Panel>.screenName()` strings),
+--- closing all other panels first. Returns true when a panel was toggled, false when the
+--- name is unknown or the router has not finished binding controllers yet.
+function HudPanelRouter.openScreen(screenName: string): boolean
+	local ctrl = controllersByScreen[screenName]
+	if not ctrl then
+		return false
+	end
+	if ctrl.IsOpen() then
+		ctrl.Close()
+		return true
+	end
+	closeAllExceptCtrl(nil)
+	ctrl.Open()
+	return true
+end
+
+function HudPanelRouter.closeAll()
+	closeAllExceptCtrl(nil)
 end
 
 return HudPanelRouter

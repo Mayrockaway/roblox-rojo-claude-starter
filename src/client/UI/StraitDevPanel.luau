@@ -40,9 +40,10 @@ function StraitDevPanel.mount(
 
 	local root = Instance.new("Frame")
 	root.Name = "Panel"
-	-- Middle-right: clear top-row strait / oil pills
-	root.AnchorPoint = Vector2.new(1, 0.5)
-	root.Position = UDim2.new(1, -12, 0.5, 0)
+	-- Top-right: clear of `ActiveManifestPanel` (middle-right) and the top-row pills.
+	-- Inset Y by ~`GuiInset` (36 px) so it sits below the topbar instead of behind it.
+	root.AnchorPoint = Vector2.new(1, 0)
+	root.Position = UDim2.new(1, -12, 0, 44)
 	root.Size = UDim2.fromOffset(168, 132)
 	root.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
 	root.BackgroundTransparency = 0.12

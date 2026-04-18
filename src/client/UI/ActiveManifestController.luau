@@ -45,6 +45,31 @@ local lastPerBarrel = 1
 local nextIncidentSlotIndex = 0
 local scrollResizeConn: RBXScriptConnection? = nil
 
+-- Collapsed/expanded state for the manifest pill.
+-- Auto behaviour: idle voyage → collapse to header band; active voyage → expand to full card.
+-- Manual override: clicking the header band toggles regardless; the next idle↔active
+-- transition re-applies the auto state (so a stuck-collapsed pill never traps the player).
+local authoredSize: UDim2? = nil
+local authoredPosition: UDim2? = nil
+local authoredHeaderSize: UDim2? = nil
+local authoredHeaderPosition: UDim2? = nil
+-- `UIAspectRatioConstraint` has **no** `Enabled` property; the documented way to
+-- toggle a constraint is to reparent it. We hold the Lua reference here so the
+-- instance survives `.Parent = nil` (no GC) and can be reattached on expand.
+local authoredAspect: UIAspectRatioConstraint? = nil
+local isCollapsed = true
+local wasActive = false
+local headerToggleConn: RBXScriptConnection? = nil
+
+-- Collapsed pill footprint, expressed as viewport-Scale UDim2 dimensions.
+-- We want the pill to be **smaller** than the authored full panel on both axes
+-- so it reads as a compact badge, while the `ManifestHeader` is stretched to
+-- 100% of that footprint so the `TextScaled` title (capped at 28px by its
+-- `UITextSizeConstraint`) remains as legible as the full-size header.
+local COLLAPSED_X_SCALE = 0.085
+local COLLAPSED_Y_SCALE = 0.045
+local SECTION_NAMES = { "LoadedSection", "IncidentsSection", "DeliverySection" }
+
 -- Incident titles: **`UITextSizeConstraint` only applies when `TextScaled` is true** — with TextScaled off,
 -- Min/Max are ignored and `TextSize` is fixed px (Studio “min 1” won’t shrink anything).
 -- With TextScaled on, `TextSize` is the **ceiling** for the scaled font; constraint clamps that range.
@@ -435,6 +460,111 @@ local function fillNextIncidentSlot(panel: Frame, inc: { [string]: any }, lossOi
 	end
 end
 
+--- Snapshot the panel's authored Studio geometry once so the collapse/expand toggle
+--- can restore it cleanly. Safe to call repeatedly; only the first call wins.
+local function captureAuthoredGeometry(panel: Frame)
+	if authoredSize then
+		return
+	end
+	authoredSize = panel.Size
+	authoredPosition = panel.Position
+	local arc = panel:FindFirstChildOfClass("UIAspectRatioConstraint")
+	if arc then
+		authoredAspect = arc
+	end
+	local hdr = panel:FindFirstChild("ManifestHeader")
+	if hdr and hdr:IsA("GuiObject") then
+		authoredHeaderSize = hdr.Size
+		authoredHeaderPosition = hdr.Position
+	end
+end
+
+--- Apply the current `isCollapsed` state to the panel: shrink to header band when
+--- collapsed (anchoring to the authored top edge), restore authored size+aspect
+--- when expanded. Section visibility follows: hidden when collapsed; shown when
+--- expanded **and** a shipment is active (idle expanded keeps sections hidden so
+--- we don't reveal stale rows from the last voyage).
+local function applyCollapseState(panel: Frame)
+	if not (authoredSize and authoredPosition) then
+		return
+	end
+	local sectionsVisible = (not isCollapsed) and (activeShipmentId ~= nil)
+	for _, name in ipairs(SECTION_NAMES) do
+		local sec = panel:FindFirstChild(name)
+		if sec and sec:IsA("GuiObject") then
+			sec.Visible = sectionsVisible
+		end
+	end
+	local hdr = panel:FindFirstChild("ManifestHeader")
+	if isCollapsed then
+		-- Detach the aspect constraint so the collapsed pill isn't forced to keep
+		-- the tall authored ratio (which would shrink the X axis to a sliver).
+		if authoredAspect and authoredAspect.Parent ~= nil then
+			authoredAspect.Parent = nil
+		end
+		local sizeX = COLLAPSED_X_SCALE
+		local sizeY = COLLAPSED_Y_SCALE
+		-- Keep the top edge of the panel anchored where Studio authored it; only the
+		-- bottom contracts. AnchorPoint = (1, 0.5) means Position.Y is the *center*
+		-- of the panel on the Y axis, so we offset by half the size delta.
+		local deltaY = (authoredSize.Y.Scale - sizeY) * 0.5
+		panel.Size = UDim2.new(sizeX, 0, sizeY, 0)
+		panel.Position = UDim2.new(
+			authoredPosition.X.Scale,
+			authoredPosition.X.Offset,
+			authoredPosition.Y.Scale - deltaY,
+			authoredPosition.Y.Offset
+		)
+		-- Stretch the header to fill the whole pill so the `TextScaled` title
+		-- reclaims the available pixel area (capped by `UITextSizeConstraint`).
+		if hdr and hdr:IsA("GuiObject") then
+			hdr.Size = UDim2.new(1, 0, 1, 0)
+			hdr.Position = UDim2.new(0, 0, 0, 0)
+		end
+	else
+		if authoredAspect and authoredAspect.Parent == nil then
+			authoredAspect.Parent = panel
+		end
+		panel.Size = authoredSize
+		panel.Position = authoredPosition
+		if hdr and hdr:IsA("GuiObject") and authoredHeaderSize and authoredHeaderPosition then
+			hdr.Size = authoredHeaderSize
+			hdr.Position = authoredHeaderPosition
+		end
+	end
+end
+
+--- Wire a transparent click target across `ManifestHeader` so the player can
+--- manually toggle the pill regardless of voyage state. Idempotent.
+local function ensureHeaderToggle(panel: Frame)
+	if headerToggleConn then
+		return
+	end
+	local hdr = panel:FindFirstChild("ManifestHeader")
+	if not (hdr and hdr:IsA("GuiObject")) then
+		return
+	end
+	local btn = hdr:FindFirstChild("_HeaderToggle")
+	if not (btn and btn:IsA("TextButton")) then
+		local b = Instance.new("TextButton")
+		b.Name = "_HeaderToggle"
+		b.BackgroundTransparency = 1
+		b.Text = ""
+		b.AutoButtonColor = false
+		b.Size = UDim2.new(1, 0, 1, 0)
+		b.Position = UDim2.new(0, 0, 0, 0)
+		b.ZIndex = (hdr.ZIndex or 1) + 10
+		b.Parent = hdr
+		btn = b
+	end
+	headerToggleConn = (btn :: TextButton).Activated:Connect(function()
+		isCollapsed = not isCollapsed
+		if panelRef then
+			applyCollapseState(panelRef)
+		end
+	end)
+end
+
 local function setIdle(panel: Frame)
 	activeShipmentId = nil
 	hydratedShipmentId = nil
@@ -445,12 +575,10 @@ local function setIdle(panel: Frame)
 	if mtitle and mtitle:IsA("TextLabel") then
 		mtitle.Text = TITLE_IDLE
 	end
-	for _, name in ipairs({ "LoadedSection", "IncidentsSection", "DeliverySection" }) do
-		local sec = panel:FindFirstChild(name)
-		if sec and sec:IsA("Frame") then
-			sec.Visible = false
-		end
-	end
+	-- Auto-collapse on every transition into idle (also covers initial bind).
+	isCollapsed = true
+	wasActive = false
+	applyCollapseState(panel)
 end
 
 local function setActiveChrome(panel: Frame)
@@ -459,12 +587,13 @@ local function setActiveChrome(panel: Frame)
 	if mtitle and mtitle:IsA("TextLabel") then
 		mtitle.Text = TITLE_ACTIVE
 	end
-	for _, name in ipairs({ "LoadedSection", "IncidentsSection", "DeliverySection" }) do
-		local sec = panel:FindFirstChild(name)
-		if sec and sec:IsA("Frame") then
-			sec.Visible = true
-		end
+	-- Auto-expand only on the idle → active edge so a manual collapse during an
+	-- ongoing voyage isn't clobbered by every subsequent ManifestHudSnapshot.
+	if not wasActive then
+		isCollapsed = false
+		wasActive = true
 	end
+	applyCollapseState(panel)
 end
 
 local function applyLoadedAndDelivery(panel: Frame, dispatched: { [string]: any }, remaining: { [string]: any }, perBarrel: number)
@@ -552,8 +681,19 @@ function ActiveManifestController.start(playerGui: PlayerGui)
 	if panel then
 		if not panelRef then
 			panelRef = panel
+			captureAuthoredGeometry(panel)
+			ensureHeaderToggle(panel)
 			setIdle(panel)
+			print(
+				string.format(
+					"[Client] ActiveManifestController: bound panel; collapsed=%s authoredSize=%s",
+					tostring(isCollapsed),
+					tostring(authoredSize)
+				)
+			)
 		end
+	else
+		warn("[Client] ActiveManifestController.start: ActiveManifestPanel not found under HUD.Canvas yet.")
 	end
 end
 
