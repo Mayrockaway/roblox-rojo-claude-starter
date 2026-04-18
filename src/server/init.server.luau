@@ -263,6 +263,70 @@ do
 			FighterPlaneWaveService:DebugSpawnOverPlayer(player)
 		elseif cmd == "/fighterretarget" or cmd == "/jetretarget" then
 			FighterPlaneWaveService:DebugRetargetTemplate(player.Name)
+		elseif cmd:sub(1, 9) == "/testvein" then
+			-- /testvein <oil> <stream> <veincount>
+			-- oil: dirt, good, gold
+			-- stream: dribble, stream, burst, geyser
+			-- vein: single, double, triple
+			-- e.g. /testvein gold geyser triple
+			local args = cmd:sub(10):gsub("^%s+", "")
+			local oilArg, streamArg, veinArg = args:match("^(%S+)%s+(%S+)%s*(%S*)")
+			oilArg = oilArg or "good"
+			streamArg = streamArg or "stream"
+			veinArg = veinArg or "single"
+
+			local oilMap = { dirt = "DirtOil", good = "GoodOil", gold = "GoldOil" }
+			local streamMap = { dribble = "Dribble", stream = "Stream", burst = "Burst", geyser = "Geyser" }
+			local veinMap = { single = "Single", double = "Double", triple = "Triple" }
+
+			local oilKey = oilMap[oilArg] or "GoodOil"
+			local streamKey = streamMap[streamArg] or "Stream"
+			local veinKey = veinMap[veinArg] or "Single"
+			local veinCount = ({ Single = 1, Double = 2, Triple = 3 })[veinKey] or 1
+
+			local VeinConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
+			local internalOil = VeinConfig.GetInternalOilName(oilKey)
+
+			-- Build forced vein result
+			local veins = {}
+			for i = 1, veinCount do
+				table.insert(veins, { streamType = streamKey, oilType = oilKey })
+			end
+			local forcedResult = {
+				isDead = false,
+				veinCount = veinKey,
+				veins = veins,
+				groundType = "Bronze",
+			}
+
+			-- Force it onto the player's starter tile T11 in S04_02
+			local state = OilStateService:GetState(player.UserId)
+			if state then
+				local chunk = state.chunksById["S04_02"]
+				if chunk and chunk.tiles then
+					-- Find first undrilled tile (skip T33 center pump)
+					local targetKey = nil
+					for _, tk in ipairs({"T11","T12","T13","T14","T15","T21","T22","T23","T24","T25","T31","T32","T34","T35","T41","T42","T43","T44","T45","T51","T52","T53","T54","T55"}) do
+						local tile = chunk.tiles[tk]
+						if tile and not tile.drilled then
+							targetKey = tk
+							break
+						end
+					end
+					if targetKey then
+						local tile = chunk.tiles[targetKey]
+						tile.drilled = true
+						tile.hasOil = true
+						tile.oilType = internalOil
+						tile.veinResult = forcedResult
+						tile.revealPending = nil
+						OilStateService:PushState(player.UserId)
+						print(string.format("[Dev] testvein: %s %s %s on %s (oil=%s)", veinKey, oilKey, streamKey, targetKey, internalOil))
+					else
+						print("[Dev] testvein: no undrilled tiles left in S04_02")
+					end
+				end
+			end
 		elseif cmd == "/grant500" then
 			grantAllPlayersCash(500)
 		elseif cmd == "/wipedata" or cmd == "/dev_wipeme" then
@@ -304,7 +368,7 @@ do
 		"/fighterwave", "/fighters", "/fighterhere", "/jethere",
 		"/fighterretarget", "/jetretarget",
 		"/grant500", "/wipedata", "/dev_wipeme", "/wipealldata", "/dev_wipeall",
-		"/giveall",
+		"/giveall", "/testvein",
 	}
 	for _, alias in ipairs(DEV_COMMAND_ALIASES) do
 		local ok, err = pcall(function()

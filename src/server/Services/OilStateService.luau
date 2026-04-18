@@ -1061,6 +1061,70 @@ function OilStateService:AddCash(userId: number, amount: number): boolean
 	return true
 end
 
+-- Auto-place a T1 pump at the center tile (T33) of a section.
+-- This pump is permanent and can only be upgraded, not removed.
+function OilStateService:_autoPlaceCenterPump(userId: number, state: any, chunk: any, groundType: any)
+	local centerTileKey = "T33"
+	local tile = chunk.tiles and chunk.tiles[centerTileKey]
+	if not tile then return end
+
+	-- Mark center tile as having the fixed pump
+	tile.hasCenterPump = true
+	tile.drilled = true
+	tile.hasOil = true
+
+	-- Resolve position from the plot model
+	local plot = state.plot or self._plotService:GetOwnedPlot(userId)
+	if not plot then return end
+
+	local sectionModel = self._plotService:GetChunkModel(plot, chunk.chunkId)
+	if not sectionModel then return end
+
+	local tilePart = self._plotService:FindChunkTileBasePart(sectionModel, centerTileKey)
+	if not tilePart then return end
+
+	local topY = tilePart.Position.Y + tilePart.Size.Y / 2
+	local sx, sz = tilePart.Position.X, tilePart.Position.Z
+
+	-- Compute cell coords (T33 = local row 3, col 3)
+	local s = staticGridConstants()
+	local localR, localC = 3, 3
+	local cellR = (chunk.row - 1) * s.subTilesPerSide + localR
+	local cellC = (chunk.col - 1) * s.subTilesPerSide + localC
+	local ck = cellKey(cellR, cellC)
+
+	local tierCfg = OilConfig.PumpTiers and OilConfig.PumpTiers["T1"]
+	if not tierCfg then return end
+
+	local biomeConfig = OilConfig.Biomes[chunk.biome] or OilConfig.Biomes.Desert or { flowMul = 1, tierMix = { HeavyCrude = 100 } }
+	local pumpId = state.nextDrillId
+	state.nextDrillId += 1
+
+	local pump = {
+		drillId = pumpId,
+		chunkId = chunk.chunkId,
+		biome = chunk.biome,
+		tier = "T1",
+		tileKey = centerTileKey,
+		template = tierCfg.templateName,
+		scale = 1,
+		variant = nil,
+		position = Vector3.new(sx, topY, sz),
+		flowBase = OilConfig.DrillBaseFlow * (biomeConfig.flowMul or 1) * (tierCfg.flowMultiplier or 1),
+		tierMix = copyTierMap(biomeConfig.tierMix or { HeavyCrude = 100 }),
+		tileOilType = tile.oilType,
+		cellKey = ck,
+		cellRow = cellR,
+		cellCol = cellC,
+		localBuffer = emptyTierMap(),
+		connected = true, -- center pump is always connected
+		placementCost = 0,
+		isCenterPump = true, -- flag: can't be removed, only upgraded
+	}
+	state.drillsById[pumpId] = pump
+	state.activeDrillCount += 1
+end
+
 function OilStateService:TryBuyChunk(userId: number, chunkId: string): (boolean, string, string)
 	DevLog.log(string.format("[TryBuyChunk] user=%d chunkId=%s", userId, tostring(chunkId)))
 	local state = self._statesByUserId[userId]
@@ -1127,6 +1191,9 @@ function OilStateService:TryBuyChunk(userId: number, chunkId: string): (boolean,
 			}
 		end
 	end
+
+	-- Auto-place a T1 pump at center tile T33
+	self:_autoPlaceCenterPump(userId, state, chunk, groundType)
 
 	self:_markDirty(userId)
 	self:PushState(userId)
@@ -1825,6 +1892,9 @@ function OilStateService:TryHammerDestroy(userId: number, payload: any): (boolea
 		local drillId = tonumber(payload.targetId)
 		local pump = drillId and state.drillsById[drillId]
 		if not pump then return false, "ERR_BAD_TARGET", "Pump not found.", nil end
+		if pump.isCenterPump == true then
+			return false, "ERR_CENTER_PUMP", "Center pump cannot be removed. Upgrade it instead!", nil
+		end
 		if pump.ftueFreeNoSellback == true then
 			return false, "ERR_PROTECTED_FTUE", "Tutorial equipment cannot be sold back.", nil
 		end
@@ -1899,6 +1969,11 @@ function OilStateService:GetActiveDrills(userId: number)
 end
 
 function OilStateService:TryPlacePipe(userId: number, payload): (boolean, string, string, any)
+	-- Pipes removed — all drills auto-connect to center pump
+	return false, "ERR_PIPES_REMOVED", "Pipes are no longer needed! Oil flows directly to the center pump.", nil
+end
+
+function OilStateService:_TryPlacePipe_LEGACY(userId: number, payload): (boolean, string, string, any)
 	local state = self._statesByUserId[userId]
 	if not state then
 		return false, "ERR_NO_STATE", "State unavailable.", nil
@@ -2376,8 +2451,9 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		-- Always bind the current Workspace plot Model (same plotId can be a new instance after rejoin).
 		existing.plot = plot
 		-- Keep starter infrastructure intact for migrated/legacy profiles.
-		self:_ensureDefaultDrumForPlayer(existing, plot)
-		self:_ensureDefaultPipesForPlayer(existing, plot)
+		-- Drums and pipes removed — center pump system
+		-- self:_ensureDefaultDrumForPlayer(existing, plot)
+		-- self:_ensureDefaultPipesForPlayer(existing, plot)
 		self:_invokeStateTimersReady(userId)
 		return
 	end
@@ -2491,8 +2567,28 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 	-- Derive storageCapacity from per-tank capacities (after persistence may have set tankTiers).
 	state.storageCapacity = totalTankCapacity(state)
 
-	self:_ensureDefaultDrumForPlayer(state, plot)
-	self:_ensureDefaultPipesForPlayer(state, plot)
+	-- Drums and pipes removed — center pump system replaces them
+	-- self:_ensureDefaultDrumForPlayer(state, plot)
+	-- self:_ensureDefaultPipesForPlayer(state, plot)
+
+	-- Auto-place center pumps on all unlocked sections (including starter chunk)
+	for _, chunk in pairs(state.chunksById) do
+		if chunk.unlocked and chunk.tiles then
+			-- Check if this chunk already has a center pump
+			local hasCenterPump = false
+			for _, drill in pairs(state.drillsById) do
+				if drill.chunkId == chunk.chunkId and drill.isCenterPump then
+					hasCenterPump = true
+					break
+				end
+			end
+			if not hasCenterPump then
+				local VeinConfigInit = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
+				local gt = VeinConfigInit.GroundByRow[chunk.row] or VeinConfigInit.GroundTypes.Bronze
+				self:_autoPlaceCenterPump(userId, state, chunk, gt)
+			end
+		end
+	end
 
 	self._statesByUserId[userId] = state
 	self:_invokeStateTimersReady(userId)

@@ -752,6 +752,115 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 				local topY = tilePart.Position.Y + tilePart.Size.Y / 2
 				local basePos = Vector3.new(tilePart.Position.X, topY + 0.3, tilePart.Position.Z)
 				part.Position = basePos + (offset or Vector3.new(0, 0, 0))
+
+					-- Snake tube from spray to center pump
+					local centerTile = sectionModel:FindFirstChild("T33")
+					if centerTile and centerTile:IsA("BasePart") and info.tileKey ~= "T33" then
+						local tubeName = "OilTube_" .. sig .. (oilTypeOverride and ("_" .. oilTypeOverride) or "")
+						if not folder:FindFirstChild(tubeName) then
+							local pumpModel = sectionModel:FindFirstChild("CenterPump")
+							-- OilSpout is the highest part of the pump at exactly pump top
+							local pumpTopY = centerTile.Position.Y + centerTile.Size.Y / 2 + 7.5
+							if pumpModel then
+								-- Find the OilSpout part directly for exact height
+								local spout = pumpModel:FindFirstChild("OilSpout", true)
+								if spout and spout:IsA("BasePart") then
+									pumpTopY = spout.Position.Y + spout.Size.Y / 2
+								else
+									local _, pSz2 = pumpModel:GetBoundingBox()
+									local pCF2 = pumpModel:GetPivot()
+									pumpTopY = pCF2.Position.Y + pSz2.Y / 2
+								end
+							end
+
+							-- Start at ground level (tile surface)
+							local tileTopY = tilePart.Position.Y + tilePart.Size.Y / 2
+							local startPos = Vector3.new(part.Position.X, tileTopY, part.Position.Z)
+							local endPos = Vector3.new(centerTile.Position.X, pumpTopY, centerTile.Position.Z)
+
+							local oilType2 = oilTypeOverride or info.tile.oilType or "HeavyCrude"
+							local tubeColor = Color3.fromRGB(60, 50, 35) -- Dirt Oil
+							local isRainbow = false
+							if oilType2 == "LightSweet" or oilType2 == "GoodOil" then
+								tubeColor = Color3.fromRGB(255, 200, 50) -- Golden
+							elseif oilType2 == "PremiumRefined" or oilType2 == "GoldOil" then
+								isRainbow = true
+								tubeColor = Color3.fromRGB(255, 100, 100) -- Start color, will cycle
+							end
+
+							-- Stream type determines diameter
+							local streamType = "Stream"
+							local veinResult = info.tile.veinResult
+							if veinResult and typeof(veinResult) == "table" and veinResult.veins and typeof(veinResult.veins) == "table" and #veinResult.veins > 0 then
+								streamType = veinResult.veins[1].streamType or "Stream"
+							end
+							local DIAMETER_BASE = 0.55
+							local actualDiameter = DIAMETER_BASE
+							if streamType == "Dribble" then actualDiameter = 0.25
+							elseif streamType == "Stream" then actualDiameter = 0.55
+							elseif streamType == "Burst" then actualDiameter = 3
+							elseif streamType == "Geyser" then actualDiameter = 8
+							end
+							local diameterMult = 1 -- not used anymore, using actualDiameter directly
+
+							-- Arc height scales with stream type
+							local arcMult = 1
+							if streamType == "Dribble" then arcMult = 0.4
+							elseif streamType == "Stream" then arcMult = 1
+							elseif streamType == "Burst" then arcMult = 1.5
+							elseif streamType == "Geyser" then arcMult = 6
+							end
+
+							local midXZ = (startPos + endPos) / 2
+							local horizDist = (Vector3.new(startPos.X, 0, startPos.Z) - Vector3.new(endPos.X, 0, endPos.Z)).Magnitude
+							local arcHeight = math.clamp(horizDist * 1.5 * arcMult, 5, 120)
+							local controlXZ = startPos:Lerp(endPos, 0.35)
+							local controlPos = Vector3.new(controlXZ.X, math.max(startPos.Y, endPos.Y) + arcHeight, controlXZ.Z)
+
+							local tubeFolder = Instance.new("Folder")
+							tubeFolder.Name = tubeName
+							if isRainbow then
+								tubeFolder:SetAttribute("Rainbow", true)
+							end
+							tubeFolder.Parent = folder
+
+							local SEGS = 40
+							local DIAMETER = actualDiameter
+
+							-- Pre-compute bezier positions
+							local bezierPositions = {}
+							for i = 0, SEGS do
+								local t2 = i / SEGS
+								local u = 1 - t2
+								bezierPositions[i] = u * u * startPos + 2 * u * t2 * controlPos + t2 * t2 * endPos
+							end
+
+							-- Place segments along curve
+							for i = 0, SEGS - 1 do
+								local p0 = bezierPositions[i]
+								local p1 = bezierPositions[i + 1]
+								local midP = (p0 + p1) / 2
+								local segLen = (p1 - p0).Magnitude
+
+								local seg = Instance.new("Part")
+								seg.Name = "Seg_" .. i
+								seg.Shape = Enum.PartType.Cylinder
+								seg.Size = Vector3.new(segLen * 1.15, DIAMETER, DIAMETER)
+								seg.Color = tubeColor
+								seg.Material = Enum.Material.SmoothPlastic
+								seg.Transparency = 0.25
+								seg.Anchored = true
+								seg.CanCollide = false
+								seg.CanQuery = false
+								seg.CanTouch = false
+								seg.CFrame = CFrame.lookAt(midP, p1) * CFrame.Angles(0, math.rad(90), 0)
+								seg.Parent = tubeFolder
+							end
+
+							-- Animation handled client-side by OilTubeSnakeAnimation.client.luau
+							-- It discovers OilTube_ folders and animates their Seg_ parts
+						end
+					end
 			end
 		end
 	end
