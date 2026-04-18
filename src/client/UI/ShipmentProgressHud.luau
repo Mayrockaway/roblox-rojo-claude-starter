@@ -1,8 +1,7 @@
 --!strict
--- `ProgressFill.Size` follows **ship→finish closeness** (server: bow + lead vs dock→finish XZ), via replicated
--- `ActiveShipmentBoat.RouteProgress01`. While a shipment is active, **no** wall-clock fill — time-based ETA would
--- advance the bar when the ship is stuck. If the attribute is not yet replicated, fill stays 0. Until
--- `ShipmentVoyageComplete`, then full until `ShipmentResolved`.
+-- `ProgressFill.Size` follows **arc-length progress along the voyage polyline** (server `RouteProgress01`).
+-- No wall-clock fill during an active shipment — only distance. If the attribute is not yet replicated, fill stays 0
+-- briefly. Until `ShipmentVoyageComplete`, then full until `ShipmentResolved`.
 -- Cruise hint: `.` → `..` → `...` text only (no UIScale bounce). Strait halt freezes bar.
 -- **Studio:** author a `TextLabel` named `Hint` under `ShipmentProgressPanel` (see `docs/features/oil-gameplay-hud/CANONICAL_STUDIO_LAYOUT.md`). If track + fill exist but no bindable status line is found, a single `TextLabel` named `Hint` is created under that panel once (fallback only).
 -- Wired from `ShipmentProgressBootstrap.client.luau` (expects `{ type, data }` packets with owner id).
@@ -96,6 +95,8 @@ local haltProgressFreezeUntil: number? = nil
 local haltFrozenFillAlpha: number? = nil
 local activeShipmentId: string? = nil
 local clearTask: thread? = nil
+--- Avoid full Workspace scans every tick once the voyage boat is resolved (same pattern as `ShipmentOceanWavesSfx`).
+local routeProgressBoatCache: Model? = nil
 
 local VOYAGE_POLL_SEC = 0.12
 --- Server fired `ShipmentVoyageComplete`: bar stays full until `ShipmentResolved`.
@@ -486,52 +487,56 @@ local function crowdEnsureHost(track: GuiObject): Frame
 	return host
 end
 
---- Voyage boat lives under `Workspace.dOCKS.Boats` (see `BoatDockService`); legacy places may use `OilVisuals`.
-local function collectActiveShipmentBoatModels(): { Model }
+--- All `ActiveShipmentBoat` models under Workspace (streaming / hierarchy-safe; matches `ShipmentOceanWavesSfx`).
+local function collectAllActiveShipmentBoatModels(): { Model }
 	local out: { Model } = {}
-	local docks = Workspace:FindFirstChild("dOCKS")
-		or Workspace:FindFirstChild("Docks")
-		or Workspace:FindFirstChild("DOCKS")
-	local boatsFolder = docks and docks:FindFirstChild("Boats")
-	if boatsFolder then
-		for _, inst in ipairs(boatsFolder:GetDescendants()) do
-			if inst:IsA("Model") and inst.Name == "ActiveShipmentBoat" then
-				table.insert(out, inst)
-			end
-		end
-	end
-	local map = Workspace:FindFirstChild("Map")
-	local plots = map and map:FindFirstChild("Plots")
-	if plots then
-		for _, plot in ipairs(plots:GetChildren()) do
-			local oilV = plot:FindFirstChild("OilVisuals")
-			local boat = oilV and oilV:FindFirstChild("ActiveShipmentBoat")
-			if boat and boat:IsA("Model") then
-				table.insert(out, boat)
-			end
+	for _, inst in ipairs(Workspace:GetDescendants()) do
+		if inst:IsA("Model") and inst.Name == "ActiveShipmentBoat" then
+			table.insert(out, inst)
 		end
 	end
 	return out
 end
 
+local function clearRouteProgressBoatCache()
+	routeProgressBoatCache = nil
+end
+
 local function findActiveShipmentBoat(ownerUserId: number, shipmentId: string?): Model?
-	local candidates = collectActiveShipmentBoatModels()
-	for _, boat in ipairs(candidates) do
-		if boat:GetAttribute("OwnerUserId") ~= ownerUserId then
-			continue
-		end
+	if routeProgressBoatCache and routeProgressBoatCache.Parent and routeProgressBoatCache.Name == "ActiveShipmentBoat" then
 		if shipmentId and shipmentId ~= "" then
+			local csid = routeProgressBoatCache:GetAttribute("ShipmentId")
+			if csid ~= nil and tostring(csid) == shipmentId then
+				return routeProgressBoatCache
+			end
+		else
+			local co = routeProgressBoatCache:GetAttribute("OwnerUserId")
+			if typeof(co) == "number" and co == ownerUserId then
+				return routeProgressBoatCache
+			end
+		end
+	end
+
+	local candidates = collectAllActiveShipmentBoatModels()
+	-- 1) `ShipmentId` is unique per voyage — match first (works before `OwnerUserId` replicates).
+	if shipmentId and shipmentId ~= "" then
+		for _, boat in ipairs(candidates) do
 			local sid = boat:GetAttribute("ShipmentId")
 			if sid ~= nil and tostring(sid) == shipmentId then
+				routeProgressBoatCache = boat
 				return boat
 			end
 		end
 	end
+	-- 2) Owner match once `OwnerUserId` is a number.
 	for _, boat in ipairs(candidates) do
-		if boat:GetAttribute("OwnerUserId") == ownerUserId then
+		local o = boat:GetAttribute("OwnerUserId")
+		if typeof(o) == "number" and o == ownerUserId then
+			routeProgressBoatCache = boat
 			return boat
 		end
 	end
+	routeProgressBoatCache = nil
 	return nil
 end
 
@@ -1180,8 +1185,7 @@ local function progressAlphaFromClock(): number
 	return (now - voyageStartTime) / span
 end
 
---- Prefer `RouteProgress01` (ship→finish XZ on server). Never use wall-clock for active shipments — that
---- fills the bar while the boat is stuck or before attributes replicate.
+--- `RouteProgress01` only (polyline distance 0–1 from server). Never ETA clock while a shipment is active.
 local function ownerProgressFillAlpha(): number
 	local lp = Players.LocalPlayer
 	if not lp or not activeShipmentId then
@@ -1392,6 +1396,7 @@ function ShipmentProgressHud.onVisualPacket(kind: string, data: Packet, localPla
 		voyageStartTime = nil
 		voyageEndTime = nil
 		activeShipmentId = nil
+		clearRouteProgressBoatCache()
 		setFillScaleX(0)
 
 		if not (progressFill and progressFill.Parent and statusLine and statusLine.Parent) then
@@ -1456,6 +1461,7 @@ function ShipmentProgressHud.onVisualPacket(kind: string, data: Packet, localPla
 	if kind == "ShipmentStarted" then
 		stopClearTask()
 		cancelAllHintFx()
+		clearRouteProgressBoatCache()
 		haltProgressFreezeUntil = nil
 		haltFrozenFillAlpha = nil
 		voyageHudComplete = false

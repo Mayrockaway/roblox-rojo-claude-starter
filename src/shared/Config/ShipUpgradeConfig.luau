@@ -28,16 +28,16 @@ local CAPACITY_UPGRADE_COSTS: { number } = {
 }
 
 -- Base voyage duration (seconds) at each speed **level** before strait/events add time.
--- Max tier **60s** — leaves headroom so incidents/extensions don’t start from an already-tiny leg.
+-- Max tier **30s** — leaves headroom so incidents/extensions don’t start from an already-tiny leg.
 local TRAVEL_SECONDS_BY_SPEED_LEVEL: { number } = {
-	90, -- 1
-	80, -- 2  (−10)
-	74, -- 3  (−6)
-	70, -- 4  (−4)
-	67, -- 5  (−3)
-	64, -- 6  (−3)
-	62, -- 7  (−2)
-	60, -- 8  (−2) max
+	60, -- 1
+	50, -- 2  (−10)
+	44, -- 3  (−6)
+	40, -- 4  (−4)
+	37, -- 5  (−3)
+	34, -- 6  (−3)
+	32, -- 7  (−2)
+	30, -- 8  (−2) max
 }
 
 --- Cost to upgrade speed **from** `level` **to** `level + 1` (`level` is current 1..MaxSpeedLevel-1).

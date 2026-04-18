@@ -51,6 +51,18 @@ local function anchorAllBaseParts(instance: Instance)
 	end
 end
 
+local function stripBarrelProximityPrompts(root: Instance)
+	local toDestroy: { ProximityPrompt } = {}
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then
+			table.insert(toDestroy, d)
+		end
+	end
+	for _, p in ipairs(toDestroy) do
+		p:Destroy()
+	end
+end
+
 -- Catalog `visualGroundOffsetStuds` (world studs at unit scale) × placed pump scale.
 local function pumpTierVisualGroundLiftStuds(tier: any, appliedScale: number): number
 	if typeof(tier) ~= "string" then
@@ -1463,13 +1475,6 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 				barrel:SetAttribute("OnConveyor", true)
 				barrel.Parent = barrelsFolder
 
-				-- Enable pickup prompt
-				for _, d in ipairs(barrel:GetDescendants()) do
-					if d:IsA("ProximityPrompt") then
-						d.Enabled = true
-					end
-				end
-
 				-- Barrel half-height for proper Y placement
 				local barrelHalfHeight = 0
 				if barrel:IsA("BasePart") then
@@ -1514,9 +1519,6 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 					-- and destroy on arrival. No more on-dock pile; capacity is expressed by
 					-- the tank's liquid fill level (see OilTankFx client FX).
 					barrel:SetAttribute("OnConveyor", false)
-					for _, d in ipairs(barrel:GetDescendants()) do
-						if d:IsA("ProximityPrompt") then d.Enabled = false end
-					end
 
 					local tankCenter = endPos
 					local oilTanks = plot:FindFirstChild("OilTanks")

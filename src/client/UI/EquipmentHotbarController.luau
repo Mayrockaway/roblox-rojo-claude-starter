@@ -27,12 +27,15 @@ local bindWait = false
 local refreshToken = 0
 local toolAttrConns: { RBXScriptConnection } = {}
 local backpackConns: { RBXScriptConnection } = {}
+local playerBackpackGuardConn: RBXScriptConnection? = nil
 local characterConns: { RBXScriptConnection } = {}
 local hotbarStrip: Frame? = nil
 local slotTemplate: GuiObject? = nil
 local slotToTool: { [GuiObject]: Tool } = {}
 local slotToStroke: { [GuiObject]: UIStroke } = {}
 local stripAbsConn: RBXScriptConnection? = nil
+local characterAddedConn: RBXScriptConnection? = nil
+local keyboardConn: RBXScriptConnection? = nil
 
 --- Roblox-style hotbar: `toolBySlot[i]` is the `Tool` bound to keys `1..9` and `0` (slot 10). Nil = empty.
 local MAX_HOTBAR_SLOTS = 10
@@ -350,6 +353,32 @@ local function reconcileRobloxToolbarSlotsAndBuildRows(player: Player): { SlotRo
 		end
 	end
 
+	local unassigned: { Tool } = {}
+	for _, t in ipairs(desiredReps) do
+		if t.Parent ~= nil and assigned[t] ~= true then
+			table.insert(unassigned, t)
+		end
+	end
+	if #unassigned > 0 then
+		local sample = {}
+		for i = 1, math.min(5, #unassigned) do
+			local t = unassigned[i]
+			local id = t:GetAttribute("EquipmentItemId")
+			table.insert(
+				sample,
+				string.format("%s (itemId=%s)", t.Name, typeof(id) == "string" and id or "?")
+			)
+		end
+		warn(
+			string.format(
+				"[EquipmentHotbar] %d tool row(s) exceed max %d slots — extra tools stay in Backpack only. Examples: %s",
+				#unassigned,
+				MAX_HOTBAR_SLOTS,
+				table.concat(sample, "; ")
+			)
+		)
+	end
+
 	local allInstances = gatherToolsBackpackThenCharacter(player)
 	local rows: { SlotRow } = {}
 	for i = 1, MAX_HOTBAR_SLOTS do
@@ -624,10 +653,73 @@ local function disconnectList(list: { RBXScriptConnection })
 	table.clear(list)
 end
 
+--- After `HUD` is recreated (ResetOnSpawn, late replication, teleport flows), strip refs go stale but `started`
+--- stayed true — `tryStart` must tear down and rebind instead of returning early.
+local function disconnectAndResetHotbarBinding()
+	refreshToken += 1
+	disconnectList(backpackConns)
+	if playerBackpackGuardConn then
+		playerBackpackGuardConn:Disconnect()
+		playerBackpackGuardConn = nil
+	end
+	disconnectList(characterConns)
+	clearToolAttrConns()
+	if stripAbsConn then
+		stripAbsConn:Disconnect()
+		stripAbsConn = nil
+	end
+	if characterAddedConn then
+		characterAddedConn:Disconnect()
+		characterAddedConn = nil
+	end
+	if keyboardConn then
+		keyboardConn:Disconnect()
+		keyboardConn = nil
+	end
+	local strip = hotbarStrip
+	if strip and strip.Parent then
+		pcall(function()
+			clearStrip(strip)
+		end)
+	end
+	hotbarStrip = nil
+	slotTemplate = nil
+	clearToolBySlotAssignments()
+	table.clear(slotToTool)
+	table.clear(slotToStroke)
+	started = false
+end
+
+local function isHotbarBindingAliveForPlayerGui(playerGui: PlayerGui): boolean
+	if not started or not hotbarStrip or not slotTemplate then
+		return false
+	end
+	if hotbarStrip.Parent == nil or slotTemplate.Parent == nil then
+		return false
+	end
+	if not hotbarStrip:IsDescendantOf(playerGui) or not slotTemplate:IsDescendantOf(playerGui) then
+		return false
+	end
+	return true
+end
+
 local function wireBackpackOnce(player: Player, bp: Backpack)
 	disconnectList(backpackConns)
+	local function onBackpackToolChanged()
+		scheduleFullRebuild(player)
+	end
+	local function hookBackpackTool(t: Tool)
+		table.insert(backpackConns, t:GetAttributeChangedSignal(STACK_ATTR):Connect(onBackpackToolChanged))
+		table.insert(backpackConns, t:GetPropertyChangedSignal("Parent"):Connect(onBackpackToolChanged))
+	end
+	for _, ch in ipairs(bp:GetChildren()) do
+		if ch:IsA("Tool") then
+			hookBackpackTool(ch :: Tool)
+		end
+	end
 	table.insert(backpackConns, bp.ChildAdded:Connect(function(child)
 		if child:IsA("Tool") then
+			hookBackpackTool(child :: Tool)
 			scheduleFullRebuild(player)
 		end
 	end))
@@ -656,14 +748,20 @@ end
 
 function EquipmentHotbarController.start(playerGui: PlayerGui): boolean
 	if started then
-		return true
+		if isHotbarBindingAliveForPlayerGui(playerGui) then
+			return true
+		end
+		disconnectAndResetHotbarBinding()
 	end
 	if bindWait then
 		local deadline = os.clock() + 30
 		while bindWait and not started and os.clock() < deadline do
 			task.wait(0.05)
 		end
-		return started
+		if started then
+			return true
+		end
+		--- Another `start()` was mid-flight (or timed out waiting); continue so this caller can bind.
 	end
 	bindWait = true
 
@@ -680,20 +778,47 @@ function EquipmentHotbarController.start(playerGui: PlayerGui): boolean
 				if bp:IsA("Backpack") then
 					wireBackpackOnce(player, bp)
 				end
+				if playerBackpackGuardConn then
+					playerBackpackGuardConn:Disconnect()
+					playerBackpackGuardConn = nil
+				end
+				playerBackpackGuardConn = player.ChildAdded:Connect(function(ch)
+					if ch:IsA("Backpack") then
+						wireBackpackOnce(player, ch :: Backpack)
+						scheduleFullRebuild(player)
+					end
+				end)
 
 				local function onCharacterAdded(character: Model)
 					clearToolBySlotAssignments()
 					wireCharacterTools(player, character)
 					scheduleFullRebuild(player)
 					updateEquippedHighlight(character)
+					--- After death/respawn, tools + GUI layout can replicate a few frames late — refresh slots.
+					task.delay(0.12, function()
+						if player.Character == character and hotbarStrip then
+							scheduleFullRebuild(player)
+						end
+					end)
+					task.delay(0.4, function()
+						if player.Character == character and hotbarStrip then
+							scheduleFullRebuild(player)
+						end
+					end)
 				end
 
 				if player.Character then
 					onCharacterAdded(player.Character)
 				end
-				player.CharacterAdded:Connect(onCharacterAdded)
+				if characterAddedConn then
+					characterAddedConn:Disconnect()
+				end
+				characterAddedConn = player.CharacterAdded:Connect(onCharacterAdded)
 
-				UserInputService.InputBegan:Connect(function(input, gameProcessed)
+				if keyboardConn then
+					keyboardConn:Disconnect()
+				end
+				keyboardConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
 					if gameProcessed then
 						return
 					end
@@ -710,6 +835,10 @@ function EquipmentHotbarController.start(playerGui: PlayerGui): boolean
 				end)
 
 				rebuild(player)
+				task.defer(function()
+					scheduleFullRebuild(player)
+				end)
+
 				if stripAbsConn then
 					stripAbsConn:Disconnect()
 					stripAbsConn = nil
@@ -742,6 +871,21 @@ end
 --- Call when `PlayerGui.HUD` is cloned in late (e.g. after first defer). Safe to call multiple times.
 function EquipmentHotbarController.tryStart(playerGui: PlayerGui): boolean
 	return EquipmentHotbarController.start(playerGui)
+end
+
+--- After shop purchase / stack merge (no **`ChildAdded`**), or replication lag — safe to call multiple times.
+function EquipmentHotbarController.requestRebuild()
+	local p = Players.LocalPlayer
+	if not p then
+		return
+	end
+	scheduleFullRebuild(p)
+	task.defer(function()
+		scheduleFullRebuild(p)
+	end)
+	task.delay(0.15, function()
+		scheduleFullRebuild(p)
+	end)
 end
 
 return EquipmentHotbarController

@@ -16,13 +16,13 @@ local StraitEventConfig = {
 	-- P(trigger) at each trigger point, independent rolls.
 	OccurrenceChance = {
 		Open = 0.15,
-		Restricted = 0.40,
-		Closed = 0.60,
+		Restricted = 0.30,
+		Closed = 0.50,
 	} :: { [PublicStraitBracket]: number },
 
-	-- Restricted: P(High | hit); of the remainder, P(Low) = this and P(Medium) = 1 - this (Medium-weighted).
-	RestrictedHighChance = 0.15,
-	RestrictedLowVersusMediumChance = 0.45, -- Low 45% / Medium 55% after High gate
+	-- Restricted: P(High | occurrence hit); of the remainder, P(Low) = this vs P(Medium) = 1 - this (Low-weighted).
+	RestrictedHighChance = 0.10,
+	RestrictedLowVersusMediumChance = 0.62, -- Low 62% / Medium 38% after High gate
 
 	-- Closed: P(Medium | hit); else High.
 	ClosedMediumChance = 0.60,

@@ -21,6 +21,7 @@ local player = Players.LocalPlayer
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilmanConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilmanConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local StepperHold = require(script.Parent.Parent:WaitForChild("StepperHold"))
 
 local SCREEN_NAME_SELL = "OilmanSellGui"
 local SCREEN_NAME_DIALOGUE = "OilmanDialogueGui"
@@ -826,7 +827,8 @@ function OilmanDialoguePanel.bind(playerGui: PlayerGui)
 		refreshTotal()
 	end
 
-	-- Wire sell-modal steppers
+	-- Wire sell-modal steppers (hold to repeat on mouse / touch)
+	local stepperHoldConns: { RBXScriptConnection } = {}
 	for _, tier in ipairs(OilmanConfig.TierOrder) do
 		local row = rowsContainer:FindFirstChild("Row_" .. tier) :: Frame?
 		if not row then continue end
@@ -837,14 +839,23 @@ function OilmanDialoguePanel.bind(playerGui: PlayerGui)
 			refreshRow(tier)
 			refreshTotal()
 		end
-		;(steppers:FindFirstChild("Step_-10") :: TextButton).Activated:Connect(function() adjust(-10) end)
-		;(steppers:FindFirstChild("Step_-1") :: TextButton).Activated:Connect(function() adjust(-1) end)
-		;(steppers:FindFirstChild("Step_+1") :: TextButton).Activated:Connect(function() adjust(1) end)
-		;(steppers:FindFirstChild("Step_+10") :: TextButton).Activated:Connect(function() adjust(10) end)
-		;(steppers:FindFirstChild("Step_Max") :: TextButton).Activated:Connect(function()
+		StepperHold.bind(steppers:FindFirstChild("Step_-10") :: GuiButton, function()
+			adjust(-10)
+		end, stepperHoldConns)
+		StepperHold.bind(steppers:FindFirstChild("Step_-1") :: GuiButton, function()
+			adjust(-1)
+		end, stepperHoldConns)
+		StepperHold.bind(steppers:FindFirstChild("Step_+1") :: GuiButton, function()
+			adjust(1)
+		end, stepperHoldConns)
+		StepperHold.bind(steppers:FindFirstChild("Step_+10") :: GuiButton, function()
+			adjust(10)
+		end, stepperHoldConns)
+		StepperHold.bind(steppers:FindFirstChild("Step_Max") :: GuiButton, function()
 			tierValue[tier] = tierMax[tier] or 0
-			refreshRow(tier); refreshTotal()
-		end)
+			refreshRow(tier)
+			refreshTotal()
+		end, stepperHoldConns)
 	end
 
 	maxAllBtn.Activated:Connect(function()

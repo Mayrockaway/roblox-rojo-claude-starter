@@ -138,24 +138,6 @@ local function getBoatPathSampleWorldPosition(boat: Model): Vector3
 	return boat:GetPivot().Position
 end
 
---- HUD: how close `worldPos` (XZ) is to the **finish** vs **dock → finish** span. Used with bow + lead point.
-local function shipToFinishHud01(path: { Vector3 }, worldPos: Vector3): number
-	if #path < 2 then
-		return 0
-	end
-	local axz = Vector3.new(path[1].X, 0, path[1].Z)
-	local bxz = Vector3.new(path[#path].X, 0, path[#path].Z)
-	local pxz = Vector3.new(worldPos.X, 0, worldPos.Z)
-	local dockToFinish = bxz - axz
-	local initialGap = dockToFinish.Magnitude
-	if initialGap < 4 then
-		return 1
-	end
-	local distShipToFinish = (bxz - pxz).Magnitude
-	-- At dispatch, ship sits at dock: distShipToFinish ≈ initialGap → ~0. At finish → ~1.
-	return 1 - math.clamp(distShipToFinish / initialGap, 0, 1)
-end
-
 local function getFirstBasePart(instance: Instance): BasePart?
 	if instance:IsA("BasePart") then
 		return instance
@@ -205,17 +187,6 @@ local function resolveRigForBoatInstance(boat: Instance): ShipRig.RigDef
 		end
 	end
 	return ShipSkinCatalog.GetRigForTemplate("Tanker")
-end
-
---- Bow / front marker toward the destination — HUD “distance to finish” must not use midship/waterline
---- or the bar lags what players see (camera on bow approaching beach).
-local function getHudShipWorldPositionForFinishProgress(boat: Model): Vector3
-	local rig = resolveRigForBoatInstance(boat)
-	local bow = ShipRig.FindBasePart(boat, rig.frontMarkerName)
-	if bow then
-		return bow.Position
-	end
-	return getBoatPathSampleWorldPosition(boat)
 end
 
 local function findBoatSeat(boat: Instance): Seat?
@@ -334,6 +305,7 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 	self._boatDockService = boatDockService
 	self._connections = {}
 	self._lanes = {}
+	self._laneVoyageCounts = {} :: { number }
 
 	local assetsFolder = ReplicatedStorage:FindFirstChild("Assets")
 	self._boatTemplate = assetsFolder and assetsFolder:FindFirstChild("Tanker") or nil
@@ -381,6 +353,7 @@ function OilShipmentService:_discoverLanes()
 	local routes = strait and strait:FindFirstChild("Routes")
 	if not routes then
 		warn("[OilShipmentService] No Routes folder found at Map.Ocean.StraitHormuz.Routes")
+		self._laneVoyageCounts = {}
 		return
 	end
 
@@ -411,16 +384,57 @@ function OilShipmentService:_discoverLanes()
 		end
 	end
 
+	self._laneVoyageCounts = {}
+	for i = 1, #self._lanes do
+		self._laneVoyageCounts[i] = 0
+	end
+
 	print(string.format("[OilShipmentService] Discovered %d lanes", #self._lanes))
 end
 
-function OilShipmentService:_pickLane(seed: number)
+--- Prefer lanes with fewer boats currently on voyage (same `_lanes` indices). Tie-break uses `seed`.
+function OilShipmentService:_pickLaneLeastLoaded(seed: number): (any, number?)
 	if #self._lanes == 0 then
-		return nil
+		return nil, nil
+	end
+	local counts = self._laneVoyageCounts
+	local minCount = math.huge
+	local candidates: { number } = {}
+	for i = 1, #self._lanes do
+		local c = if counts[i] ~= nil then counts[i] :: number else 0
+		if c < minCount then
+			minCount = c
+			candidates = { i }
+		elseif c == minCount then
+			table.insert(candidates, i)
+		end
 	end
 	local rng = Random.new(seed)
-	local idx = rng:NextInteger(1, #self._lanes)
-	return self._lanes[idx]
+	local pickIdx = candidates[rng:NextInteger(1, #candidates)]
+	return self._lanes[pickIdx], pickIdx
+end
+
+function OilShipmentService:_reserveLaneSlot(laneIndex: number)
+	local n = #self._lanes
+	if laneIndex < 1 or laneIndex > n then
+		return
+	end
+	self._laneVoyageCounts[laneIndex] = (self._laneVoyageCounts[laneIndex] or 0) + 1
+end
+
+function OilShipmentService:_releaseLaneSlotForShipment(shipment: { [string]: any })
+	local idxAny = shipment.laneIndex
+	if typeof(idxAny) ~= "number" then
+		return
+	end
+	local idx = math.floor(idxAny)
+	if idx < 1 or idx > #self._lanes then
+		shipment.laneIndex = nil
+		return
+	end
+	local c = (self._laneVoyageCounts[idx] or 0) - 1
+	self._laneVoyageCounts[idx] = math.max(0, c)
+	shipment.laneIndex = nil
 end
 
 function OilShipmentService:_buildPath(dockSpawnPos: Vector3, lane): { Vector3 }
@@ -745,12 +759,15 @@ function OilShipmentService:_runShipment(shipment)
 	end
 	-- Pick a lane and build the full path: dock (boat's current slot) → lane waypoints
 	local seed = math.floor(workspace:GetServerTimeNow() * 1000) + ownerUserId
-	local lane = self:_pickLane(seed)
+	local lane, laneIndex = self:_pickLaneLeastLoaded(seed)
 	if not lane then
 		warn("[OilShipmentService] No lanes available, falling back to straight line.")
 		local startPos = boat:GetPivot().Position
 		local endPos = startPos + Vector3.new(0, 0, -140)
 		lane = { name = "Fallback", positions = { startPos, endPos } }
+	else
+		(shipment :: any).laneIndex = laneIndex
+		self:_reserveLaneSlot(laneIndex :: number)
 	end
 
 	-- Dock spawn position XZ = boat's current pivot (sits at its dock slot). Y must be
@@ -802,7 +819,7 @@ function OilShipmentService:_runShipment(shipment)
 		boat:SetAttribute("ShipmentId", shipment.shipmentId)
 		boat:SetAttribute("OwnerUserId", ownerUserId)
 		boat:SetAttribute("ShipSkinId", shipment.shipSkinId)
-		-- HUD: ship→finish distance ratio (see `shipToFinishHud01` in voyage loop).
+		-- HUD: arc-length progress along lane polyline (see voyage loop: s_hull / totalPathLen).
 		boat:SetAttribute("RouteProgress01", 0)
 	end
 
@@ -949,10 +966,11 @@ function OilShipmentService:_runShipment(shipment)
 			local hullAlongPos = select(1, positionAndTangentAtArcLength(path, segDists, s_hull))
 			local currentPos, nextTan = positionAndTangentAtArcLength(path, segDists, s_lead)
 			if boat:IsA("Model") then
-				-- Physical bow (what the player sees) + commanded lead point on route (physics can lag carrot).
-				local hudBow = shipToFinishHud01(path, getHudShipWorldPositionForFinishProgress(boat))
-				local hudLead = shipToFinishHud01(path, currentPos)
-				routeHudMonotone = math.max(routeHudMonotone, hudBow, hudLead)
+				-- Polyline distance 0→1 (not Euclidean dock→finish — winding strait paths need arc length).
+				local denom = totalPathLen
+				local hull01 = if denom > 1e-4 then math.clamp(s_hull / denom, 0, 1) else 0
+				local lead01 = if denom > 1e-4 then math.clamp(s_lead / denom, 0, 1) else 0
+				routeHudMonotone = math.max(routeHudMonotone, hull01, lead01)
 				boat:SetAttribute("RouteProgress01", clamp01(routeHudMonotone))
 			end
 			if ctx then
@@ -1089,11 +1107,13 @@ function OilShipmentService:_runShipment(shipment)
 		boardConnection:Disconnect()
 	end
 	self:_handleOwnerAfterSuccessfulShipmentFinish(boat, ownerUserId)
+	self:_teleportGuestsHomeAfterShipmentFinish(boat, ownerUserId)
 	self:_teardownShip(shipment.shipmentId)
 	self._boatDockService:CheckinBoat(ownerUserId, { destroyed = false })
 	if ctx and ctx.pendingForcedPirateHit and self._hitContractService and typeof(self._hitContractService.RefundContract) == "function" then
 		self._hitContractService:RefundContract(ctx.pendingForcedPirateHit.contractId, "victim_completed_before_raid")
 	end
+	self:_releaseLaneSlotForShipment(shipment :: any)
 	self._activeShipmentByOwner[ownerUserId] = nil
 	self._shipmentContexts[shipment.shipmentId] = nil
 end
@@ -1129,6 +1149,56 @@ function OilShipmentService:_handleOwnerAfterSuccessfulShipmentFinish(boat: Inst
 		if claimPad and claimPad:IsA("BasePart") then
 			CharacterTeleport.teleportWithUnseat(character, CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)), "ShipmentFinish:claimPad")
 		end
+	end
+end
+
+--- Non-owners on deck / seat when the voyage completes: send them to **their** ClaimPad (not strait warehouse).
+--- Owner delivery uses `_handleOwnerAfterSuccessfulShipmentFinish`; without this, guests fall through when the boat is checked in.
+function OilShipmentService:_teleportGuestsHomeAfterShipmentFinish(boat: Instance, ownerUserId: number)
+	if not (boat and boat:IsA("Model")) then
+		return
+	end
+	local boatModel = boat :: Model
+	local boatCF, boatSize = boatModel:GetBoundingBox()
+	local halfX = boatSize.X * 0.5 + 2
+	local halfY = boatSize.Y * 0.5 + 6
+	local halfZ = boatSize.Z * 0.5 + 2
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.UserId == ownerUserId then
+			continue
+		end
+		local character = player.Character
+		if not character then
+			continue
+		end
+		local hrp = character:FindFirstChild("HumanoidRootPart")
+		if not (hrp and hrp:IsA("BasePart")) then
+			continue
+		end
+
+		local hum = character:FindFirstChildOfClass("Humanoid")
+		local seatedOnBoat = hum ~= nil and hum.SeatPart ~= nil and hum.SeatPart:IsDescendantOf(boatModel)
+		local rel = boatCF:PointToObjectSpace(hrp.Position)
+		local onDeck = math.abs(rel.X) <= halfX
+			and math.abs(rel.Y) <= halfY
+			and math.abs(rel.Z) <= halfZ
+
+		if not (seatedOnBoat or onDeck) then
+			continue
+		end
+
+		local plot = self._plotService:GetOwnedPlot(player.UserId)
+		local claimPad = plot and plot:FindFirstChild("ClaimPad")
+		if not (claimPad and claimPad:IsA("BasePart")) then
+			continue
+		end
+
+		CharacterTeleport.teleportWithUnseat(
+			character,
+			CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)),
+			"ShipmentFinish:guestHome"
+		)
 	end
 end
 
@@ -1432,6 +1502,7 @@ function OilShipmentService:_addPlayerFlag(boat: Instance, ownerUserId: number)
 end
 
 function OilShipmentService:_finishShipmentWithoutPayout(shipment, reason: string)
+	self:_releaseLaneSlotForShipment(shipment :: any)
 	self._oilStateService:DecrementShipmentCount(shipment.ownerUserId)
 	self._oilStateService:PushState(shipment.ownerUserId)
 	local shipLabelF = ShipSkinCatalog.GetSkin(shipment.shipSkinId).displayName

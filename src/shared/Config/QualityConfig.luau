@@ -7,19 +7,19 @@ local Tiers = {
 		displayName = "Heavy Crude",
 		--- Compact HUD copy (manifest strip, cargo rows).
 		hudShortName = "Crude",
-		basePricePerBarrel = 8,
+		basePricePerBarrel = 16,
 		productionWeight = 80,
 	},
 	LightSweet = {
 		displayName = "Light Sweet",
 		hudShortName = "Light",
-		basePricePerBarrel = 14,
+		basePricePerBarrel = 28,
 		productionWeight = 15,
 	},
 	PremiumRefined = {
 		displayName = "Premium Refined",
 		hudShortName = "Premium",
-		basePricePerBarrel = 20,
+		basePricePerBarrel = 40,
 		productionWeight = 5,
 	},
 } :: {

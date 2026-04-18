@@ -33,6 +33,9 @@ local DEBUG_DOCK_SPAWN = true
 --- `ShipmentShip`; those parts do not collide with `MarinaDock`, but still collide with `Default` (character).
 local MARINA_DOCK_GROUP = "MarinaDock"
 
+--- `Workspace.Map.MapDecor` props (buoys, etc.): voyage hulls (`ShipmentShip`) ignore them; characters still collide.
+local MAP_DECOR_GROUP = "MapDecor"
+
 local function getDocksRoot(): Instance?
 	return Workspace:FindFirstChild("dOCKS")
 		or Workspace:FindFirstChild("Docks")
@@ -54,6 +57,46 @@ local function applyMarinaDockCollisionRules()
 	pcall(function()
 		PhysicsService:CollisionGroupSetCollidable(MARINA_DOCK_GROUP, "Players", true)
 	end)
+end
+
+local function applyMapDecorVersusShipmentShipRules()
+	pcall(function()
+		PhysicsService:RegisterCollisionGroup(MAP_DECOR_GROUP)
+	end)
+	-- Voyage boats only use `ShipmentShip`; idle boats stay Default and still collide with decor.
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable("ShipmentShip", MAP_DECOR_GROUP, false)
+	end)
+	-- Players / characters remain able to touch MapDecor geometry (walk, physics).
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(MAP_DECOR_GROUP, "Default", true)
+	end)
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(MAP_DECOR_GROUP, "Players", true)
+	end)
+end
+
+function BoatDockService:_tagMapDecorFolder(mapDecor: Instance)
+	local function tagIfDecorPart(inst: Instance)
+		if not inst:IsA("BasePart") then
+			return
+		end
+		pcall(function()
+			(inst :: BasePart).CollisionGroup = MAP_DECOR_GROUP
+		end)
+	end
+	for _, d in ipairs(mapDecor:GetDescendants()) do
+		tagIfDecorPart(d)
+	end
+	local decorConn = mapDecor.DescendantAdded:Connect(function(inst)
+		task.defer(function()
+			if inst.Parent == nil then
+				return
+			end
+			tagIfDecorPart(inst)
+		end)
+	end)
+	table.insert(self._connections, decorConn)
 end
 
 function BoatDockService:_tagMarinaDockParts(docksRoot: Instance)
@@ -104,11 +147,20 @@ function BoatDockService:Init(remoteService, oilStateService)
 		PhysicsService:CollisionGroupSetCollidable("ShipmentShip", "ShipmentShip", false)
 	end)
 	applyMarinaDockCollisionRules()
+	applyMapDecorVersusShipmentShipRules()
 	local docksRoot = getDocksRoot()
 	if docksRoot then
 		self:_tagMarinaDockParts(docksRoot)
 	else
 		warn("[BoatDockService] No workspace.dOCKS — MarinaDock tagging skipped.")
+	end
+
+	local map = Workspace:FindFirstChild("Map") or Workspace:FindFirstChild("map")
+	local mapDecor = map and (map:FindFirstChild("MapDecor") or map:FindFirstChild("mapdecor"))
+	if mapDecor then
+		self:_tagMapDecorFolder(mapDecor)
+	else
+		warn("[BoatDockService] No Workspace.Map.MapDecor — MapDecor collision tagging skipped.")
 	end
 
 	self:_discoverSlots()

@@ -10,6 +10,7 @@ local PhysicsService = game:GetService("PhysicsService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
+local Players = game:GetService("Players")
 
 --- Local cosmetic NPCs (Pirate / Coast Guard): must not shove the player. `Humanoid` resets
 --- `CanCollide` on body parts; parts must also ignore `ShipmentShip` (deck) vs `Players` (character).
@@ -390,6 +391,10 @@ end
 
 local ROUTINE_PAPERWORK_ID = "RoutinePaperwork"
 local ROUTINE_PAPERWORK_DECK_OFFSET = CFrame.new(0, 8, 0)
+-- After template + ParticleFxScale: bias toss upward, then let gravity/drag pull sheets down.
+local ROUTINE_PAPERWORK_SPEED_MUL = 1.22
+local ROUTINE_PAPERWORK_GRAVITY_MUL = 0.72 -- less negative Y acceleration = longer hang before fall
+local ROUTINE_PAPERWORK_SPREAD_MUL = 0.72 -- tighter cone around EmissionDirection (more "up" than sideways)
 
 local function findActiveShipmentBoatByShipmentId(shipmentId: string): Model?
 	if shipmentId == "" then
@@ -1289,6 +1294,18 @@ local function playRoutinePaperworkFx(worldPos: Vector3, holdSeconds: number, da
 	emitter.Rate = 0
 	emitter.Enabled = false
 	ParticleFxScale.ApplyToEmitter(emitter, fxScale)
+	emitter.EmissionDirection = Enum.NormalId.Top
+	local spd = emitter.Speed
+	emitter.Speed = NumberRange.new(spd.Min * ROUTINE_PAPERWORK_SPEED_MUL, spd.Max * ROUTINE_PAPERWORK_SPEED_MUL)
+	local acc = emitter.Acceleration
+	if acc.Y < 0 then
+		emitter.Acceleration = Vector3.new(acc.X, acc.Y * ROUTINE_PAPERWORK_GRAVITY_MUL, acc.Z)
+	end
+	local spread = emitter.SpreadAngle
+	emitter.SpreadAngle = Vector2.new(
+		math.clamp(spread.X * ROUTINE_PAPERWORK_SPREAD_MUL, 18, 88),
+		math.clamp(spread.Y * ROUTINE_PAPERWORK_SPREAD_MUL, 18, 88)
+	)
 
 	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
 	local boat = if shipmentId ~= "" then findActiveShipmentBoatByShipmentId(shipmentId) else nil
@@ -2710,6 +2727,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		local PHASE_BOARD = 3.0
 		local PHASE_STEAL = 7.0
 		local PHASE_ESCAPE = 4.0
+		local RETURN_WINDOW = 1.25 -- overlap: last pirates return vs escape drive (was undefined)
 		local PIRATE_COUNT = 5
 		local PIRATE_SPACING = 1.5
 		local deckY = getBoatDeckY(playerBoat, boatRoot.Position.Y)
@@ -2768,10 +2786,16 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 			for _, p in ipairs(pirates) do
 				table.insert(ghostRoots, p.npc)
 			end
-			sustainStraitNpcGhosts(ghostRoots, 48)
+			-- Full sequence + escape (~22s) — keep sweeps longer than CoastGuard (42) so reparents stay ghosted
+			sustainStraitNpcGhosts(ghostRoots, 62)
 		end
 
 		animateMove(pirateBoat, pirateBoat:GetPivot(), uprightLookAt(parkPos, rootPos), PHASE_APPROACH, 0)
+		-- Approach can wake constraints / welds on the template — match CoastGuard: re-ghost after big moves
+		applyStraitNpcGhostParts(pirateBoat)
+		for _, p in ipairs(pirates) do
+			applyStraitNpcGhostParts(p.npc)
+		end
 
 		rootPos = boatRoot.Position
 		deckY = getBoatDeckY(playerBoat, boatRoot.Position.Y) + pirateLift
@@ -2848,6 +2872,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 			pirate.npc.Parent = Workspace
 			setObjectCF(pirate.npc, worldCF)
 			pirate.cf = worldCF
+			applyStraitNpcGhostParts(pirate.npc)
 		end
 
 		-- Find barrels to steal before any pirate moves
@@ -2914,6 +2939,9 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 						carry.CanCollide = false
 						carry.CanQuery = false
 						carry.CanTouch = false
+						pcall(function()
+							carry.CollisionGroup = STRAIT_FX_NPC_GROUP
+						end)
 						carry.CFrame = CFrame.new(standPos + Vector3.new(0, BARREL_CARRY_UP, 0))
 						carry.Parent = Workspace
 						Debris:AddItem(carry, 20)
@@ -2962,8 +2990,10 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 				pirate.npc.Parent = pirateBoat
 				setObjectCF(pirate.npc, worldCF)
 				pirate.cf = worldCF
+				applyStraitNpcGhostParts(pirate.npc)
 			end
 		end
+		applyStraitNpcGhostParts(pirateBoat)
 
 		local driveAwayDur = math.max(0.2, PHASE_ESCAPE - RETURN_WINDOW)
 		local escapePos = pirateBoat:GetPivot().Position + fwd * ESCAPE_DIST
@@ -3357,17 +3387,24 @@ function StraitWaypointWorldFx.OnUSShipSlapPayload(data: { [string]: any })
 		local boatRoot = getBoatAttachmentPart(playerBoat)
 		if not boatRoot then return end
 
+		-- Event is broadcast to all clients; only the victim should hear kraken / ship-break SFX (2D camera sounds were still playing for everyone).
+		local ownerUid = tonumber(data.ownerUserId)
+		local isVictimClient = ownerUid ~= nil and Players.LocalPlayer.UserId == ownerUid
+
 		local bbCF, bbSz = playerBoat:GetBoundingBox()
 		local rootPos = bbCF.Position
 		local waterY = boatRoot.Position.Y
 
-		-- Play kraken SFX immediately (slam synced to 4.12s in the clip)
-		local krakenSfx = Instance.new("Sound")
-		krakenSfx.SoundId = "rbxassetid://97968431643666"
-		krakenSfx.Volume = 1.5
-		krakenSfx.Parent = Workspace.CurrentCamera
-		krakenSfx:Play()
-		local krakenSfxLength = 0 -- will check after loaded
+		-- Play kraken SFX immediately (slam synced to 4.12s in the clip) — victim only
+		local krakenSfx: Sound? = nil
+		if isVictimClient then
+			local k = Instance.new("Sound")
+			k.SoundId = "rbxassetid://97968431643666"
+			k.Volume = 1.5
+			k.Parent = Workspace.CurrentCamera
+			k:Play()
+			krakenSfx = k
+		end
 
 		local SCALE = 30
 		local TENTACLE_COUNT = 6
@@ -3414,6 +3451,15 @@ function StraitWaypointWorldFx.OnUSShipSlapPayload(data: { [string]: any })
 			tent:PivotTo(startCF)
 			tent.Parent = Workspace
 			Debris:AddItem(tent, 20)
+
+			if not isVictimClient then
+				for _, d in ipairs(tent:GetDescendants()) do
+					if d:IsA("Sound") then
+						d.Volume = 0
+						d.Playing = false
+					end
+				end
+			end
 
 			-- Play wiggle animation with random offset
 			local animCtrl = tent:FindFirstChildOfClass("AnimationController")
@@ -3479,29 +3525,33 @@ function StraitWaypointWorldFx.OnUSShipSlapPayload(data: { [string]: any })
 		-- Explode boat
 		StraitWaypointWorldFx.ExplodeBoatIntoPieces(playerBoat, rootPos)
 
-		-- Play ShipDestroyed SFX AFTER the kraken clip finishes (not during)
-		task.spawn(function()
-			if krakenSfx and krakenSfx.IsLoaded then
-				krakenSfxLength = krakenSfx.TimeLength
-			else
-				krakenSfx.Loaded:Wait()
-				krakenSfxLength = krakenSfx.TimeLength
-			end
-			-- Wait for remaining clip time from slam impact (4.12s in) to end
-			local remaining = math.max(0, krakenSfxLength - 4.12)
-			task.wait(remaining)
-			-- Now play ship destroyed
-			local sfxFolder = ReplicatedStorage:FindFirstChild("Assets") and ReplicatedStorage.Assets:FindFirstChild("SFX")
-			local shipDestroyedTemplate = sfxFolder and sfxFolder:FindFirstChild("ShipDestroyed")
-			if shipDestroyedTemplate then
-				local s = shipDestroyedTemplate:Clone()
-				s.Parent = Workspace.CurrentCamera
-				s:Play()
-				Debris:AddItem(s, s.TimeLength + 1)
-			end
-			-- Cleanup kraken sfx after it ends
-			Debris:AddItem(krakenSfx, 2)
-		end)
+		-- Play ShipDestroyed SFX AFTER the kraken clip finishes (not during) — victim only
+		if isVictimClient and krakenSfx then
+			task.spawn(function()
+				local k = krakenSfx
+				local krakenSfxLength = 0
+				if k.IsLoaded then
+					krakenSfxLength = k.TimeLength
+				else
+					k.Loaded:Wait()
+					krakenSfxLength = k.TimeLength
+				end
+				-- Wait for remaining clip time from slam impact (4.12s in) to end
+				local remaining = math.max(0, krakenSfxLength - 4.12)
+				task.wait(remaining)
+				-- Now play ship destroyed
+				local sfxFolder = ReplicatedStorage:FindFirstChild("Assets") and ReplicatedStorage.Assets:FindFirstChild("SFX")
+				local shipDestroyedTemplate = sfxFolder and sfxFolder:FindFirstChild("ShipDestroyed")
+				if shipDestroyedTemplate then
+					local s = shipDestroyedTemplate:Clone()
+					s.Parent = Workspace.CurrentCamera
+					s:Play()
+					Debris:AddItem(s, s.TimeLength + 1)
+				end
+				-- Cleanup kraken sfx after it ends
+				Debris:AddItem(k, 2)
+			end)
+		end
 
 		-- Sink boat underwater (parallel)
 		task.spawn(function()

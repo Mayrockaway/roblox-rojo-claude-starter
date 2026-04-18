@@ -1,7 +1,10 @@
 --!strict
--- Settings Panel Controller: wires the SettingsPanelGui toggle switches and close button
+-- Settings Panel Controller: wires the SettingsPanelGui toggle switches and close button.
+-- Prefer `SettingsPanel` + `HudPanelRouter` when present; this legacy script delegates audio to `ClientAudioPreferences`.
+
 local Players = game:GetService("Players")
-local SoundService = game:GetService("SoundService")
+
+local ClientAudioPreferences = require(script.Parent:WaitForChild("ClientAudioPreferences"))
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -47,10 +50,12 @@ if not container then warn("[SettingsController] Container not found") return en
 settingsGui.Enabled = false
 print("[SettingsController] Panel hidden on start")
 
+ClientAudioPreferences.init()
+
 -- State
 local panelOpen = false
-local musicEnabled = true
-local sfxEnabled = true
+local musicEnabled = ClientAudioPreferences.isMusicEnabled()
+local sfxEnabled = ClientAudioPreferences.isSfxEnabled()
 
 -- Find both tabs in section "1"
 local section1 = container:FindFirstChild("1")
@@ -161,8 +166,7 @@ if sfxTab then
 		if active then active.Visible = sfxEnabled end
 		if inactive then inactive.Visible = not sfxEnabled end
 
-		-- Store preference so other scripts can check it
-		player:SetAttribute("SFXEnabled", sfxEnabled)
+		ClientAudioPreferences.setSfxEnabled(sfxEnabled)
 	end
 
 	-- Make the ENTIRE tab clickable

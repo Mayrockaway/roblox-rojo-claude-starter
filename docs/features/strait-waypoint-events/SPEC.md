@@ -71,8 +71,8 @@ Each trigger waypoint rolls separately:
 | Bracket | P(event at this waypoint) |
 |---------|----------------------------|
 | Open | **15%** |
-| Restricted | **40%** |
-| Closed | **60%** |
+| Restricted | **30%** |
+| Closed | **50%** |
 
 **Closed** remains punishing versus Open; per-waypoint occurrence was lowered versus the old 80% to offset **more trigger points** (2–9) and softer severity rolls.
 
@@ -81,7 +81,7 @@ Each trigger waypoint rolls separately:
 | Bracket | Severity rules |
 |---------|----------------|
 | Open | **Low only** |
-| Restricted | **15%** High; remaining **85%** split **45%** Low vs **55%** Medium |
+| Restricted | **10%** High; remaining **90%** split **62%** Low vs **38%** Medium (Low-weighted) |
 | Closed | **No Low** — **60%** Medium, **40%** High |
 
 (`RestrictedHighChance`, `RestrictedLowVersusMediumChance`, and `ClosedMediumChance` live in `StraitEventConfig`.)
@@ -246,9 +246,9 @@ Defined in `StraitEvents/Catalog.luau`. **Design notes, merge history:** [EVENTS
 
 ## 10. Test checklist
 
-- [ ] Open: only Low severities on successful hits; ~10% empirical over many runs per waypoint.
-- [ ] Restricted: High appears ~25% of hits (stochastic); Low/Medium otherwise.
-- [ ] Closed: no Low; Medium/High only; ~80% hit rate per waypoint.
+- [ ] Open: only Low severities on successful hits; ~15% occurrence per waypoint.
+- [ ] Restricted: High ~10% of severity rolls when an event fires; Low-weighted Low vs Medium on the rest; ~30% occurrence per waypoint.
+- [ ] Closed: no Low; Medium/High only; ~50% occurrence per waypoint.
 - [ ] Strait state change **mid-voyage**: later waypoint uses new bracket.
 - [ ] Pause: ship holds position timing-wise (no alpha jump after pause).
 - [ ] `skipWaypointPause` event: no wait, no clock shift.

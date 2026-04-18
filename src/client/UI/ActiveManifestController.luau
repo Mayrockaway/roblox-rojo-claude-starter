@@ -1,8 +1,10 @@
 --!strict
 -- Drives **`PlayerGui.HUD.Canvas.ActiveManifestPanel`** from **`ShipmentVisualEvent`**:
 -- `ManifestHudSnapshot` (server-authoritative manifest + optional per-incident tier loss), `ShipmentResolved` (idle).
--- Incidents: three fixed-height slots (preserves vertical space); clones **`IncidentRow_1`** archetype; **`LossChip`** only for tiers with barrel loss > 0.
--- Allowed runtime: **`Text`**, **`Visible`**, cloning from authored templates/rows (see `ui-architecture` world/manifest exception).
+-- Incidents: **`IncidentsSection.SectionBody`** holds **`IncidentsScroll`** (ScrollingFrame) or SectionBody is the scroll;
+-- clones **`IncidentRow_1`** archetype into **`IncidentSlot_*`**; first three slots match legacy empty stripes; 4+ append + scroll.
+-- **`LossChip`** only for tiers with barrel loss > 0.
+-- Allowed runtime: **`Text`**, **`Visible`**, cloning + scroll host ensure (see `ui-architecture` world/manifest exception).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
@@ -28,6 +30,10 @@ local TIER_CHIP_COLOR: { [string]: Color3 } = {
 local TITLE_ACTIVE = "ACTIVE MANIFEST"
 local TITLE_IDLE = "No Active Shipment"
 
+-- Match legacy `layoutIncidentSlotStack`: three equal stripes in the incidents body (relative to scroll viewport height).
+local LEGACY_VISIBLE_ROWS = 3
+local ROW_STACK_GAP_SCALE = 0.008
+
 local playerGuiRef: PlayerGui? = nil
 local panelRef: Frame? = nil
 local archetypeRow: Frame? = nil
@@ -36,21 +42,30 @@ local activeShipmentId: string? = nil
 local hydratedShipmentId: string? = nil
 local lastPerBarrel = 1
 
-local INCIDENT_SLOT_COUNT = 3
 local nextIncidentSlotIndex = 0
+local scrollResizeConn: RBXScriptConnection? = nil
 
--- Readable incident titles (Studio template was TextSize 8 / max 15; align clones + cached archetype here).
-local INCIDENT_TITLE_TEXT_SIZE = 14
-local INCIDENT_TITLE_CONSTRAINT_MIN = 10
-local INCIDENT_TITLE_CONSTRAINT_MAX = 24
+-- Incident titles: **`UITextSizeConstraint` only applies when `TextScaled` is true** — with TextScaled off,
+-- Min/Max are ignored and `TextSize` is fixed px (Studio “min 1” won’t shrink anything).
+-- With TextScaled on, `TextSize` is the **ceiling** for the scaled font; constraint clamps that range.
+local INCIDENT_TITLE_CONSTRAINT_MIN = 6
+local INCIDENT_TITLE_CONSTRAINT_MAX = 16
 
 local function applyIncidentTitleReadability(tit: TextLabel)
-	tit.TextSize = INCIDENT_TITLE_TEXT_SIZE
+	tit.AutomaticSize = Enum.AutomaticSize.None
+	tit.RichText = false
+	tit.TextScaled = true
+	tit.TextWrapped = true
+	tit.TextTruncate = Enum.TextTruncate.None
+	tit.TextYAlignment = Enum.TextYAlignment.Center
+	tit.TextSize = INCIDENT_TITLE_CONSTRAINT_MAX
 	local c = tit:FindFirstChildOfClass("UITextSizeConstraint")
-	if c then
-		c.MinTextSize = INCIDENT_TITLE_CONSTRAINT_MIN
-		c.MaxTextSize = INCIDENT_TITLE_CONSTRAINT_MAX
+	if not c then
+		c = Instance.new("UITextSizeConstraint")
+		c.Parent = tit
 	end
+	c.MinTextSize = INCIDENT_TITLE_CONSTRAINT_MIN
+	c.MaxTextSize = INCIDENT_TITLE_CONSTRAINT_MAX
 end
 
 local function findHud(playerGui: PlayerGui): ScreenGui?
@@ -91,6 +106,110 @@ local function sumOil(m: { [string]: any }?): number
 	return t
 end
 
+local function rowHeightScale(): number
+	local g = ROW_STACK_GAP_SCALE
+	return (1 - g * math.max(0, LEGACY_VISIBLE_ROWS - 1)) / LEGACY_VISIBLE_ROWS
+end
+
+local function incidentRowHeightPx(scroll: ScrollingFrame): number
+	local h = scroll.AbsoluteSize.Y
+	local rh = rowHeightScale() * h
+	return math.max(1, math.floor(rh))
+end
+
+local function configureIncidentsScroll(scroll: ScrollingFrame)
+	scroll.BackgroundTransparency = 1
+	scroll.BorderSizePixel = 0
+	scroll.ScrollBarThickness = 4
+	scroll.ScrollBarImageTransparency = 0.35
+	scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+	scroll.ClipsDescendants = true
+	scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+	scroll.AnchorPoint = Vector2.new(0, 0)
+	scroll.Position = UDim2.new(0, 0, 0, 0)
+	scroll.Size = UDim2.new(1, 0, 1, 0)
+	local lay = scroll:FindFirstChild("IncidentsListLayout") :: UIListLayout?
+	if not lay then
+		lay = Instance.new("UIListLayout")
+		lay.Name = "IncidentsListLayout"
+		lay.FillDirection = Enum.FillDirection.Vertical
+		lay.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		lay.VerticalAlignment = Enum.VerticalAlignment.Top
+		lay.SortOrder = Enum.SortOrder.LayoutOrder
+		lay.Parent = scroll
+	end
+	local gapPx = math.max(1, math.floor(scroll.AbsoluteSize.Y * ROW_STACK_GAP_SCALE))
+	lay.Padding = UDim.new(0, gapPx)
+end
+
+local function refreshAllIncidentRowHeights(scroll: ScrollingFrame)
+	local hPx = incidentRowHeightPx(scroll)
+	local lay = scroll:FindFirstChild("IncidentsListLayout") :: UIListLayout?
+	if lay then
+		local gapPx = math.max(1, math.floor(scroll.AbsoluteSize.Y * ROW_STACK_GAP_SCALE))
+		lay.Padding = UDim.new(0, gapPx)
+	end
+	for _, ch in ipairs(scroll:GetChildren()) do
+		if ch:IsA("Frame") then
+			local n = ch.Name
+			if string.sub(n, 1, 13) == "IncidentSlot_" or string.sub(n, 1, 12) == "IncidentRow_" then
+				ch.Size = UDim2.new(1, 0, 0, hPx)
+			end
+		end
+	end
+end
+
+local function bindScrollResize(scroll: ScrollingFrame)
+	if scrollResizeConn then
+		scrollResizeConn:Disconnect()
+		scrollResizeConn = nil
+	end
+	scrollResizeConn = scroll:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+		refreshAllIncidentRowHeights(scroll)
+	end)
+end
+
+--- SectionBody may be a Frame (legacy) or ScrollingFrame; optional child **`IncidentsScroll`** is created if missing.
+local function resolveIncidentsScroll(panel: Frame): ScrollingFrame?
+	local inc = panel:FindFirstChild("IncidentsSection")
+	local body = inc and inc:FindFirstChild("SectionBody")
+	if not body then
+		return nil
+	end
+	if body:IsA("ScrollingFrame") then
+		configureIncidentsScroll(body)
+		bindScrollResize(body)
+		return body
+	end
+	if not body:IsA("Frame") then
+		return nil
+	end
+	local existing = body:FindFirstChild("IncidentsScroll")
+	if existing and existing:IsA("ScrollingFrame") then
+		configureIncidentsScroll(existing)
+		bindScrollResize(existing)
+		return existing
+	end
+	local scroll = Instance.new("ScrollingFrame")
+	scroll.Name = "IncidentsScroll"
+	scroll.ZIndex = body.ZIndex
+	scroll.Parent = body
+	configureIncidentsScroll(scroll)
+	for _, moveName in ipairs({ "IncidentRow_1", "IncidentRow_2", "IncidentRow_3" }) do
+		local r = body:FindFirstChild(moveName)
+		if r then
+			r.Parent = scroll
+		end
+	end
+	bindScrollResize(scroll)
+	return scroll
+end
+
+local function getIncidentsScroll(panel: Frame): ScrollingFrame?
+	return resolveIncidentsScroll(panel)
+end
+
 local function ensureArchetypes(panel: Frame)
 	if archetypeRow and archetypeRow.Parent then
 		return
@@ -101,24 +220,31 @@ local function ensureArchetypes(panel: Frame)
 	if chipArchetype and not chipArchetype.Parent then
 		chipArchetype = nil
 	end
-	local inc = panel:FindFirstChild("IncidentsSection")
-	local body = inc and inc:FindFirstChild("SectionBody")
-	if not (body and body:IsA("Instance")) then
+	local scroll = getIncidentsScroll(panel)
+	if not scroll then
 		return
 	end
 	local src: Frame? = nil
-	local row1 = body:FindFirstChild("IncidentRow_1")
+	local row1 = scroll:FindFirstChild("IncidentRow_1")
 	if row1 and row1:IsA("Frame") then
 		src = row1
 	else
-		local sgHud = StarterGui:FindFirstChild("HUD", true)
-		local sgCanvas = sgHud and sgHud:FindFirstChild("Canvas")
-		local sgPanel = sgCanvas and sgCanvas:FindFirstChild("ActiveManifestPanel")
-		local sgInc = sgPanel and sgPanel:FindFirstChild("IncidentsSection")
-		local sgBody = sgInc and sgInc:FindFirstChild("SectionBody")
-		local alt = sgBody and sgBody:FindFirstChild("IncidentRow_1")
-		if alt and alt:IsA("Frame") then
-			src = alt
+		local inc = panel:FindFirstChild("IncidentsSection")
+		local body = inc and inc:FindFirstChild("SectionBody")
+		local altBody = body and body:IsA("Frame") and body:FindFirstChild("IncidentRow_1")
+		if altBody and altBody:IsA("Frame") then
+			src = altBody
+		else
+			local sgHud = StarterGui:FindFirstChild("HUD", true)
+			local sgCanvas = sgHud and sgHud:FindFirstChild("Canvas")
+			local sgPanel = sgCanvas and sgCanvas:FindFirstChild("ActiveManifestPanel")
+			local sgInc = sgPanel and sgPanel:FindFirstChild("IncidentsSection")
+			local sgBody = sgInc and sgInc:FindFirstChild("SectionBody")
+			local underScroll = sgBody and (sgBody:FindFirstChild("IncidentsScroll") or sgBody)
+			local alt = underScroll and underScroll:FindFirstChild("IncidentRow_1")
+			if alt and alt:IsA("Frame") then
+				src = alt
+			end
 		end
 	end
 	if not (src and src:IsA("Frame")) then
@@ -148,14 +274,13 @@ local function ensureArchetypes(panel: Frame)
 	end
 end
 
--- Idle / between shipments: remove runtime slot clones only; keep **`IncidentRow_1`** so the first voyage can build archetypes.
+-- Idle / between shipments: remove runtime **`IncidentSlot_*`** only (matches legacy); keep **`IncidentRow_1`** if still authored.
 local function clearIncidentRuntimeSlots(panel: Frame)
-	local inc = panel:FindFirstChild("IncidentsSection")
-	local body = inc and inc:FindFirstChild("SectionBody")
-	if not (body and body:IsA("Instance")) then
+	local scroll = getIncidentsScroll(panel)
+	if not scroll then
 		return
 	end
-	for _, ch in ipairs(body:GetChildren()) do
+	for _, ch in ipairs(scroll:GetChildren()) do
 		if ch:IsA("Frame") and string.sub(ch.Name, 1, 13) == "IncidentSlot_" then
 			ch:Destroy()
 		end
@@ -164,12 +289,11 @@ end
 
 -- New shipment hydrate: strip template row + old slots before re-cloning from archetype.
 local function clearIncidentHydrate(panel: Frame)
-	local inc = panel:FindFirstChild("IncidentsSection")
-	local body = inc and inc:FindFirstChild("SectionBody")
-	if not (body and body:IsA("Instance")) then
+	local scroll = getIncidentsScroll(panel)
+	if not scroll then
 		return
 	end
-	for _, ch in ipairs(body:GetChildren()) do
+	for _, ch in ipairs(scroll:GetChildren()) do
 		if ch:IsA("Frame") then
 			local n = ch.Name
 			if string.sub(n, 1, 12) == "IncidentRow_" or string.sub(n, 1, 13) == "IncidentSlot_" then
@@ -241,36 +365,25 @@ local function clearIncidentSlotRow(row: Frame)
 	end
 end
 
-local function layoutIncidentSlotStack(body: Frame)
-	local gap = 0.008
-	local h = (1 - gap * math.max(0, INCIDENT_SLOT_COUNT - 1)) / INCIDENT_SLOT_COUNT
-	for i = 1, INCIDENT_SLOT_COUNT do
-		local row = body:FindFirstChild("IncidentSlot_" .. tostring(i))
-		if row and row:IsA("Frame") then
-			row.AnchorPoint = Vector2.new(0, 0)
-			row.Position = UDim2.new(0, 0, (i - 1) * (h + gap), 0)
-			row.Size = UDim2.new(1, 0, h, 0)
-		end
-	end
-end
-
 local function ensureIncidentSlots(panel: Frame)
 	if not archetypeRow then
 		return
 	end
-	local inc = panel:FindFirstChild("IncidentsSection")
-	local body = inc and inc:FindFirstChild("SectionBody")
-	if not (body and body:IsA("Instance")) then
+	local scroll = getIncidentsScroll(panel)
+	if not scroll then
 		return
 	end
-	for i = 1, INCIDENT_SLOT_COUNT do
+	local hPx = incidentRowHeightPx(scroll)
+	for i = 1, LEGACY_VISIBLE_ROWS do
 		local row = archetypeRow:Clone()
 		row.Name = "IncidentSlot_" .. tostring(i)
+		row.LayoutOrder = i
 		row.Visible = true
-		row.Parent = body
+		row.Size = UDim2.new(1, 0, 0, hPx)
+		row.Parent = scroll
 		clearIncidentSlotRow(row)
 	end
-	layoutIncidentSlotStack(body)
+	refreshAllIncidentRowHeights(scroll)
 end
 
 local function resolveIncidentTitle(inc: { [string]: any }): string
@@ -284,20 +397,7 @@ local function resolveIncidentTitle(inc: { [string]: any }): string
 	return ManifestIncidentTitle.fromDisplayName(tostring(inc.title or ""))
 end
 
-local function fillNextIncidentSlot(panel: Frame, inc: { [string]: any }, lossOilByTier: { [string]: any }, perBarrel: number)
-	local incSec = panel:FindFirstChild("IncidentsSection")
-	local body = incSec and incSec:FindFirstChild("SectionBody")
-	if not (body and body:IsA("Instance")) then
-		return
-	end
-	nextIncidentSlotIndex += 1
-	if nextIncidentSlotIndex > INCIDENT_SLOT_COUNT then
-		return
-	end
-	local row = body:FindFirstChild("IncidentSlot_" .. tostring(nextIncidentSlotIndex))
-	if not row or not row:IsA("Frame") then
-		return
-	end
+local function fillIncidentRow(row: Frame, inc: { [string]: any }, lossOilByTier: { [string]: any }, perBarrel: number)
 	local top = row:FindFirstChild("IncidentTop")
 	local tit = top and top:FindFirstChild("IncidentTitle")
 	if tit and tit:IsA("TextLabel") then
@@ -307,6 +407,31 @@ local function fillNextIncidentSlot(panel: Frame, inc: { [string]: any }, lossOi
 	local host = top and top:FindFirstChild("LossChipsHost")
 	if host and host:IsA("Frame") then
 		layoutLossChips(host, lossOilByTier, perBarrel)
+	end
+end
+
+local function fillNextIncidentSlot(panel: Frame, inc: { [string]: any }, lossOilByTier: { [string]: any }, perBarrel: number)
+	local scroll = getIncidentsScroll(panel)
+	if not scroll then
+		return
+	end
+	if not archetypeRow then
+		return
+	end
+	nextIncidentSlotIndex += 1
+	local idx = nextIncidentSlotIndex
+	local cand = scroll:FindFirstChild("IncidentSlot_" .. tostring(idx))
+	local row: Frame? = if cand and cand:IsA("Frame") then cand else nil
+	if not row then
+		row = archetypeRow:Clone()
+		row.Name = "IncidentSlot_" .. tostring(idx)
+		row.LayoutOrder = idx
+		row.Visible = true
+		row.Size = UDim2.new(1, 0, 0, incidentRowHeightPx(scroll))
+		row.Parent = scroll
+	end
+	if row and row:IsA("Frame") then
+		fillIncidentRow(row, inc, lossOilByTier, perBarrel)
 	end
 end
 

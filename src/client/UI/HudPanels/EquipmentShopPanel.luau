@@ -15,6 +15,7 @@ local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
+local EquipmentHotbarController = require(script.Parent.Parent:WaitForChild("EquipmentHotbarController"))
 local EquipmentShopPopulate = require(script.Parent.EquipmentShopPopulate)
 
 local SCREEN_NAME = "ShopPanelGui"
@@ -337,6 +338,10 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 			local slotsNow = resolveEquipmentSlots(screen)
 			if #slotsNow > 0 then
 				refreshCatalog(slotsNow)
+			end
+			-- Purchase can merge stacks (**no `ChildAdded`**) or replicate a tick late — force hotbar sync.
+			if msg.ok == true then
+				EquipmentHotbarController.requestRebuild()
 			end
 		end
 	end)

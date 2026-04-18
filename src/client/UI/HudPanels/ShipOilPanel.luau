@@ -15,6 +15,7 @@ local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
+local StepperHold = require(script.Parent.Parent:WaitForChild("StepperHold"))
 local FtueDispatchPointerSignals = require(script.Parent.Parent:WaitForChild("FtueDispatchPointerSignals"))
 local UiSfx = require(script.Parent.Parent.Parent:WaitForChild("UiSfx")) :: {
 	playSetSail: () -> (),
@@ -783,12 +784,12 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 				minus = minus :: GuiButton,
 				plus = plus :: GuiButton,
 			}
-			table.insert(connections, (minus :: GuiButton).Activated:Connect(function()
+			StepperHold.bind(minus :: GuiButton, function()
 				bumpTier(tier, -1)
-			end))
-			table.insert(connections, (plus :: GuiButton).Activated:Connect(function()
+			end, connections)
+			StepperHold.bind(plus :: GuiButton, function()
 				bumpTier(tier, 1)
-			end))
+			end, connections)
 			if amt:IsA("TextBox") then
 				table.insert(connections, amt.FocusLost:Connect(function()
 					applyTypedBarrelsForTier(tier, amt.Text)

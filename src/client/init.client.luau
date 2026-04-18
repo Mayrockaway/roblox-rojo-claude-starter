@@ -1743,6 +1743,13 @@ playerGui.ChildAdded:Connect(function(child)
 	end
 end)
 
+--- Death/respawn: re-validate hotbar binding (strip may be recreated) and let controller rebuild after tools replicate.
+player.CharacterAdded:Connect(function()
+	task.defer(tryBindEquipmentHotbarAsync)
+	task.delay(0.18, tryBindEquipmentHotbarAsync)
+	task.delay(0.55, tryBindEquipmentHotbarAsync)
+end)
+
 mouse.Button1Down:Connect(function()
 	local equipped = getEquippedToolName()
 	if equipped == TOOL_PIPE then
