@@ -527,13 +527,17 @@ end
 
 local pirateHireUiState = {
 	screen = nil :: ScreenGui?,
-	targetList = nil :: ScrollingFrame?,
-	infoLabel = nil :: TextLabel?,
-	confirmButton = nil :: TextButton?,
 	selectedVictimUserId = nil :: number?,
 	hitCost = 5000,
 	freeHitTokens = 0,
 }
+local PIRATE_AUTO_CLOSE_DIST = 12
+local COLOR_PIRATE_IDLE = Color3.fromRGB(255, 255, 255)
+local COLOR_PIRATE_HOVER = Color3.fromRGB(255, 205, 80)
+local COLOR_PIRATE_DIM = Color3.fromRGB(210, 210, 210)
+local COLOR_PIRATE_GOLD = Color3.fromRGB(255, 170, 60)
+local COLOR_PIRATE_MONEY = Color3.fromRGB(80, 220, 80)
+local COLOR_PIRATE_RED = Color3.fromRGB(255, 80, 80)
 
 local function closePirateHireUi()
 	local s = pirateHireUiState.screen
@@ -541,87 +545,30 @@ local function closePirateHireUi()
 		s:Destroy()
 	end
 	pirateHireUiState.screen = nil
-	pirateHireUiState.targetList = nil
-	pirateHireUiState.infoLabel = nil
-	pirateHireUiState.confirmButton = nil
 	pirateHireUiState.selectedVictimUserId = nil
 end
 
-local function updatePirateHireInfo(text: string)
-	local label = pirateHireUiState.infoLabel
-	if label then
-		label.Text = text
-	end
-end
-
-local function refreshPirateHireTargets()
-	local targetList = pirateHireUiState.targetList
-	if not targetList then
-		return
-	end
-
-	for _, child in ipairs(targetList:GetChildren()) do
-		if child:IsA("GuiObject") then
-			child:Destroy()
-		end
-	end
-
-	local ok, payload = pcall(function()
-		return requestPirateHireTargets:InvokeServer()
-	end)
-	if not ok or typeof(payload) ~= "table" then
-		updatePirateHireInfo("Could not fetch targets.")
-		return
-	end
-
-	pirateHireUiState.freeHitTokens = math.max(0, math.floor(tonumber((payload :: any).freeHitTokens) or 0))
-	pirateHireUiState.hitCost = math.max(0, math.floor(tonumber((payload :: any).hitCost) or pirateHireUiState.hitCost))
-
-	local y = 0
-	local targets = (payload :: any).targets
-	if typeof(targets) == "table" then
-		for _, target in ipairs(targets) do
-			if typeof(target) == "table" then
-				local userId = tonumber(target.userId)
-				if userId then
-					local btn = Instance.new("TextButton")
-					btn.Name = "Target_" .. tostring(userId)
-					btn.Size = UDim2.new(1, -6, 0, 32)
-					btn.Position = UDim2.new(0, 3, 0, y)
-					btn.BackgroundColor3 = Color3.fromRGB(35, 42, 54)
-					btn.TextColor3 = Color3.fromRGB(239, 244, 255)
-					btn.TextXAlignment = Enum.TextXAlignment.Left
-					btn.Font = Enum.Font.Merriweather
-					btn.TextSize = 14
-					local dn = tostring(target.displayName or target.name or ("User " .. tostring(userId)))
-					local un = tostring(target.name or "")
-					btn.Text = string.format("  %s (%s)", dn, un)
-					btn.Parent = targetList
-					btn.MouseButton1Click:Connect(function()
-						pirateHireUiState.selectedVictimUserId = userId
-						updatePirateHireInfo(string.format(
-							"Selected: %s | Cost: $%d%s",
-							dn,
-							pirateHireUiState.hitCost,
-							pirateHireUiState.freeHitTokens > 0 and string.format(" (or 1 free token, you have %d)", pirateHireUiState.freeHitTokens) or ""
-						))
-					end)
-					y += 35
-				end
-			end
-		end
-	end
-
-	targetList.CanvasSize = UDim2.new(0, 0, 0, math.max(y, 1))
-	if y <= 0 then
-		updatePirateHireInfo("No valid targets online right now.")
+local function pirateBlockyLine(name, text, order, isButton, parent)
+	local obj
+	if isButton then
+		obj = Instance.new("TextButton")
+		obj.AutoButtonColor = false
+		obj.Active = true
+		obj.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		obj.BackgroundTransparency = 0.99
+		obj.MouseEnter:Connect(function() obj.TextColor3 = COLOR_PIRATE_HOVER; obj.BackgroundTransparency = 0.35 end)
+		obj.MouseLeave:Connect(function() obj.TextColor3 = COLOR_PIRATE_IDLE; obj.BackgroundTransparency = 0.99 end)
+		local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = obj
 	else
-		updatePirateHireInfo(string.format(
-			"Pick a target. Cost: $%d%s",
-			pirateHireUiState.hitCost,
-			pirateHireUiState.freeHitTokens > 0 and string.format(" | Free tokens: %d", pirateHireUiState.freeHitTokens) or ""
-		))
+		obj = Instance.new("TextLabel")
+		obj.BackgroundTransparency = 1
 	end
+	obj.Name = name; obj.Text = text; obj.Size = UDim2.new(1, 0, 0, 42); obj.LayoutOrder = order
+	obj.BorderSizePixel = 0; obj.Font = Enum.Font.LuckiestGuy; obj.TextSize = 34
+	obj.TextColor3 = COLOR_PIRATE_IDLE; obj.TextStrokeTransparency = 0; obj.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	obj.TextXAlignment = Enum.TextXAlignment.Left; obj.TextYAlignment = Enum.TextYAlignment.Center
+	if parent then obj.Parent = parent end
+	return obj
 end
 
 local function openPirateHireUi(payload: any)
@@ -635,129 +582,118 @@ local function openPirateHireUi(payload: any)
 	local screen = Instance.new("ScreenGui")
 	screen.Name = "PirateHireGui"
 	screen.ResetOnSpawn = false
-	screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screen.IgnoreGuiInset = true
+	screen.DisplayOrder = 60
 	screen.Parent = playerGui
 	pirateHireUiState.screen = screen
 
-	local dim = Instance.new("Frame")
-	dim.Name = "Dim"
-	dim.Size = UDim2.fromScale(1, 1)
-	dim.BackgroundColor3 = Color3.new(0, 0, 0)
-	dim.BackgroundTransparency = 0.35
-	dim.BorderSizePixel = 0
-	dim.Parent = screen
-
-	local panel = Instance.new("Frame")
-	panel.Name = "Panel"
-	panel.AnchorPoint = Vector2.new(0.5, 0.5)
-	panel.Position = UDim2.fromScale(0.5, 0.5)
-	panel.Size = UDim2.fromOffset(520, 420)
-	panel.BackgroundColor3 = Color3.fromRGB(20, 25, 34)
-	panel.BorderSizePixel = 0
-	panel.Parent = dim
-
-	local title = Instance.new("TextLabel")
-	title.Name = "Title"
-	title.BackgroundTransparency = 1
-	title.Size = UDim2.new(1, -16, 0, 34)
-	title.Position = UDim2.fromOffset(8, 8)
-	title.Font = Enum.Font.GothamBold
-	title.TextSize = 20
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.TextColor3 = Color3.fromRGB(248, 234, 146)
-	title.Text = "Pirate Broker"
-	title.Parent = panel
-
-	local info = Instance.new("TextLabel")
-	info.Name = "Info"
-	info.BackgroundTransparency = 1
-	info.Size = UDim2.new(1, -16, 0, 48)
-	info.Position = UDim2.fromOffset(8, 44)
-	info.Font = Enum.Font.Merriweather
-	info.TextWrapped = true
-	info.TextXAlignment = Enum.TextXAlignment.Left
-	info.TextYAlignment = Enum.TextYAlignment.Top
-	info.TextSize = 14
-	info.TextColor3 = Color3.fromRGB(223, 232, 244)
-	info.Text = "Ask a question or hire a hit."
-	info.Parent = panel
-	pirateHireUiState.infoLabel = info
-
-	local askButton = Instance.new("TextButton")
-	askButton.Name = "AskButton"
-	askButton.Size = UDim2.fromOffset(150, 34)
-	askButton.Position = UDim2.fromOffset(8, 98)
-	askButton.BackgroundColor3 = Color3.fromRGB(56, 70, 92)
-	askButton.TextColor3 = Color3.fromRGB(245, 249, 255)
-	askButton.Font = Enum.Font.Merriweather
-	askButton.TextSize = 14
-	askButton.Text = "Ask a question"
-	askButton.Parent = panel
-	askButton.MouseButton1Click:Connect(function()
-		requestPirateHireAction:FireServer({ action = "ask" })
-	end)
-
-	local refreshButton = Instance.new("TextButton")
-	refreshButton.Name = "RefreshButton"
-	refreshButton.Size = UDim2.fromOffset(110, 34)
-	refreshButton.Position = UDim2.fromOffset(166, 98)
-	refreshButton.BackgroundColor3 = Color3.fromRGB(56, 70, 92)
-	refreshButton.TextColor3 = Color3.fromRGB(245, 249, 255)
-	refreshButton.Font = Enum.Font.Gotham
-	refreshButton.TextSize = 14
-	refreshButton.Text = "Refresh list"
-	refreshButton.Parent = panel
-	refreshButton.MouseButton1Click:Connect(function()
-		refreshPirateHireTargets()
-	end)
-
-	local targetList = Instance.new("ScrollingFrame")
-	targetList.Name = "TargetList"
-	targetList.Size = UDim2.new(1, -16, 1, -196)
-	targetList.Position = UDim2.fromOffset(8, 140)
-	targetList.BackgroundColor3 = Color3.fromRGB(28, 34, 46)
-	targetList.BorderSizePixel = 0
-	targetList.AutomaticCanvasSize = Enum.AutomaticSize.None
-	targetList.ScrollBarThickness = 8
-	targetList.Parent = panel
-	pirateHireUiState.targetList = targetList
-
-	local confirmButton = Instance.new("TextButton")
-	confirmButton.Name = "ConfirmButton"
-	confirmButton.Size = UDim2.fromOffset(150, 36)
-	confirmButton.Position = UDim2.new(1, -314, 1, -44)
-	confirmButton.BackgroundColor3 = Color3.fromRGB(158, 53, 53)
-	confirmButton.TextColor3 = Color3.fromRGB(253, 242, 242)
-	confirmButton.Font = Enum.Font.Merriweather
-	confirmButton.TextSize = 14
-	confirmButton.Text = "Hire a hit"
-	confirmButton.Parent = panel
-	pirateHireUiState.confirmButton = confirmButton
-	confirmButton.MouseButton1Click:Connect(function()
-		local victimUserId = pirateHireUiState.selectedVictimUserId
-		if not victimUserId then
-			updatePirateHireInfo("Select a target first.")
+	-- Auto-close when walking away
+	local pirateModel = Workspace:FindFirstChild("PirateHire") or Workspace:FindFirstChild("PirateHire", true)
+	local autoCloseConn
+	autoCloseConn = RunService.Heartbeat:Connect(function()
+		if not screen.Parent then
+			if autoCloseConn then autoCloseConn:Disconnect() end
 			return
 		end
-		requestPirateHireAction:FireServer({
-			action = "hire",
-			victimUserId = victimUserId,
-		})
+		local char = player.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if hrp and pirateModel then
+			local piratePos = pirateModel:GetPivot().Position
+			if (hrp.Position - piratePos).Magnitude > PIRATE_AUTO_CLOSE_DIST then
+				closePirateHireUi()
+				if autoCloseConn then autoCloseConn:Disconnect() end
+			end
+		end
 	end)
 
-	local closeButton = Instance.new("TextButton")
-	closeButton.Name = "CloseButton"
-	closeButton.Size = UDim2.fromOffset(150, 36)
-	closeButton.Position = UDim2.new(1, -158, 1, -44)
-	closeButton.BackgroundColor3 = Color3.fromRGB(48, 56, 70)
-	closeButton.TextColor3 = Color3.fromRGB(238, 244, 251)
-	closeButton.Font = Enum.Font.Merriweather
-	closeButton.TextSize = 14
-	closeButton.Text = "Close"
-	closeButton.Parent = panel
-	closeButton.MouseButton1Click:Connect(closePirateHireUi)
+	local root = Instance.new("Frame")
+	root.Name = "Root"; root.BackgroundTransparency = 1; root.BorderSizePixel = 0; root.Active = false
+	root.AnchorPoint = Vector2.new(0.5, 0.5)
+	root.Position = UDim2.fromScale(0.68, 0.55)
+	root.Size = UDim2.fromOffset(520, 420)
+	root.Parent = screen
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Vertical
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+	layout.VerticalAlignment = Enum.VerticalAlignment.Center
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Padding = UDim.new(0, 6)
+	layout.Parent = root
 
-	refreshPirateHireTargets()
+	local header = pirateBlockyLine("Header", "Pirate Broker:", 1, false, root)
+	header.Size = UDim2.new(1, 0, 0, 50); header.TextSize = 44
+
+	local askBtn = pirateBlockyLine("AskButton", "Ask a question", 2, true, root)
+	local hireBtn = pirateBlockyLine("HireButton", string.format("Hire a hit ($%d)", pirateHireUiState.hitCost), 3, true, root)
+	if pirateHireUiState.freeHitTokens > 0 then
+		local freeLabel = pirateBlockyLine("FreeTokens", string.format("  Free tokens: %d", pirateHireUiState.freeHitTokens), 4, false, root)
+		freeLabel.TextSize = 22; freeLabel.Size = UDim2.new(1, 0, 0, 28); freeLabel.TextColor3 = COLOR_PIRATE_MONEY
+	end
+	local backBtn = pirateBlockyLine("BackButton", "back", 10, true, root)
+	backBtn.TextSize = 28; backBtn.TextColor3 = COLOR_PIRATE_DIM
+	backBtn.MouseLeave:Connect(function() backBtn.TextColor3 = COLOR_PIRATE_DIM end)
+	backBtn.MouseButton1Click:Connect(closePirateHireUi)
+
+	askBtn.MouseButton1Click:Connect(function()
+		requestPirateHireAction:FireServer({ action = "ask" })
+		local quotes = {"Arrr, the seas be rough today!", "I know every ship in these waters.", "Gold talks, sailor.", "Need someone sunk? I know a crew.", "The strait takes what it wants!"}
+		header.Text = quotes[math.random(1, #quotes)]; header.TextSize = 28
+		task.delay(2, function() if header.Parent then header.Text = "Pirate Broker:"; header.TextSize = 44 end end)
+	end)
+
+	hireBtn.MouseButton1Click:Connect(function()
+		-- Show targets submenu
+		header.Text = "Pick a target:"; header.TextSize = 38
+		askBtn.Visible = false; hireBtn.Visible = false; backBtn.Visible = false
+		for _, c in ipairs(root:GetChildren()) do if c.Name:find("Target_") or c.Name == "FreeTokens" or c.Name == "NoTargets" or c.Name == "HireBack" then c:Destroy() end end
+
+		local ok, result = pcall(function()
+			return requestPirateHireTargets:InvokeServer()
+		end)
+		if not ok or typeof(result) ~= "table" then
+			local errLabel = pirateBlockyLine("NoTargets", "Could not fetch targets", 5, false, root)
+			errLabel.TextSize = 22; errLabel.Size = UDim2.new(1, 0, 0, 28); errLabel.TextColor3 = COLOR_PIRATE_RED
+		else
+			pirateHireUiState.freeHitTokens = math.max(0, math.floor(tonumber((result :: any).freeHitTokens) or 0))
+			pirateHireUiState.hitCost = math.max(0, math.floor(tonumber((result :: any).hitCost) or pirateHireUiState.hitCost))
+			local targets = (result :: any).targets
+			local order = 5
+			if typeof(targets) == "table" and #targets > 0 then
+				for _, target in ipairs(targets) do
+					if typeof(target) == "table" then
+						local userId = tonumber(target.userId)
+						if userId then
+							local dn = tostring(target.displayName or target.name or ("User " .. tostring(userId)))
+							local label = string.format("%s", dn)
+							local tBtn = pirateBlockyLine("Target_" .. tostring(userId), label, order, true, root)
+							tBtn.TextSize = 26; tBtn.Size = UDim2.new(1, 0, 0, 34)
+							-- Add cost label
+							local costLabel = Instance.new("TextLabel")
+							costLabel.Size = UDim2.new(0.4, 0, 1, 0); costLabel.Position = UDim2.new(0.6, 0, 0, 0)
+							costLabel.BackgroundTransparency = 1; costLabel.Text = string.format("$%d", pirateHireUiState.hitCost)
+							costLabel.Font = Enum.Font.LuckiestGuy; costLabel.TextSize = 22; costLabel.TextColor3 = COLOR_PIRATE_MONEY
+							costLabel.TextStrokeTransparency = 0; costLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+							costLabel.TextXAlignment = Enum.TextXAlignment.Right; costLabel.Parent = tBtn
+							tBtn.MouseButton1Click:Connect(function()
+								requestPirateHireAction:FireServer({ action = "hire", victimUserId = userId })
+								header.Text = "Pirates dispatched!"; header.TextSize = 32
+								task.delay(1.5, closePirateHireUi)
+							end)
+							order += 1
+						end
+					end
+				end
+			else
+				local noTargets = pirateBlockyLine("NoTargets", "No ships on the strait", 5, false, root)
+				noTargets.TextSize = 22; noTargets.Size = UDim2.new(1, 0, 0, 28); noTargets.TextColor3 = COLOR_PIRATE_DIM
+			end
+		end
+
+		local hireBack = pirateBlockyLine("HireBack", "back", 99, true, root)
+		hireBack.TextSize = 24; hireBack.TextColor3 = COLOR_PIRATE_DIM
+		hireBack.MouseLeave:Connect(function() hireBack.TextColor3 = COLOR_PIRATE_DIM end)
+		hireBack.MouseButton1Click:Connect(function() closePirateHireUi(); openPirateHireUi(payload) end)
+	end)
 end
 
 local function getEquippedToolName(): string?
@@ -3535,139 +3471,131 @@ airStrikeEvent.OnClientEvent:Connect(function(data)
 end)
 
 -- =================== ARMY GENERAL PANEL UI ===================
+-- Army General dialogue — same visual style as Oilman (LuckiestGuy blocky text)
 armyGeneralOpenEvent.OnClientEvent:Connect(function(data)
 	if typeof(data) ~= "table" then return end
 
-	-- Close existing panel if open
 	local existing = playerGui:FindFirstChild("ArmyGeneralGui")
 	if existing then existing:Destroy() end
 
 	local airstrikeCost = tonumber(data.airstrikeCost) or 10000
 	local nukeCooldownRemaining = tonumber(data.nukeCooldownRemaining) or 0
 
+	local COLOR_IDLE = Color3.fromRGB(255, 255, 255)
+	local COLOR_HOVER = Color3.fromRGB(255, 205, 80)
+
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "ArmyGeneralGui"
 	screenGui.ResetOnSpawn = false
-	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screenGui.IgnoreGuiInset = true
+	screenGui.DisplayOrder = 60
 	screenGui.Parent = playerGui
 
-	-- Dim background
-	local dim = Instance.new("Frame")
-	dim.Size = UDim2.fromScale(1, 1)
-	dim.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-	dim.BackgroundTransparency = 0.4
-	dim.BorderSizePixel = 0
-	dim.Parent = screenGui
+	-- Auto-close when walking away
+	local generalModel = Workspace:FindFirstChild("Army General", true)
+	local autoCloseConn
+	autoCloseConn = RunService.Heartbeat:Connect(function()
+		if not screenGui.Parent then
+			if autoCloseConn then autoCloseConn:Disconnect() end
+			return
+		end
+		local char = player.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if hrp and generalModel then
+			if (hrp.Position - generalModel:GetPivot().Position).Magnitude > 12 then
+				screenGui:Destroy()
+				if autoCloseConn then autoCloseConn:Disconnect() end
+			end
+		end
+	end)
 
-	-- Panel
-	local panel = Instance.new("Frame")
-	panel.Size = UDim2.fromOffset(400, 380)
-	panel.Position = UDim2.new(0.5, -200, 0.5, -190)
-	panel.BackgroundColor3 = Color3.fromRGB(20, 25, 34)
-	panel.BorderSizePixel = 0
-	panel.Parent = screenGui
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 12)
-	corner.Parent = panel
+	-- Root frame — center-right like Oilman
+	local root = Instance.new("Frame")
+	root.Name = "Root"
+	root.BackgroundTransparency = 1
+	root.BorderSizePixel = 0
+	root.Active = false
+	root.AnchorPoint = Vector2.new(0.5, 0.5)
+	root.Position = UDim2.fromScale(0.68, 0.55)
+	root.Size = UDim2.fromOffset(500, 320)
+	root.Parent = screenGui
 
-	-- Title
-	local title = Instance.new("TextLabel")
-	title.Size = UDim2.new(1, 0, 0, 40)
-	title.BackgroundTransparency = 1
-	title.Text = "Military Operations"
-	title.TextColor3 = Color3.fromRGB(255, 220, 100)
-	title.Font = Enum.Font.Merriweather
-	title.TextSize = 22
-	title.Parent = panel
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Vertical
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+	layout.VerticalAlignment = Enum.VerticalAlignment.Center
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Padding = UDim.new(0, 6)
+	layout.Parent = root
 
-	-- Nuke button
-	local nukeBtn = Instance.new("TextButton")
-	nukeBtn.Size = UDim2.new(0.85, 0, 0, 50)
-	nukeBtn.Position = UDim2.new(0.075, 0, 0, 55)
-	nukeBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
-	nukeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	nukeBtn.Font = Enum.Font.Merriweather
-	nukeBtn.TextSize = 18
-	nukeBtn.AutoButtonColor = true
-	nukeBtn.Parent = panel
-	local nukeBtnCorner = Instance.new("UICorner")
-	nukeBtnCorner.CornerRadius = UDim.new(0, 8)
-	nukeBtnCorner.Parent = nukeBtn
-
-	if nukeCooldownRemaining > 0 then
-		nukeBtn.Text = string.format("LAUNCH NUKE (cooldown %ds)", math.ceil(nukeCooldownRemaining))
-		nukeBtn.BackgroundColor3 = Color3.fromRGB(80, 40, 40)
-	else
-		nukeBtn.Text = "LAUNCH NUKE (Robux)"
+	local function blockyLine(name, text, order, isButton)
+		local obj
+		if isButton then
+			obj = Instance.new("TextButton")
+			obj.AutoButtonColor = false
+			obj.Active = true
+			obj.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+			obj.BackgroundTransparency = 0.99
+			obj.MouseEnter:Connect(function()
+				obj.TextColor3 = COLOR_HOVER
+				obj.BackgroundTransparency = 0.35
+			end)
+			obj.MouseLeave:Connect(function()
+				obj.TextColor3 = COLOR_IDLE
+				obj.BackgroundTransparency = 0.99
+			end)
+			local c = Instance.new("UICorner")
+			c.CornerRadius = UDim.new(0, 6)
+			c.Parent = obj
+		else
+			obj = Instance.new("TextLabel")
+			obj.BackgroundTransparency = 1
+		end
+		obj.Name = name
+		obj.Text = text
+		obj.Size = UDim2.new(1, 0, 0, 42)
+		obj.LayoutOrder = order
+		obj.BorderSizePixel = 0
+		obj.Font = Enum.Font.LuckiestGuy
+		obj.TextSize = 34
+		obj.TextColor3 = COLOR_IDLE
+		obj.TextStrokeTransparency = 0
+		obj.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		obj.TextXAlignment = Enum.TextXAlignment.Left
+		obj.TextYAlignment = Enum.TextYAlignment.Center
+		return obj
 	end
 
-	local nukeDesc = Instance.new("TextLabel")
-	nukeDesc.Size = UDim2.new(0.85, 0, 0, 30)
-	nukeDesc.Position = UDim2.new(0.075, 0, 0, 110)
-	nukeDesc.BackgroundTransparency = 1
-	nukeDesc.Text = "Destroys ALL boats in the strait. 5 min cooldown."
-	nukeDesc.TextColor3 = Color3.fromRGB(180, 180, 180)
-	nukeDesc.Font = Enum.Font.Merriweather
-	nukeDesc.TextSize = 12
-	nukeDesc.TextWrapped = true
-	nukeDesc.Parent = panel
+	-- Header
+	local header = blockyLine("Header", "Army General:", 1, false)
+	header.Size = UDim2.new(1, 0, 0, 50)
+	header.TextSize = 44
+	header.Parent = root
 
-	-- Airstrike button
-	local airBtn = Instance.new("TextButton")
-	airBtn.Size = UDim2.new(0.85, 0, 0, 50)
-	airBtn.Position = UDim2.new(0.075, 0, 0, 155)
-	airBtn.BackgroundColor3 = Color3.fromRGB(56, 70, 120)
-	airBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	airBtn.Font = Enum.Font.Merriweather
-	airBtn.TextSize = 16
-	airBtn.Text = string.format("CALL AIRSTRIKE ($%d)", airstrikeCost)
-	airBtn.AutoButtonColor = true
-	airBtn.Parent = panel
-	local airBtnCorner = Instance.new("UICorner")
-	airBtnCorner.CornerRadius = UDim.new(0, 8)
-	airBtnCorner.Parent = airBtn
+	-- Launch Nuke
+	local nukeText = "Launch Nuke"
+	if nukeCooldownRemaining > 0 then
+		nukeText = string.format("Nuke (cooldown %ds)", math.ceil(nukeCooldownRemaining))
+	end
+	local nukeBtn = blockyLine("NukeButton", nukeText, 2, true)
+	nukeBtn.Parent = root
 
-	local airDesc = Instance.new("TextLabel")
-	airDesc.Size = UDim2.new(0.85, 0, 0, 30)
-	airDesc.Position = UDim2.new(0.075, 0, 0, 210)
-	airDesc.BackgroundTransparency = 1
-	airDesc.Text = "Target a specific player's boat. 70% hit chance."
-	airDesc.TextColor3 = Color3.fromRGB(180, 180, 180)
-	airDesc.Font = Enum.Font.Merriweather
-	airDesc.TextSize = 12
-	airDesc.TextWrapped = true
-	airDesc.Parent = panel
+	-- Call Airstrike
+	local airBtn = blockyLine("AirstrikeButton", string.format("Call Airstrike ($%d)", airstrikeCost), 3, true)
+	airBtn.Parent = root
 
-	-- Target list (hidden until airstrike clicked)
-	local targetList = Instance.new("ScrollingFrame")
-	targetList.Name = "TargetList"
-	targetList.Size = UDim2.new(0.85, 0, 0, 80)
-	targetList.Position = UDim2.new(0.075, 0, 0, 245)
-	targetList.BackgroundColor3 = Color3.fromRGB(15, 18, 25)
-	targetList.BorderSizePixel = 0
-	targetList.Visible = false
-	targetList.ScrollBarThickness = 4
-	targetList.Parent = panel
-
-	local selectedVictim = nil
-
-	-- Close button
-	local closeBtn = Instance.new("TextButton")
-	closeBtn.Size = UDim2.fromOffset(80, 30)
-	closeBtn.Position = UDim2.new(0.5, -40, 1, -40)
-	closeBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-	closeBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-	closeBtn.Font = Enum.Font.Merriweather
-	closeBtn.TextSize = 14
-	closeBtn.Text = "Close"
-	closeBtn.Parent = panel
-	closeBtn.MouseButton1Click:Connect(function()
-		screenGui:Destroy()
+	-- Back
+	local backBtn = blockyLine("BackButton", "back", 4, true)
+	backBtn.TextSize = 28
+	backBtn.TextColor3 = Color3.fromRGB(210, 210, 210)
+	backBtn.MouseLeave:Connect(function()
+		backBtn.TextColor3 = Color3.fromRGB(210, 210, 210)
 	end)
-	dim.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			screenGui:Destroy()
-		end
+	backBtn.Parent = root
+
+	-- Close on back
+	backBtn.MouseButton1Click:Connect(function()
+		screenGui:Destroy()
 	end)
 
 	-- Nuke click
@@ -3676,39 +3604,55 @@ armyGeneralOpenEvent.OnClientEvent:Connect(function(data)
 		screenGui:Destroy()
 	end)
 
-	-- Airstrike click — show target list
+	-- Airstrike click — show target list as additional blocky lines
 	airBtn.MouseButton1Click:Connect(function()
-		targetList.Visible = true
+		-- Remove existing target buttons
+		for _, c in ipairs(root:GetChildren()) do
+			if c.Name:find("Target_") then c:Destroy() end
+		end
+
 		-- Fetch targets
 		local result = requestArmyGeneralTargets:InvokeServer()
 		if typeof(result) ~= "table" or typeof(result.targets) ~= "table" then return end
 
-		-- Clear old buttons
-		for _, c in ipairs(targetList:GetChildren()) do
-			if c:IsA("TextButton") then c:Destroy() end
-		end
+		-- Replace the options with target list
+		header.Text = "Pick Target:"
+		nukeBtn.Visible = false
+		airBtn.Visible = false
 
-		for i, target in ipairs(result.targets) do
-			local btn = Instance.new("TextButton")
-			btn.Size = UDim2.new(1, -8, 0, 28)
-			btn.Position = UDim2.fromOffset(4, (i - 1) * 32)
-			btn.BackgroundColor3 = target.hasShipment and Color3.fromRGB(40, 55, 80) or Color3.fromRGB(35, 35, 40)
-			btn.TextColor3 = target.hasShipment and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(100, 100, 100)
-			btn.Font = Enum.Font.Merriweather
-			btn.TextSize = 12
-			btn.Text = target.displayName .. (target.hasShipment and " (on strait)" or " (no shipment)")
-			btn.AutoButtonColor = true
-			btn.Parent = targetList
+		local order = 5
+		for _, target in ipairs(result.targets) do
+			local label = target.displayName
+			if not target.hasShipment then
+				label = label .. " (no ship)"
+			end
+			local tBtn = blockyLine("Target_" .. tostring(target.userId), label, order, true)
+			tBtn.TextSize = 28
+			if not target.hasShipment then
+				tBtn.TextColor3 = Color3.fromRGB(100, 100, 100)
+			end
+			tBtn.Parent = root
+			order += 1
 
 			if target.hasShipment then
-				btn.MouseButton1Click:Connect(function()
+				tBtn.MouseButton1Click:Connect(function()
 					requestArmyGeneralAction:FireServer({ action = "airstrike", victimUserId = target.userId })
 					screenGui:Destroy()
 				end)
 			end
 		end
 
-		targetList.CanvasSize = UDim2.fromOffset(0, #result.targets * 32)
+		if #result.targets == 0 then
+			local noTargets = blockyLine("NoTargets", "No ships on the strait", 5, false)
+			noTargets.TextSize = 28
+			noTargets.TextColor3 = Color3.fromRGB(180, 80, 80)
+			noTargets.Parent = root
+		end
+
+		-- Back returns to main menu
+		backBtn.MouseButton1Click:Connect(function()
+			screenGui:Destroy()
+		end)
 	end)
 end)
 

@@ -37,6 +37,7 @@ local function getDocksRoot(): Instance?
 	return Workspace:FindFirstChild("dOCKS")
 		or Workspace:FindFirstChild("Docks")
 		or Workspace:FindFirstChild("DOCKS")
+		or Workspace:FindFirstChild("dOCKS", true)
 end
 
 local function applyMarinaDockCollisionRules()
@@ -114,9 +115,7 @@ function BoatDockService:Init(remoteService, oilStateService)
 end
 
 function BoatDockService:_discoverSlots()
-	local docks = Workspace:FindFirstChild("dOCKS")
-		or Workspace:FindFirstChild("Docks")
-		or Workspace:FindFirstChild("DOCKS")
+	local docks = getDocksRoot()
 	if not docks then
 		warn("[BoatDockService] workspace.dOCKS not found — idle boats will not spawn.")
 		return
@@ -197,9 +196,7 @@ function BoatDockService:_resolveTemplate(skinId: string): (Instance?, string, S
 end
 
 function BoatDockService:_ensureBoatsFolder(): Folder
-	local docks = Workspace:FindFirstChild("dOCKS")
-		or Workspace:FindFirstChild("Docks")
-		or Workspace:FindFirstChild("DOCKS")
+	local docks = getDocksRoot()
 	if not docks then
 		local placeholder = Instance.new("Folder")
 		placeholder.Name = "dOCKS"

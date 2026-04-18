@@ -56,6 +56,9 @@ local TEMPLATE_RIG_OVERRIDES: { [string]: RigOverride } = {
 	Ship5 = {
 		deckYOffsetFallback = 15,
 	},
+	Whale = {
+		deckYOffsetFallback = 15,
+	},
 }
 
 local function applyRigOverride(rig: RigDef, over: RigOverride?)
@@ -147,6 +150,12 @@ local ShipSkinCatalog = {
 			templateName = "Ship5",
 			fxParticleScale = 1,
 			rarityDisplay = "Epic",
+		},
+		WhaleSkin = {
+			displayName = "Whale",
+			templateName = "Whale",
+			fxParticleScale = 1.2,
+			rarityDisplay = "Legendary",
 		},
 	} :: { [string]: SkinDef },
 }

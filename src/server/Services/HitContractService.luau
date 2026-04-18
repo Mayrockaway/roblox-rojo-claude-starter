@@ -234,7 +234,7 @@ function HitContractService:_onPirateHirePrompt(player: Player)
 end
 
 function HitContractService:_ensurePrompt()
-	local npc = Workspace:FindFirstChild("PirateHire")
+	local npc = Workspace:FindFirstChild("PirateHire") or Workspace:FindFirstChild("PirateHire", true)
 	if not npc then
 		return
 	end
