@@ -200,7 +200,7 @@ Catalog.Events = {
 	{
 		id = "USShipSlap",
 		severity = "High",
-		displayName = "Government seizure",
+		displayName = "Sea Monster",
 		totalLoss = true,
 		usShipSlapEvent = true,
 	} :: StraitEventDef,

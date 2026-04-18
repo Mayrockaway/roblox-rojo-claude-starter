@@ -2062,8 +2062,10 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			print(string.format("  [StraitShipment DEBUG] US SHIP SLAP: side=%d, pausing %ds then total loss",
 				approachSide, cfg.SequenceDuration))
 		end
+		-- Delay the "total loss" HUD message until AFTER the kraken SFX finishes (~6s)
+		task.wait(6)
 		self:_emitTotalLossManifestHud(shipment, def.id)
-		task.wait(cfg.SequenceDuration)
+		task.wait(cfg.SequenceDuration - 6)
 		return true -- total loss
 	end
 

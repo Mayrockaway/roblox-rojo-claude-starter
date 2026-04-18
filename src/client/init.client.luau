@@ -2104,10 +2104,10 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 		StraitWaypointWorldFx.OnUSShipSlapPayload(data)
 		local isOwner = data.ownerUserId == player.UserId
 		if isOwner then
-			setStatus("GOVERNMENT SEIZURE! Your tanker has been confiscated!", false)
-			task.delay(2, function() playEventSFX("ShipDestroyed") end)
+			setStatus("SEA MONSTER! Your ship is under attack!", false)
+			-- ShipDestroyed SFX is handled inside the kraken FX (plays after kraken audio ends)
 		else
-			setStatus("A US Navy vessel just seized a nearby ship!", true)
+			setStatus("A sea monster just attacked a nearby ship!", true)
 		end
 		return
 	end
