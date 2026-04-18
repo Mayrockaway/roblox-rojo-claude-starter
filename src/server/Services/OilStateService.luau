@@ -1096,74 +1096,42 @@ function OilStateService:TryBuyChunk(userId: number, chunkId: string): (boolean,
 	DevLog.log(string.format("[TryBuyChunk] OK user=%d chunkId=%s row=%d col=%d cost=%d",
 		userId, chunkId, chunk.row, chunk.col, cost))
 
-	-- Roll a biome from this chunk's row pool, excluding biomes already taken by siblings in the same row.
+	-- Vein system: ground type determined by row, all tiles same appearance
+	local VeinConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
+	local groundType = VeinConfig.GroundByRow[chunk.row] or VeinConfig.GroundTypes.Bronze
 	local rng = Random.new(userId * 97 + chunk.row * 31 + chunk.col * 17 + math.floor(workspace:GetServerTimeNow() * 1000))
-	local usedInRow: { [string]: boolean } = {}
-	for _, otherChunk in pairs(state.chunksById) do
-		if otherChunk.row == chunk.row and otherChunk.biome and otherChunk.chunkId ~= chunk.chunkId then
-			usedInRow[otherChunk.biome] = true
-		end
-	end
-	local biomeName = BiomeConfig.RollBiomeForRow(chunk.row, usedInRow, rng)
-	chunk.unlocked = true
-	chunk.biome = biomeName
-	chunk.revealed = false -- stays hidden until slot machine animation finishes
 
-	-- Generate per-tile oil types + obstacles for the 5x5 sub-tiles
+	chunk.unlocked = true
+	chunk.biome = groundType.name -- store ground type name as biome for compat
+	chunk.revealed = true -- no reveal animation needed, tiles appear immediately
+	chunk.groundType = groundType.name
+
+	-- Generate per-tile data — all tiles use ground type's appearance
+	-- Oil type / vein data is NOT rolled here — it's rolled at drill completion
 	local subTiles = staticGridConstants().subTilesPerSide
 	chunk.tiles = {}
 
-	-- Assign tile types + bake in one oilType per tile. Then roll hasOil per tile based on row rate:
-	-- tiles that lose the roll have no oil underneath and produce a dirt patch when drilled.
-	-- SUPER TILEs always keep their oil regardless of row rate.
-	local oilRate = BiomeConfig.OilRatePerRow and BiomeConfig.OilRatePerRow[chunk.row] or 0.75
 	for tr = 1, subTiles do
 		for tc = 1, subTiles do
 			local tileKey = string.format("T%d%d", tr, tc)
-			local tileType = BiomeConfig.RollTileType(biomeName, rng)
-			local pickedOil = BiomeConfig.PickOilType(tileType, rng)
-			local hasOil = (tileType.name == "SUPER TILE") or (rng:NextNumber() < oilRate)
 			chunk.tiles[tileKey] = {
-				oilType = pickedOil,
-				hasOil = hasOil,
-				tileName = tileType.name,
-				tileMaterial = tileType.material.Name,
-				tileColorR = math.floor(tileType.color.R * 255),
-				tileColorG = math.floor(tileType.color.G * 255),
-				tileColorB = math.floor(tileType.color.B * 255),
-				drillSeconds = tileType.drillSeconds,
+				oilType = nil, -- rolled at drill completion
+				hasOil = true, -- placeholder, real result from vein roll
+				tileName = groundType.name,
+				tileMaterial = groundType.material.Name,
+				tileColorR = math.floor(groundType.color.R * 255),
+				tileColorG = math.floor(groundType.color.G * 255),
+				tileColorB = math.floor(groundType.color.B * 255),
+				drillSeconds = groundType.drillSeconds,
 				drilled = false,
 			}
 		end
 	end
 
 	self:_markDirty(userId)
+	self:PushState(userId)
 
-	-- Fire biome reveal event to client for slot machine animation
-	local player = Players:GetPlayerByUserId(userId)
-	if player then
-		local revealEvent = self._remoteService:GetEvent(RemoteNames.BiomeRevealEvent)
-		revealEvent:FireClient(player, {
-			chunkId = chunkId,
-			biome = biomeName,
-			tiles = chunk.tiles,
-		})
-	end
-
-	-- Delay reveal so the slot machine animation plays first
-	task.delay(3, function()
-		local currentState = self._statesByUserId[userId]
-		if currentState then
-			local currentChunk = currentState.chunksById[chunkId]
-			if currentChunk then
-				currentChunk.revealed = true
-				self:_markDirty(userId)
-				self:PushState(userId)
-			end
-		end
-	end)
-
-	return true, "OK", string.format("%s Discovered!", biomeData and biomeData.displayName or biomeName)
+	return true, "OK", string.format("%s Plot Unlocked!", groundType.name)
 end
 
 -- Legacy stub: obstacle system removed. Kept so any stale callers get a clear error
@@ -1486,11 +1454,40 @@ function OilStateService:CompleteDrill(userId: number, drillId: number): (boolea
 	state.activeDrills[drillId] = nil
 
 	local chunk = state.chunksById[entry.chunkId]
-	local hasOil = true
-	if chunk and chunk.tiles and chunk.tiles[entry.tileKey] then
-		chunk.tiles[entry.tileKey].drilled = true
-		hasOil = chunk.tiles[entry.tileKey].hasOil ~= false
+	if not chunk or not chunk.tiles or not chunk.tiles[entry.tileKey] then
+		self:_markDirty(userId)
+		return false, nil
 	end
+
+	local tile = chunk.tiles[entry.tileKey]
+	tile.drilled = true
+	tile.revealPending = true -- wait for player to press E on DrillComplete
+
+	-- Roll the vein using VeinConfig odds based on ground type
+	local VeinConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
+	local groundType = VeinConfig.GroundTypes[chunk.groundType or chunk.biome] or VeinConfig.GroundTypes.Bronze
+	local rng = Random.new(userId * 13 + drillId * 7 + math.floor(workspace:GetServerTimeNow() * 1000))
+	local veinResult = VeinConfig.RollVein(groundType, rng)
+
+	-- Store vein result on tile
+	tile.veinResult = {
+		isDead = veinResult.isDead,
+		veinCount = veinResult.veinCount,
+		veins = veinResult.veins,
+		groundType = veinResult.groundType,
+	}
+
+	-- Set tile oil type from the first vein (for compat with existing systems)
+	if veinResult.isDead then
+		tile.hasOil = false
+		tile.oilType = nil
+	else
+		tile.hasOil = true
+		-- Use the best oil type from all veins for the tile's primary oilType
+		local bestOil = veinResult.veins[1].oilType
+		tile.oilType = VeinConfig.GetInternalOilName(bestOil)
+	end
+
 	self:_markDirty(userId)
 	return true, {
 		drillId = drillId,
@@ -1498,8 +1495,31 @@ function OilStateService:CompleteDrill(userId: number, drillId: number): (boolea
 		tileKey = entry.tileKey,
 		cellKey = entry.cellKey,
 		position = entry.position,
-		oilType = entry.oilType,
-		hasOil = hasOil,
+		oilType = tile.oilType,
+		hasOil = tile.hasOil,
+		revealPending = true,
+	}
+end
+
+function OilStateService:RevealTile(userId: number, chunkId: string, tileKey: string): (boolean, any)
+	local state = self._statesByUserId[userId]
+	if not state then return false, nil end
+	local chunk = state.chunksById[chunkId]
+	if not chunk or not chunk.tiles or not chunk.tiles[tileKey] then return false, nil end
+
+	local tile = chunk.tiles[tileKey]
+	if not tile.drilled then return false, nil end
+	if not tile.revealPending then return false, nil end
+
+	tile.revealPending = nil -- clear the pending flag, spray can now spawn
+	self:_markDirty(userId)
+
+	return true, {
+		chunkId = chunkId,
+		tileKey = tileKey,
+		oilType = tile.oilType,
+		hasOil = tile.hasOil,
+		veinResult = tile.veinResult,
 	}
 end
 
@@ -2387,28 +2407,27 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 			worldZ = def.worldZ,
 		}
 
-		-- Starting chunk gets a guaranteed Dustlands biome with tiles (so the player can start playing)
+		-- Starting chunk gets ground type based on its row (vein system)
 		if def.startingChunk then
-			chunkData.biome = "DustyDesert"
+			local VeinConfigStarter = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
+			local gt = VeinConfigStarter.GroundByRow[def.row] or VeinConfigStarter.GroundTypes.Bronze
+			chunkData.biome = gt.name
+			chunkData.groundType = gt.name
 			chunkData.revealed = true
 			chunkData.tiles = {}
 			local subTiles = staticGridConstants().subTilesPerSide
 			for tr = 1, subTiles do
 				for tc = 1, subTiles do
 					local tileKey = string.format("T%d%d", tr, tc)
-					local tileType = BiomeConfig.RollTileType("DustyDesert", startRng)
-					-- Starter chunk uses the row-4 oil rate (90%)
-					local starterRate = (BiomeConfig.OilRatePerRow and BiomeConfig.OilRatePerRow[4]) or 0.9
-					local hasOil = (tileType.name == "SUPER TILE") or (startRng:NextNumber() < starterRate)
 					chunkData.tiles[tileKey] = {
-						oilType = BiomeConfig.PickOilType(tileType, startRng),
-						hasOil = hasOil,
-						tileName = tileType.name,
-						tileMaterial = tileType.material.Name,
-						tileColorR = math.floor(tileType.color.R * 255),
-						tileColorG = math.floor(tileType.color.G * 255),
-						tileColorB = math.floor(tileType.color.B * 255),
-						drillSeconds = tileType.drillSeconds,
+						oilType = nil,
+						hasOil = true,
+						tileName = gt.name,
+						tileMaterial = gt.material.Name,
+						tileColorR = math.floor(gt.color.R * 255),
+						tileColorG = math.floor(gt.color.G * 255),
+						tileColorB = math.floor(gt.color.B * 255),
+						drillSeconds = gt.drillSeconds,
 						drilled = false,
 					}
 				end

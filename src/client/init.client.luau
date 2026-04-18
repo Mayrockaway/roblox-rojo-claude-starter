@@ -192,6 +192,7 @@ local warehouseStateUpdate = waitRemote(RemoteNames.WarehouseStateUpdate) :: Rem
 local requestWarehouseSnapshot = waitRemote(RemoteNames.RequestWarehouseSnapshot) :: RemoteFunction
 -- RequestClearObstacle remote no longer bound (obstacle system removed)
 local biomeRevealEvent = waitRemote(RemoteNames.BiomeRevealEvent) :: RemoteEvent
+local requestRevealTile = waitRemote(RemoteNames.RequestRevealTile) :: RemoteEvent
 local requestDispatchShipment = waitRemote(RemoteNames.RequestDispatchShipment) :: RemoteEvent
 local oilStateUpdate = waitRemote(RemoteNames.OilStateUpdate) :: RemoteEvent
 local oilActionResult = waitRemote(RemoteNames.OilActionResult) :: RemoteEvent
@@ -2170,8 +2171,12 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 		local isOwner = data.ownerUserId == player.UserId
 		if isOwner then playEventSFX("Mines") end
 		if data.didHit then
-			setStatus(isOwner and "MINE HIT — Ship destroyed!" or "A vessel struck a mine!", false)
-			if isOwner then task.delay(2, function() playEventSFX("ShipDestroyed") end) end
+			if isOwner then
+				task.delay(4, function() setStatus("MINE HIT — Ship destroyed!", false) end)
+				task.delay(4, function() playEventSFX("ShipDestroyed") end)
+			else
+				setStatus("A vessel struck a mine!", false)
+			end
 		else
 			setStatus(isOwner and "Mines spotted! Navigating through..." or "Mines surfaced near a vessel!", true)
 		end
@@ -2187,8 +2192,12 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 			playEventSFX("MissileStrike")
 		end
 		if outcome == "hit" then
-			setStatus(isOwner and "MISSILE STRIKE — Ship destroyed!" or "A vessel was destroyed by a missile!", false)
-			if isOwner then task.delay(2, function() playEventSFX("ShipDestroyed") end) end
+			if isOwner then
+				task.delay(4, function() setStatus("MISSILE STRIKE — Ship destroyed!", false) end)
+				task.delay(4, function() playEventSFX("ShipDestroyed") end)
+			else
+				setStatus("A vessel was destroyed by a missile!", false)
+			end
 		elseif outcome == "smallHit" then
 			setStatus(isOwner and "MISSILE NEAR HIT — Barrels lost!" or "A missile grazed a vessel nearby!", false)
 		else
@@ -2206,12 +2215,14 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 			playEventSFX("Paperwork")
 		end
 		if data.totalLoss then
-			setStatus(
-				isOwner and string.format("STRAIT: %s (%s) — shipment lost", name, sev)
-					or string.format("Strait: another vessel lost cargo (%s)", sev),
-				false
-			)
-			if isOwner then task.delay(2, function() playEventSFX("ShipDestroyed") end) end
+			if isOwner then
+				task.delay(4, function()
+					setStatus(string.format("STRAIT: %s (%s) — shipment lost", name, sev), false)
+					playEventSFX("ShipDestroyed")
+				end)
+			else
+				setStatus(string.format("Strait: another vessel lost cargo (%s)", sev), false)
+			end
 		else
 			local lost = tonumber(data.barrelsLost) or 0
 			local extra = lost > 0 and string.format(" — lost %d barrel(s), %d left", lost, tonumber(data.totalLoaded) or 0) or ""
@@ -2236,18 +2247,21 @@ shipmentVisualEvent.OnClientEvent:Connect(function(packet)
 	elseif kind == "ShipmentResolved" then
 		local delivered = tonumber(data.delivered) or 0
 		local lost = tonumber(data.lost) or 0
-		setStatus(
-			string.format(
-				"Shipment done. %d barrels delivered to warehouse (%d lost). Sell at market for cash.",
-				delivered, lost
-			),
-			true
-		)
-		-- Delivery SFX: perfect delivery vs lost some barrels
-		if lost == 0 then
-			playEventSFX("DeliverySuccess")
-		else
-			playEventSFX("DeliveryOk")
+		local totalLoss = delivered == 0 and lost == 0
+		if not totalLoss then
+			setStatus(
+				string.format(
+					"Shipment done. %d barrels delivered to warehouse (%d lost). Sell at market for cash.",
+					delivered, lost
+				),
+				true
+			)
+			-- Delivery SFX only if ship actually delivered (not destroyed)
+			if lost == 0 then
+				playEventSFX("DeliverySuccess")
+			else
+				playEventSFX("DeliveryOk")
+			end
 		end
 	end
 end)
@@ -2436,11 +2450,238 @@ drillProgressUpdate.OnClientEvent:Connect(function(data)
 	if data.kind == "started" and data.ownerUserId == player.UserId then
 		setStatus(string.format("Drilling (%s) — %.1fs", tostring(data.tier or "?"), tonumber(data.duration) or 0), false)
 	elseif data.kind == "completed" and data.ownerUserId == player.UserId then
-		if data.hasOil == false then
-			setStatus("Dry hole — no oil under this tile.", false)
-		else
-			setStatus("Drill complete. Place a pump on this tile!", false)
+		-- Spawn DrillComplete model on the tile with ProximityPrompt
+		setStatus("Drill complete! Press E to reveal what's underneath.", false)
+		local pos = if typeof(data.position) == "table"
+			then Vector3.new(tonumber(data.position.x) or 0, tonumber(data.position.y) or 0, tonumber(data.position.z) or 0)
+			else Vector3.new(0, 0, 0)
+		local dcTemplate = ReplicatedStorage:FindFirstChild("Assets") and ReplicatedStorage.Assets:FindFirstChild("DrillComplete")
+		if dcTemplate and pos.Magnitude > 0 then
+			task.spawn(function()
+				local dc = dcTemplate:Clone()
+				dc.Name = "DrillComplete_" .. tostring(data.chunkId) .. "_" .. tostring(data.tileKey)
+				for _, d in ipairs(dc:GetDescendants()) do
+					if d:IsA("BasePart") then d.Anchored = true; d.CanCollide = false end
+				end
+				dc:PivotTo(CFrame.new(pos + Vector3.new(0, 4, 0)))
+				dc.Parent = Workspace
+
+				local prompt = Instance.new("ProximityPrompt")
+				prompt.Name = "RevealPrompt"
+				prompt.ActionText = "Reveal"
+				prompt.ObjectText = "Drill Complete"
+				prompt.KeyboardKeyCode = Enum.KeyCode.E
+				prompt.MaxActivationDistance = 12
+				prompt.RequiresLineOfSight = false
+				prompt.HoldDuration = 0
+				local root = dc:FindFirstChildWhichIsA("BasePart")
+				if root then prompt.Parent = root end
+
+				prompt.Triggered:Connect(function(trigPlayer)
+					if trigPlayer ~= player then return end
+					requestRevealTile:FireServer({
+						chunkId = data.chunkId,
+						tileKey = data.tileKey,
+					})
+					-- Remove prompt immediately so you can't double-press
+					prompt:Destroy()
+				end)
+			end)
 		end
+
+	elseif data.kind == "revealed" and data.ownerUserId == player.UserId then
+		-- Remove DrillComplete model
+		local dcName = "DrillComplete_" .. tostring(data.chunkId) .. "_" .. tostring(data.tileKey)
+		local dcModel = Workspace:FindFirstChild(dcName)
+		if dcModel then dcModel:Destroy() end
+
+		local veinResult = data.veinResult
+		if not veinResult then return end
+
+		-- Find the tile Part in workspace by position
+		local VeinConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("VeinConfig"))
+		local displayName = VeinConfig.BuildDisplayName(veinResult)
+		local prob = VeinConfig.CalculateCombinedOdds(veinResult)
+		local oddsText = VeinConfig.FormatOdds(prob)
+		local rarity = VeinConfig.GetRarityFromOdds(prob)
+
+		-- Slot spin animation on the tile
+		-- Find tile part by searching owned plot sections
+		local tilePart = nil
+		local ownedPlot = Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("Plots")
+		if ownedPlot then
+			for _, plot in ipairs(ownedPlot:GetChildren()) do
+				local pg = plot:FindFirstChild("PlotGround")
+				if not pg then continue end
+				for _, section in ipairs(pg:GetChildren()) do
+					if not section:IsA("Model") then continue end
+					local tp = section:FindFirstChild(tostring(data.tileKey))
+					if tp and tp:IsA("BasePart") then
+						tilePart = tp
+						break
+					end
+				end
+				if tilePart then break end
+			end
+		end
+
+		task.spawn(function()
+			-- Billboard above tile showing spinning results
+			local billboard = nil
+			local nameLabel = nil
+			local oddsLabel = nil
+			if tilePart then
+				billboard = Instance.new("BillboardGui")
+				billboard.Name = "VeinRevealBillboard"
+				billboard.Size = UDim2.fromOffset(300, 100)
+				billboard.StudsOffset = Vector3.new(0, 8, 0)
+				billboard.AlwaysOnTop = true
+				billboard.Adornee = tilePart
+				billboard.Parent = playerGui
+
+				nameLabel = Instance.new("TextLabel")
+				nameLabel.Size = UDim2.fromScale(1, 0.6)
+				nameLabel.Position = UDim2.fromScale(0, 0)
+				nameLabel.BackgroundTransparency = 1
+				nameLabel.Font = Enum.Font.LuckiestGuy
+				nameLabel.TextSize = 28
+				nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+				nameLabel.TextStrokeTransparency = 0
+				nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+				nameLabel.Text = ""
+				nameLabel.Parent = billboard
+
+				oddsLabel = Instance.new("TextLabel")
+				oddsLabel.Size = UDim2.fromScale(1, 0.4)
+				oddsLabel.Position = UDim2.fromScale(0, 0.6)
+				oddsLabel.BackgroundTransparency = 1
+				oddsLabel.Font = Enum.Font.LuckiestGuy
+				oddsLabel.TextSize = 22
+				oddsLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+				oddsLabel.TextStrokeTransparency = 0
+				oddsLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+				oddsLabel.Text = ""
+				oddsLabel.Parent = billboard
+			end
+
+			-- Spin through random combos for 3 seconds
+			local spinDur = 3
+			local spinT0 = os.clock()
+			local spinRng = Random.new(os.clock() * 1000)
+			local allStreams = VeinConfig.StreamOrder
+			local allOils = VeinConfig.OilOrder
+			local originalColor = tilePart and tilePart.Color or Color3.fromRGB(254, 224, 180)
+
+			while true do
+				local elapsed = os.clock() - spinT0
+				if elapsed >= spinDur then break end
+				-- Ease: start fast, slow down
+				local progress = elapsed / spinDur
+				local interval = 0.06 + 0.4 * (progress * progress * progress)
+				-- Pick random combo to display
+				local randStream = allStreams[spinRng:NextInteger(1, #allStreams)]
+				local randOil = allOils[spinRng:NextInteger(1, #allOils)]
+				local streamDef = VeinConfig.Streams[randStream]
+				local oilDef = VeinConfig.OilTypes[randOil]
+
+				if tilePart then
+					tilePart.Color = oilDef.color
+				end
+				if nameLabel then
+					nameLabel.Text = oilDef.displayName .. " " .. streamDef.name
+					nameLabel.TextColor3 = streamDef.color
+				end
+				if oddsLabel then
+					local fakeProbInverse = spinRng:NextInteger(2, 5000)
+					oddsLabel.Text = "1/" .. tostring(fakeProbInverse)
+				end
+
+				task.wait(interval)
+			end
+
+			-- Land on the real result
+			if tilePart then
+				if veinResult.isDead then
+					tilePart.Color = Color3.fromRGB(72, 50, 30)
+					tilePart.Material = Enum.Material.Ground
+				else
+					local firstOil = VeinConfig.OilTypes[veinResult.veins[1].oilType]
+					if firstOil then
+						tilePart.Color = firstOil.color
+					end
+				end
+			end
+			if nameLabel then
+				nameLabel.Text = displayName
+				nameLabel.TextColor3 = rarity.color
+				if rarity.name == "LEGENDARY" or rarity.name == "EPIC" then
+					nameLabel.TextSize = 34
+				end
+			end
+			if oddsLabel then
+				oddsLabel.Text = oddsText .. " — " .. rarity.name
+				oddsLabel.TextColor3 = rarity.color
+			end
+
+			-- Toast popup
+			local toast = Instance.new("ScreenGui")
+			toast.Name = "VeinToast"
+			toast.IgnoreGuiInset = true
+			toast.DisplayOrder = 100
+			toast.Parent = playerGui
+
+			local toastLabel = Instance.new("TextLabel")
+			toastLabel.Size = UDim2.new(0.6, 0, 0, 60)
+			toastLabel.Position = UDim2.new(0.2, 0, 0.15, 0)
+			toastLabel.BackgroundTransparency = 0.3
+			toastLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+			toastLabel.Font = Enum.Font.LuckiestGuy
+			toastLabel.TextSize = 30
+			toastLabel.TextColor3 = rarity.color
+			toastLabel.TextStrokeTransparency = 0
+			toastLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+			toastLabel.Text = displayName .. "  " .. oddsText
+			toastLabel.Parent = toast
+			local corner = Instance.new("UICorner")
+			corner.CornerRadius = UDim.new(0, 12)
+			corner.Parent = toastLabel
+
+			-- Oil burst if not dead
+			if not veinResult.isDead and data.hasOil then
+				local veinCount = VeinConfig.VeinCounts[veinResult.veinCount]
+				local count = veinCount and veinCount.count or 1
+				for i, vein in ipairs(veinResult.veins) do
+					local internalOil = VeinConfig.GetInternalOilName(vein.oilType)
+					local sprayName = "OilSpray_" .. internalOil
+					local sprayTemplate = ReplicatedStorage.Assets:FindFirstChild(sprayName)
+					if sprayTemplate and tilePart then
+						local spray = sprayTemplate:Clone()
+						for _, d in ipairs(spray:GetDescendants()) do
+							if d:IsA("BasePart") then d.Anchored = true; d.CanCollide = false end
+						end
+						local offset = Vector3.new((i - 1) * 2 - (count - 1), 0.5, 0)
+						spray:PivotTo(CFrame.new(tilePart.Position + offset + Vector3.new(0, 0.3, 0)))
+						spray.Parent = Workspace
+						-- Burst: emit extra particles
+						for _, d in ipairs(spray:GetDescendants()) do
+							if d:IsA("ParticleEmitter") then
+								local streamDef = VeinConfig.Streams[vein.streamType]
+								local mult = streamDef and streamDef.particleMult or 1
+								d:Emit(math.floor(100 * mult))
+							end
+						end
+						Debris:AddItem(spray, 5) -- server spray takes over
+					end
+				end
+			end
+
+			-- Fade billboard + toast after 3s
+			task.wait(3)
+			if billboard then billboard:Destroy() end
+			task.wait(1)
+			if toast and toast.Parent then toast:Destroy() end
+		end)
+
 	elseif data.kind == "pumpPlaced" and data.ownerUserId == player.UserId then
 		setStatus("Pump online — producing oil.", false)
 	end
@@ -2466,20 +2707,15 @@ end)
 
 -- Biome reveal slot machine animation
 biomeRevealEvent.OnClientEvent:Connect(function(data)
-	if typeof(data) ~= "table" or not data.biome or not data.chunkId then return end
-	local biomeName = data.biome
-	local chunkId = data.chunkId
-
-	-- Find the section model to animate its tiles
+	-- Vein system: chunks reveal instantly with ground type color, no slot animation needed
+	if typeof(data) ~= "table" or not data.chunkId then return end
 	local sectionModel = nil
 	if ownedPlot then
 		local ground = ownedPlot:FindFirstChild("PlotGround")
 		if ground then
-			sectionModel = ground:FindFirstChild(chunkId)
+			sectionModel = ground:FindFirstChild(data.chunkId)
 		end
 	end
-
-	-- Remove the fog overlay immediately
 	if sectionModel then
 		local overlay = sectionModel:FindFirstChild("LockOverlay")
 		if overlay and overlay:IsA("BasePart") then
@@ -2494,74 +2730,6 @@ biomeRevealEvent.OnClientEvent:Connect(function(data)
 			end
 		end
 	end
-
-	-- Slot machine: flash REAL biome tile sets (pulled live from BiomeConfig) onto the 5x5 grid.
-	-- Only flash biomes that could actually appear for THIS chunk (from its row pool).
-	task.spawn(function()
-		local biomeConfig = require(Shared:WaitForChild("Config"):WaitForChild("BiomeConfig"))
-
-		-- Parse the chunk row from chunkId (format "S<row>_<col>")
-		local chunkRow = tonumber(tostring(chunkId):match("^S(%d+)_"))
-		local rowPool = chunkRow and biomeConfig.RowPools and biomeConfig.RowPools[chunkRow] or nil
-
-		-- Build presets from the row's pool (fallback to all biomes if no pool found)
-		local biomePresets = {}
-		local function addPreset(bname)
-			local biome = biomeConfig.Biomes[bname]
-			if not biome then return end
-			local preset = { name = bname, tiles = {} }
-			for _, tt in ipairs(biome.tileTypes or {}) do
-				table.insert(preset.tiles, {
-					mat = tt.material or Enum.Material.Plastic,
-					col = tt.color or Color3.fromRGB(180, 180, 180),
-					w = tt.weight or 1,
-				})
-			end
-			if #preset.tiles > 0 then table.insert(biomePresets, preset) end
-		end
-		if rowPool then
-			for _, bname in ipairs(rowPool) do addPreset(bname) end
-		else
-			for bname, _ in pairs(biomeConfig.Biomes) do addPreset(bname) end
-		end
-		if #biomePresets == 0 then return end
-
-		local function rollTile(preset)
-			local totalW = 0
-			for _, t in ipairs(preset.tiles) do totalW += t.w end
-			local r = math.random(1, totalW)
-			local cursor = 0
-			for _, t in ipairs(preset.tiles) do
-				cursor += t.w
-				if r <= cursor then return t end
-			end
-			return preset.tiles[1]
-		end
-
-		local tileParts = {}
-		if sectionModel then
-			for _, child in ipairs(sectionModel:GetChildren()) do
-				if child:IsA("BasePart") and child.Name:match("^T%d%d$") then
-					table.insert(tileParts, child)
-				end
-			end
-		end
-
-		-- Flash-through animation (no obstacle preview: obstacles removed)
-		local intervals = { 0.12, 0.12, 0.15, 0.18, 0.22, 0.3, 0.4, 0.6 }
-		for i, interval in ipairs(intervals) do
-			local preset = biomePresets[((i - 1) % #biomePresets) + 1]
-			for _, part in ipairs(tileParts) do
-				local t = rollTile(preset)
-				part.Material = t.mat
-				part.Color = t.col
-			end
-			task.wait(interval)
-		end
-
-		_ = biomeName
-		task.wait(3.5)
-	end)
 end)
 
 -- Obstacle system removed; clear-prompt binding deleted.
@@ -3104,8 +3272,10 @@ nukeDetonateEvent.OnClientEvent:Connect(function(data)
 			end
 		end
 
-		setStatus("NUCLEAR STRIKE! All boats in the strait destroyed!", false)
-		task.delay(3, function() playEventSFX("ShipDestroyed") end)
+		task.delay(6, function()
+			setStatus("NUCLEAR STRIKE! All boats in the strait destroyed!", false)
+			playEventSFX("ShipDestroyed")
+		end)
 	end)
 end)
 
@@ -3395,8 +3565,10 @@ airStrikeEvent.OnClientEvent:Connect(function(data)
 		-- Status message
 		if isVictim then
 			if outcome == "hit" then
-				setStatus("YOUR SHIP WAS BOMBED! Cargo destroyed!", false)
-				task.delay(2, function() playEventSFX("ShipDestroyed") end)
+				task.delay(5, function()
+					setStatus("YOUR SHIP WAS BOMBED! Cargo destroyed!", false)
+					playEventSFX("ShipDestroyed")
+				end)
 
 				-- DEATH CAM: head flies away from explosion, camera follows
 				local localChar = player.Character

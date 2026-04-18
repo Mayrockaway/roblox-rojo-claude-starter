@@ -79,6 +79,9 @@ local RemoteNames = {
 	NukeDetonateEvent = "NukeDetonateEvent",
 	AirStrikeEvent = "AirStrikeEvent",
 
+	-- Drill vein reveal (player presses E on DrillComplete model)
+	RequestRevealTile = "RequestRevealTile",
+
 	-- Per-plot oil tanks: three tubes (HeavyCrude/LightSweet/PremiumRefined) upgradable 1..10.
 	RequestUpgradeOilTank = "RequestUpgradeOilTank",
 

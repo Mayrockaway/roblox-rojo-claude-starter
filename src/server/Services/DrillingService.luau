@@ -118,6 +118,32 @@ function DrillingService:Start()
 		self:_handlePlacePump(player, payload)
 	end))
 
+	-- Vein reveal: player pressed E on DrillComplete model
+	local revealEvent = self._remoteService:GetEvent(RemoteNames.RequestRevealTile)
+	table.insert(self._connections, revealEvent.OnServerEvent:Connect(function(player, payload)
+		if typeof(payload) ~= "table" then return end
+		local chunkId = tostring(payload.chunkId or "")
+		local tileKey = tostring(payload.tileKey or "")
+		if chunkId == "" or tileKey == "" then return end
+
+		local ok, result = self._oilStateService:RevealTile(player.UserId, chunkId, tileKey)
+		if not ok or not result then return end
+
+		-- Fire revealed event to owner so client plays the slot spin
+		self._progressEvent:FireClient(player, {
+			kind = "revealed",
+			ownerUserId = player.UserId,
+			chunkId = result.chunkId,
+			tileKey = result.tileKey,
+			oilType = result.oilType,
+			hasOil = result.hasOil,
+			veinResult = result.veinResult,
+		})
+
+		-- Push state so OilVisualService can now spawn sprays
+		self._oilStateService:PushState(player.UserId)
+	end))
+
 	-- When a player leaves, cancel any pending completion tasks so we don't double-complete
 	-- after OilState reload (persisted active drills get fresh delays on rejoin).
 	table.insert(self._connections, Players.PlayerRemoving:Connect(function(player)

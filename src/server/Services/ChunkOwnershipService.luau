@@ -127,8 +127,8 @@ function ChunkOwnershipService:_applyChunkVisual(sectionModel: Model, chunk)
 	local overlay = sectionModel:FindFirstChild("LockOverlay")
 	local sign = sectionModel:FindFirstChild("Sign")
 
-	if chunk.unlocked and chunk.revealed then
-		-- REVEALED: apply biome materials/colors to tiles + spawn obstacles
+	if chunk.unlocked then
+		-- UNLOCKED: apply ground type colors to tiles (revealed immediately, no animation)
 		if overlay and overlay:IsA("BasePart") then
 			setPartTransparency(overlay, 1) -- hide overlay
 		end
@@ -142,11 +142,12 @@ function ChunkOwnershipService:_applyChunkVisual(sectionModel: Model, chunk)
 				if child:IsA("BasePart") and child.Name:match("^T%d%d$") then
 					local tileData = chunk.tiles[child.Name]
 					if tileData then
-						-- Drilled dry-hole tile → render as dirt patch (overrides normal visuals)
-						if tileData.drilled and tileData.hasOil == false then
+						-- Drilled dry-hole tile (revealed, no oil) → render as dirt patch
+						if tileData.drilled and tileData.hasOil == false and not tileData.revealPending then
 							setPartMaterial(child, Enum.Material.Ground)
 							setPartColor(child, Color3.fromRGB(72, 50, 30))
 						else
+							-- All tiles use ground type color (sand-colored per row)
 							local matName = tileData.tileMaterial
 							if matName and Enum.Material[matName] then
 								setPartMaterial(child, Enum.Material[matName])
@@ -175,26 +176,26 @@ function ChunkOwnershipService:_applyChunkVisual(sectionModel: Model, chunk)
 		self:_syncObstacles(sectionModel, chunk)
 
 	elseif not chunk.unlocked then
-		-- LOCKED: show dark fog + buy sign
+		-- LOCKED: show ground type color (no black fog), keep buy sign
+		local VeinConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("VeinConfig"))
+		local groundType = VeinConfig.GroundByRow[chunk.row] or VeinConfig.GroundTypes.Bronze
+
 		if overlay and overlay:IsA("BasePart") then
-			setPartTransparency(overlay, FOG_TRANSPARENCY)
-			setPartColor(overlay, FOG_COLOR)
-			setPartMaterial(overlay, Enum.Material.Neon)
+			setPartTransparency(overlay, 1) -- no overlay
 		end
-		-- Make all tiles dark/hidden under the fog
+		-- Show tiles in ground type color (visible, not hidden)
 		for _, child in ipairs(sectionModel:GetChildren()) do
 			if child:IsA("BasePart") and child.Name:match("^T%d%d$") then
-				setPartMaterial(child, Enum.Material.SmoothPlastic)
-				setPartColor(child, Color3.fromRGB(30, 30, 38))
+				setPartMaterial(child, groundType.material)
+				setPartColor(child, groundType.color)
 			end
 		end
 		if sign then
 			local cost = self:_costFor(nil, chunk)
 			self:_setSignVisible(sign, true, cost)
-			-- Update sign text to show "?" instead of biome name
 			for _, d in ipairs(sign:GetDescendants()) do
 				if d:IsA("TextLabel") and d.Name == "CostLabel" then
-					d.Text = string.format("? BUY: $%d", cost)
+					d.Text = string.format("BUY: $%d", cost)
 				end
 			end
 		end
@@ -214,7 +215,7 @@ function ChunkOwnershipService:_setSignVisible(sign: Instance, visible: boolean,
 			descendant.Enabled = visible
 		elseif descendant:IsA("TextLabel") and descendant.Name == "CostLabel" then
 			if visible and cost then
-				descendant.Text = string.format("? BUY: $%d", cost)
+				descendant.Text = string.format("BUY: $%d", cost)
 			end
 		end
 	end

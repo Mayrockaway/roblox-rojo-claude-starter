@@ -659,7 +659,7 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 	for _, chunk in ipairs(snapshot.chunks or {}) do
 		if chunk.tiles and chunk.unlocked then
 			for tileKey, tile in pairs(chunk.tiles) do
-				if tile and tile.drilled and tile.hasOil ~= false then
+				if tile and tile.drilled and tile.hasOil ~= false and not tile.revealPending then
 					local spraySig = chunk.chunkId .. ":" .. tileKey
 					local hasPump = false
 					for _, d in ipairs(snapshot.drills or {}) do
