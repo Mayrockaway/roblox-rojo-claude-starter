@@ -22,69 +22,20 @@ end
 function PipeNetworkService:MarkConnectivityForTick(state)
 	if not state then return end
 
-	-- Build traversable node lookup: pipes AND drills can carry connectivity.
-	-- cellKey -> { row, col }
-	local nodes = {}
-	if typeof(state.pipesByCellKey) == "table" then
-		for key, pipe in pairs(state.pipesByCellKey) do
-			nodes[key] = { row = pipe.row, col = pipe.col }
+	-- New system: every drill in a section with a center pump is auto-connected.
+	-- No pipes or drums needed. A drill is "connected" if its chunkId matches
+	-- any chunk that has an unlocked section (which always has a center pump).
+	local chunksWithPumps = {}
+	if typeof(state.chunksById) == "table" then
+		for chunkId, chunk in pairs(state.chunksById) do
+			if chunk.unlocked then
+				chunksWithPumps[chunkId] = true
+			end
 		end
 	end
-	-- Add drill cells as traversable nodes (so pump-to-pump chains work)
+
 	for _, drill in pairs(state.drillsById or {}) do
-		if drill.cellRow and drill.cellCol then
-			local key = makeKey(drill.cellRow, drill.cellCol)
-			if not nodes[key] then
-				nodes[key] = { row = drill.cellRow, col = drill.cellCol }
-			end
-		end
-	end
-
-	-- BFS through all traversable nodes, starting from any node 4-adjacent to a drum cell.
-	local reached = {}
-	local queue = {}
-	if typeof(state.drumsById) == "table" then
-		for _, drum in pairs(state.drumsById or {}) do
-			if drum.row and drum.col then
-				local deltas = { {1,0}, {-1,0}, {0,1}, {0,-1} }
-				for _, d in ipairs(deltas) do
-					local nKey = makeKey(drum.row + d[1], drum.col + d[2])
-					if nodes[nKey] and not reached[nKey] then
-						reached[nKey] = true
-						table.insert(queue, nKey)
-					end
-				end
-			end
-		end
-	end
-
-	-- Walk node-to-node (pipes + drills)
-	local head = 1
-	while head <= #queue do
-		local key = queue[head]
-		head += 1
-		local cell = nodes[key]
-		if cell then
-			local deltas = { {1,0}, {-1,0}, {0,1}, {0,-1} }
-			for _, d in ipairs(deltas) do
-				local nKey = makeKey(cell.row + d[1], cell.col + d[2])
-				if nodes[nKey] and not reached[nKey] then
-					reached[nKey] = true
-					table.insert(queue, nKey)
-				end
-			end
-		end
-	end
-
-	-- Mark drills: a drill is connected iff its own cell was reached by BFS.
-	for _, drill in pairs(state.drillsById or {}) do
-		drill.connected = false
-		if drill.cellRow and drill.cellCol then
-			local key = makeKey(drill.cellRow, drill.cellCol)
-			if reached[key] then
-				drill.connected = true
-			end
-		end
+		drill.connected = drill.chunkId ~= nil and chunksWithPumps[drill.chunkId] == true
 	end
 end
 

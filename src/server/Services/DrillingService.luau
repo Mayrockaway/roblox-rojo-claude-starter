@@ -17,6 +17,7 @@ local ConsumeShopEquipmentTool = require(script.Parent.Parent.Utils.ConsumeShopE
 local NotifyShopToolConsumedSafe = require(script.Parent.Parent.Utils.NotifyShopToolConsumedSafe)
 
 local DrillingService = {}
+local REVEAL_SPRAY_SECONDS = 2.0
 
 function DrillingService:SetFtueService(ftueService: any)
 	self._ftueService = ftueService
@@ -126,10 +127,22 @@ function DrillingService:Start()
 		local tileKey = tostring(payload.tileKey or "")
 		if chunkId == "" or tileKey == "" then return end
 
+		if payload.stage == "startVisuals" then
+			local ok, result = self._oilStateService:StartRevealVisuals(player.UserId, chunkId, tileKey)
+			if not ok or not result then return end
+			self._oilStateService:PushState(player.UserId)
+			if result.hasOil ~= false then
+				task.delay(REVEAL_SPRAY_SECONDS + 0.05, function()
+					self._oilStateService:PushState(player.UserId)
+				end)
+			end
+			return
+		end
+
 		local ok, result = self._oilStateService:RevealTile(player.UserId, chunkId, tileKey)
 		if not ok or not result then return end
 
-		-- Fire revealed event to owner so client plays the slot spin
+		-- Fire revealed event to owner so client plays the crate opener
 		self._progressEvent:FireClient(player, {
 			kind = "revealed",
 			ownerUserId = player.UserId,
@@ -138,6 +151,8 @@ function DrillingService:Start()
 			oilType = result.oilType,
 			hasOil = result.hasOil,
 			veinResult = result.veinResult,
+			veinTypeId = result.veinTypeId,
+			groundType = result.groundType,
 		})
 
 		-- Push state so OilVisualService can now spawn sprays

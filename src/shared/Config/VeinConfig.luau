@@ -76,6 +76,45 @@ VeinConfig.GroundByRow = {
 }
 
 -- ═══════════════════════════════════════════════════════════
+-- Center Pump Upgrade Config
+-- ═══════════════════════════════════════════════════════════
+
+VeinConfig.PumpUpgrades = {
+	T1 = { flowMult = 1, templateName = "Pump_T1", displayName = "Basic Pump" },
+	T2 = { flowMult = 2, templateName = "Pump_T2", displayName = "Standard Pump" },
+	T3 = { flowMult = 4, templateName = "Pump_T3", displayName = "Advanced Pump" },
+}
+
+VeinConfig.PumpUpgradeOrder = { "T1", "T2", "T3" }
+
+-- Base upgrade costs (for Bronze / row closest to spawn)
+-- Scale by row: Bronze=1x, Silver=3x, Gold=10x, Diamond=30x
+VeinConfig.PumpUpgradeCosts = {
+	T2 = 5000,
+	T3 = 10000,
+}
+
+VeinConfig.RowCostMultiplier = {
+	Bronze = 1,
+	Silver = 3,
+	Gold = 10,
+	Diamond = 30,
+}
+
+function VeinConfig.GetUpgradeCost(currentTier: string, groundType: string): (string?, number?)
+	local currentIdx = 0
+	for i, t in ipairs(VeinConfig.PumpUpgradeOrder) do
+		if t == currentTier then currentIdx = i break end
+	end
+	local nextTier = VeinConfig.PumpUpgradeOrder[currentIdx + 1]
+	if not nextTier then return nil, nil end -- already max
+
+	local baseCost = VeinConfig.PumpUpgradeCosts[nextTier] or 0
+	local mult = VeinConfig.RowCostMultiplier[groundType] or 1
+	return nextTier, math.floor(baseCost * mult)
+end
+
+-- ═══════════════════════════════════════════════════════════
 -- Stream Types
 -- ═══════════════════════════════════════════════════════════
 
