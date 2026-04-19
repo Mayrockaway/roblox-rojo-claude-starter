@@ -53,6 +53,59 @@ local function migrateLegacyStandardTileOil(tiles: any)
 	end
 end
 
+local function migrateLegacyVeinTypeIds(tiles: any)
+	if typeof(tiles) ~= "table" then
+		return
+	end
+	local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
+	local dryHole = VeinCrateConfig.FindByVeinResult({ isDead = true })
+	for _, tile in pairs(tiles) do
+		if typeof(tile) == "table" then
+			local t = tile :: any
+			if typeof(t.veinTypeId) == "string" and VeinCrateConfig.GetById(t.veinTypeId) then
+				continue
+			end
+			local migrated = nil
+			if typeof(t.veinResult) == "table" then
+				migrated = VeinCrateConfig.FindByVeinResult(t.veinResult)
+			elseif t.hasOil == false then
+				migrated = dryHole
+			end
+			if migrated then
+				t.veinTypeId = migrated.id
+				if migrated.isUnlucky then
+					t.hasOil = false
+					t.oilType = nil
+				elseif typeof(t.oilType) ~= "string" then
+					t.oilType = migrated.primaryInternalOilType
+				end
+			end
+		end
+	end
+end
+
+local function normalizeChunkTilesToGroundType(tiles: any, groundType: any)
+	if typeof(tiles) ~= "table" or typeof(groundType) ~= "table" then
+		return
+	end
+	local materialName = if typeof(groundType.material) == "EnumItem" then groundType.material.Name else "Metal"
+	local color = groundType.color
+	local colorR = math.floor((color :: Color3).R * 255)
+	local colorG = math.floor((color :: Color3).G * 255)
+	local colorB = math.floor((color :: Color3).B * 255)
+	for _, tile in pairs(tiles) do
+		if typeof(tile) == "table" then
+			local t = tile :: any
+			t.tileName = groundType.name
+			t.tileMaterial = materialName
+			t.tileColorR = colorR
+			t.tileColorG = colorG
+			t.tileColorB = colorB
+			t.drillSeconds = groundType.drillSeconds
+		end
+	end
+end
+
 local function floorPositive(value: number): number
 	return math.max(0, math.floor(value))
 end
@@ -674,11 +727,12 @@ local function maxActiveDrillsFor(state): number
 end
 
 local function chunkUnlockCost(row: number, col: number): number
-	local dist = chebyshevFromCenter(row, col)
-	if dist <= 0 then
-		return 0
+	local VeinConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
+	local groundType = VeinConfig.GroundByRow[row]
+	if not groundType then
+		return floorPositive(OilConfig.ChunkUnlockBaseCost)
 	end
-	return floorPositive(OilConfig.ChunkUnlockBaseCost * (1 + (dist - 1) * OilConfig.ChunkUnlockDistanceMultiplier))
+	return VeinConfig.GetChunkUnlockCostByGround(groundType.name)
 end
 
 local function hasUnlockedNeighbor(state, row: number, col: number): boolean
@@ -1546,29 +1600,21 @@ function OilStateService:CompleteDrill(userId: number, drillId: number): (boolea
 	tile.drilled = true
 	tile.revealPending = true -- wait for player to press E on DrillComplete
 
-	-- Roll the vein using VeinConfig odds based on ground type
-	local VeinConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
-	local groundType = VeinConfig.GroundTypes[chunk.groundType or chunk.biome] or VeinConfig.GroundTypes.Bronze
+	local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
+	local groundTypeName = chunk.groundType or chunk.biome or "Bronze"
 	local rng = Random.new(userId * 13 + drillId * 7 + math.floor(workspace:GetServerTimeNow() * 1000))
-	local veinResult = VeinConfig.RollVein(groundType, rng)
+	local rolledType = VeinCrateConfig.RollVeinType(groundTypeName, rng)
+	local veinResult = VeinCrateConfig.BuildVeinResult(rolledType, groundTypeName)
 
-	-- Store vein result on tile
-	tile.veinResult = {
-		isDead = veinResult.isDead,
-		veinCount = veinResult.veinCount,
-		veins = veinResult.veins,
-		groundType = veinResult.groundType,
-	}
+	tile.veinTypeId = rolledType.id
+	tile.veinResult = veinResult
 
-	-- Set tile oil type from the first vein (for compat with existing systems)
-	if veinResult.isDead then
+	if rolledType.isUnlucky then
 		tile.hasOil = false
 		tile.oilType = nil
 	else
 		tile.hasOil = true
-		-- Use the best oil type from all veins for the tile's primary oilType
-		local bestOil = veinResult.veins[1].oilType
-		tile.oilType = VeinConfig.GetInternalOilName(bestOil)
+		tile.oilType = rolledType.primaryInternalOilType
 	end
 
 	self:_markDirty(userId)
@@ -1598,22 +1644,17 @@ function OilStateService:RevealTile(userId: number, chunkId: string, tileKey: st
 	tile.revealedAt = workspace:GetServerTimeNow()
 	tile.visualsStartedAt = nil
 
-	-- Roll a vein type from VeinCrateConfig for the crate opener
 	local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
 	local gt = chunk.groundType or chunk.biome or "Bronze"
-	local isDryHole = tile.hasOil == false or (tile.veinResult and tile.veinResult.isDead == true)
-	local rolledType
-	if isDryHole then
-		rolledType = VeinCrateConfig.GetById("dry_hole")
-	else
-		local rng = Random.new(userId * 17 + os.clock() * 1000)
-		rolledType = VeinCrateConfig.RollVeinType(gt, rng)
-	end
+	local rolledType = if typeof(tile.veinTypeId) == "string" then VeinCrateConfig.GetById(tile.veinTypeId) else nil
 	if not rolledType then
-		local rng = Random.new(userId * 17 + os.clock() * 1000)
+		local rng = Random.new(userId * 17 + math.floor(workspace:GetServerTimeNow() * 1000))
 		rolledType = VeinCrateConfig.RollVeinType(gt, rng)
+		tile.veinTypeId = rolledType.id
+		tile.veinResult = VeinCrateConfig.BuildVeinResult(rolledType, gt)
+		tile.hasOil = not rolledType.isUnlucky
+		tile.oilType = if rolledType.isUnlucky then nil else rolledType.primaryInternalOilType
 	end
-	tile.veinTypeId = rolledType.id
 	self:_markDirty(userId)
 
 	return true, {
@@ -3125,14 +3166,16 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 			if chunk and isUnlocked == true then
 				chunk.unlocked = true
 				chunk.revealed = true
-				-- Restore biome
-				if typeof(persisted.chunkBiomes) == "table" and typeof(persisted.chunkBiomes[chunkId]) == "string" then
-					chunk.biome = persisted.chunkBiomes[chunkId]
-				end
+				local VeinConfigPersisted = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
+				local gt = VeinConfigPersisted.GroundByRow[chunk.row] or VeinConfigPersisted.GroundTypes.Bronze
+				chunk.biome = gt.name
+				chunk.groundType = gt.name
 				-- Restore per-tile data
 				if typeof(persisted.chunkTiles) == "table" and typeof(persisted.chunkTiles[chunkId]) == "table" then
 					chunk.tiles = persisted.chunkTiles[chunkId]
 					migrateLegacyStandardTileOil(chunk.tiles)
+					migrateLegacyVeinTypeIds(chunk.tiles)
+					normalizeChunkTilesToGroundType(chunk.tiles, gt)
 				end
 			end
 		end

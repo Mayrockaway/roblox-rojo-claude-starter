@@ -282,6 +282,8 @@ end
 function ChunkOwnershipService:_applyTileDecorations(tilePart: BasePart, tileData: any)
 	-- Always clear first — idempotent (fresh chunk state)
 	clearTileDecorations(tilePart)
+	tilePart.Transparency = 0
+	tilePart.Reflectance = 0
 	-- Only strip decorations for DRY HOLES (drilled + no oil = dirt patch).
 	-- Drilled tiles with oil keep their visual (sand textures, obsidian decals, etc.) because
 	-- the oil is spraying, not because the tile has become dirt.

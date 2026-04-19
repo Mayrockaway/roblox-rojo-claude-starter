@@ -10,7 +10,7 @@ local OilVisualService = {}
 local DRILL_HEIGHT_OFFSET = 0
 local OIL_REVEAL_SPRAY_SECONDS = 2.0
 local OIL_TUBE_REVEAL_DURATION = 1.5
-local OIL_TUBE_VISIBLE_TRANSPARENCY = 0.25
+local OIL_TUBE_VISIBLE_TRANSPARENCY = 0.5
 local OIL_TUBE_ENDPOINT_EPSILON = 0.05
 local TIER_ORDER = { "HeavyCrude", "LightSweet", "PremiumRefined" }
 local function floorPositive(value: number): number
@@ -100,6 +100,8 @@ local function getHighestBasePartTopPosition(instance: Instance?): Vector3?
 	local bestTop = -math.huge
 	local bestPos = nil :: Vector3?
 	local function considerPart(part: BasePart)
+		-- Skip hologram anchor parts (invisible, not real geometry)
+		if part.Transparency >= 1 and part.Size.Magnitude < 2 then return end
 		local topY = part.Position.Y + part.Size.Y / 2
 		if topY > bestTop then
 			bestTop = topY
@@ -116,6 +118,7 @@ local function getHighestBasePartTopPosition(instance: Instance?): Vector3?
 	end
 	return bestPos
 end
+local PUMP_ENDPOINT_Y_OFFSET = -2.4 -- tubes enter inside the pump body
 local function getCenterPumpEndpoint(plot: Model, sectionModel: Instance, centerTile: BasePart, drills: { any }?, chunkId: string): Vector3
 	local fallback = Vector3.new(centerTile.Position.X, centerTile.Position.Y + centerTile.Size.Y / 2 + 7, centerTile.Position.Z)
 	local visualRoot = plot:FindFirstChild("OilVisuals")
@@ -126,7 +129,7 @@ local function getCenterPumpEndpoint(plot: Model, sectionModel: Instance, center
 				local pumpVisual = drillsFolder:FindFirstChild("Drill_" .. tostring(drill.drillId))
 				local topPos = getHighestBasePartTopPosition(pumpVisual)
 				if topPos then
-					return topPos
+					return topPos + Vector3.new(0, PUMP_ENDPOINT_Y_OFFSET, 0)
 				end
 			end
 		end
@@ -134,7 +137,7 @@ local function getCenterPumpEndpoint(plot: Model, sectionModel: Instance, center
 	local pumpModel = sectionModel:FindFirstChild("CenterPump")
 	local topPos = getHighestBasePartTopPosition(pumpModel)
 	if topPos then
-		return topPos
+		return topPos + Vector3.new(0, PUMP_ENDPOINT_Y_OFFSET, 0)
 	end
 	return fallback
 end
@@ -434,7 +437,7 @@ function OilVisualService:_syncUserVisuals(userId: number, snapshot)
 			fn()
 		end
 	end
-	run("Visual.syncDrills", function() self:_syncDrills(plot, drillsFolder, snapshot.drills or {}, userId) end)
+	run("Visual.syncDrills", function() self:_syncDrills(plot, drillsFolder, snapshot.drills or {}, userId, snapshot) end)
 	run("Visual.syncActiveDrills", function() self:_syncActiveDrills(plot, activeDrillsFolder, snapshot.activeDrills or {}, userId) end)
 	run("Visual.syncActiveProspectors", function() self:_syncActiveProspectors(plot, activeProspectorsFolder, snapshot.activeProspectors or {}, userId) end)
 	run("Visual.syncOilSprays", function() self:_syncOilSprays(plot, spraysFolder, snapshot) end)
@@ -742,17 +745,32 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 		end
 	end
 
-	local function eachTileVisualVariant(info: any, callback: (string?, Vector3?) -> ())
-		if info.tile.tileName == "SUPER TILE" then
-			callback("HeavyCrude", Vector3.new(-1.5, 0, -1.5))
-			callback("LightSweet", Vector3.new(1.5, 0, -1.5))
-			callback("PremiumRefined", Vector3.new(0, 0, 1.8))
+	local function eachTileVisualVariant(info: any, callback: (string?, Vector3?, string?) -> ())
+		local veinResult = info.tile.veinResult
+		if veinResult and typeof(veinResult) == "table" and typeof(veinResult.veins) == "table" and #veinResult.veins > 0 then
+			local VeinConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
+			local offsets = {
+				[1] = { Vector3.new(0, 0, 0) },
+				[2] = { Vector3.new(-1.25, 0, 0), Vector3.new(1.25, 0, 0) },
+				[3] = { Vector3.new(-1.5, 0, -1), Vector3.new(1.5, 0, -1), Vector3.new(0, 0, 1.7) },
+			}
+			local count = math.clamp(#veinResult.veins, 1, 3)
+			for index, vein in ipairs(veinResult.veins) do
+				local internalOil = VeinConfig.GetInternalOilName(vein.oilType)
+				callback(internalOil, offsets[count][index] or Vector3.new(0, 0, 0), vein.streamType)
+			end
 			return
 		end
-		callback(nil, nil)
+		if info.tile.tileName == "SUPER TILE" then
+			callback("HeavyCrude", Vector3.new(-1.5, 0, -1.5), "Stream")
+			callback("LightSweet", Vector3.new(1.5, 0, -1.5), "Burst")
+			callback("PremiumRefined", Vector3.new(0, 0, 1.8), "Geyser")
+			return
+		end
+		callback(nil, nil, nil)
 	end
 
-	local function syncSprayForTile(sig: string, info: any, oilTypeOverride: string?, offset: Vector3?)
+	local function syncSprayForTile(sig: string, info: any, oilTypeOverride: string?, offset: Vector3?, _streamTypeOverride: string?)
 		local suffix = oilTypeOverride and ("_" .. oilTypeOverride) or ""
 		local childName = "Spray_" .. sig .. suffix
 		local part = folder:FindFirstChild(childName)
@@ -800,7 +818,7 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 		end
 	end
 
-	local function syncTubeForTile(sig: string, info: any, oilTypeOverride: string?, offset: Vector3?)
+	local function syncTubeForTile(sig: string, info: any, oilTypeOverride: string?, offset: Vector3?, streamTypeOverride: string?)
 		local sectionModel = self._plotService:GetChunkModel(_plot, info.chunk.chunkId)
 		if not sectionModel then
 			return
@@ -826,9 +844,9 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 			isRainbow = true
 			tubeColor = Color3.fromRGB(255, 100, 100)
 		end
-		local streamType = "Stream"
+		local streamType = streamTypeOverride or "Stream"
 		local veinResult = info.tile.veinResult
-		if veinResult and typeof(veinResult) == "table" and veinResult.veins and typeof(veinResult.veins) == "table" and #veinResult.veins > 0 then
+		if not streamTypeOverride and veinResult and typeof(veinResult) == "table" and veinResult.veins and typeof(veinResult.veins) == "table" and #veinResult.veins > 0 then
 			streamType = veinResult.veins[1].streamType or "Stream"
 		end
 		local actualDiameter = 0.55
@@ -937,13 +955,13 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 	end
 
 	for sig, info in pairs(wantedSprays) do
-		eachTileVisualVariant(info, function(oilTypeOverride, offset)
-			syncSprayForTile(sig, info, oilTypeOverride, offset)
+		eachTileVisualVariant(info, function(oilTypeOverride, offset, streamTypeOverride)
+			syncSprayForTile(sig, info, oilTypeOverride, offset, streamTypeOverride)
 		end)
 	end
 	for sig, info in pairs(wantedTubes) do
-		eachTileVisualVariant(info, function(oilTypeOverride, offset)
-			syncTubeForTile(sig, info, oilTypeOverride, offset)
+		eachTileVisualVariant(info, function(oilTypeOverride, offset, streamTypeOverride)
+			syncTubeForTile(sig, info, oilTypeOverride, offset, streamTypeOverride)
 		end)
 	end
 	for sig, info in pairs(wantedPuddles) do
@@ -974,7 +992,30 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 	end
 end
 
-function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills, ownerUserId: number)
+function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills, ownerUserId: number, snapshot: any?)
+	local function getFlowRate(drill: any): number
+		if drill.isCenterPump ~= true or typeof(snapshot) ~= "table" or typeof(snapshot.chunks) ~= "table" then
+			return drill.flowBase or 0.2
+		end
+		local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
+		local VeinConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
+		local pumpDef = VeinConfig.PumpUpgrades[drill.tier] or VeinConfig.PumpUpgrades.T1
+		local pumpMult = pumpDef and pumpDef.flowMult or 1
+		local total = 0
+		for _, chunk in ipairs(snapshot.chunks) do
+			if chunk.chunkId == drill.chunkId and typeof(chunk.tiles) == "table" then
+				for tileKey, tile in pairs(chunk.tiles) do
+					if tileKey ~= "T33" and tile.drilled == true and tile.hasOil ~= false and typeof(tile.visualsStartedAt) == "number" and typeof(tile.veinTypeId) == "string" then
+						local def = VeinCrateConfig.GetById(tile.veinTypeId)
+						if def and not def.isUnlucky then
+							total += (def.barrelsPerSecond or 0) * pumpMult
+						end
+					end
+				end
+			end
+		end
+		return total
+	end
 	local wanted = {}
 	for _, drill in ipairs(drills) do
 		local drillId = drill.drillId
@@ -1096,38 +1137,54 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				holoPart.CanCollide = false
 				holoPart.CanQuery = false
 				holoPart.CanTouch = false
-				holoPart.Position = Vector3.new(model:GetPivot().Position.X, topY + 0.5, model:GetPivot().Position.Z)
+				holoPart.Position = Vector3.new(model:GetPivot().Position.X, topY + 2, model:GetPivot().Position.Z)
 				holoPart.Parent = model
 				local billboard = Instance.new("BillboardGui")
 				billboard.Name = "HoloGui"
-				billboard.Size = UDim2.fromOffset(120, 40)
+				billboard.Size = UDim2.fromOffset(80, 24)
 				billboard.StudsOffset = Vector3.new(0, 0, 0)
-				billboard.AlwaysOnTop = false
+				billboard.AlwaysOnTop = true
 				billboard.LightInfluence = 0
 				billboard.Parent = holoPart
 				local label = Instance.new("TextLabel")
 				label.Name = "Info"
 				label.Size = UDim2.fromScale(1, 1)
 				label.BackgroundTransparency = 1
-				label.TextColor3 = Color3.fromRGB(200, 255, 200)
-				label.Font = Enum.Font.Merriweather
-				label.TextSize = 14
-				label.TextStrokeTransparency = 0
-				label.TextStrokeColor3 = Color3.fromRGB(255, 255, 255)
+				label.Font = Enum.Font.LuckiestGuy
+				label.TextSize = 26
+				label.TextTransparency = 0.35
+				label.TextStrokeTransparency = 0.5
+				label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 				label.Parent = billboard
 			end
-			-- Update hologram text
+			-- Update hologram text + reposition
 			local holoGui = holoPart:FindFirstChild("HoloGui")
 			local infoLabel = holoGui and holoGui:FindFirstChild("Info")
 			if infoLabel then
-				local displayOilType = oilType == "LightSweet" and "Light Sweet" or oilType == "PremiumRefined" and "Premium" or "Crude"
-				if isConnected then
-					local flowRate = drill.flowBase or 0.2
-					infoLabel.Text = string.format("%s\n%.1f/s", displayOilType, flowRate)
-					infoLabel.TextColor3 = fillColor
+				local topY2 = -math.huge
+				for _, p2 in ipairs(model:GetDescendants()) do
+					if p2:IsA("BasePart") then
+						local pt = p2.Position.Y + p2.Size.Y / 2
+						if pt > topY2 then topY2 = pt end
+					end
+				end
+				holoPart.Position = Vector3.new(model:GetPivot().Position.X, topY2 + 2, model:GetPivot().Position.Z)
+
+				local flowRate = getFlowRate(drill)
+				infoLabel.Text = string.format("%.1f/s", flowRate)
+				-- Color by production threshold
+				if flowRate >= 2 then
+					-- Excellent: rainbow cycle handled client-side, use gold as static fallback
+					infoLabel.TextColor3 = Color3.fromRGB(255, 170, 60)
+				elseif flowRate >= 1 then
+					-- Good: green
+					infoLabel.TextColor3 = Color3.fromRGB(80, 220, 80)
+				elseif flowRate >= 0.5 then
+					-- OK: yellow
+					infoLabel.TextColor3 = Color3.fromRGB(240, 200, 70)
 				else
-					infoLabel.Text = displayOilType .. "\nDisconnected"
-					infoLabel.TextColor3 = Color3.fromRGB(180, 80, 80)
+					-- Low: white
+					infoLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 				end
 			end
 			-- Rare cosmetic variant: add a Highlight in the variant's color
@@ -1892,7 +1949,59 @@ function OilVisualService:_syncOilTanks(plot: Model, snapshot)
 		if col and liquid.Color ~= col then
 			liquid.Color = col
 		end
-		-- Legacy floating sign: keep data updated but hide it from gameplay UI.
+		-- Hologram: barrel count above each tank
+			local shellTopY = bottomY + targetShellY
+			local holoName = "TankHolo_" .. oilType
+			local holoPart = tube:FindFirstChild(holoName)
+			if not holoPart then
+				holoPart = Instance.new("Part")
+				holoPart.Name = holoName
+				holoPart.Size = Vector3.new(0.5, 0.5, 0.5)
+				holoPart.Transparency = 1
+				holoPart.Anchored = true
+				holoPart.CanCollide = false
+				holoPart.CanQuery = false
+				holoPart.CanTouch = false
+				holoPart.Position = Vector3.new(union.Position.X, shellTopY + 4, union.Position.Z)
+				holoPart.Parent = tube
+
+				local bb = Instance.new("BillboardGui")
+				bb.Name = "HoloGui"
+				bb.Size = UDim2.fromOffset(200, 60)
+				bb.AlwaysOnTop = false
+				bb.LightInfluence = 0
+				bb.Parent = holoPart
+
+				local lbl = Instance.new("TextLabel")
+				lbl.Name = "Info"
+				lbl.Size = UDim2.fromScale(1, 1)
+				lbl.BackgroundTransparency = 1
+				lbl.Font = Enum.Font.LuckiestGuy
+				lbl.TextSize = 28
+				lbl.TextStrokeTransparency = 0
+				lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+				lbl.Parent = bb
+			end
+
+			local holoGui = holoPart:FindFirstChild("HoloGui")
+			local infoLabel = holoGui and holoGui:FindFirstChild("Info")
+			if infoLabel then
+				local currentAmt = math.floor(amount)
+				local maxAmt = math.floor(capacity)
+				if currentAmt >= maxAmt and maxAmt > 0 then
+					infoLabel.Text = "FULL!\nUpgrade"
+					infoLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+					infoLabel.TextSize = 32
+				else
+					infoLabel.Text = string.format("%d / %d", currentAmt, maxAmt)
+					infoLabel.TextColor3 = col or Color3.fromRGB(200, 200, 200)
+					infoLabel.TextSize = 28
+				end
+				-- Reposition above tank top (scales with tier upgrade height)
+				holoPart.Position = Vector3.new(union.Position.X, shellTopY + 4, union.Position.Z)
+			end
+
+			-- Legacy floating sign: keep data updated but hide it from gameplay UI.
 		local sign = union:FindFirstChild("TankSign")
 		if sign and sign:IsA("BillboardGui") then
 			sign.Enabled = false

@@ -1,12 +1,11 @@
 --!strict
--- VeinConfig: ground types, odds tables, stream/oil/vein definitions,
--- rarity colors, nomenclature helpers, combined odds calculator.
+-- VeinConfig: ground progression, pump upgrades, oil types, and legacy helpers.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
 
 local VeinConfig = {}
-
--- ═══════════════════════════════════════════════════════════
--- Ground Types (by plot row)
--- ═══════════════════════════════════════════════════════════
 
 export type GroundTypeDef = {
 	name: string,
@@ -14,70 +13,50 @@ export type GroundTypeDef = {
 	color: Color3,
 	material: Enum.Material,
 	drillSeconds: number,
-	streamWeights: { [string]: number },
-	oilWeights: { [string]: number },
-	veinWeights: { [string]: number },
+	unlockCost: number,
 }
 
 VeinConfig.GroundTypes = {
 	Bronze = {
 		name = "Bronze",
-		row = 1,
-		color = Color3.fromRGB(205, 175, 125),
-		material = Enum.Material.Sand,
+		row = 4,
+		color = Color3.fromRGB(176, 120, 72),
+		material = Enum.Material.Metal,
 		drillSeconds = 30,
-		streamWeights = { Dribble = 50, Stream = 40, Burst = 9, Geyser = 1 },
-		oilWeights = { DirtOil = 95, GoodOil = 5, GoldOil = 0 },
-		veinWeights = { Single = 95, Double = 5, Triple = 1 },
+		unlockCost = 750,
 	},
 	Silver = {
 		name = "Silver",
-		row = 2,
-		color = Color3.fromRGB(192, 192, 192),
-		material = Enum.Material.Sand,
-		drillSeconds = 1800, -- 30 min
-		streamWeights = { Dribble = 30, Stream = 59, Burst = 10, Geyser = 1 },
-		oilWeights = { DirtOil = 80, GoodOil = 19, GoldOil = 1 },
-		veinWeights = { Single = 80, Double = 19, Triple = 1 },
+		row = 3,
+		color = Color3.fromRGB(196, 202, 210),
+		material = Enum.Material.Metal,
+		drillSeconds = 8 * 60,
+		unlockCost = 5000,
 	},
 	Gold = {
 		name = "Gold",
-		row = 3,
-		color = Color3.fromRGB(255, 215, 0),
-		material = Enum.Material.Sand,
-		drillSeconds = 10800, -- 3 hrs
-		streamWeights = { Dribble = 20, Stream = 50, Burst = 25, Geyser = 5 },
-		oilWeights = { DirtOil = 35, GoodOil = 60, GoldOil = 5 },
-		veinWeights = { Single = 70, Double = 25, Triple = 5 },
+		row = 2,
+		color = Color3.fromRGB(255, 200, 46),
+		material = Enum.Material.Metal,
+		drillSeconds = 35 * 60,
+		unlockCost = 45000,
 	},
 	Diamond = {
 		name = "Diamond",
-		row = 4,
-		color = Color3.fromRGB(185, 240, 255),
-		material = Enum.Material.Sand,
-		drillSeconds = 86400, -- 1 day
-		streamWeights = { Dribble = 10, Stream = 40, Burst = 40, Geyser = 10 },
-		oilWeights = { DirtOil = 0, GoodOil = 80, GoldOil = 20 },
-		veinWeights = { Single = 60, Double = 30, Triple = 10 },
+		row = 1,
+		color = Color3.fromRGB(154, 235, 255),
+		material = Enum.Material.Metal,
+		drillSeconds = 2 * 60 * 60,
+		unlockCost = 350000,
 	},
 } :: { [string]: GroundTypeDef }
 
--- Row → ground type lookup
--- Visual layout (top=far, bottom=near spawn):
--- DDD (row 1, furthest from spawn)
--- GGG (row 2)
--- SSS (row 3)
--- BBB (row 4, closest to spawn, has starter pump in middle)
 VeinConfig.GroundByRow = {
 	[1] = VeinConfig.GroundTypes.Diamond,
 	[2] = VeinConfig.GroundTypes.Gold,
 	[3] = VeinConfig.GroundTypes.Silver,
 	[4] = VeinConfig.GroundTypes.Bronze,
 }
-
--- ═══════════════════════════════════════════════════════════
--- Center Pump Upgrade Config
--- ═══════════════════════════════════════════════════════════
 
 VeinConfig.PumpUpgrades = {
 	T1 = { flowMult = 1, templateName = "Pump_T1", displayName = "Basic Pump" },
@@ -87,39 +66,37 @@ VeinConfig.PumpUpgrades = {
 
 VeinConfig.PumpUpgradeOrder = { "T1", "T2", "T3" }
 
--- Base upgrade costs (for Bronze / row closest to spawn)
--- Scale by row: Bronze=1x, Silver=3x, Gold=10x, Diamond=30x
-VeinConfig.PumpUpgradeCosts = {
-	T2 = 5000,
-	T3 = 10000,
-}
-
-VeinConfig.RowCostMultiplier = {
-	Bronze = 1,
-	Silver = 3,
-	Gold = 10,
-	Diamond = 30,
+VeinConfig.PumpUpgradeCostsByGround = {
+	Bronze = { T2 = 900, T3 = 3200 },
+	Silver = { T2 = 6000, T3 = 22000 },
+	Gold = { T2 = 45000, T3 = 165000 },
+	Diamond = { T2 = 320000, T3 = 1200000 },
 }
 
 function VeinConfig.GetUpgradeCost(currentTier: string, groundType: string): (string?, number?)
 	local currentIdx = 0
-	for i, t in ipairs(VeinConfig.PumpUpgradeOrder) do
-		if t == currentTier then currentIdx = i break end
+	for i, tier in ipairs(VeinConfig.PumpUpgradeOrder) do
+		if tier == currentTier then
+			currentIdx = i
+			break
+		end
 	end
 	local nextTier = VeinConfig.PumpUpgradeOrder[currentIdx + 1]
-	if not nextTier then return nil, nil end -- already max
-
-	local baseCost = VeinConfig.PumpUpgradeCosts[nextTier] or 0
-	local mult = VeinConfig.RowCostMultiplier[groundType] or 1
-	return nextTier, math.floor(baseCost * mult)
+	if not nextTier then
+		return nil, nil
+	end
+	local groundCosts = VeinConfig.PumpUpgradeCostsByGround[groundType] or VeinConfig.PumpUpgradeCostsByGround.Bronze
+	return nextTier, groundCosts[nextTier]
 end
 
--- ═══════════════════════════════════════════════════════════
--- Stream Types
--- ═══════════════════════════════════════════════════════════
+function VeinConfig.GetChunkUnlockCostByGround(groundType: string): number
+	local ground = VeinConfig.GroundTypes[groundType]
+	return ground and ground.unlockCost or VeinConfig.GroundTypes.Bronze.unlockCost
+end
 
 export type StreamDef = {
 	name: string,
+	barrelsPerSecond: number,
 	productionMult: number,
 	particleMult: number,
 	color: Color3,
@@ -127,39 +104,38 @@ export type StreamDef = {
 	shaking: boolean,
 }
 
+VeinConfig.BurstOutputBps = {
+	Dribble = 0.005,
+	Stream = 0.0125,
+	Burst = 0.03,
+	Geyser = 0.08,
+}
+
 VeinConfig.Streams = {
-	Dead = { name = "Dead", productionMult = 0, particleMult = 0, color = Color3.fromRGB(150, 150, 150), bold = false, shaking = false },
-	Dribble = { name = "Dribble", productionMult = 1, particleMult = 0.4, color = Color3.fromRGB(255, 255, 255), bold = false, shaking = false },
-	Stream = { name = "Stream", productionMult = 1.5, particleMult = 1, color = Color3.fromRGB(80, 220, 80), bold = false, shaking = false },
-	Burst = { name = "Burst", productionMult = 2, particleMult = 2, color = Color3.fromRGB(50, 150, 255), bold = true, shaking = false },
-	Geyser = { name = "Geyser", productionMult = 3, particleMult = 4, color = Color3.fromRGB(255, 170, 60), bold = true, shaking = true },
+	Dead = { name = "Dead", barrelsPerSecond = 0, productionMult = 0, particleMult = 0, color = Color3.fromRGB(150, 150, 150), bold = false, shaking = false },
+	Dribble = { name = "Dribble", barrelsPerSecond = VeinConfig.BurstOutputBps.Dribble, productionMult = VeinConfig.BurstOutputBps.Dribble, particleMult = 0.4, color = Color3.fromRGB(255, 255, 255), bold = false, shaking = false },
+	Stream = { name = "Stream", barrelsPerSecond = VeinConfig.BurstOutputBps.Stream, productionMult = VeinConfig.BurstOutputBps.Stream, particleMult = 1, color = Color3.fromRGB(80, 220, 80), bold = false, shaking = false },
+	Burst = { name = "Burst", barrelsPerSecond = VeinConfig.BurstOutputBps.Burst, productionMult = VeinConfig.BurstOutputBps.Burst, particleMult = 2, color = Color3.fromRGB(50, 150, 255), bold = true, shaking = false },
+	Geyser = { name = "Geyser", barrelsPerSecond = VeinConfig.BurstOutputBps.Geyser, productionMult = VeinConfig.BurstOutputBps.Geyser, particleMult = 4, color = Color3.fromRGB(255, 170, 60), bold = true, shaking = true },
 } :: { [string]: StreamDef }
 
 VeinConfig.StreamOrder = { "Dribble", "Stream", "Burst", "Geyser" }
 
--- ═══════════════════════════════════════════════════════════
--- Oil Types (renamed)
--- ═══════════════════════════════════════════════════════════
-
 export type OilTypeDef = {
 	name: string,
 	displayName: string,
-	internalName: string, -- maps to old HeavyCrude/LightSweet/PremiumRefined
+	internalName: string,
 	color: Color3,
 	valueMult: number,
 }
 
 VeinConfig.OilTypes = {
-	DirtOil = { name = "DirtOil", displayName = "Dirt Oil", internalName = "HeavyCrude", color = Color3.fromRGB(200, 200, 200), valueMult = 1 },
-	GoodOil = { name = "GoodOil", displayName = "Good Oil", internalName = "LightSweet", color = Color3.fromRGB(240, 200, 70), valueMult = 2 },
-	GoldOil = { name = "GoldOil", displayName = "Gold Oil", internalName = "PremiumRefined", color = Color3.fromRGB(255, 150, 200), valueMult = 4 },
+	DirtOil = { name = "DirtOil", displayName = "Crude", internalName = "HeavyCrude", color = Color3.fromRGB(200, 200, 200), valueMult = 1 },
+	GoodOil = { name = "GoodOil", displayName = "Refined", internalName = "LightSweet", color = Color3.fromRGB(240, 200, 70), valueMult = 2 },
+	GoldOil = { name = "GoldOil", displayName = "Premium", internalName = "PremiumRefined", color = Color3.fromRGB(255, 150, 200), valueMult = 4 },
 } :: { [string]: OilTypeDef }
 
 VeinConfig.OilOrder = { "DirtOil", "GoodOil", "GoldOil" }
-
--- ═══════════════════════════════════════════════════════════
--- Vein Counts
--- ═══════════════════════════════════════════════════════════
 
 export type VeinCountDef = {
 	name: string,
@@ -176,16 +152,6 @@ VeinConfig.VeinCounts = {
 	Triple = { name = "Triple", displayName = "Triple Vein", count = 3, color = Color3.fromRGB(255, 170, 60), bold = true, shaking = true },
 } :: { [string]: VeinCountDef }
 
--- ═══════════════════════════════════════════════════════════
--- Dead chance (no oil at all)
--- ═══════════════════════════════════════════════════════════
-
-VeinConfig.DEAD_CHANCE = 0.15
-
--- ═══════════════════════════════════════════════════════════
--- Rolling
--- ═══════════════════════════════════════════════════════════
-
 export type SingleVeinResult = {
 	streamType: string,
 	oilType: string,
@@ -193,135 +159,41 @@ export type SingleVeinResult = {
 
 export type VeinRollResult = {
 	isDead: boolean,
-	veinCount: string, -- "Single" | "Double" | "Triple"
-	veins: { SingleVeinResult }, -- 1, 2, or 3 entries
+	veinCount: string,
+	veins: { SingleVeinResult },
 	groundType: string,
 }
 
-local function weightedPick(weights: { [string]: number }, rng: Random): string
-	local total = 0
-	for _, w in pairs(weights) do
-		total += w
-	end
-	if total <= 0 then
-		-- Fallback: pick first key
-		for k in pairs(weights) do return k end
-	end
-	local roll = rng:NextNumber() * total
-	local accum = 0
-	for key, w in pairs(weights) do
-		accum += w
-		if roll <= accum then
-			return key
-		end
-	end
-	-- Fallback
-	for k in pairs(weights) do return k end
-	return "Dribble"
-end
-
 function VeinConfig.RollVein(groundType: GroundTypeDef, rng: Random): VeinRollResult
-	-- 15% chance of dead
-	if rng:NextNumber() < VeinConfig.DEAD_CHANCE then
-		return {
-			isDead = true,
-			veinCount = "Single",
-			veins = {{ streamType = "Dead", oilType = "DirtOil" }},
-			groundType = groundType.name,
-		}
-	end
-
-	local veinCount = weightedPick(groundType.veinWeights, rng)
-	local count = VeinConfig.VeinCounts[veinCount].count
-
-	local veins: { SingleVeinResult } = {}
-	for _ = 1, count do
-		local stream = weightedPick(groundType.streamWeights, rng)
-		local oil = weightedPick(groundType.oilWeights, rng)
-		table.insert(veins, { streamType = stream, oilType = oil })
-	end
-
-	return {
-		isDead = false,
-		veinCount = veinCount,
-		veins = veins,
-		groundType = groundType.name,
-	}
+	local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
+	local rolled = VeinCrateConfig.RollVeinType(groundType.name, rng)
+	return VeinCrateConfig.BuildVeinResult(rolled, groundType.name)
 end
-
--- ═══════════════════════════════════════════════════════════
--- Nomenclature
--- ═══════════════════════════════════════════════════════════
 
 function VeinConfig.BuildDisplayName(result: VeinRollResult): string
 	if result.isDead then
-		return "Dead — No Oil"
+		return "Dry Hole"
 	end
-
 	local parts = {}
 	for _, vein in ipairs(result.veins) do
 		local oilDef = VeinConfig.OilTypes[vein.oilType]
 		local streamDef = VeinConfig.Streams[vein.streamType]
-		table.insert(parts, (oilDef and oilDef.displayName or vein.oilType) .. " " .. (streamDef and streamDef.name or vein.streamType))
+		table.insert(parts, string.format("%s %s", oilDef and oilDef.displayName or vein.oilType, streamDef and streamDef.name or vein.streamType))
 	end
-
-	if result.veinCount == "Triple" then
-		if #parts == 3 then
-			return "OMG TRIPLE VEIN! " .. parts[1] .. ", " .. parts[2] .. ", and " .. parts[3]
-		end
-	elseif result.veinCount == "Double" then
-		if #parts == 2 then
-			return "DOUBLE VEIN! " .. parts[1] .. " and " .. parts[2]
-		end
-	end
-
-	return parts[1] or "Unknown"
+	return table.concat(parts, " + ")
 end
 
--- ═══════════════════════════════════════════════════════════
--- Combined Odds Calculator
--- ═══════════════════════════════════════════════════════════
-
-function VeinConfig.CalculateCombinedOdds(result: VeinRollResult): number
-	if result.isDead then
-		return VeinConfig.DEAD_CHANCE
-	end
-
-	local ground = VeinConfig.GroundTypes[result.groundType]
-	if not ground then return 0 end
-
-	-- Probability of NOT being dead
-	local prob = 1 - VeinConfig.DEAD_CHANCE
-
-	-- Vein count probability
-	local veinTotal = 0
-	for _, w in pairs(ground.veinWeights) do veinTotal += w end
-	prob *= (ground.veinWeights[result.veinCount] or 0) / math.max(1, veinTotal)
-
-	-- Each vein's stream + oil probability
-	local streamTotal = 0
-	for _, w in pairs(ground.streamWeights) do streamTotal += w end
-	local oilTotal = 0
-	for _, w in pairs(ground.oilWeights) do oilTotal += w end
-
-	for _, vein in ipairs(result.veins) do
-		prob *= (ground.streamWeights[vein.streamType] or 0) / math.max(1, streamTotal)
-		prob *= (ground.oilWeights[vein.oilType] or 0) / math.max(1, oilTotal)
-	end
-
-	return prob
+function VeinConfig.CalculateCombinedOdds(_result: VeinRollResult): number
+	return 0
 end
 
 function VeinConfig.FormatOdds(prob: number): string
-	if prob <= 0 then return "???" end
-	local inverse = math.floor(1 / prob + 0.5)
-	if inverse <= 1 then return "1/1" end
+	if prob <= 0 then
+		return "ROW POOL"
+	end
+	local inverse = math.max(1, math.floor(1 / prob + 0.5))
 	return "1/" .. tostring(inverse)
 end
-
--- ═══════════════════════════════════════════════════════════
--- Rarity tier from combined probability
--- ═══════════════════════════════════════════════════════════
 
 export type RarityTier = {
 	name: string,
@@ -329,7 +201,10 @@ export type RarityTier = {
 }
 
 function VeinConfig.GetRarityFromOdds(prob: number): RarityTier
-	local inverse = if prob > 0 then 1 / prob else 999999
+	if prob <= 0 then
+		return { name = "ROW POOL", color = Color3.fromRGB(255, 255, 255) }
+	end
+	local inverse = 1 / prob
 	if inverse >= 10000 then
 		return { name = "LEGENDARY", color = Color3.fromRGB(255, 170, 60) }
 	elseif inverse >= 1000 then
@@ -338,27 +213,23 @@ function VeinConfig.GetRarityFromOdds(prob: number): RarityTier
 		return { name = "RARE", color = Color3.fromRGB(50, 150, 255) }
 	elseif inverse >= 10 then
 		return { name = "UNCOMMON", color = Color3.fromRGB(80, 220, 80) }
-	else
-		return { name = "COMMON", color = Color3.fromRGB(255, 255, 255) }
 	end
+	return { name = "COMMON", color = Color3.fromRGB(255, 255, 255) }
 end
-
--- ═══════════════════════════════════════════════════════════
--- Map new oil type names to old internal names for compatibility
--- ═══════════════════════════════════════════════════════════
 
 function VeinConfig.GetInternalOilName(oilType: string): string
 	local def = VeinConfig.OilTypes[oilType]
 	return def and def.internalName or "HeavyCrude"
 end
 
--- Total production multiplier for a vein result (sum of all veins' stream mults)
 function VeinConfig.GetTotalProductionMult(result: VeinRollResult): number
-	if result.isDead then return 0 end
+	if result.isDead then
+		return 0
+	end
 	local total = 0
 	for _, vein in ipairs(result.veins) do
 		local streamDef = VeinConfig.Streams[vein.streamType]
-		total += streamDef and streamDef.productionMult or 0
+		total += streamDef and streamDef.barrelsPerSecond or 0
 	end
 	return total
 end

@@ -1,228 +1,1984 @@
 --!strict
--- VeinCrateConfig: registry of all vein types that can appear in the crate opener.
--- User supplies: id, displayName, imageId, rarity, barrelsPerSecond, oilType, streamType, weights per ground type.
+-- Generated from lootbox-1 (3).json and rebalance rules.
 
 local VeinCrateConfig = {}
 
--- ═══════════════════════════════════════════════════════════
--- Rarity tiers + colors
--- ═══════════════════════════════════════════════════════════
-
-VeinCrateConfig.RarityColors = {
-	Common      = Color3.fromRGB(128, 128, 128),
-	Uncommon    = Color3.fromRGB(0, 204, 0),
-	Rare        = Color3.fromRGB(51, 102, 255),
-	Epic        = Color3.fromRGB(170, 0, 255),
-	Mythic      = Color3.fromRGB(255, 68, 204),
-	Legendary   = Color3.fromRGB(255, 170, 0),
-	Secret      = Color3.fromRGB(255, 0, 0),
+export type StreamSignature = {
+	burstType: string,
+	oilType: string,
+	internalOilType: string,
+	barrelsPerSecond: number,
 }
-
-VeinCrateConfig.RarityOrder = { "Common", "Uncommon", "Rare", "Epic", "Mythic", "Legendary", "Secret" }
-
--- ═══════════════════════════════════════════════════════════
--- Vein type definitions
--- ═══════════════════════════════════════════════════════════
 
 export type VeinTypeDef = {
 	id: string,
 	displayName: string,
 	imageId: string,
+	iconKey: string,
 	rarity: string,
+	sourceRarity: string,
+	streamCount: number,
 	barrelsPerSecond: number,
-	oilType: string,         -- internal: HeavyCrude, LightSweet, PremiumRefined
-	streamType: string,      -- Dribble, Stream, Burst, Geyser
-	shiny: boolean?,         -- optional "Shiny" label
-	-- Weights per ground type (0 = can't appear in that ground)
-	weights: {
-		Bronze: number,
-		Silver: number,
-		Gold: number,
-		Diamond: number,
-	},
+	primaryInternalOilType: string,
+	isUnlucky: boolean,
+	streams: { StreamSignature },
 }
 
--- PLACEHOLDER vein types — user will replace these with real data + asset IDs
+VeinCrateConfig.RarityOrder = { "Unlucky", "Common", "Uncommon", "Special", "Rare", "Epic", "Exotic", "Legendary", "Ascendant", "Transcendent", "Top Secret", "Mythic" }
+
+VeinCrateConfig.RarityStyles = {
+	["Unlucky"] = { effect = "solid", bgStart = Color3.fromHex("#5f4b40"), bgEnd = Color3.fromHex("#1d1511"), glow = Color3.fromHex("#aa7d66"), text = Color3.fromHex("#f1d3b2"), spark = Color3.fromHex("#ffffff") },
+	["Common"] = { effect = "solid", bgStart = Color3.fromHex("#8d939c"), bgEnd = Color3.fromHex("#434952"), glow = Color3.fromHex("#d7dde6"), text = Color3.fromHex("#eef2f7"), spark = Color3.fromHex("#ffffff") },
+	["Uncommon"] = { effect = "solid", bgStart = Color3.fromHex("#27cb00"), bgEnd = Color3.fromHex("#136100"), glow = Color3.fromHex("#8bff72"), text = Color3.fromHex("#38ff3f"), spark = Color3.fromHex("#dfffd5") },
+	["Special"] = { effect = "solid", bgStart = Color3.fromHex("#00c2a0"), bgEnd = Color3.fromHex("#0a5a5d"), glow = Color3.fromHex("#9ff9ee"), text = Color3.fromHex("#84fff0"), spark = Color3.fromHex("#e8fffb") },
+	["Rare"] = { effect = "solid", bgStart = Color3.fromHex("#21c0da"), bgEnd = Color3.fromHex("#0c4f8f"), glow = Color3.fromHex("#82ebff"), text = Color3.fromHex("#84efff"), spark = Color3.fromHex("#d8fcff") },
+	["Epic"] = { effect = "solid", bgStart = Color3.fromHex("#a100ff"), bgEnd = Color3.fromHex("#4c0073"), glow = Color3.fromHex("#ff83ff"), text = Color3.fromHex("#ff6cff"), spark = Color3.fromHex("#ffd8ff") },
+	["Exotic"] = { effect = "solid", bgStart = Color3.fromHex("#ff3b7d"), bgEnd = Color3.fromHex("#7f1137"), glow = Color3.fromHex("#ffb1ce"), text = Color3.fromHex("#ff7fb1"), spark = Color3.fromHex("#ffe5f0") },
+	["Legendary"] = { effect = "solid", bgStart = Color3.fromHex("#ff8b1a"), bgEnd = Color3.fromHex("#8a2a00"), glow = Color3.fromHex("#ffd66b"), text = Color3.fromHex("#ffcf57"), spark = Color3.fromHex("#fff0b6") },
+	["Ascendant"] = { effect = "solid", bgStart = Color3.fromHex("#ffd66b"), bgEnd = Color3.fromHex("#9b6200"), glow = Color3.fromHex("#fff1bd"), text = Color3.fromHex("#ffe08d"), spark = Color3.fromHex("#fff9dd") },
+	["Transcendent"] = { effect = "solid", bgStart = Color3.fromHex("#fff6de"), bgEnd = Color3.fromHex("#8d97a8"), glow = Color3.fromHex("#fff2b8"), text = Color3.fromHex("#fff6cf"), spark = Color3.fromHex("#ffffff") },
+	["Top Secret"] = { effect = "solid", bgStart = Color3.fromHex("#ff2948"), bgEnd = Color3.fromHex("#6f0015"), glow = Color3.fromHex("#ff9bb3"), text = Color3.fromHex("#ff4665"), spark = Color3.fromHex("#ffe1e8") },
+	["Mythic"] = { effect = "rainbow", bgStart = Color3.fromHex("#d500ff"), bgEnd = Color3.fromHex("#56007d"), glow = Color3.fromHex("#ff97ff"), text = Color3.fromHex("#ff43ff"), spark = Color3.fromHex("#ffe0ff") },
+}
+
+VeinCrateConfig.GroundRarityWeights = {
+	Bronze = { Unlucky = 1800, Common = 3000, Uncommon = 2500, Special = 1400, Rare = 800, Epic = 350, Exotic = 120, Legendary = 25, Ascendant = 5 },
+	Silver = { Unlucky = 1200, Common = 1700, Uncommon = 2100, Special = 1800, Rare = 1500, Epic = 900, Exotic = 500, Legendary = 220, Ascendant = 70, Transcendent = 10 },
+	Gold = { Unlucky = 700, Common = 700, Uncommon = 1100, Special = 1500, Rare = 1800, Epic = 1800, Exotic = 1200, Legendary = 700, Ascendant = 350, Transcendent = 120, ["Top Secret"] = 30 },
+	Diamond = { Unlucky = 300, Common = 300, Uncommon = 500, Special = 700, Rare = 1100, Epic = 1600, Exotic = 1800, Legendary = 1600, Ascendant = 900, Transcendent = 600, ["Top Secret"] = 400, Mythic = 200 },
+}
+
 VeinCrateConfig.VeinTypes = {
 	{
-		id = "rusty_dribble",
-		displayName = "Rusty Dribble",
-		imageId = "rbxassetid://0", -- placeholder
+		id = "item-1",
+		displayName = "Grease Spill",
+		imageId = "rbxassetid://0",
+		iconKey = "master:36",
 		rarity = "Common",
-		barrelsPerSecond = 1,
-		oilType = "HeavyCrude",
-		streamType = "Dribble",
-		weights = { Bronze = 100, Silver = 60, Gold = 20, Diamond = 5 },
+		sourceRarity = "Uncommon",
+		streamCount = 1,
+		barrelsPerSecond = 0.005,
+		primaryInternalOilType = "HeavyCrude",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.005 } },
 	},
 	{
-		id = "steady_stream",
-		displayName = "Steady Stream",
+		id = "item-3",
+		displayName = "Clean Leak",
 		imageId = "rbxassetid://0",
+		iconKey = "master:9",
 		rarity = "Common",
-		barrelsPerSecond = 3,
-		oilType = "HeavyCrude",
-		streamType = "Stream",
-		weights = { Bronze = 80, Silver = 80, Gold = 40, Diamond = 20 },
+		sourceRarity = "Uncommon",
+		streamCount = 1,
+		barrelsPerSecond = 0.005,
+		primaryInternalOilType = "LightSweet",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.005 } },
 	},
 	{
-		id = "golden_stream",
-		displayName = "Golden Stream",
+		id = "item-5",
+		displayName = "Grease Cache",
 		imageId = "rbxassetid://0",
+		iconKey = "master:1",
+		rarity = "Common",
+		sourceRarity = "Uncommon",
+		streamCount = 1,
+		barrelsPerSecond = 0.0125,
+		primaryInternalOilType = "HeavyCrude",
+		isUnlucky = false,
+		streams = { { burstType = "Stream", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.0125 } },
+	},
+	{
+		id = "item-6",
+		displayName = "Clean Cache",
+		imageId = "rbxassetid://0",
+		iconKey = "master:4",
+		rarity = "Common",
+		sourceRarity = "Rare",
+		streamCount = 1,
+		barrelsPerSecond = 0.0125,
+		primaryInternalOilType = "LightSweet",
+		isUnlucky = false,
+		streams = { { burstType = "Stream", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.0125 } },
+	},
+	{
+		id = "item-4",
+		displayName = "Prime Leak",
+		imageId = "rbxassetid://0",
+		iconKey = "master:15",
 		rarity = "Uncommon",
-		barrelsPerSecond = 5,
-		oilType = "LightSweet",
-		streamType = "Stream",
-		weights = { Bronze = 20, Silver = 60, Gold = 80, Diamond = 60 },
+		sourceRarity = "Epic",
+		streamCount = 1,
+		barrelsPerSecond = 0.005,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.005 } },
 	},
 	{
-		id = "dirty_burst",
-		displayName = "Dirty Burst",
+		id = "item-14",
+		displayName = "Double Clean Chaos Leak",
 		imageId = "rbxassetid://0",
+		iconKey = "master:28",
 		rarity = "Uncommon",
-		barrelsPerSecond = 8,
-		oilType = "HeavyCrude",
-		streamType = "Burst",
-		weights = { Bronze = 15, Silver = 40, Gold = 50, Diamond = 30 },
+		sourceRarity = "Uncommon",
+		streamCount = 2,
+		barrelsPerSecond = 0.01,
+		primaryInternalOilType = "LightSweet",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.005 }, { burstType = "Dribble", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.005 } },
 	},
 	{
-		id = "golden_burst",
-		displayName = "Golden Burst",
+		id = "item-7",
+		displayName = "Prime Cache",
 		imageId = "rbxassetid://0",
+		iconKey = "master:8",
+		rarity = "Uncommon",
+		sourceRarity = "Epic",
+		streamCount = 1,
+		barrelsPerSecond = 0.0125,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Stream", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.0125 } },
+	},
+	{
+		id = "item-18",
+		displayName = "Double Clean Janky Cache",
+		imageId = "rbxassetid://0",
+		iconKey = "master:23",
+		rarity = "Uncommon",
+		sourceRarity = "Uncommon",
+		streamCount = 2,
+		barrelsPerSecond = 0.0175,
+		primaryInternalOilType = "LightSweet",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.0125 } },
+	},
+	{
+		id = "item-17",
+		displayName = "Double Grease Jackpot Cache",
+		imageId = "rbxassetid://0",
+		iconKey = "master:24",
+		rarity = "Uncommon",
+		sourceRarity = "Uncommon",
+		streamCount = 2,
+		barrelsPerSecond = 0.0175,
+		primaryInternalOilType = "LightSweet",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.0125 } },
+	},
+	{
+		id = "item-15",
+		displayName = "Double Prime Bonanza Leak",
+		imageId = "rbxassetid://0",
+		iconKey = "master:29",
+		rarity = "Special",
+		sourceRarity = "Epic",
+		streamCount = 2,
+		barrelsPerSecond = 0.01,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.005 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.005 } },
+	},
+	{
+		id = "item-8",
+		displayName = "Grease Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:2",
+		rarity = "Special",
+		sourceRarity = "Rare",
+		streamCount = 1,
+		barrelsPerSecond = 0.03,
+		primaryInternalOilType = "HeavyCrude",
+		isUnlucky = false,
+		streams = { { burstType = "Burst", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-16",
+		displayName = "Double Prime Gremlin Leak",
+		imageId = "rbxassetid://0",
+		iconKey = "master:30",
+		rarity = "Special",
+		sourceRarity = "Epic",
+		streamCount = 2,
+		barrelsPerSecond = 0.01,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.005 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.005 } },
+	},
+	{
+		id = "item-24",
+		displayName = "Double Clean Gremlin Cache",
+		imageId = "rbxassetid://0",
+		iconKey = "master:7",
+		rarity = "Special",
+		sourceRarity = "Special",
+		streamCount = 2,
+		barrelsPerSecond = 0.025,
+		primaryInternalOilType = "LightSweet",
+		isUnlucky = false,
+		streams = { { burstType = "Stream", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.0125 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.0125 } },
+	},
+	{
+		id = "item-9",
+		displayName = "Clean Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:5",
+		rarity = "Special",
+		sourceRarity = "Epic",
+		streamCount = 1,
+		barrelsPerSecond = 0.03,
+		primaryInternalOilType = "LightSweet",
+		isUnlucky = false,
+		streams = { { burstType = "Burst", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-21",
+		displayName = "Double Prime Turbo Cache",
+		imageId = "rbxassetid://0",
+		iconKey = "master:27",
 		rarity = "Rare",
-		barrelsPerSecond = 12,
-		oilType = "LightSweet",
-		streamType = "Burst",
-		weights = { Bronze = 5, Silver = 20, Gold = 60, Diamond = 50 },
+		sourceRarity = "Legendary",
+		streamCount = 2,
+		barrelsPerSecond = 0.0175,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.0125 } },
 	},
 	{
-		id = "premium_stream",
-		displayName = "Premium Stream",
+		id = "item-23",
+		displayName = "Double Grease Bonanza Cache",
 		imageId = "rbxassetid://0",
+		iconKey = "master:25",
 		rarity = "Rare",
-		barrelsPerSecond = 10,
-		oilType = "PremiumRefined",
-		streamType = "Stream",
-		weights = { Bronze = 0, Silver = 5, Gold = 30, Diamond = 60 },
+		sourceRarity = "Epic",
+		streamCount = 2,
+		barrelsPerSecond = 0.0175,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.0125 } },
 	},
 	{
-		id = "crude_geyser",
-		displayName = "Crude Geyser",
+		id = "item-22",
+		displayName = "Double Clean Chaos Cache",
 		imageId = "rbxassetid://0",
+		iconKey = "master:26",
+		rarity = "Rare",
+		sourceRarity = "Exotic",
+		streamCount = 2,
+		barrelsPerSecond = 0.0175,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.0125 } },
+	},
+	{
+		id = "item-19",
+		displayName = "Double Prime Lucky Cache",
+		imageId = "rbxassetid://0",
+		iconKey = "master:22",
+		rarity = "Rare",
+		sourceRarity = "Legendary",
+		streamCount = 2,
+		barrelsPerSecond = 0.0175,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.0125 } },
+	},
+	{
+		id = "item-25",
+		displayName = "Double Prime Jackpot Cache",
+		imageId = "rbxassetid://0",
+		iconKey = "master:11",
+		rarity = "Rare",
+		sourceRarity = "Legendary",
+		streamCount = 2,
+		barrelsPerSecond = 0.025,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Stream", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.0125 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.0125 } },
+	},
+	{
+		id = "item-10",
+		displayName = "Prime Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:12",
 		rarity = "Epic",
-		barrelsPerSecond = 20,
-		oilType = "HeavyCrude",
-		streamType = "Geyser",
-		weights = { Bronze = 2, Silver = 8, Gold = 15, Diamond = 20 },
+		sourceRarity = "Legendary",
+		streamCount = 1,
+		barrelsPerSecond = 0.03,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Burst", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.03 } },
 	},
 	{
-		id = "golden_geyser",
-		displayName = "Golden Geyser",
+		id = "item-27",
+		displayName = "Double Grease Lucky Strike",
 		imageId = "rbxassetid://0",
-		rarity = "Mythic",
-		barrelsPerSecond = 35,
-		oilType = "LightSweet",
-		streamType = "Geyser",
-		weights = { Bronze = 0, Silver = 2, Gold = 8, Diamond = 15 },
+		iconKey = "master:14",
+		rarity = "Epic",
+		sourceRarity = "Epic",
+		streamCount = 2,
+		barrelsPerSecond = 0.034999999999999996,
+		primaryInternalOilType = "LightSweet",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.03 } },
 	},
 	{
-		id = "premium_burst",
-		displayName = "Premium Burst",
+		id = "item-30",
+		displayName = "Triple Prime Chaos Leak",
 		imageId = "rbxassetid://0",
-		rarity = "Mythic",
-		barrelsPerSecond = 30,
-		oilType = "PremiumRefined",
-		streamType = "Burst",
-		weights = { Bronze = 0, Silver = 1, Gold = 10, Diamond = 30 },
+		iconKey = "master:34",
+		rarity = "Epic",
+		sourceRarity = "Ascendant",
+		streamCount = 3,
+		barrelsPerSecond = 0.015,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.005 }, { burstType = "Dribble", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.005 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.005 } },
 	},
 	{
-		id = "premium_geyser",
-		displayName = "Premium Geyser",
+		id = "item-26",
+		displayName = "Double Prime Janky Cache",
 		imageId = "rbxassetid://0",
+		iconKey = "master:10",
+		rarity = "Epic",
+		sourceRarity = "Ascendant",
+		streamCount = 2,
+		barrelsPerSecond = 0.025,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Stream", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.0125 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.0125 } },
+	},
+	{
+		id = "item-28",
+		displayName = "Double Grease Hybrid Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:16",
+		rarity = "Epic",
+		sourceRarity = "Legendary",
+		streamCount = 2,
+		barrelsPerSecond = 0.034999999999999996,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-29",
+		displayName = "Double Clean Turbo Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:17",
+		rarity = "Exotic",
+		sourceRarity = "Ascendant",
+		streamCount = 2,
+		barrelsPerSecond = 0.034999999999999996,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-34",
+		displayName = "Triple Prime Janky Cache",
+		imageId = "rbxassetid://0",
+		iconKey = "master:21",
+		rarity = "Exotic",
+		sourceRarity = "Ascendant",
+		streamCount = 3,
+		barrelsPerSecond = 0.037500000000000006,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Stream", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.0125 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.0125 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.0125 } },
+	},
+	{
+		id = "item-43",
+		displayName = "Triple Clean Lucky Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:43",
+		rarity = "Exotic",
+		sourceRarity = "Top Secret",
+		streamCount = 3,
+		barrelsPerSecond = 0.0475,
+		primaryInternalOilType = "LightSweet",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.0125 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-11",
+		displayName = "Grease Blowout",
+		imageId = "rbxassetid://0",
+		iconKey = "master:3",
+		rarity = "Exotic",
+		sourceRarity = "Epic",
+		streamCount = 1,
+		barrelsPerSecond = 0.08,
+		primaryInternalOilType = "HeavyCrude",
+		isUnlucky = false,
+		streams = { { burstType = "Geyser", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.08 } },
+	},
+	{
+		id = "item-33",
+		displayName = "Triple Prime Jackpot Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:33",
+		rarity = "Exotic",
+		sourceRarity = "Top Secret",
+		streamCount = 3,
+		barrelsPerSecond = 0.04,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.005 }, { burstType = "Dribble", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-32",
+		displayName = "Triple Clean Gremlin Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:32",
 		rarity = "Legendary",
-		barrelsPerSecond = 60,
-		oilType = "PremiumRefined",
-		streamType = "Geyser",
-		weights = { Bronze = 0, Silver = 0, Gold = 2, Diamond = 10 },
+		sourceRarity = "Transcendent",
+		streamCount = 3,
+		barrelsPerSecond = 0.039999999999999994,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.03 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.005 } },
 	},
 	{
-		id = "rainbow_geyser",
-		displayName = "Rainbow Geyser",
+		id = "item-31",
+		displayName = "Triple Grease Bonanza Strike",
 		imageId = "rbxassetid://0",
-		rarity = "Secret",
-		barrelsPerSecond = 100,
-		oilType = "PremiumRefined",
-		streamType = "Geyser",
-		shiny = true,
-		weights = { Bronze = 0, Silver = 0, Gold = 0, Diamond = 1 },
+		iconKey = "master:31",
+		rarity = "Legendary",
+		sourceRarity = "Transcendent",
+		streamCount = 3,
+		barrelsPerSecond = 0.039999999999999994,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Burst", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.03 }, { burstType = "Dribble", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.005 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.005 } },
 	},
 	{
-		id = "dry_hole",
+		id = "item-41",
+		displayName = "Triple Grease Jackpot Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:41",
+		rarity = "Legendary",
+		sourceRarity = "Top Secret",
+		streamCount = 3,
+		barrelsPerSecond = 0.0475,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.0125 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-12",
+		displayName = "Clean Blowout",
+		imageId = "rbxassetid://0",
+		iconKey = "master:6",
+		rarity = "Legendary",
+		sourceRarity = "Legendary",
+		streamCount = 1,
+		barrelsPerSecond = 0.08,
+		primaryInternalOilType = "LightSweet",
+		isUnlucky = false,
+		streams = { { burstType = "Geyser", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.08 } },
+	},
+	{
+		id = "item-42",
+		displayName = "Triple Prime Janky Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:42",
+		rarity = "Ascendant",
+		sourceRarity = "Mythic",
+		streamCount = 3,
+		barrelsPerSecond = 0.0475,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.0125 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-38",
+		displayName = "Triple Clean Chaos Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:38",
+		rarity = "Ascendant",
+		sourceRarity = "Ascendant",
+		streamCount = 3,
+		barrelsPerSecond = 0.0475,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.0125 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-40",
+		displayName = "Triple Grease Gremlin Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:40",
+		rarity = "Ascendant",
+		sourceRarity = "Top Secret",
+		streamCount = 3,
+		barrelsPerSecond = 0.0475,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.0125 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-39",
+		displayName = "Triple Prime Bonanza Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:39",
+		rarity = "Transcendent",
+		sourceRarity = "Exotic",
+		streamCount = 3,
+		barrelsPerSecond = 0.0475,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.0125 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-13",
+		displayName = "Prime Blowout",
+		imageId = "rbxassetid://0",
+		iconKey = "master:13",
+		rarity = "Transcendent",
+		sourceRarity = "Mythic",
+		streamCount = 1,
+		barrelsPerSecond = 0.08,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Geyser", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.08 } },
+	},
+	{
+		id = "item-37",
+		displayName = "Triple Prime Turbo Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:20",
+		rarity = "Transcendent",
+		sourceRarity = "Mythic",
+		streamCount = 3,
+		barrelsPerSecond = 0.065,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.03 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-36",
+		displayName = "Triple Clean Hybrid Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:19",
+		rarity = "Top Secret",
+		sourceRarity = "Transcendent",
+		streamCount = 3,
+		barrelsPerSecond = 0.065,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.03 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-35",
+		displayName = "Triple Clean Lucky Strike Tar",
+		imageId = "rbxassetid://0",
+		iconKey = "master:18",
+		rarity = "Top Secret",
+		sourceRarity = "Transcendent",
+		streamCount = 3,
+		barrelsPerSecond = 0.065,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.03 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-44",
+		displayName = "Triple Prime Hybrid Strike",
+		imageId = "rbxassetid://0",
+		iconKey = "master:44",
+		rarity = "Mythic",
+		sourceRarity = "Mythic",
+		streamCount = 3,
+		barrelsPerSecond = 0.09,
+		primaryInternalOilType = "PremiumRefined",
+		isUnlucky = false,
+		streams = { { burstType = "Burst", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.03 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "LightSweet", barrelsPerSecond = 0.03 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "PremiumRefined", barrelsPerSecond = 0.03 } },
+	},
+	{
+		id = "item-45",
 		displayName = "Dry Hole",
 		imageId = "rbxassetid://0",
-		rarity = "Common",
+		iconKey = "master:37",
+		rarity = "Unlucky",
+		sourceRarity = "Common",
+		streamCount = 1,
 		barrelsPerSecond = 0,
-		oilType = "HeavyCrude",
-		streamType = "Dribble",
-		weights = { Bronze = 30, Silver = 20, Gold = 10, Diamond = 5 },
+		primaryInternalOilType = "HeavyCrude",
+		isUnlucky = true,
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "HeavyCrude", barrelsPerSecond = 0.005 } },
 	},
 }
 
--- ═══════════════════════════════════════════════════════════
--- Lookup helpers
--- ═══════════════════════════════════════════════════════════
+VeinCrateConfig.GroundSpriteSheets = {
+    Bronze = {
+        assetId = "rbxassetid://71916811703809",
+        width = 2760,
+        height = 4416,
+        cellWidth = 552,
+        cellHeight = 552,
+    },
+    Silver = {
+        assetId = "rbxassetid://80019526230979",
+        width = 2760,
+        height = 4416,
+        cellWidth = 552,
+        cellHeight = 552,
+    },
+    Gold = {
+        assetId = "rbxassetid://72890617312400",
+        width = 2760,
+        height = 4968,
+        cellWidth = 552,
+        cellHeight = 552,
+    },
+    Diamond = {
+        assetId = "rbxassetid://96797628570457",
+        width = 2760,
+        height = 4968,
+        cellWidth = 552,
+        cellHeight = 552,
+    },
+}
+
+VeinCrateConfig.GroundSpriteRects = {
+    Bronze = {
+        ["item-45"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 26,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-3"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 578,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-1"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 1130,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-6"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 1682,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-5"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 2234,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-4"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 26,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-14"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 578,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-7"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 1130,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-18"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 1682,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-17"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 2234,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-15"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 26,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-16"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 578,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-24"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 1130,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-9"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 1682,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-8"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 2234,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-22"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 26,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-23"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 578,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-19"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 1130,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-21"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 1682,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-25"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 2234,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-30"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 26,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-26"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 578,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-10"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 1130,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-28"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 1682,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-27"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 2234,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-29"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 26,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-34"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 578,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-33"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 1130,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-43"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 1682,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-11"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 2234,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-32"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 26,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-31"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 578,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-41"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 1130,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-12"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 1682,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-38"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 2234,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-40"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 26,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-42"] = {
+            imageId = "rbxassetid://71916811703809",
+            rectOffsetX = 578,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+    },
+    Silver = {
+        ["item-45"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 26,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-3"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 578,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-1"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1130,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-6"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1682,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-5"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 2234,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-4"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 26,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-14"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 578,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-7"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1130,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-18"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1682,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-17"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 2234,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-15"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 26,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-16"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 578,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-24"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1130,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-9"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1682,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-8"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 2234,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-22"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 26,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-23"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 578,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-19"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1130,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-21"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1682,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-25"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 2234,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-30"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 26,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-26"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 578,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-10"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1130,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-28"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1682,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-27"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 2234,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-29"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 26,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-34"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 578,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-33"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1130,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-43"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1682,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-11"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 2234,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-32"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 26,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-31"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 578,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-41"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1130,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-12"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1682,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-38"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 2234,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-40"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 26,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-42"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 578,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-39"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1130,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-37"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 1682,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-13"] = {
+            imageId = "rbxassetid://80019526230979",
+            rectOffsetX = 2234,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+    },
+    Gold = {
+        ["item-45"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 26,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-3"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 578,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-1"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1130,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-6"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1682,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-5"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 2234,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-4"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 26,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-14"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 578,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-7"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1130,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-18"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1682,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-17"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 2234,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-15"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 26,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-16"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 578,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-24"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1130,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-9"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1682,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-8"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 2234,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-22"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 26,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-23"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 578,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-19"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1130,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-21"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1682,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-25"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 2234,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-30"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 26,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-26"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 578,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-10"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1130,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-28"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1682,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-27"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 2234,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-29"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 26,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-34"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 578,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-33"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1130,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-43"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1682,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-11"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 2234,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-32"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 26,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-31"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 578,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-41"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1130,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-12"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1682,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-38"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 2234,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-40"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 26,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-42"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 578,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-39"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1130,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-37"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 1682,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-13"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 2234,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-36"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 26,
+            rectOffsetY = 4442,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-35"] = {
+            imageId = "rbxassetid://72890617312400",
+            rectOffsetX = 578,
+            rectOffsetY = 4442,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+    },
+    Diamond = {
+        ["item-45"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 26,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-3"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 578,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-1"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1130,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-6"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1682,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-5"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 2234,
+            rectOffsetY = 26,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-4"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 26,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-14"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 578,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-7"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1130,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-18"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1682,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-17"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 2234,
+            rectOffsetY = 578,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-15"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 26,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-16"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 578,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-24"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1130,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-9"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1682,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-8"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 2234,
+            rectOffsetY = 1130,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-22"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 26,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-23"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 578,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-19"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1130,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-21"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1682,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-25"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 2234,
+            rectOffsetY = 1682,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-30"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 26,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-26"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 578,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-10"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1130,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-28"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1682,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-27"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 2234,
+            rectOffsetY = 2234,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-29"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 26,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-34"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 578,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-33"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1130,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-43"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1682,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-11"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 2234,
+            rectOffsetY = 2786,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-32"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 26,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-31"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 578,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-41"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1130,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-12"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1682,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-38"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 2234,
+            rectOffsetY = 3338,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-40"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 26,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-42"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 578,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-39"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1130,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-37"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1682,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-13"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 2234,
+            rectOffsetY = 3890,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-36"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 26,
+            rectOffsetY = 4442,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-35"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 578,
+            rectOffsetY = 4442,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+        ["item-44"] = {
+            imageId = "rbxassetid://96797628570457",
+            rectOffsetX = 1130,
+            rectOffsetY = 4442,
+            rectSizeX = 500,
+            rectSizeY = 500,
+        },
+    },
+}
 
 local byId: { [string]: VeinTypeDef } = {}
-for _, vt in ipairs(VeinCrateConfig.VeinTypes) do
-	byId[vt.id] = vt
+local byRarity: { [string]: { VeinTypeDef } } = {}
+local bySignature: { [string]: VeinTypeDef } = {}
+
+local function signatureKeyFromStreams(streams): string
+	local parts = {}
+	for _, stream in ipairs(streams) do
+		if typeof(stream) == "table" then
+			local burstType = stream.burstType or stream.streamType
+			local oilType = stream.oilType
+			if typeof(burstType) == "string" and typeof(oilType) == "string" then
+				table.insert(parts, string.format("%s/%s", burstType, oilType))
+			end
+		end
+	end
+	return table.concat(parts, "|")
+end
+
+for _, rarity in ipairs(VeinCrateConfig.RarityOrder) do
+	byRarity[rarity] = {}
+end
+for _, def in ipairs(VeinCrateConfig.VeinTypes) do
+	byId[def.id] = def
+	local bucket = byRarity[def.rarity]
+	if bucket then
+		table.insert(bucket, def)
+	end
+	if not def.isUnlucky then
+		bySignature[signatureKeyFromStreams(def.streams)] = def
+	end
+end
+
+local function colorField(rarity: string, field: string): Color3
+	local style = VeinCrateConfig.RarityStyles[rarity]
+	if style and typeof(style[field]) == "Color3" then
+		return style[field]
+	end
+	return Color3.fromRGB(128, 128, 128)
 end
 
 function VeinCrateConfig.GetById(id: string): VeinTypeDef?
 	return byId[id]
 end
 
+function VeinCrateConfig.GetRarityStyle(rarity: string)
+	return VeinCrateConfig.RarityStyles[rarity] or VeinCrateConfig.RarityStyles.Common
+end
+
+function VeinCrateConfig.GetRarityColor(rarity: string): Color3
+	return colorField(rarity, "bgStart")
+end
+
+function VeinCrateConfig.GetRarityTextColor(rarity: string): Color3
+	return colorField(rarity, "text")
+end
+
+function VeinCrateConfig.GetRaritySparkColor(rarity: string): Color3
+	return colorField(rarity, "spark")
+end
+
+function VeinCrateConfig.GetGroundSpriteSheet(groundType: string)
+	return VeinCrateConfig.GroundSpriteSheets[groundType]
+end
+
+function VeinCrateConfig.GetDisplaySprite(idOrDef: string | VeinTypeDef, groundType: string)
+	local def = if typeof(idOrDef) == "table" then idOrDef else VeinCrateConfig.GetById(idOrDef)
+	if not def then
+		return nil
+	end
+	local byGround = VeinCrateConfig.GroundSpriteRects[groundType]
+	return byGround and byGround[def.id] or nil
+end
+
 function VeinCrateConfig.GetAllForGround(groundType: string): { VeinTypeDef }
+	local weights = VeinCrateConfig.GroundRarityWeights[groundType]
+	if typeof(weights) ~= "table" then
+		return table.clone(VeinCrateConfig.VeinTypes)
+	end
 	local result = {}
-	for _, vt in ipairs(VeinCrateConfig.VeinTypes) do
-		local w = (vt.weights :: any)[groundType]
-		if typeof(w) == "number" and w > 0 then
-			table.insert(result, vt)
+	for rarity, bucket in pairs(byRarity) do
+		if (weights[rarity] or 0) > 0 then
+			for _, def in ipairs(bucket) do
+				table.insert(result, def)
+			end
 		end
 	end
+	table.sort(result, function(a, b)
+		local ai, bi = 999, 999
+		for i, rarity in ipairs(VeinCrateConfig.RarityOrder) do
+			if rarity == a.rarity then ai = i end
+			if rarity == b.rarity then bi = i end
+		end
+		if ai ~= bi then return ai < bi end
+		return a.displayName < b.displayName
+	end)
 	return result
 end
 
 function VeinCrateConfig.RollVeinType(groundType: string, rng: Random): VeinTypeDef
-	local pool = VeinCrateConfig.GetAllForGround(groundType)
-	if #pool == 0 then
-		return VeinCrateConfig.VeinTypes[1] -- fallback
-	end
-
+	local weights = VeinCrateConfig.GroundRarityWeights[groundType] or VeinCrateConfig.GroundRarityWeights.Bronze
 	local totalWeight = 0
-	for _, vt in ipairs(pool) do
-		totalWeight += (vt.weights :: any)[groundType] or 0
+	for _, rarity in ipairs(VeinCrateConfig.RarityOrder) do
+		totalWeight += weights[rarity] or 0
 	end
-
-	local roll = rng:NextNumber() * totalWeight
+	if totalWeight <= 0 then
+		return VeinCrateConfig.VeinTypes[1]
+	end
+	local roll = rng:NextInteger(1, totalWeight)
 	local accum = 0
-	for _, vt in ipairs(pool) do
-		accum += (vt.weights :: any)[groundType] or 0
+	local pickedRarity = "Common"
+	for _, rarity in ipairs(VeinCrateConfig.RarityOrder) do
+		accum += weights[rarity] or 0
 		if roll <= accum then
-			return vt
+			pickedRarity = rarity
+			break
 		end
 	end
-
-	return pool[#pool]
+	local bucket = byRarity[pickedRarity]
+	if not bucket or #bucket == 0 then
+		for _, rarity in ipairs(VeinCrateConfig.RarityOrder) do
+			local fallback = byRarity[rarity]
+			if fallback and #fallback > 0 then
+				bucket = fallback
+				break
+			end
+		end
+	end
+	if not bucket or #bucket == 0 then
+		return VeinCrateConfig.VeinTypes[1]
+	end
+	return bucket[rng:NextInteger(1, #bucket)]
 end
 
-function VeinCrateConfig.GetRarityColor(rarity: string): Color3
-	return VeinCrateConfig.RarityColors[rarity] or Color3.fromRGB(128, 128, 128)
+function VeinCrateConfig.BuildVeinResult(def: VeinTypeDef, groundType: string)
+	if def.isUnlucky then
+		return { isDead = true, veinCount = "Single", veins = { { streamType = "Dead", oilType = "DirtOil" } }, groundType = groundType }
+	end
+	local veins = {}
+	for _, stream in ipairs(def.streams) do
+		table.insert(veins, { streamType = stream.burstType, oilType = stream.oilType })
+	end
+	local veinCount = if #veins >= 3 then "Triple" elseif #veins == 2 then "Double" else "Single"
+	return { isDead = false, veinCount = veinCount, veins = veins, groundType = groundType }
 end
 
--- Rebuild lookup when types are modified
+function VeinCrateConfig.FindByVeinResult(veinResult): VeinTypeDef?
+	if typeof(veinResult) ~= "table" then
+		return nil
+	end
+	if veinResult.isDead == true then
+		return byRarity.Unlucky and byRarity.Unlucky[1] or nil
+	end
+	if typeof(veinResult.veins) ~= "table" or #veinResult.veins == 0 then
+		return nil
+	end
+	return bySignature[signatureKeyFromStreams(veinResult.veins)]
+end
+
+function VeinCrateConfig.GetInternalOilTotals(def: VeinTypeDef): { [string]: number }
+	local totals = { HeavyCrude = 0, LightSweet = 0, PremiumRefined = 0 }
+	for _, stream in ipairs(def.streams) do
+		totals[stream.internalOilType] = (totals[stream.internalOilType] or 0) + stream.barrelsPerSecond
+	end
+	return totals
+end
+
+function VeinCrateConfig.GetSignatureLabel(def: VeinTypeDef): string
+	if def.isUnlucky then
+		return "Dry Hole"
+	end
+	local parts = {}
+	for _, stream in ipairs(def.streams) do
+		table.insert(parts, string.format("%s/%s", stream.burstType, stream.oilType))
+	end
+	return table.concat(parts, "  +  ")
+end
+
 function VeinCrateConfig._rebuildLookup()
 	byId = {}
-	for _, vt in ipairs(VeinCrateConfig.VeinTypes) do
-		byId[vt.id] = vt
+	byRarity = {}
+	bySignature = {}
+	for _, rarity in ipairs(VeinCrateConfig.RarityOrder) do
+		byRarity[rarity] = {}
+	end
+	for _, def in ipairs(VeinCrateConfig.VeinTypes) do
+		byId[def.id] = def
+		local bucket = byRarity[def.rarity]
+		if bucket then
+			table.insert(bucket, def)
+		end
+		if not def.isUnlucky then
+			bySignature[signatureKeyFromStreams(def.streams)] = def
+		end
 	end
 end
 
