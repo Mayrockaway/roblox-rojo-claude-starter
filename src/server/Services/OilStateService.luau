@@ -530,7 +530,7 @@ function OilStateService:SetFtueProgress(userId: number, step: string?)
 	if step == nil then
 		self:_clearFtuePlacementNoSellback(state)
 	end
-	-- Tutorial escort vessel is only for the first dispatch during `Dispatch`; never after FTUE completes or past that leg.
+	-- Tutorial escort vessel is only for the first dispatch during **`WaitPlotShipment`**; never after FTUE completes or past that leg.
 	if state.ftueCompleted or step == FtueConfig.Step.Done or step == FtueConfig.Step.WaitShipment then
 		state.ftueEscortShipmentRemaining = 0
 	end
@@ -1476,7 +1476,7 @@ function OilStateService:TryStartDrill(userId: number, payload): (boolean, strin
 		and ftueDrillCell ~= nil
 		and ftueDrillCell == ck
 		and typeof(ftueStep) == "string"
-		and ftueStep == FtueConfig.Step.WaitDrill
+		and ftueStep == FtueConfig.Step.WaitDrillOil_WIP
 	)
 	if ftueFreeNoSellback then
 		effectiveSeconds = math.max(0.5, tonumber(FtueConfig.FtueTutorialDrillSeconds) or 5)
@@ -1778,7 +1778,7 @@ function OilStateService:TryPlacePump(userId: number, payload): (boolean, string
 		and ftuePumpCell ~= nil
 		and ftuePumpCell == ck
 		and typeof(ftueStepPump) == "string"
-		and ftueStepPump == FtueConfig.Step.WaitPump
+		and ftueStepPump == FtueConfig.Step.WaitDrillOil_WIP
 	)
 	for _, existing in pairs(state.drillsById) do
 		if existing.cellKey == ck then
@@ -2162,7 +2162,7 @@ function OilStateService:_TryPlacePipe_LEGACY(userId: number, payload): (boolean
 		and ftuePipeCell ~= nil
 		and ftuePipeCell == key
 		and typeof(ftueStepPipe) == "string"
-		and ftueStepPipe == FtueConfig.Step.WaitPipe
+		and ftueStepPipe == FtueConfig.Step.WaitDrillOil_WIP
 	)
 
 	state.pipesByCellKey[key] = {
@@ -2939,6 +2939,17 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		state.ftueStep = nil
 	elseif hasFtueStepKey then
 		local s = (pFtue.ftueStep :: string):gsub("^%s+", ""):gsub("%s+$", "")
+		local LEGACY_FTUE_STEP: { [string]: string } = {
+			WaitDrill = FtueConfig.Step.WaitDrillOil_WIP,
+			WaitPipe = FtueConfig.Step.WaitDrillOil_WIP,
+			WaitPump = FtueConfig.Step.WaitDrillOil_WIP,
+			Dispatch = FtueConfig.Step.WaitPlotShipment,
+			Sell = FtueConfig.Step.WaitWarehouseSell,
+		}
+		local mapped = LEGACY_FTUE_STEP[s]
+		if mapped then
+			s = mapped
+		end
 		if s == "" then
 			state.ftueStep = FtueConfig.Step.Intro
 			state.ftueCompleted = false
@@ -2977,7 +2988,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		(state :: any).ftueDoneScreenAcknowledged = (state.ftueCompleted == true and typeof((state :: any).ftueStep) ~= "string")
 	end
 
-	-- Tutorial escort ship only applies on the `Dispatch` step; clear stale flag after that leg or when FTUE is done.
+	-- Tutorial escort ship only applies on **`WaitPlotShipment`**; clear stale flag after that leg or when FTUE is done.
 	if FtueConfig.Enabled then
 		local fs = (state :: any).ftueStep
 		if (state :: any).ftueCompleted == true then
@@ -2985,8 +2996,10 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		elseif typeof(fs) == "string" then
 			if
 				fs == FtueConfig.Step.WaitShipment
-				or fs == FtueConfig.Step.Sell
+				or fs == FtueConfig.Step.WaitWarehouseSell
 				or fs == FtueConfig.Step.WaitSell
+				or fs == FtueConfig.Step.WaitDocksShipUpgrade
+				or fs == FtueConfig.Step.WaitDocksHire
 				or fs == FtueConfig.Step.Done
 			then
 				state.ftueEscortShipmentRemaining = 0
@@ -4038,6 +4051,38 @@ function OilStateService:GetFtuePipeTutorialCellKeyForPlot(plot: Model, state: a
 		return nil
 	end
 	return cellKey(frontRow, frontCol)
+end
+
+--- Used while `ftueStep == WaitDrillOil_WIP` to restore drill / pipe / pump restriction attributes after join.
+function OilStateService:IsFtueDrillTutorialCellDrilled(state: any, drillCk: string): boolean
+	local rowStr, colStr = string.match(drillCk, "^R(%d+)C(%d+)$")
+	local row = tonumber(rowStr)
+	local col = tonumber(colStr)
+	if not row or not col then
+		return false
+	end
+	local sectionId = cellToSectionId(row, col)
+	local localKey = globalCellToLocalTileKey(row, col)
+	local chunk = state.chunksById and (state.chunksById :: any)[sectionId]
+	if not chunk or not chunk.tiles then
+		return false
+	end
+	local t = (chunk.tiles :: any)[localKey]
+	return t ~= nil and t.drilled == true
+end
+
+function OilStateService:HasFtueTutorialPipeAt(state: any, pipeCk: string): boolean
+	local pipes = state.pipesByCellKey
+	return typeof(pipes) == "table" and pipes[pipeCk] ~= nil
+end
+
+function OilStateService:HasFtueTutorialPumpAt(state: any, pumpCellKey: string): boolean
+	for _, pump in pairs(state.drillsById or {}) do
+		if typeof(pump) == "table" and pump.cellKey == pumpCellKey then
+			return true
+		end
+	end
+	return false
 end
 
 return OilStateService

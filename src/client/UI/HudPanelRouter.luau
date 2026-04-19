@@ -1,5 +1,9 @@
 --!strict
--- Wires `HUD.Canvas.LeftStack` + `TopRow` buttons to modal `ScreenGuis` (exclusive group + toggle).
+-- Wires HUD modal-toggle buttons to `ScreenGui`s (exclusive group; second press closes).
+-- Buttons live in three authored regions of `HUD.Canvas`:
+--   * `TopRow`            — OilPriceButton / StraitStatusButton
+--   * `Canvas` direct     — StraitControlCta, RobuxShop
+--   * `Canvas.Buttons`    — DailyButton, SettingsButton (and BUY/SELL/HIRE owned by HudTeleportRouter)
 -- Retries until every mapped button is wired or attempts exhaust — StarterGui clones can arrive late.
 
 local ActiveManifestController = require(script.Parent.ActiveManifestController)
@@ -18,10 +22,9 @@ local HudTriggerHover = require(script.Parent.HudTriggerHover)
 
 local STRAIT_CONTROL_CTA_ALIASES = { "StraitControlCta", "StraitControlCTA" }
 
--- Maps **HUD GuiButton.Name** → **target ScreenGui name**. Buttons currently live under three
--- authored regions of the HUD: `TopRow`, `LeftStack` (legacy), and `Canvas.Buttons` (the new
--- right-side 2x3 grid + the `RobuxShop` button as a direct child of `Canvas`).
--- `findHudModalButton` searches all three before falling back to a recursive HUD scan.
+-- Maps **HUD GuiButton.Name** → **target ScreenGui name**. `findHudModalButton`
+-- searches `Canvas` direct children, then `Canvas.Buttons`, then `Canvas.TopRow`,
+-- then a recursive HUD scan as a last resort.
 local BUTTON_TO_SCREEN: { [string]: string } = {
 	OilPriceButton = OilPriceInfoPanel.screenName(),
 	StraitStatusButton = StraitInfoPanel.screenName(),
@@ -29,10 +32,11 @@ local BUTTON_TO_SCREEN: { [string]: string } = {
 	ShopButton = EquipmentShopPanel.screenName(),
 	ShipOilButton = ShipOilPanel.screenName(),
 	ManageShipButton = ShipManagementPanel.screenName(),
-	SettingsButton = SettingsPanel.screenName(),
 	SellOilButton = SellOilPanel.screenName(),
-	-- New HUD `Canvas.Buttons` grid + standalone Robux button.
+	-- HUD `Canvas.Buttons` grid (right-side modal-openers).
 	DailyButton = DailyPanel.screenName(),
+	SettingsButton = SettingsPanel.screenName(),
+	-- Standalone Robux button (direct child of `Canvas`, sits above the grid).
 	RobuxShop = RobuxShopPanel.screenName(),
 }
 
@@ -102,14 +106,13 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 				continue
 			end
 			local canvas = hud:FindFirstChild("Canvas")
-			-- We only require `Canvas` to exist. `TopRow`, `LeftStack`, and `Buttons` are each
-			-- looked up per-button in `findHudModalButton`; missing any one of them is fine
-			-- (e.g. `LeftStack` is being deprecated as buttons migrate into `Buttons`).
+			-- We only require `Canvas` to exist. `TopRow` and `Buttons` are each looked up
+			-- per-button in `findHudModalButton`; missing either is fine (e.g. some
+			-- StarterGui presets ship without the right-side grid).
 			if not (canvas and canvas:IsA("Frame")) then
 				task.wait(0.5)
 				continue
 			end
-			local leftStack = canvas:FindFirstChild("LeftStack")
 			local topRow = canvas:FindFirstChild("TopRow")
 			local buttonsFrame = canvas:FindFirstChild("Buttons")
 
@@ -166,18 +169,15 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 
 			local function findHudModalButton(name: string): GuiButton?
 				local names = if name == "StraitControlCta" then STRAIT_CONTROL_CTA_ALIASES else { name }
-				-- Search in this order so the **new authored region wins** when a stale
-				-- duplicate of the same button name still lives under `LeftStack`:
-				--   1. Direct child of `Canvas`  (e.g. `RobuxShop`)
-				--   2. `Canvas.Buttons`           (the new 2x3 grid)
-				--   3. `Canvas.TopRow`            (status bar buttons)
-				--   4. `Canvas.LeftStack`         (legacy — being removed)
-				--   5. Recursive `HUD` fallback   (anywhere else in the HUD)
+				-- Search order:
+				--   1. Direct child of `Canvas`  (e.g. `RobuxShop`, `StraitControlCta`)
+				--   2. `Canvas.Buttons`           (right-side grid: DailyButton, SettingsButton)
+				--   3. `Canvas.TopRow`            (status bar: OilPriceButton, StraitStatusButton)
+				--   4. Recursive `HUD` fallback   (anywhere else in the HUD)
 				local roots: { Instance } = {}
 				if canvas then table.insert(roots, canvas) end
 				if buttonsFrame and buttonsFrame:IsA("GuiObject") then table.insert(roots, buttonsFrame) end
 				if topRow and topRow:IsA("GuiObject") then table.insert(roots, topRow) end
-				if leftStack and leftStack:IsA("GuiObject") then table.insert(roots, leftStack) end
 				table.insert(roots, hud)
 				for _, tryName in ipairs(names) do
 					for i, root in ipairs(roots) do
@@ -202,7 +202,7 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 				local ctrl = byScreen[screenName]
 				if not (btn and btn:IsA("GuiButton")) then
 					if attempt == 1 or attempt % 20 == 0 then
-						warn("[Client] HudPanelRouter: missing button", buttonName, "under HUD (TopRow / LeftStack)")
+						warn("[Client] HudPanelRouter: missing button", buttonName, "under HUD (Canvas / Buttons / TopRow)")
 					end
 					continue
 				end

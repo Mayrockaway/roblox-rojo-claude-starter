@@ -16,13 +16,13 @@ local FtueConfig = {
 	DialogueSwapTitleBodySlots = true,
 
 	--- Persisted profile version that first wrote FTUE fields (migration). Oil profile `version` tracks similarly.
-	PersistVersion = 9,
+	PersistVersion = 10,
 
 	--- Fresh profile (no DataStore row) starts with this oil cash when FTUE is enabled.
 	StartingCash = 0,
 
-	--- Cash granted when entering the Dispatch step (after pump on tutorial tile). **Only** this amount at that stage.
-	DispatchStageCashReward = 50,
+	--- One-time plot cash when entering **`WaitPlotShipment`** (plot shipment terminal leg). Server truth; pairs with client `UiSfx.playKaching` on that step.
+	PlotShipmentStageCashReward = 50,
 
 	--- Granted when the player reaches the final **Done** step (before Complete!). See `OilStateService.SetFtueProgress`.
 	TutorialCompleteCashReward = 500,
@@ -36,78 +36,81 @@ local FtueConfig = {
 	PumpItemId = "pump_t1",
 	PipeItemId = "pipe",
 
-	--- Drill duration (seconds) on the FTUE highlighted tile during `WaitDrill`. Overrides biome `drillSeconds` / tier divisor.
+	--- Drill duration (seconds) on the FTUE highlighted tile during the drill leg of **`WaitDrillOil_WIP`**. Overrides biome `drillSeconds` / tier divisor.
 	FtueTutorialDrillSeconds = 5,
 
 	--- Canonical step ids (also used for `Player` attribute `FtueStep`).
 	Step = {
 		Intro = "Intro",
-		WaitDrill = "WaitDrill",
-		WaitPipe = "WaitPipe",
-		WaitPump = "WaitPump",
-		Dispatch = "Dispatch",
+		--- Placeholder bucket: drill + oil setup through **first oil collection** (exact gates TBD when drill/pipe systems land).
+		WaitDrillOil_WIP = "WaitDrillOil_WIP",
+		--- Walk to **plot** shipment terminal and fulfill a shipment (no Ship Oil HUD pointer).
+		WaitPlotShipment = "WaitPlotShipment",
 		WaitShipment = "WaitShipment",
-		Sell = "Sell",
+		--- Land at warehouse; sell at **warehouse** terminal (Sell Oil UI pointers may still apply).
+		WaitWarehouseSell = "WaitWarehouseSell",
 		WaitSell = "WaitSell",
+		WaitDocksShipUpgrade = "WaitDocksShipUpgrade",
+		WaitDocksHire = "WaitDocksHire",
 		Done = "Done",
 	},
 
-	--- Ordered flow after intro acknowledge (server-driven transitions elsewhere).
+	--- Ordered server-driven flow (see `FtueService` + gameplay hooks).
 	Order = {
 		"Intro",
-		"WaitDrill",
-		"WaitPipe",
-		"WaitPump",
-		"Dispatch",
+		"WaitDrillOil_WIP",
+		"WaitPlotShipment",
 		"WaitShipment",
-		"Sell",
+		"WaitWarehouseSell",
 		"WaitSell",
+		"WaitDocksShipUpgrade",
+		"WaitDocksHire",
 		"Done",
 	} :: { string },
 
-	--- UI copy for dialogue panel (title + body). Keep under ~400 chars body for mobile.
+	--- UI copy for dialogue panel (title + body). Placeholders until each leg is finalized.
 	Copy = {
 		Intro = {
 			title = "CALLING ALL OIL TYCOONS!",
 			body = "SOS! Our country is desperate for oil and we need you to get through the Strait of Hormuz by any means!",
 		},
-		WaitDrill = {
-			title = "GET TO DRILLIN'!",
-			body = "I'll give you your first free drill - equip it from your backpack. Drill the highlighted tile.",
+		WaitDrillOil_WIP = {
+			title = "DRILL & COLLECT (WIP)",
+			body = "Placeholder: new drill flow goes here through your first oil collection. Details TBD.",
 		},
-		WaitPipe = {
-			title = "LAY SOME PIPE!",
-			body = "Great! Here's a free pipe segment — place it on the highlighted tile to connect the oil well to your refinery.",
-		},
-		WaitPump = {
-			title = "COLLECT THAT OIL!",
-			body = "Now place your collector on the drilled tile so oil flows through the pipe into your refinery storage. Don't forget to upgrade storage later!",
-		},
-		Dispatch = {
-			title = "SHIP YOUR OIL!",
-			body = "Great work! Open the Ship Oil panel to dispatch your cargo. I'll let you borrow my super yacht this one time so nobody bothers you. Here's $50 toward your dispatch fee; after this, crossing won't be so easy.",
+		WaitPlotShipment = {
+			title = "SHIP YOUR CARGO",
+			body = "Placeholder: walk to the shipment terminal on your plot and send your cargo. No HUD Ship Oil button for this leg.",
 		},
 		WaitShipment = {
-			title = "SAIL THE STRAIT OF HORMUZ!",
-			body = "While you're sailing, you can teleport home or back to your ship. Sit back and relax - you'll make land near your warehouse. Check out the Strait statuses in the meantime!",
+			title = "ACROSS THE STRAIT",
+			body = "Placeholder: wait for your shipment to finish. Check Strait status while you wait.",
 		},
-		Sell = {
-			title = "TIME TO CASH IN!",
-			body = "Great work sailing the Strait! Now use the Sell Oil panel to cash in.",
+		WaitWarehouseSell = {
+			title = "SELL AT THE WAREHOUSE",
+			body = "Placeholder: land at the warehouse and use the terminal there to sell your oil.",
 		},
 		WaitSell = {
-			title = "GET A GOOD PRICE!",
-			body = "Watch out! Next time, remember to check the oil market on the top left of your screen for good prices before you sell.",
+			title = "WATCH THE MARKET",
+			body = "Placeholder: next time, check the oil market (top-left) before you sell.",
+		},
+		WaitDocksShipUpgrade = {
+			title = "UPGRADE YOUR SHIP",
+			body = "Placeholder: head to the docks and upgrade speed or cargo.",
+		},
+		WaitDocksHire = {
+			title = "HIRE CREW",
+			body = "Placeholder: at the docks, review the hire contract at the NPC.",
 		},
 		Done = {
-			title = "FIRST VOYAGE COMPLETE!",
-			body = "Our great nation thanks you for your service. Here's some extra cash to get you started. Remember to upgrade your equipment, explore the docks for some Secret Services, and always keep an eye on the Strait!",
+			title = "WELCOME TO TOWN",
+			body = "Placeholder: FTUE completes in town — here's startup cash. Full script TBD.",
 		},
 	} :: { [string]: { title: string, body: string } },
 
 	WrongTileDrill = "Drill only the highlighted tile.",
 	WrongTilePipe = "Place the pipe on the highlighted tile.",
-	WrongTilePump = "Place the pump on the highlighted tile.",
+	WrongTilePump = "Place the collector on the highlighted tile.",
 
 	--- Shipment HUD `Hint` line when placement is blocked to wrong cell (see `init.client` setStatus).
 	ClientHintPlaceDrillOnTile = "Place the drill on the marked tile.",
@@ -120,13 +123,13 @@ local FtueConfig = {
 	--- Keys are `Step` ids. Asset ids are defined once in `FtuePortraitAssets` (Asset Manager import names).
 	PortraitImageByStep = {
 		Intro = FtuePortraitAssets.OilManOilHead,
-		WaitDrill = FtuePortraitAssets.OilmanDrilling,
-		WaitPipe = FtuePortraitAssets.OilmanDrilling,
-		WaitPump = FtuePortraitAssets.OilmanCelebrate,
-		Dispatch = FtuePortraitAssets.OilmanSalute,
+		WaitDrillOil_WIP = FtuePortraitAssets.OilmanDrilling,
+		WaitPlotShipment = FtuePortraitAssets.OilmanSalute,
 		WaitShipment = FtuePortraitAssets.OilmanBurger,
-		Sell = FtuePortraitAssets.OilManOilHead,
+		WaitWarehouseSell = FtuePortraitAssets.OilManOilHead,
 		WaitSell = FtuePortraitAssets.OilmanPointAngry,
+		WaitDocksShipUpgrade = FtuePortraitAssets.OilmanSalute,
+		WaitDocksHire = FtuePortraitAssets.OilmanCelebrate,
 		Done = FtuePortraitAssets.OilmanCelebrate,
 	} :: { [string]: string },
 }

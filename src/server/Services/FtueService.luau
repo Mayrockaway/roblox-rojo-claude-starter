@@ -54,8 +54,8 @@ local function fireState(player: Player, step: string?)
 	ev:FireClient(player, { step = step })
 end
 
---- One-time plot cash when entering `Dispatch` (see `FtueConfig.DispatchStageCashReward`). Server truth; pairs with client `UiSfx.playKaching` on that step.
-local function grantDispatchStageCashIfNeeded(self: any, player: Player)
+--- One-time plot cash when entering **`WaitPlotShipment`** (see `FtueConfig.PlotShipmentStageCashReward`). Server truth; pairs with client `UiSfx.playKaching` on that step.
+local function grantPlotShipmentStageCashIfNeeded(self: any, player: Player)
 	if FtueConfig.Enabled ~= true then
 		return
 	end
@@ -67,7 +67,7 @@ local function grantDispatchStageCashIfNeeded(self: any, player: Player)
 	if not st or st.ftueDispatchCashGranted == true then
 		return
 	end
-	local amt = floorPositive(tonumber(FtueConfig.DispatchStageCashReward) or 0)
+	local amt = floorPositive(tonumber(FtueConfig.PlotShipmentStageCashReward) or 0)
 	if amt <= 0 then
 		return
 	end
@@ -107,27 +107,32 @@ local function reapplyFtueRestrictionAttributes(self: any, player: Player)
 		return
 	end
 	local step = (st :: any).ftueStep
-	if step == FtueConfig.Step.WaitDrill then
-		local ck = self._oilState:GetFtueDrillTargetCellKeyForPlot(plot, st, player.UserId)
-		if ck then
-			player:SetAttribute(Constants.FtueRestrictDrillCellKeyAttribute, ck)
+	if step == FtueConfig.Step.WaitDrillOil_WIP then
+		local drillCk = self._oilState:GetFtueDrillTargetCellKeyForPlot(plot, st, player.UserId)
+		local pipeCk = self._oilState:GetFtuePipeTutorialCellKeyForPlot(plot, st)
+		if typeof(drillCk) == "string" and drillCk ~= "" then
+			if not self._oilState:IsFtueDrillTutorialCellDrilled(st, drillCk) then
+				player:SetAttribute(Constants.FtueRestrictDrillCellKeyAttribute, drillCk)
+				return
+			end
 		end
-	elseif step == FtueConfig.Step.WaitPipe then
-		local ck = self._oilState:GetFtuePipeTutorialCellKeyForPlot(plot, st)
-		if ck then
-			player:SetAttribute(Constants.FtueRestrictPipeCellKeyAttribute, ck)
+		if typeof(pipeCk) == "string" and pipeCk ~= "" then
+			if not self._oilState:HasFtueTutorialPipeAt(st, pipeCk) then
+				player:SetAttribute(Constants.FtueRestrictPipeCellKeyAttribute, pipeCk)
+				return
+			end
 		end
-	elseif step == FtueConfig.Step.WaitPump then
-		local ck = self._oilState:GetFtueDrillTargetCellKeyForPlot(plot, st, player.UserId)
-		if ck then
-			player:SetAttribute(Constants.FtueRestrictPumpCellKeyAttribute, ck)
+		if typeof(drillCk) == "string" and drillCk ~= "" then
+			if not self._oilState:HasFtueTutorialPumpAt(st, drillCk) then
+				player:SetAttribute(Constants.FtueRestrictPumpCellKeyAttribute, drillCk)
+			end
 		end
 	end
 end
 
 function FtueService:_setStep(player: Player, step: string?)
-	if typeof(step) == "string" and step == FtueConfig.Step.Dispatch then
-		grantDispatchStageCashIfNeeded(self, player)
+	if typeof(step) == "string" and step == FtueConfig.Step.WaitPlotShipment then
+		grantPlotShipmentStageCashIfNeeded(self, player)
 	end
 	if typeof(step) == "string" and step == FtueConfig.Step.Done then
 		--- Clear stale acknowledgement **before** cash grant / `PushState` / `SetFtueProgress`, so any
@@ -333,18 +338,30 @@ local function onAcknowledge(self: any, player: Player)
 		ftueDbg("onAcknowledge uid=%d reject WaitSell: oil.ftueStep=%s", player.UserId, tostring(oilStep))
 		return
 	end
+	if step == FtueConfig.Step.WaitDocksShipUpgrade and oilStep ~= FtueConfig.Step.WaitDocksShipUpgrade then
+		ftueDbg("onAcknowledge uid=%d reject WaitDocksShipUpgrade: oil.ftueStep=%s", player.UserId, tostring(oilStep))
+		return
+	end
+	if step == FtueConfig.Step.WaitDocksHire and oilStep ~= FtueConfig.Step.WaitDocksHire then
+		ftueDbg("onAcknowledge uid=%d reject WaitDocksHire: oil.ftueStep=%s", player.UserId, tostring(oilStep))
+		return
+	end
 	if step == FtueConfig.Step.Done and oilStep ~= FtueConfig.Step.Done then
 		ftueDbg("onAcknowledge uid=%d reject Complete!: oil.ftueStep=%s", player.UserId, tostring(oilStep))
 		return
 	end
 	ftueDbg("onAcknowledge uid=%d resolvedStep=%s (Continue/Complete!)", player.UserId, step)
 	ftueDumpOilState(self._oilState, player, "onAcknowledge before")
-	-- Only steps that show **Continue** in `FtueDialogueController` advance here (Intro, WaitSell, Done).
+	-- Only steps that show **Continue** in `FtueDialogueController` advance here (Intro, WaitSell, docks legs, Done).
 	if step == FtueConfig.Step.Intro then
 		applyWaitDrillEntry(self, player)
-		self:_setStep(player, FtueConfig.Step.WaitDrill)
+		self:_setStep(player, FtueConfig.Step.WaitDrillOil_WIP)
 	elseif step == FtueConfig.Step.WaitSell then
-		ftueDbg("onAcknowledge uid=%d WaitSell Continue -> _setStep(Done) (show final modal; not finished yet)", player.UserId)
+		self:_setStep(player, FtueConfig.Step.WaitDocksShipUpgrade)
+	elseif step == FtueConfig.Step.WaitDocksShipUpgrade then
+		self:_setStep(player, FtueConfig.Step.WaitDocksHire)
+	elseif step == FtueConfig.Step.WaitDocksHire then
+		ftueDbg("onAcknowledge uid=%d WaitDocksHire Continue -> _setStep(Done) (final modal)", player.UserId)
 		local oil = self._oilState
 		if oil and typeof((oil :: any).SetFtueDoneScreenAcknowledged) == "function" then
 			(oil :: any):SetFtueDoneScreenAcknowledged(player.UserId, false)
@@ -398,7 +415,7 @@ function FtueService:Init(
 	self._market = _market
 end
 
---- After the FTUE drill completes on the tutorial tile: clear drill lock, remove starter **front** core pipe so the player can lay the tutorial segment, grant a pipe, go to `WaitPipe`.
+--- After the FTUE drill completes on the tutorial tile: clear drill lock, remove starter **front** core pipe so the player can lay the tutorial segment, grant a pipe; stays on **`WaitDrillOil_WIP`**.
 function FtueService:OnFtueTutorialDrillFinished(userId: number, done: any?)
 	if FtueConfig.Enabled ~= true then
 		return
@@ -413,7 +430,7 @@ function FtueService:OnFtueTutorialDrillFinished(userId: number, done: any?)
 	end
 	local stepAny = (st :: any).ftueStep
 	local persistedStep = typeof(stepAny) == "string" and stepAny
-	if persistedStep ~= FtueConfig.Step.WaitDrill and player:GetAttribute(Constants.FtueStepAttribute) ~= FtueConfig.Step.WaitDrill then
+	if persistedStep ~= FtueConfig.Step.WaitDrillOil_WIP and player:GetAttribute(Constants.FtueStepAttribute) ~= FtueConfig.Step.WaitDrillOil_WIP then
 		return
 	end
 	local wantDrill = player:GetAttribute(Constants.FtueRestrictDrillCellKeyAttribute)
@@ -437,10 +454,10 @@ function FtueService:OnFtueTutorialDrillFinished(userId: number, done: any?)
 		player:SetAttribute(Constants.FtueRestrictPipeCellKeyAttribute, pipeCk)
 	end
 	self._equipmentShop:GrantFreeOwnedEquipment(player, FtueConfig.PipeItemId, 1)
-	self:SetStep(player, FtueConfig.Step.WaitPipe)
+	self:SetStep(player, FtueConfig.Step.WaitDrillOil_WIP)
 end
 
---- After the tutorial pipe segment is placed on the locked cell: grant pump, go to `WaitPump`.
+--- After the tutorial pipe segment is placed on the locked cell: grant pump, stay on **`WaitDrillOil_WIP`**.
 function FtueService:OnFtueTutorialPipePlaced(userId: number, placedCellKey: string)
 	if FtueConfig.Enabled ~= true then
 		return
@@ -454,7 +471,7 @@ function FtueService:OnFtueTutorialPipePlaced(userId: number, placedCellKey: str
 		return
 	end
 	local step = (st :: any).ftueStep
-	if step ~= FtueConfig.Step.WaitPipe then
+	if step ~= FtueConfig.Step.WaitDrillOil_WIP then
 		return
 	end
 	local want = player:GetAttribute(Constants.FtueRestrictPipeCellKeyAttribute)
@@ -471,10 +488,10 @@ function FtueService:OnFtueTutorialPipePlaced(userId: number, placedCellKey: str
 		player:SetAttribute(Constants.FtueRestrictPumpCellKeyAttribute, pumpCk)
 	end
 	self._equipmentShop:GrantFreeOwnedEquipment(player, FtueConfig.PumpItemId, 1)
-	self:SetStep(player, FtueConfig.Step.WaitPump)
+	self:SetStep(player, FtueConfig.Step.WaitDrillOil_WIP)
 end
 
---- After the tutorial pump is placed on the drilled tile: go to `Dispatch` (cash grant inside `_setStep`).
+--- After the tutorial pump is placed on the drilled tile: first oil collection leg done → **`WaitPlotShipment`** (cash grant inside `_setStep`).
 function FtueService:OnFtueTutorialPumpPlaced(userId: number, placedCellKey: string)
 	if FtueConfig.Enabled ~= true then
 		return
@@ -487,7 +504,7 @@ function FtueService:OnFtueTutorialPumpPlaced(userId: number, placedCellKey: str
 	if not st then
 		return
 	end
-	if (st :: any).ftueStep ~= FtueConfig.Step.WaitPump then
+	if (st :: any).ftueStep ~= FtueConfig.Step.WaitDrillOil_WIP then
 		return
 	end
 	local want = player:GetAttribute(Constants.FtueRestrictPumpCellKeyAttribute)
@@ -495,16 +512,16 @@ function FtueService:OnFtueTutorialPumpPlaced(userId: number, placedCellKey: str
 		return
 	end
 	player:SetAttribute(Constants.FtueRestrictPumpCellKeyAttribute, nil)
-	self:SetStep(player, FtueConfig.Step.Dispatch)
+	self:SetStep(player, FtueConfig.Step.WaitPlotShipment)
 end
 
---- After a successful `RequestDispatchShipment` while on `Dispatch`: ship is sailing — show WaitShipment copy.
+--- After a successful `RequestDispatchShipment` while on **`WaitPlotShipment`**: ship is sailing — show `WaitShipment` copy.
 function FtueService:OnDispatchShipmentSuccess(userId: number)
 	if FtueConfig.Enabled ~= true then
 		return
 	end
 	local st = self._oilState:GetState(userId)
-	if not st or (st :: any).ftueStep ~= FtueConfig.Step.Dispatch then
+	if not st or (st :: any).ftueStep ~= FtueConfig.Step.WaitPlotShipment then
 		return
 	end
 	local player = Players:GetPlayerByUserId(userId)
@@ -530,10 +547,10 @@ function FtueService:OnShipmentDeliveredToWarehouse(userId: number, totalDeliver
 	if not player then
 		return
 	end
-	self:SetStep(player, FtueConfig.Step.Sell)
+	self:SetStep(player, FtueConfig.Step.WaitWarehouseSell)
 end
 
---- After any successful warehouse sale payout while on `Sell` — next step uses Continue (WaitSell).
+--- After any successful warehouse sale payout while on **`WaitWarehouseSell`** — next step uses Continue (`WaitSell`).
 function FtueService:OnFtueWarehouseSaleSuccess(userId: number, payout: number)
 	if FtueConfig.Enabled ~= true then
 		return
@@ -542,7 +559,7 @@ function FtueService:OnFtueWarehouseSaleSuccess(userId: number, payout: number)
 		return
 	end
 	local st = self._oilState:GetState(userId)
-	if not st or (st :: any).ftueStep ~= FtueConfig.Step.Sell then
+	if not st or (st :: any).ftueStep ~= FtueConfig.Step.WaitWarehouseSell then
 		return
 	end
 	local player = Players:GetPlayerByUserId(userId)

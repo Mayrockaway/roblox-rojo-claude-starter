@@ -1,5 +1,10 @@
 --!strict
--- Wires `HUD.Canvas.TeleportStack` buttons → server teleport `RemoteEvent`s (no payload).
+-- Wires HUD teleport buttons → server teleport `RemoteEvent`s (no payload).
+-- Buttons live in two authored regions of `HUD.Canvas`:
+--   * `TeleportStack`           → `TeleportHomeButton`, `TeleportShipButton`
+--   * `Buttons` (right-side grid) → `BuyButton`, `SellButton`, `HireButton`
+-- DAILY / SETTINGS / RobuxShop in the same `Buttons` grid open modal panels and
+-- are wired by `HudPanelRouter`, not here.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -10,13 +15,6 @@ local RemoteNames = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChil
 local BUTTON_TO_REMOTE: { [string]: string } = {
 	TeleportHomeButton = RemoteNames.RequestTeleportHome,
 	TeleportShipButton = RemoteNames.RequestTeleportToShip,
-	TeleportWarehouseButton = RemoteNames.RequestTeleportToWarehouse,
-	TeleportDocksButton = RemoteNames.RequestTeleportToDocks,
-	-- Dev / FTUE shortcuts on `LeftStack` (legacy): alias the existing teleport remotes.
-	ShopsTestButton = RemoteNames.RequestTeleportToDocks,
-	SellOilTestButton = RemoteNames.RequestTeleportToWarehouse,
-	-- New `HUD.Canvas.Buttons` grid (2x3): SHOP / SELL / HIRE delegate to teleports;
-	-- DAILY / SETTINGS / RobuxShop delegate to `HudPanelRouter` (panel toggles, not here).
 	BuyButton = RemoteNames.RequestTeleportToDocks,        -- "front of Shop" = DocksTeleportTarget
 	SellButton = RemoteNames.RequestTeleportToWarehouse,   -- player warehouse spawn
 	HireButton = RemoteNames.RequestTeleportToHire,        -- Workspace.HireTeleportTarget
@@ -46,7 +44,7 @@ function HudTeleportRouter.start(playerGui: PlayerGui)
 	if started then
 		return
 	end
-	print("[Client] HudTeleportRouter: start() — waiting for HUD TeleportStack + remotes…")
+	print("[Client] HudTeleportRouter: start() — waiting for HUD Canvas + remotes…")
 
 	task.spawn(function()
 		local remotesFolder = waitRemotesFolder()
@@ -85,16 +83,18 @@ function HudTeleportRouter.start(playerGui: PlayerGui)
 			local buttonsFrame = canvas:FindFirstChild("Buttons")
 
 			local function findTrigger(name: string): GuiButton?
-				-- Search order: new `Buttons` grid first (BuyButton/SellButton/HireButton
-				-- live there), then legacy `TeleportStack`, then a recursive `HUD` fallback.
-				if buttonsFrame and buttonsFrame:IsA("GuiObject") then
-					local b = buttonsFrame:FindFirstChild(name, true)
+				-- Search order:
+				--   1. `TeleportStack`  — TeleportHomeButton / TeleportShipButton
+				--   2. `Buttons` grid   — BuyButton / SellButton / HireButton
+				--   3. recursive HUD   — fallback for any future relocation
+				if stack and stack:IsA("GuiObject") then
+					local b = stack:FindFirstChild(name, true)
 					if b and b:IsA("GuiButton") then
 						return b :: GuiButton
 					end
 				end
-				if stack and stack:IsA("GuiObject") then
-					local b = stack:FindFirstChild(name, true)
+				if buttonsFrame and buttonsFrame:IsA("GuiObject") then
+					local b = buttonsFrame:FindFirstChild(name, true)
 					if b and b:IsA("GuiButton") then
 						return b :: GuiButton
 					end
@@ -155,7 +155,7 @@ function HudTeleportRouter.start(playerGui: PlayerGui)
 			print("[Client] HudTeleportRouter: teleport buttons wired (" .. tostring(wired) .. ").")
 			return
 		end
-		warn("[Client] HudTeleportRouter: timed out waiting for HUD TeleportStack.")
+		warn("[Client] HudTeleportRouter: timed out waiting for HUD Canvas / teleport buttons.")
 	end)
 end
 

@@ -1,18 +1,13 @@
 --!strict
 -- Toggles Studio-authored pointer **frames** (`*PointerRoot`) for the current `FtueStep`.
--- Most pointers live under `FTUEDialogueGui.Canvas.Pointers`. Ship / Sell arrows must sit under the **same
--- subtree as the card** — e.g. `ShipOilPanelGui.Canvas.PanelHost` (full-size transparent overlay **sibling
--- of** `Panel`, high `ZIndex`), **not** `Canvas.Pointers` beside `PanelHost`. Otherwise arrows use viewport
--- space while the panel uses the aspect-letterboxed `PanelHost` space and drift in the device emulator.
--- This module resolves `ShipBarrelPointerRoot` / `DispatchPointerRoot` and `SellBarrelPointerRoot` /
--- `SellButtonPointerRoot` under those modals first.
+-- Most pointers live under `FTUEDialogueGui.Canvas.Pointers`. Sell Oil modal arrows sit under the **same
+-- subtree as the card** — `SellOilPanelGui` — so they align with the letterboxed panel (see `PANEL_FIRST_ROOT`).
 
 local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
-local ShipOilPanel = require(script.Parent:WaitForChild("HudPanels"):WaitForChild("ShipOilPanel"))
 local SellOilPanel = require(script.Parent:WaitForChild("HudPanels"):WaitForChild("SellOilPanel"))
 local FtueDispatchPointerSignals = require(script.Parent:WaitForChild("FtueDispatchPointerSignals"))
 local FtueTpHomePointerState = require(script.Parent:WaitForChild("FtueTpHomePointerState"))
@@ -21,17 +16,20 @@ local FtueTpHomePointerSignals = require(script.Parent:WaitForChild("FtueTpHomeP
 local FtueUiPointers = {}
 
 --- Pointers live under the FTUE dialogue `ScreenGui`, not as separate top-level `ScreenGui`s.
---- `Dispatch` / `Sell` use sequential roots (HUD button → steppers → primary CTA); see `resolveActivePointerRootName`.
+--- `WaitWarehouseSell` uses sequential roots under `SellOilPanelGui`; see `resolveActivePointerRootName`.
 local POINTER_ROOT_BY_STEP: { [string]: string } = {
+	[FtueConfig.Step.WaitPlotShipment] = "PlotShipmentPointerRoot",
 	[FtueConfig.Step.WaitShipment] = "StraitPointerRoot",
+	[FtueConfig.Step.WaitDocksShipUpgrade] = "DocksUpgradePointerRoot",
+	[FtueConfig.Step.WaitDocksHire] = "DocksHireContractPointerRoot",
 	[FtueConfig.Step.WaitSell] = "OilPricePointerRoot",
 }
 
 local ALL_POINTER_ROOT_NAMES = {
-	"ShipOilPointerRoot",
-	"ShipBarrelPointerRoot",
-	"DispatchPointerRoot",
+	"PlotShipmentPointerRoot",
 	"StraitPointerRoot",
+	"DocksUpgradePointerRoot",
+	"DocksHireContractPointerRoot",
 	"SellOilPointerRoot",
 	"SellBarrelPointerRoot",
 	"SellButtonPointerRoot",
@@ -39,7 +37,6 @@ local ALL_POINTER_ROOT_NAMES = {
 	"TPHomePointerRoot",
 }
 
-local SHIP_OIL_PANEL_GUI = "ShipOilPanelGui"
 local SELL_OIL_PANEL_GUI = "SellOilPanelGui"
 local HUD_SCREEN_GUI = "HUD"
 
@@ -47,23 +44,12 @@ local warnedMissingTpHomeRoot = false
 
 --- Prefer modal `ScreenGui` for roots that must align with cargo / CTA (author under that panel in Studio).
 local PANEL_FIRST_ROOT: { [string]: string } = {
-	ShipBarrelPointerRoot = SHIP_OIL_PANEL_GUI,
-	DispatchPointerRoot = SHIP_OIL_PANEL_GUI,
 	SellBarrelPointerRoot = SELL_OIL_PANEL_GUI,
 	SellButtonPointerRoot = SELL_OIL_PANEL_GUI,
 }
 
 local function resolveActivePointerRootName(step: string): string?
-	if step == FtueConfig.Step.Dispatch then
-		local open, barrels = ShipOilPanel.peekOpenAndBarrelsForFtue()
-		if not open then
-			return "ShipOilPointerRoot"
-		elseif barrels <= 0 then
-			return "ShipBarrelPointerRoot"
-		else
-			return "DispatchPointerRoot"
-		end
-	elseif step == FtueConfig.Step.Sell then
+	if step == FtueConfig.Step.WaitWarehouseSell then
 		local open, barrels = SellOilPanel.peekOpenAndBarrelsForSellFtue()
 		if not open then
 			return "SellOilPointerRoot"
@@ -357,10 +343,6 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 		hookDescendantRefresh(dlg0)
 	end
 
-	local ship0 = playerGui:FindFirstChild(SHIP_OIL_PANEL_GUI, true)
-	if ship0 and ship0:IsA("ScreenGui") then
-		hookDescendantRefresh(ship0)
-	end
 	local sell0 = playerGui:FindFirstChild(SELL_OIL_PANEL_GUI, true)
 	if sell0 and sell0:IsA("ScreenGui") then
 		hookDescendantRefresh(sell0)
@@ -371,7 +353,7 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 			hookDescendantRefresh(ch)
 			task.defer(refresh)
 		end
-		if ch:IsA("ScreenGui") and (ch.Name == SHIP_OIL_PANEL_GUI or ch.Name == SELL_OIL_PANEL_GUI) then
+		if ch:IsA("ScreenGui") and ch.Name == SELL_OIL_PANEL_GUI then
 			hookDescendantRefresh(ch)
 			task.defer(refresh)
 		end
@@ -384,7 +366,7 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 		if inst.Name == "Pointers" then
 			task.defer(refresh)
 		end
-		if inst.Name == SHIP_OIL_PANEL_GUI or inst.Name == SELL_OIL_PANEL_GUI or inst.Name == HUD_SCREEN_GUI then
+		if inst.Name == SELL_OIL_PANEL_GUI or inst.Name == HUD_SCREEN_GUI then
 			task.defer(refresh)
 		end
 	end)

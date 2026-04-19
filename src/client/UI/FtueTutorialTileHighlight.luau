@@ -1,5 +1,5 @@
 --!strict
--- World-space raised border on the FTUE tutorial tile (WaitDrill / WaitPipe / WaitPump): reads
+-- World-space raised border on the FTUE tutorial tile (**`WaitDrillOil_WIP`** drill/pipe/pump legs): reads
 -- `FtueRestrictDrillCellKey` / `FtueRestrictPipeCellKey` / `FtueRestrictPumpCellKey` on the player.
 
 local Workspace = game:GetService("Workspace")

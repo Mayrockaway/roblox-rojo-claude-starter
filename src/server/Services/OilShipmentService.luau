@@ -693,7 +693,7 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 	if
 		FtueConfig.Enabled == true
 		and (state.ftueEscortShipmentRemaining or 0) > 0
-		and ftueStepNow == FtueConfig.Step.Dispatch
+		and ftueStepNow == FtueConfig.Step.WaitPlotShipment
 	then
 		tutorialEscort = true
 		local maxStats = ShipStats.Resolve(ShipUpgradeConfig.MaxSpeedLevel, capL)
@@ -768,7 +768,7 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 
 	if self._ftueService and FtueConfig.Enabled then
 		local stD = self._oilStateService:GetState(player.UserId)
-		if stD and (stD :: any).ftueStep == FtueConfig.Step.Dispatch then
+		if stD and (stD :: any).ftueStep == FtueConfig.Step.WaitPlotShipment then
 			(self._ftueService :: any):OnDispatchShipmentSuccess(player.UserId)
 		end
 	end

@@ -52,8 +52,19 @@ local scrollResizeConn: RBXScriptConnection? = nil
 local authoredSize: UDim2? = nil
 local authoredPosition: UDim2? = nil
 local authoredAnchor: Vector2? = nil
+local authoredCornerRadius: UDim? = nil
 local authoredHeaderSize: UDim2? = nil
 local authoredHeaderPosition: UDim2? = nil
+-- Title geometry inside `ManifestHeader`. The Studio author positions the title for
+-- the **expanded** layout where the header is a thin top strip (~32px). When we
+-- stretch the header to fill the collapsed pill, those same scale-based Position /
+-- AnchorPoint values push the title toward the top of the pill instead of centering
+-- it. Capture once, override on collapse, restore on expand.
+local authoredTitleSize: UDim2? = nil
+local authoredTitlePosition: UDim2? = nil
+local authoredTitleAnchor: Vector2? = nil
+local authoredTitleXAlignment: Enum.TextXAlignment? = nil
+
 -- `UIAspectRatioConstraint` has **no** `Enabled` property; the documented way to
 -- toggle a constraint is to reparent it. We hold the Lua reference here so the
 -- instance survives `.Parent = nil` (no GC) and can be reattached on expand.
@@ -489,10 +500,33 @@ local function captureAuthoredGeometry(panel: Frame)
 	if arc then
 		authoredAspect = arc
 	end
+	local uic = panel:FindFirstChildOfClass("UICorner")
+	if uic then
+		authoredCornerRadius = uic.CornerRadius
+	end
 	local hdr = panel:FindFirstChild("ManifestHeader")
 	if hdr and hdr:IsA("GuiObject") then
 		authoredHeaderSize = hdr.Size
 		authoredHeaderPosition = hdr.Position
+		local title = hdr:FindFirstChild("ManifestTitle")
+		if title and title:IsA("TextLabel") then
+			local t = title :: TextLabel
+			authoredTitleSize = t.Size
+			authoredTitlePosition = t.Position
+			authoredTitleAnchor = t.AnchorPoint
+			authoredTitleXAlignment = t.TextXAlignment
+		end
+	end
+end
+
+--- Strip any leftover `CollapseChevron` from a prior session so it doesn't
+--- linger after we removed the chevron feature. Cheap; no-op when absent.
+local function removeLegacyCollapseChevron(panel: Frame)
+	local hdr = panel:FindFirstChild("ManifestHeader")
+	if not hdr then return end
+	local chev = hdr:FindFirstChild("CollapseChevron")
+	if chev then
+		chev:Destroy()
 	end
 end
 
@@ -576,11 +610,21 @@ local function applyCollapseState(panel: Frame)
 		end
 	end
 	local hdr = panel:FindFirstChild("ManifestHeader")
+	-- Corner radius: authored is `UDim.new(0.1, 0)` = 10% of the smaller axis. At full
+	-- card size that's ~21px (looks intentionally rounded); at the small collapsed pill
+	-- size that drops to ~3-4px and reads as a square box. Scale-up to a true pill
+	-- (`UDim.new(0.5, 0)` = 50% of half-height = fully round ends) when collapsed,
+	-- restore the authored value on expand. Stored on a separate `UICorner` so we
+	-- don't blow away other authored properties on the panel.
+	local uic = panel:FindFirstChildOfClass("UICorner")
 	if isCollapsed then
 		-- Detach the aspect constraint so the collapsed pill isn't forced to keep
 		-- the tall authored ratio (which would shrink the X axis to a sliver).
 		if authoredAspect and authoredAspect.Parent ~= nil then
 			authoredAspect.Parent = nil
+		end
+		if uic then
+			uic.CornerRadius = UDim.new(0.5, 0)
 		end
 		-- Switch to a top-left anchor so `Position` represents the top-left corner
 		-- directly, with no anchor-vs-size math to get wrong. Using **Scale** for both
@@ -621,26 +665,74 @@ local function applyCollapseState(panel: Frame)
 
 		-- Stretch the header to fill the whole pill so the `TextScaled` title
 		-- reclaims the available pixel area (capped by `UITextSizeConstraint`).
+		-- Also re-anchor `ManifestTitle` to the geometric center — its authored
+		-- Position / AnchorPoint targets the small expanded title strip and would
+		-- otherwise push the text toward the top of the stretched pill.
 		if hdr and hdr:IsA("GuiObject") then
 			hdr.Size = UDim2.new(1, 0, 1, 0)
 			hdr.Position = UDim2.new(0, 0, 0, 0)
+			local title = hdr:FindFirstChild("ManifestTitle")
+			if title and title:IsA("TextLabel") then
+				local t = title :: TextLabel
+				t.AnchorPoint = Vector2.new(0.5, 0.5)
+				t.Position = UDim2.fromScale(0.5, 0.5)
+				-- Width leaves ~14% on the right for the chevron + 4-8px insets;
+				-- height fills most of the band so `TextScaled` picks the largest
+				-- legible size against `UITextSizeConstraint` (if authored).
+				t.Size = UDim2.fromScale(0.78, 0.85)
+				t.TextXAlignment = Enum.TextXAlignment.Center
+			end
 		end
 	else
-		-- Restore in order: aspect → anchor → size → position. Reattaching the aspect
-		-- before setting Size lets it clamp the rendered rect on the same frame Size
-		-- is applied. Anchor restoration must precede Position restoration because
-		-- Position is interpreted relative to AnchorPoint.
+		-- Expand: pin the **same top-left corner** as the collapsed pill (CashStrip's
+		-- left edge X + captured expanded-top Y). That way the panel grows downward
+		-- from a single fixed anchor instead of "jumping" to the original right-anchored
+		-- authored slot, which sits ~5-20px right of the left HUD column on wide
+		-- viewports because the authored AnchorPoint is (1, 0.5).
+		--
+		-- We reattach the aspect constraint so the card keeps its tall silhouette,
+		-- restore the authored UDim2 Size, but **keep AnchorPoint at (0, 0)** and
+		-- compute Position from the same X/Y fractions the collapsed branch uses.
+		-- Original `authoredAnchor` / `authoredPosition` are preserved on the module
+		-- (not on the instance) in case we ever need to revert to the Studio-authored
+		-- right-anchored layout — they're intentionally not re-applied here.
 		if authoredAspect and authoredAspect.Parent == nil then
 			authoredAspect.Parent = panel
 		end
-		if authoredAnchor then
-			panel.AnchorPoint = authoredAnchor
+		if uic and authoredCornerRadius then
+			uic.CornerRadius = authoredCornerRadius
 		end
+		panel.AnchorPoint = Vector2.new(0, 0)
 		panel.Size = authoredSize
-		panel.Position = authoredPosition
+
+		local fx = getCashStripLeftEdgeFraction(panel)
+		local fy = expandedTopLeftFracY
+		if not fy then
+			captureExpandedRenderedTopLeftFraction(panel)
+			fy = expandedTopLeftFracY
+		end
+		if not fx then
+			-- Fallback: math-derived corner from the authored UDim2 + anchor.
+			local anchor = authoredAnchor or panel.AnchorPoint
+			fx = (authoredPosition :: UDim2).X.Scale - anchor.X * (authoredSize :: UDim2).X.Scale
+		end
+		if not fy then
+			local anchor = authoredAnchor or panel.AnchorPoint
+			fy = (authoredPosition :: UDim2).Y.Scale - anchor.Y * (authoredSize :: UDim2).Y.Scale
+		end
+		panel.Position = UDim2.fromScale(fx, fy)
+
 		if hdr and hdr:IsA("GuiObject") and authoredHeaderSize and authoredHeaderPosition then
 			hdr.Size = authoredHeaderSize
 			hdr.Position = authoredHeaderPosition
+			local title = hdr:FindFirstChild("ManifestTitle")
+			if title and title:IsA("TextLabel") and authoredTitleSize and authoredTitlePosition then
+				local t = title :: TextLabel
+				if authoredTitleAnchor then t.AnchorPoint = authoredTitleAnchor end
+				t.Position = authoredTitlePosition
+				t.Size = authoredTitleSize
+				if authoredTitleXAlignment then t.TextXAlignment = authoredTitleXAlignment end
+			end
 		end
 	end
 end
@@ -794,6 +886,7 @@ function ActiveManifestController.start(playerGui: PlayerGui)
 			panelRef = panel
 			captureAuthoredGeometry(panel)
 			ensureHeaderToggle(panel)
+			removeLegacyCollapseChevron(panel)
 			-- Defer the initial collapse so the panel renders once at its expanded
 			-- (post-`UIAspectRatioConstraint`) geometry first. We need that single
 			-- layout pass to capture the rendered top-left fraction; without it,

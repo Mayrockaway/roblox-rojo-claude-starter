@@ -1313,10 +1313,15 @@ local function formatCashWithCommas(amount: number): string
 end
 
 local function resolveCashTextLabel(pg: PlayerGui): TextLabel?
+	-- `CashStrip` lives directly under `HUD.Canvas` (legacy `LeftStack` parent removed).
+	-- Fall back to a recursive search so a future re-author into a sibling frame still
+	-- resolves without a code change.
 	local hud = pg:FindFirstChild("HUD")
 	local canvas = hud and hud:FindFirstChild("Canvas")
-	local left = canvas and canvas:FindFirstChild("LeftStack")
-	local strip = left and left:FindFirstChild("CashStrip")
+	local strip = canvas and canvas:FindFirstChild("CashStrip")
+	if not strip then
+		strip = hud and hud:FindFirstChild("CashStrip", true)
+	end
 	local lbl = strip and strip:FindFirstChild("CashText")
 	if lbl and lbl:IsA("TextLabel") then
 		return lbl

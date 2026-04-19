@@ -20,6 +20,8 @@ local UiSfx = require(script.Parent.Parent:WaitForChild("UiSfx"))
 local ACK_STEPS: { [string]: boolean } = {
 	[FtueConfig.Step.Intro] = true,
 	[FtueConfig.Step.WaitSell] = true,
+	[FtueConfig.Step.WaitDocksShipUpgrade] = true,
+	[FtueConfig.Step.WaitDocksHire] = true,
 }
 
 local FtueDialogueController = {}
@@ -300,7 +302,7 @@ function FtueDialogueController.start(
 		UiSfx.playFtueDialogueOpen()
 	end
 	local function maybePlayFtueKaching(forStep: string?)
-		if forStep ~= FtueConfig.Step.Dispatch and forStep ~= FtueConfig.Step.Done then
+		if forStep ~= FtueConfig.Step.WaitPlotShipment and forStep ~= FtueConfig.Step.Done then
 			return
 		end
 		if lastKachingStep == forStep then
@@ -433,7 +435,7 @@ function FtueDialogueController.start(
 			setGuiText(bodySlot, b)
 			lastBody = b
 		end
-		if step == FtueConfig.Step.Dispatch then
+		if step == FtueConfig.Step.WaitPlotShipment then
 			maybePlayFtueKaching(step)
 		end
 		if continueBtn then
