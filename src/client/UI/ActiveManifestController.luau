@@ -51,12 +51,25 @@ local scrollResizeConn: RBXScriptConnection? = nil
 -- transition re-applies the auto state (so a stuck-collapsed pill never traps the player).
 local authoredSize: UDim2? = nil
 local authoredPosition: UDim2? = nil
+local authoredAnchor: Vector2? = nil
 local authoredHeaderSize: UDim2? = nil
 local authoredHeaderPosition: UDim2? = nil
 -- `UIAspectRatioConstraint` has **no** `Enabled` property; the documented way to
 -- toggle a constraint is to reparent it. We hold the Lua reference here so the
 -- instance survives `.Parent = nil` (no GC) and can be reattached on expand.
 local authoredAspect: UIAspectRatioConstraint? = nil
+-- Captured **once** the first time we see the panel rendered while expanded.
+-- These are the rendered top-left of the EXPANDED panel expressed as a
+-- 0-1 fraction of the parent's *inner* (UIPadding-aware) box. Stored as **Scale**
+-- because the parent's inner box scales proportionally with the viewport, so the
+-- collapsed pill stays anchored to the same visual slot across any viewport size.
+-- The rendered top-left is **not** the same as `authoredPosition - anchor * authoredSize`
+-- when a `UIAspectRatioConstraint FitWithinMaxSize` is shrinking one axis: the math
+-- uses the **authored** UDim2 size, but the rendered rect is **clamped** by the
+-- constraint, leaving a few pixels of drift. Sourcing from `AbsolutePosition` after
+-- one layout pass avoids that drift entirely.
+local expandedTopLeftFracX: number? = nil
+local expandedTopLeftFracY: number? = nil
 local isCollapsed = true
 local wasActive = false
 local headerToggleConn: RBXScriptConnection? = nil
@@ -462,12 +475,16 @@ end
 
 --- Snapshot the panel's authored Studio geometry once so the collapse/expand toggle
 --- can restore it cleanly. Safe to call repeatedly; only the first call wins.
+--- This is the **UDim2** capture (independent of layout); the rendered top-left
+--- fraction is captured separately by `captureExpandedRenderedTopLeftFraction`
+--- after layout has settled.
 local function captureAuthoredGeometry(panel: Frame)
 	if authoredSize then
 		return
 	end
 	authoredSize = panel.Size
 	authoredPosition = panel.Position
+	authoredAnchor = panel.AnchorPoint
 	local arc = panel:FindFirstChildOfClass("UIAspectRatioConstraint")
 	if arc then
 		authoredAspect = arc
@@ -477,6 +494,69 @@ local function captureAuthoredGeometry(panel: Frame)
 		authoredHeaderSize = hdr.Size
 		authoredHeaderPosition = hdr.Position
 	end
+end
+
+--- Convert a `UIPadding` UDim child (e.g. `PaddingLeft`) into pixels relative to the
+--- containing axis size (`UIPadding` itself is configured as `UDim` per side).
+local function udimToPx(u: UDim, dim: number): number
+	return u.Scale * dim + u.Offset
+end
+
+--- Compute the parent's *inner* layout box (post-`UIPadding`) in viewport pixels.
+--- Returns `(innerX, innerY, innerW, innerH)`. A child positioned at `Scale (sx, sy)`
+--- with anchor `(0, 0)` lands at viewport `(innerX + sx * innerW, innerY + sy * innerH)`.
+local function getInnerBoxPx(parentFrame: GuiObject): (number, number, number, number)
+	local pad = parentFrame:FindFirstChildOfClass("UIPadding")
+	local absSize = parentFrame.AbsoluteSize
+	local absPos = parentFrame.AbsolutePosition
+	local padL = if pad then udimToPx(pad.PaddingLeft, absSize.X) else 0
+	local padR = if pad then udimToPx(pad.PaddingRight, absSize.X) else 0
+	local padT = if pad then udimToPx(pad.PaddingTop, absSize.Y) else 0
+	local padB = if pad then udimToPx(pad.PaddingBottom, absSize.Y) else 0
+	return absPos.X + padL, absPos.Y + padT, math.max(1, absSize.X - padL - padR), math.max(1, absSize.Y - padT - padB)
+end
+
+--- Snapshot the rendered top-left of the **expanded** panel as a 0-1 fraction of the
+--- parent's inner padded box. Must be called when the panel is in its expanded state
+--- and after a layout pass (so `AbsolutePosition` reflects post-`UIAspectRatioConstraint`
+--- geometry). Idempotent — only the first call wins.
+local function captureExpandedRenderedTopLeftFraction(panel: Frame)
+	if expandedTopLeftFracX ~= nil then
+		return
+	end
+	local parent = panel.Parent
+	if not (parent and parent:IsA("GuiObject")) then
+		return
+	end
+	if panel.AbsoluteSize.X <= 0 or panel.AbsoluteSize.Y <= 0 then
+		return
+	end
+	local innerX, innerY, innerW, innerH = getInnerBoxPx(parent :: GuiObject)
+	expandedTopLeftFracX = (panel.AbsolutePosition.X - innerX) / innerW
+	expandedTopLeftFracY = (panel.AbsolutePosition.Y - innerY) / innerH
+end
+
+--- Compute the **CashStrip's left-edge fraction** in the same parent inner-box
+--- coordinate space the collapsed pill uses. We re-read this every collapse rather
+--- than caching once because it's cheap, and reading live tracks any future
+--- re-author of the cash strip (or viewport reflow that subtly shifts its absolute
+--- pixel) without a stale snapshot. CashStrip is the canonical "left HUD column"
+--- reference: `Cash` row at the top, `ActiveManifestPanel` collapsed pill below it,
+--- so the pill's left edge stays flush with everything in that column.
+local function getCashStripLeftEdgeFraction(panel: Frame): number?
+	local parent = panel.Parent
+	if not (parent and parent:IsA("GuiObject")) then
+		return nil
+	end
+	local cashStrip = parent:FindFirstChild("CashStrip")
+	if not (cashStrip and cashStrip:IsA("GuiObject")) then
+		return nil
+	end
+	if cashStrip.AbsoluteSize.X <= 0 then
+		return nil
+	end
+	local innerX, _innerY, innerW, _innerH = getInnerBoxPx(parent :: GuiObject)
+	return (cashStrip.AbsolutePosition.X - innerX) / innerW
 end
 
 --- Apply the current `isCollapsed` state to the panel: shrink to header band when
@@ -502,29 +582,43 @@ local function applyCollapseState(panel: Frame)
 		if authoredAspect and authoredAspect.Parent ~= nil then
 			authoredAspect.Parent = nil
 		end
-		local sizeX = COLLAPSED_X_SCALE
-		local sizeY = COLLAPSED_Y_SCALE
-		-- Keep the collapsed pill aligned to the **top-left corner** of the expanded
-		-- panel's bounding box. That way the pill stays in line with the rest of the
-		-- left HUD column (Cash strip above, Teleport stack below) and doesn't drift
-		-- away from its authored slot when a voyage ends.
+		-- Switch to a top-left anchor so `Position` represents the top-left corner
+		-- directly, with no anchor-vs-size math to get wrong. Using **Scale** for both
+		-- Position and Size keeps the pill responsive to viewport changes; the parent's
+		-- inner padded box scales proportionally with the viewport so a fixed scale
+		-- fraction stays anchored to the same visual slot.
+		panel.AnchorPoint = Vector2.new(0, 0)
+		panel.Size = UDim2.fromScale(COLLAPSED_X_SCALE, COLLAPSED_Y_SCALE)
+
+		-- X axis: anchor to the **CashStrip's left edge**, not the expanded panel's
+		-- top-left. The expanded panel is right-anchored (AnchorPoint.X = 1) so its
+		-- top-left X drifts leftward as the viewport widens, dragging the collapsed
+		-- pill out of the left HUD column. CashStrip is anchored top-left and lives
+		-- in that column with the teleport buttons, so using its left edge keeps the
+		-- collapsed pill flush with the rest of the column at any viewport width.
 		--
-		-- Math (Scale axis only; Offset is preserved verbatim):
-		--   expandedTopLeft = authoredPosition - anchor * authoredSize
-		--   collapsedPos    = expandedTopLeft + anchor * collapsedSize
-		--                   = authoredPosition - anchor * (authoredSize - collapsedSize)
-		-- This works for any authored AnchorPoint (Studio default (1, 0.5) included),
-		-- so designers can re-anchor the panel without breaking the collapse.
-		local anchor = panel.AnchorPoint
-		local newPosX = authoredPosition.X.Scale - anchor.X * (authoredSize.X.Scale - sizeX)
-		local newPosY = authoredPosition.Y.Scale - anchor.Y * (authoredSize.Y.Scale - sizeY)
-		panel.Size = UDim2.new(sizeX, 0, sizeY, 0)
-		panel.Position = UDim2.new(
-			newPosX,
-			authoredPosition.X.Offset,
-			newPosY,
-			authoredPosition.Y.Offset
-		)
+		-- Y axis: keep the captured rendered top of the expanded panel so the pill
+		-- still sits where the full panel's top edge would, preserving the vertical
+		-- slot designers authored.
+		local fx = getCashStripLeftEdgeFraction(panel)
+		local fy = expandedTopLeftFracY
+		if not fy then
+			-- Lazily try once more in case the panel has now been laid out.
+			captureExpandedRenderedTopLeftFraction(panel)
+			fy = expandedTopLeftFracY
+		end
+		if not fx then
+			-- Fallback: derive X from the authored panel UDim2 corner. Rare path —
+			-- only triggers if the CashStrip child is missing or hasn't laid out yet.
+			local anchor = authoredAnchor or panel.AnchorPoint
+			fx = (authoredPosition :: UDim2).X.Scale - anchor.X * (authoredSize :: UDim2).X.Scale
+		end
+		if not fy then
+			local anchor = authoredAnchor or panel.AnchorPoint
+			fy = (authoredPosition :: UDim2).Y.Scale - anchor.Y * (authoredSize :: UDim2).Y.Scale
+		end
+		panel.Position = UDim2.fromScale(fx, fy)
+
 		-- Stretch the header to fill the whole pill so the `TextScaled` title
 		-- reclaims the available pixel area (capped by `UITextSizeConstraint`).
 		if hdr and hdr:IsA("GuiObject") then
@@ -532,8 +626,15 @@ local function applyCollapseState(panel: Frame)
 			hdr.Position = UDim2.new(0, 0, 0, 0)
 		end
 	else
+		-- Restore in order: aspect → anchor → size → position. Reattaching the aspect
+		-- before setting Size lets it clamp the rendered rect on the same frame Size
+		-- is applied. Anchor restoration must precede Position restoration because
+		-- Position is interpreted relative to AnchorPoint.
 		if authoredAspect and authoredAspect.Parent == nil then
 			authoredAspect.Parent = panel
+		end
+		if authoredAnchor then
+			panel.AnchorPoint = authoredAnchor
 		end
 		panel.Size = authoredSize
 		panel.Position = authoredPosition
@@ -693,14 +794,36 @@ function ActiveManifestController.start(playerGui: PlayerGui)
 			panelRef = panel
 			captureAuthoredGeometry(panel)
 			ensureHeaderToggle(panel)
-			setIdle(panel)
-			print(
-				string.format(
-					"[Client] ActiveManifestController: bound panel; collapsed=%s authoredSize=%s",
-					tostring(isCollapsed),
-					tostring(authoredSize)
+			-- Defer the initial collapse so the panel renders once at its expanded
+			-- (post-`UIAspectRatioConstraint`) geometry first. We need that single
+			-- layout pass to capture the rendered top-left fraction; without it,
+			-- `AbsolutePosition` is `(0, 0)` and the captured fraction would lie.
+			-- Wait until layout reports a non-zero `AbsoluteSize` before snapshotting,
+			-- bounded so a stuck layout never blocks the idle state forever.
+			task.spawn(function()
+				for _ = 1, 60 do
+					if not panel.Parent then
+						return
+					end
+					if panel.AbsoluteSize.X > 0 and panel.AbsoluteSize.Y > 0 then
+						break
+					end
+					task.wait()
+				end
+				if panel.Parent then
+					captureExpandedRenderedTopLeftFraction(panel)
+				end
+				setIdle(panel)
+				print(
+					string.format(
+						"[Client] ActiveManifestController: bound panel; collapsed=%s authoredSize=%s expandedTopLeftFrac=(%s, %s)",
+						tostring(isCollapsed),
+						tostring(authoredSize),
+						tostring(expandedTopLeftFracX),
+						tostring(expandedTopLeftFracY)
+					)
 				)
-			)
+			end)
 		end
 	else
 		warn("[Client] ActiveManifestController.start: ActiveManifestPanel not found under HUD.Canvas yet.")

@@ -3,8 +3,10 @@
 -- Retries until every mapped button is wired or attempts exhaust — StarterGui clones can arrive late.
 
 local ActiveManifestController = require(script.Parent.ActiveManifestController)
+local DailyPanel = require(script.Parent.HudPanels.DailyPanel)
 local EquipmentShopPanel = require(script.Parent.HudPanels.EquipmentShopPanel)
 local OilPriceInfoPanel = require(script.Parent.HudPanels.OilPriceInfoPanel)
+local RobuxShopPanel = require(script.Parent.HudPanels.RobuxShopPanel)
 local SellOilPanel = require(script.Parent.HudPanels.SellOilPanel)
 local ShipManagementPanel = require(script.Parent.HudPanels.ShipManagementPanel)
 local ShipOilPanel = require(script.Parent.HudPanels.ShipOilPanel)
@@ -16,6 +18,10 @@ local HudTriggerHover = require(script.Parent.HudTriggerHover)
 
 local STRAIT_CONTROL_CTA_ALIASES = { "StraitControlCta", "StraitControlCTA" }
 
+-- Maps **HUD GuiButton.Name** → **target ScreenGui name**. Buttons currently live under three
+-- authored regions of the HUD: `TopRow`, `LeftStack` (legacy), and `Canvas.Buttons` (the new
+-- right-side 2x3 grid + the `RobuxShop` button as a direct child of `Canvas`).
+-- `findHudModalButton` searches all three before falling back to a recursive HUD scan.
 local BUTTON_TO_SCREEN: { [string]: string } = {
 	OilPriceButton = OilPriceInfoPanel.screenName(),
 	StraitStatusButton = StraitInfoPanel.screenName(),
@@ -25,6 +31,9 @@ local BUTTON_TO_SCREEN: { [string]: string } = {
 	ManageShipButton = ShipManagementPanel.screenName(),
 	SettingsButton = SettingsPanel.screenName(),
 	SellOilButton = SellOilPanel.screenName(),
+	-- New HUD `Canvas.Buttons` grid + standalone Robux button.
+	DailyButton = DailyPanel.screenName(),
+	RobuxShop = RobuxShopPanel.screenName(),
 }
 
 local SCREEN_BIND: { [string]: (PlayerGui) -> HudPanelTypes.HudPanelController? } = {
@@ -36,6 +45,8 @@ local SCREEN_BIND: { [string]: (PlayerGui) -> HudPanelTypes.HudPanelController? 
 	[ShipManagementPanel.screenName()] = ShipManagementPanel.bind,
 	[SettingsPanel.screenName()] = SettingsPanel.bind,
 	[SellOilPanel.screenName()] = SellOilPanel.bind,
+	[DailyPanel.screenName()] = DailyPanel.bind,
+	[RobuxShopPanel.screenName()] = RobuxShopPanel.bind,
 }
 
 local HudPanelRouter = {}
@@ -91,12 +102,16 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 				continue
 			end
 			local canvas = hud:FindFirstChild("Canvas")
-			local leftStack = canvas and canvas:FindFirstChild("LeftStack")
-			local topRow = canvas and canvas:FindFirstChild("TopRow")
-			if not (leftStack and leftStack:IsA("Frame")) or not (topRow and topRow:IsA("Frame")) then
+			-- We only require `Canvas` to exist. `TopRow`, `LeftStack`, and `Buttons` are each
+			-- looked up per-button in `findHudModalButton`; missing any one of them is fine
+			-- (e.g. `LeftStack` is being deprecated as buttons migrate into `Buttons`).
+			if not (canvas and canvas:IsA("Frame")) then
 				task.wait(0.5)
 				continue
 			end
+			local leftStack = canvas:FindFirstChild("LeftStack")
+			local topRow = canvas:FindFirstChild("TopRow")
+			local buttonsFrame = canvas:FindFirstChild("Buttons")
 
 			ActiveManifestController.start(playerGui)
 
@@ -151,18 +166,29 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 
 			local function findHudModalButton(name: string): GuiButton?
 				local names = if name == "StraitControlCta" then STRAIT_CONTROL_CTA_ALIASES else { name }
+				-- Search in this order so the **new authored region wins** when a stale
+				-- duplicate of the same button name still lives under `LeftStack`:
+				--   1. Direct child of `Canvas`  (e.g. `RobuxShop`)
+				--   2. `Canvas.Buttons`           (the new 2x3 grid)
+				--   3. `Canvas.TopRow`            (status bar buttons)
+				--   4. `Canvas.LeftStack`         (legacy — being removed)
+				--   5. Recursive `HUD` fallback   (anywhere else in the HUD)
+				local roots: { Instance } = {}
+				if canvas then table.insert(roots, canvas) end
+				if buttonsFrame and buttonsFrame:IsA("GuiObject") then table.insert(roots, buttonsFrame) end
+				if topRow and topRow:IsA("GuiObject") then table.insert(roots, topRow) end
+				if leftStack and leftStack:IsA("GuiObject") then table.insert(roots, leftStack) end
+				table.insert(roots, hud)
 				for _, tryName in ipairs(names) do
-					local b = topRow:FindFirstChild(tryName, true)
-					if b and b:IsA("GuiButton") then
-						return b
-					end
-					b = leftStack:FindFirstChild(tryName, true)
-					if b and b:IsA("GuiButton") then
-						return b
-					end
-					b = hud:FindFirstChild(tryName, true)
-					if b and b:IsA("GuiButton") then
-						return b
+					for i, root in ipairs(roots) do
+						-- Direct child first when the root is `Canvas` so we don't recurse
+						-- into `Buttons` / `TopRow` / etc. and grab the wrong one.
+						local b: Instance? = if i == 1 and root == canvas
+							then root:FindFirstChild(tryName)
+							else root:FindFirstChild(tryName, true)
+						if b and b:IsA("GuiButton") then
+							return b :: GuiButton
+						end
 					end
 				end
 				return nil

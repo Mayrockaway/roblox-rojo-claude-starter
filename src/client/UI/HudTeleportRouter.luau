@@ -12,9 +12,14 @@ local BUTTON_TO_REMOTE: { [string]: string } = {
 	TeleportShipButton = RemoteNames.RequestTeleportToShip,
 	TeleportWarehouseButton = RemoteNames.RequestTeleportToWarehouse,
 	TeleportDocksButton = RemoteNames.RequestTeleportToDocks,
-	-- Dev / FTUE shortcuts on `LeftStack`: alias the existing teleport remotes.
+	-- Dev / FTUE shortcuts on `LeftStack` (legacy): alias the existing teleport remotes.
 	ShopsTestButton = RemoteNames.RequestTeleportToDocks,
 	SellOilTestButton = RemoteNames.RequestTeleportToWarehouse,
+	-- New `HUD.Canvas.Buttons` grid (2x3): SHOP / SELL / HIRE delegate to teleports;
+	-- DAILY / SETTINGS / RobuxShop delegate to `HudPanelRouter` (panel toggles, not here).
+	BuyButton = RemoteNames.RequestTeleportToDocks,        -- "front of Shop" = DocksTeleportTarget
+	SellButton = RemoteNames.RequestTeleportToWarehouse,   -- player warehouse spawn
+	HireButton = RemoteNames.RequestTeleportToHire,        -- Workspace.HireTeleportTarget
 }
 
 local HudTeleportRouter = {}
@@ -70,20 +75,33 @@ function HudTeleportRouter.start(playerGui: PlayerGui)
 				continue
 			end
 			local canvas = hud:FindFirstChild("Canvas")
-			local stack = canvas and canvas:FindFirstChild("TeleportStack")
-			if not (stack and stack:IsA("Frame")) then
+			-- We only require `Canvas` here. `TeleportStack` (legacy left-side stack) and the
+			-- new `Buttons` grid are each consulted in `findTrigger`; either may be missing.
+			if not (canvas and canvas:IsA("Frame")) then
 				task.wait(0.5)
 				continue
 			end
+			local stack = canvas:FindFirstChild("TeleportStack")
+			local buttonsFrame = canvas:FindFirstChild("Buttons")
 
 			local function findTrigger(name: string): GuiButton?
-				local b = stack:FindFirstChild(name, true)
-				if b and b:IsA("GuiButton") then
-					return b
+				-- Search order: new `Buttons` grid first (BuyButton/SellButton/HireButton
+				-- live there), then legacy `TeleportStack`, then a recursive `HUD` fallback.
+				if buttonsFrame and buttonsFrame:IsA("GuiObject") then
+					local b = buttonsFrame:FindFirstChild(name, true)
+					if b and b:IsA("GuiButton") then
+						return b :: GuiButton
+					end
 				end
-				b = hud:FindFirstChild(name, true)
-				if b and b:IsA("GuiButton") then
-					return b
+				if stack and stack:IsA("GuiObject") then
+					local b = stack:FindFirstChild(name, true)
+					if b and b:IsA("GuiButton") then
+						return b :: GuiButton
+					end
+				end
+				local fb = hud:FindFirstChild(name, true)
+				if fb and fb:IsA("GuiButton") then
+					return fb :: GuiButton
 				end
 				return nil
 			end

@@ -474,6 +474,11 @@ function OilShipmentService:Start()
 	table.insert(self._connections, teleportDocks.OnServerEvent:Connect(function(player)
 		self:_handleTeleportToDocks(player)
 	end))
+
+	local teleportHire = self._remoteService:GetEvent(RemoteNames.RequestTeleportToHire)
+	table.insert(self._connections, teleportHire.OnServerEvent:Connect(function(player)
+		self:_handleTeleportToHire(player)
+	end))
 end
 
 function OilShipmentService:_handleTeleportToShip(player: Player, payload: any?)
@@ -566,6 +571,39 @@ function OilShipmentService:_handleTeleportToDocks(player: Player)
 	if boatSpawn and boatSpawn:IsA("BasePart") then
 		CharacterTeleport.teleportWithUnseat(character, CFrame.new(boatSpawn.Position + Vector3.new(0, 5, 0)), "RequestTeleportToDocks:fallback")
 	end
+end
+
+--- `Workspace.HireTeleportTarget`: Attachment / BasePart / Model pivot. No fallback —
+--- if the authored target is missing we drop the request rather than dumping the player on
+--- their plot, since "Hire" is a deliberately authored destination.
+local function getHireTeleportCFrame(): CFrame?
+	local target = Workspace:FindFirstChild("HireTeleportTarget", true)
+	if not target then
+		return nil
+	end
+	if target:IsA("Attachment") then
+		return target.WorldCFrame
+	end
+	if target:IsA("BasePart") then
+		return target:GetPivot()
+	end
+	if target:IsA("Model") then
+		return target:GetPivot()
+	end
+	return nil
+end
+
+function OilShipmentService:_handleTeleportToHire(player: Player)
+	local character = player.Character
+	if not character then
+		return
+	end
+	local cf = getHireTeleportCFrame()
+	if not cf then
+		warn("[TeleportToHire] Workspace.HireTeleportTarget not found.")
+		return
+	end
+	CharacterTeleport.teleportWithUnseat(character, cf * CFrame.Angles(0, math.pi, 0), "RequestTeleportToHire")
 end
 
 function OilShipmentService:Stop()
