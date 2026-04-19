@@ -368,6 +368,9 @@ function PlotResourceService:_handleHammerDestroyRequest(player: Player, payload
 end
 
 function PlotResourceService:_handlePickupBarrelRequest(player: Player, payload)
+	-- Barrel pickup disabled
+	self:_sendResult(player, false, "ERR_DISABLED", "Barrel pickup is disabled.")
+	do return end
 	if not self:_allow(player.UserId, "pickupBarrel", 20, 10) then
 		self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many pickup requests.")
 		return
