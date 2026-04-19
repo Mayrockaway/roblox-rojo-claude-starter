@@ -71,49 +71,66 @@ local function applyBeamReveal(source: Instance, beam: Beam)
 	})
 end
 
-local function discoverTubes()
-	for _, desc in ipairs(Workspace:GetDescendants()) do
-		if desc:IsA("Folder") and desc.Name:sub(1, 8) == "OilTube_" and not tubeCache[desc] then
-			local segments: { BasePart } = {}
-			local basePositions: { Vector3 } = {}
-			for i = 0, 99 do
-				local seg = desc:FindFirstChild("Seg_" .. i)
-				if seg and seg:IsA("BasePart") then
-					table.insert(segments, seg)
-					table.insert(basePositions, seg.Position)
-				end
-			end
-			if #segments > 0 then
-				local entry: TubeEntry = {
-					segments = segments,
-					basePositions = basePositions,
-					startTime = math.random() * 10,
-					isRainbow = desc:GetAttribute("Rainbow") == true,
-				}
-				tubeCache[desc] = entry
-				applyTubeReveal(desc, entry)
-			end
+local function tryRegisterTubeFolder(desc: Instance)
+	if not (desc:IsA("Folder") and desc.Name:sub(1, 8) == "OilTube_") then
+		return
+	end
+	local segments: { BasePart } = {}
+	local basePositions: { Vector3 } = {}
+	for i = 0, 99 do
+		local seg = desc:FindFirstChild("Seg_" .. i)
+		if seg and seg:IsA("BasePart") then
+			table.insert(segments, seg)
+			table.insert(basePositions, seg.Position)
 		end
 	end
-	for folder in pairs(tubeCache) do
-		if not folder.Parent then
-			tubeCache[folder] = nil
-		end
+	if #segments == 0 then
+		tubeCache[desc] = nil
+		return
+	end
+	local existing = tubeCache[desc]
+	if existing and #existing.segments == #segments then
+		return
+	end
+	local entry: TubeEntry = {
+		segments = segments,
+		basePositions = basePositions,
+		startTime = if existing then existing.startTime else math.random() * 10,
+		isRainbow = desc:GetAttribute("Rainbow") == true,
+		prevAnimTangent = if existing then existing.prevAnimTangent else nil,
+		prevAnimRot = if existing then existing.prevAnimRot else nil,
+	}
+	tubeCache[desc] = entry
+	applyTubeReveal(desc, entry)
+end
+
+local function tryRegisterOilStreamBeam(desc: Instance)
+	if not (desc:IsA("Beam") and desc.Name == "OilStream") or beamCache[desc] then
+		return
+	end
+	local anchor = desc.Parent
+	if anchor and anchor:IsA("BasePart") then
+		beamCache[desc] = {
+			anchor = anchor,
+			beam = desc,
+			isRainbow = anchor:GetAttribute("Rainbow") == true,
+		}
+		applyBeamReveal(anchor, desc)
 	end
 end
 
-local function discoverBeams()
+--- One-time join / late-load sweep only (replaces the old **every 2s** `Workspace:GetDescendants` poll).
+local function scanWorkspaceForTubesAndBeamsOnce()
 	for _, desc in ipairs(Workspace:GetDescendants()) do
-		if desc:IsA("Beam") and desc.Name == "OilStream" and not beamCache[desc] then
-			local anchor = desc.Parent
-			if anchor and anchor:IsA("BasePart") then
-				beamCache[desc] = {
-					anchor = anchor,
-					beam = desc,
-					isRainbow = anchor:GetAttribute("Rainbow") == true,
-				}
-				applyBeamReveal(anchor, desc)
-			end
+		tryRegisterTubeFolder(desc)
+		tryRegisterOilStreamBeam(desc)
+	end
+end
+
+local function pruneCaches()
+	for folder in pairs(tubeCache) do
+		if not folder.Parent then
+			tubeCache[folder] = nil
 		end
 	end
 	for beam in pairs(beamCache) do
@@ -123,25 +140,31 @@ local function discoverBeams()
 	end
 end
 
-task.spawn(function()
-	while true do
-		discoverTubes()
-		discoverBeams()
-		task.wait(2)
-	end
-end)
+task.defer(scanWorkspaceForTubesAndBeamsOnce)
 
 Workspace.DescendantAdded:Connect(function(desc)
 	if desc:IsA("Folder") and desc.Name:sub(1, 8) == "OilTube_" then
-		task.defer(discoverTubes)
+		task.defer(function()
+			tryRegisterTubeFolder(desc)
+		end)
+	elseif desc:IsA("BasePart") and desc.Name:sub(1, 4) == "Seg_" then
+		local p = desc.Parent
+		if p and p:IsA("Folder") and p.Name:sub(1, 8) == "OilTube_" then
+			task.defer(function()
+				tryRegisterTubeFolder(p)
+			end)
+		end
 	elseif desc:IsA("Beam") and desc.Name == "OilStream" then
-		task.defer(discoverBeams)
+		task.defer(function()
+			tryRegisterOilStreamBeam(desc)
+		end)
 	end
 end)
 
 local clock = 0
 RunService.Heartbeat:Connect(function(dt)
 	clock += dt
+	pruneCaches()
 
 	for folder, data in pairs(tubeCache) do
 		local progress = applyTubeReveal(folder, data)

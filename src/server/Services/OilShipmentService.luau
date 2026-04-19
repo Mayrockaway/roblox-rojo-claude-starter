@@ -556,10 +556,21 @@ function OilShipmentService:_handleTeleportToDocks(player: Player)
 		return
 	end
 
+	local function notifyFtueIfTownLeg()
+		if not (self._ftueService and FtueConfig.Enabled and self._oilStateService) then
+			return
+		end
+		local st = self._oilStateService:GetState(player.UserId)
+		if st and (st :: any).ftueStep == FtueConfig.Step.WaitDocksShipUpgrade then
+			(self._ftueService :: any):OnFtueDocksTownTeleportSuccess(player)
+		end
+	end
+
 	local cf = getDocksTeleportCFrame()
 	if cf then
 		-- Face away from the authored forward (e.g. into the shop) — 180° yaw in target-local space.
 		CharacterTeleport.teleportWithUnseat(character, cf * CFrame.Angles(0, math.pi, 0), "RequestTeleportToDocks")
+		notifyFtueIfTownLeg()
 		return
 	end
 
@@ -570,6 +581,7 @@ function OilShipmentService:_handleTeleportToDocks(player: Player)
 	local boatSpawn = plot:FindFirstChild("BoatSpawn")
 	if boatSpawn and boatSpawn:IsA("BasePart") then
 		CharacterTeleport.teleportWithUnseat(character, CFrame.new(boatSpawn.Position + Vector3.new(0, 5, 0)), "RequestTeleportToDocks:fallback")
+		notifyFtueIfTownLeg()
 	end
 end
 
@@ -1157,6 +1169,8 @@ function OilShipmentService:_runShipment(shipment)
 end
 
 --- Successful voyage: sample **HumanoidRootPart** before unseat. Warehouse if over **`Map.Ocean`** footprint (not over **`StartBeach`** / **`FinishBeach`** anywhere under **`Map`**). Seated-on-ship fallback: **ClaimPad** if warehouse unavailable.
+--- **FTUE override:** if the player just advanced to **`WaitWarehouseSell`** via this delivery, force-teleport to
+--- their warehouse regardless of where they are (on plot, in town, on the boat) so the next leg's pointers line up.
 function OilShipmentService:_handleOwnerAfterSuccessfulShipmentFinish(boat: Instance, ownerUserId: number)
 	local player = Players:GetPlayerByUserId(ownerUserId)
 	if not player then
@@ -1174,6 +1188,16 @@ function OilShipmentService:_handleOwnerAfterSuccessfulShipmentFinish(boat: Inst
 
 	local hum = character:FindFirstChildOfClass("Humanoid")
 	local wasSeatedOnThisBoat = hum ~= nil and hum.SeatPart ~= nil and hum.SeatPart:IsDescendantOf(boat)
+
+	if FtueConfig.Enabled and self._warehouseService and self._oilStateService then
+		local stFtue = self._oilStateService:GetState(ownerUserId)
+		local fs = stFtue and (stFtue :: any).ftueStep
+		if fs == FtueConfig.Step.WaitWarehouseSell or fs == FtueConfig.Step.WaitShipment then
+			if self._warehouseService:TryTeleportPlayerToWarehouse(player) then
+				return
+			end
+		end
+	end
 
 	if self._warehouseService and self:_postStraitWarehouseTeleportByMapPosition(samplePos) then
 		if self._warehouseService:TryTeleportPlayerToWarehouse(player) then

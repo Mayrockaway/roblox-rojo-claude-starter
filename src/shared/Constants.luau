@@ -56,6 +56,8 @@ local Constants = {
 	FtueRestrictPumpCellKeyAttribute = "FtueRestrictPumpCellKey",
 	--- Replicated FTUE step id for `FtueDialogueController` (e.g. Intro, WaitDrill). Cleared when done.
 	FtueStepAttribute = "FtueStep",
+	--- Docks upgrade leg (`WaitDocksUpgradeShip`): `"Dockman"` → talk opens ship UI → `"CargoBuy"` → upgrade → `"CloseModal"`.
+	FtueDocksUpgradeSubStepAttribute = "FtueDocksUpgradeSubStep",
 
 	-- After Humanoid.Died: seconds before `LoadCharacter()` (PlotService; CharacterAutoLoads=false).
 	-- Lower = faster respawn. Ignores `Players.RespawnTime` so tuning is explicit.

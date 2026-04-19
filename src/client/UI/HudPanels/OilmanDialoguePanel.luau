@@ -20,8 +20,8 @@ local player = Players.LocalPlayer
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilmanConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilmanConfig"))
-local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local StepperHold = require(script.Parent.Parent:WaitForChild("StepperHold"))
+local getClientRemotes = require(script.Parent.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
 
 local SCREEN_NAME_SELL = "OilmanSellGui"
 local SCREEN_NAME_DIALOGUE = "OilmanDialogueGui"
@@ -63,11 +63,6 @@ local function stroke(color: Color3, thickness: number, parent: Instance)
 	s.Thickness = thickness
 	s.Parent = parent
 	return s
-end
-
-local function waitRemote(name: string): Instance
-	local folder = Shared:WaitForChild("Remotes", 60)
-	return folder:WaitForChild(name, 30)
 end
 
 local function findRodgerHead(): BasePart?
@@ -640,10 +635,11 @@ function OilmanDialoguePanel.bind(playerGui: PlayerGui)
 	local sellConfirmBtn = footer:WaitForChild("SellConfirmButton") :: TextButton
 	local sellCloseBtn = panel:WaitForChild("CloseButton") :: TextButton
 
-	-- Remotes
-	local sellRemote = waitRemote(RemoteNames.RequestOilmanSell) :: RemoteEvent
-	local oilStateUpdate = waitRemote(RemoteNames.OilStateUpdate) :: RemoteEvent
-	local oilActionResult = waitRemote(RemoteNames.OilActionResult) :: RemoteEvent
+	-- Remotes (`PlayerScripts.Client.ClientRemotes`)
+	local CR = getClientRemotes()
+	local sellRemote = CR.requestOilmanSell
+	local oilStateUpdate = CR.oilStateUpdate
+	local oilActionResult = CR.oilActionResult
 
 	--- Camera lock with a held CFrame (RenderStepped keeps it pinned so the
 	--- player can't rotate while in dialogue). Camera is positioned 3/4 front

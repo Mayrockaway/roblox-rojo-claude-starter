@@ -139,7 +139,7 @@ local MISSILE_IMPACT_HIT_VOLUME = 0.55
 
 -- Mine field: one-shot when `didHit` — the surfacing mine detonates on the ship.
 local MINE_IMPACT_HIT_SFX_ID = "rbxassetid://102050572129572"
-local MINE_IMPACT_HIT_VOLUME = 0.2
+local MINE_IMPACT_HIT_VOLUME = 0.35 -- was 0.2; hit-only SFX — keep audible vs ambient
 
 local function getStraitFxRoot(): Instance?
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
@@ -396,11 +396,24 @@ local ROUTINE_PAPERWORK_SPEED_MUL = 1.22
 local ROUTINE_PAPERWORK_GRAVITY_MUL = 0.72 -- less negative Y acceleration = longer hang before fall
 local ROUTINE_PAPERWORK_SPREAD_MUL = 0.72 -- tighter cone around EmissionDirection (more "up" than sideways)
 
+--- Same dock layout as `BoatDockService` / `ShipmentProgressHud`: **`dOCKS.Boats`** holds `ActiveShipmentBoat`.
+local function getDocksRootForActiveShipmentBoat(): Instance?
+	return Workspace:FindFirstChild("dOCKS")
+		or Workspace:FindFirstChild("Docks")
+		or Workspace:FindFirstChild("DOCKS")
+		or Workspace:FindFirstChild("dOCKS", true)
+end
+
 local function findActiveShipmentBoatByShipmentId(shipmentId: string): Model?
 	if shipmentId == "" then
 		return nil
 	end
-	for _, inst in ipairs(Workspace:GetDescendants()) do
+	local docks = getDocksRootForActiveShipmentBoat()
+	local boatsFolder = docks and docks:FindFirstChild("Boats")
+	if not (boatsFolder and boatsFolder:IsA("Folder")) then
+		return nil
+	end
+	for _, inst in ipairs(boatsFolder:GetChildren()) do
 		if inst:IsA("Model") and inst.Name == "ActiveShipmentBoat" then
 			local attr = inst:GetAttribute("ShipmentId")
 			if attr ~= nil and tostring(attr) == shipmentId then

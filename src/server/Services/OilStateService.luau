@@ -112,6 +112,7 @@ local function buildDefaultPersisted()
 		ftueEscortShipmentRemaining = initialFtueEscortShipmentRemaining(),
 		ftueDispatchCashGranted = false,
 		ftueTutorialCompleteCashGranted = false,
+		ftueFreeCargoCapacityUpgradeUsed = false,
 		storageCapacity = OilConfig.StartingStorageCapacity,
 		oilByTier = {
 			HeavyCrude = 0,
@@ -988,9 +989,23 @@ function OilStateService:GetStateForClient(userId: number)
 		upgradeShipSpeedCost = ShipUpgradeConfig.GetSpeedUpgradeCost(
 			math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
 		),
-		upgradeShipCapacityCost = ShipUpgradeConfig.GetCapacityUpgradeCost(
-			math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
-		),
+		upgradeShipCapacityCost = (function()
+			local capL = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
+			local capCost = ShipUpgradeConfig.GetCapacityUpgradeCost(capL)
+			local plrSnap = Players:GetPlayerByUserId(userId)
+			if FtueConfig.Enabled and plrSnap and typeof(capCost) == "number" and capCost > 0 then
+				local fs = plrSnap:GetAttribute(Constants.FtueStepAttribute)
+				local sub = plrSnap:GetAttribute(Constants.FtueDocksUpgradeSubStepAttribute)
+				if
+					fs == FtueConfig.Step.WaitDocksUpgradeShip
+					and sub == "CargoBuy"
+					and (state :: any).ftueFreeCargoCapacityUpgradeUsed ~= true
+				then
+					return 0
+				end
+			end
+			return capCost
+		end)(),
 		chunks = chunks,
 		drills = drills,
 		activeDrills = activeDrills,
@@ -2395,6 +2410,33 @@ function OilStateService:ApplyProduction(userId: number, additionsByTier): numbe
 	return added
 end
 
+--- FTUE testing: add whole barrels to refinery storage (`oilByTier`), clamped to tank capacity.
+function OilStateService:FtueTestGrantRefineryBarrels(userId: number, oilType: string, barrelCount: number): number
+	local state = self._statesByUserId[userId]
+	if not state then
+		return 0
+	end
+	local tier = oilType
+	if OilTankConfig.OilColors[tier] == nil then
+		tier = "HeavyCrude"
+	end
+	local want = floorPositive(barrelCount)
+	if want <= 0 then
+		return 0
+	end
+	local cap = tankCapacity(state, tier)
+	local have = floorPositive(state.oilByTier[tier] or 0)
+	local add = math.min(want, math.max(0, cap - have))
+	if add <= 0 then
+		return 0
+	end
+	state.oilByTier[tier] = have + add
+	state.totalOil = sumTierMap(state.oilByTier)
+	self:_markDirty(userId)
+	self:PushState(userId)
+	return add
+end
+
 function OilStateService:GetAllStates()
 	return self._statesByUserId
 end
@@ -2608,6 +2650,7 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		ftueEscortShipmentRemaining = initialFtueEscortShipmentRemaining(),
 		ftueDispatchCashGranted = false,
 		ftueTutorialCompleteCashGranted = false,
+		ftueFreeCargoCapacityUpgradeUsed = false,
 		-- Per-tank upgrade levels. storageCapacity is derived = sum of tank capacities.
 		tankTiers = defaultTankTiers(),
 		storageCapacity = 0, -- set below from tankTiers
@@ -2929,6 +2972,11 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 	else
 		state.ftueTutorialCompleteCashGranted = false
 	end
+	if (persisted :: any).ftueFreeCargoCapacityUpgradeUsed == true then
+		(state :: any).ftueFreeCargoCapacityUpgradeUsed = true
+	else
+		(state :: any).ftueFreeCargoCapacityUpgradeUsed = false
+	end
 
 	-- FTUE step (v7+). Saves without these keys are pre-FTUE-progress profiles: skip tutorial.
 	local pFtue = persisted :: any
@@ -2999,6 +3047,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 				or fs == FtueConfig.Step.WaitWarehouseSell
 				or fs == FtueConfig.Step.WaitSell
 				or fs == FtueConfig.Step.WaitDocksShipUpgrade
+				or fs == FtueConfig.Step.WaitDocksUpgradeShip
 				or fs == FtueConfig.Step.WaitDocksHire
 				or fs == FtueConfig.Step.Done
 			then
@@ -3641,6 +3690,7 @@ function OilStateService:_serializeState(state)
 	persisted.ftueEscortShipmentRemaining = math.clamp(math.floor(state.ftueEscortShipmentRemaining or 0), 0, 1)
 	persisted.ftueDispatchCashGranted = state.ftueDispatchCashGranted == true
 	persisted.ftueTutorialCompleteCashGranted = (state :: any).ftueTutorialCompleteCashGranted == true
+	(persisted :: any).ftueFreeCargoCapacityUpgradeUsed = (state :: any).ftueFreeCargoCapacityUpgradeUsed == true
 	if typeof((state :: any).ftueStep) == "string" then
 		(persisted :: any).ftueStep = (state :: any).ftueStep
 	elseif (state :: any).ftueCompleted == true then
@@ -3879,11 +3929,31 @@ function OilStateService:TryUpgradeShipCapacity(userId: number): (boolean, strin
 	if not cost then
 		return false, "ERR_MAX_CAPACITY", "Ship capacity is already maxed."
 	end
-	if not self:TrySpendCash(userId, cost) then
-		return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to upgrade capacity.", cost)
+	local plr = Players:GetPlayerByUserId(userId)
+	local ftueFree = false
+	if FtueConfig.Enabled and plr then
+		local fs = plr:GetAttribute(Constants.FtueStepAttribute)
+		local sub = plr:GetAttribute(Constants.FtueDocksUpgradeSubStepAttribute)
+		if
+			fs == FtueConfig.Step.WaitDocksUpgradeShip
+			and sub == "CargoBuy"
+			and (state :: any).ftueFreeCargoCapacityUpgradeUsed ~= true
+		then
+			ftueFree = true
+		end
+	end
+	if not ftueFree then
+		if not self:TrySpendCash(userId, cost) then
+			return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to upgrade capacity.", cost)
+		end
+	else
+		(state :: any).ftueFreeCargoCapacityUpgradeUsed = true
 	end
 	state.shipCapacityLevel = level + 1
 	self:_markDirty(userId)
+	if ftueFree and _ftueService and typeof((_ftueService :: any).OnFtueShipCapacityUpgradeSuccess) == "function" then
+		(_ftueService :: any):OnFtueShipCapacityUpgradeSuccess(plr)
+	end
 	return true, "OK", "Capacity upgraded."
 end
 

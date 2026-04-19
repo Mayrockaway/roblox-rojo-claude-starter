@@ -156,6 +156,9 @@ function FtueService:_setStep(player: Player, step: string?)
 		(self._oilState :: any):SetFtueProgress(player.UserId, step)
 	end
 	player:SetAttribute(Constants.FtueStepAttribute, step)
+	if typeof(step) ~= "string" or step ~= FtueConfig.Step.WaitDocksUpgradeShip then
+		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, nil)
+	end
 	fireState(player, step)
 	ftueDbg(
 		"_setStep uid=%d -> FtueStateUpdate(%s) SetAttribute(FtueStep)",
@@ -197,6 +200,7 @@ function FtueService:SyncFromOilState(userId: number)
 	if FtueConfig.Enabled ~= true then
 		self:_clearRestrictionAttributes(player)
 		player:SetAttribute(Constants.FtueStepAttribute, nil)
+		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, nil)
 		fireState(player, nil)
 		ftueDbg("SyncFromOilState uid=%d FTUE disabled -> clear UI", userId)
 		return
@@ -334,12 +338,12 @@ local function onAcknowledge(self: any, player: Player)
 		ftueDbg("onAcknowledge uid=%d reject Intro: oil.ftueStep=%s", player.UserId, tostring(oilStep))
 		return
 	end
-	if step == FtueConfig.Step.WaitSell and oilStep ~= FtueConfig.Step.WaitSell then
-		ftueDbg("onAcknowledge uid=%d reject WaitSell: oil.ftueStep=%s", player.UserId, tostring(oilStep))
+	if step == FtueConfig.Step.WaitDrillOil_WIP and oilStep ~= FtueConfig.Step.WaitDrillOil_WIP then
+		ftueDbg("onAcknowledge uid=%d reject WaitDrillOil_WIP: oil.ftueStep=%s", player.UserId, tostring(oilStep))
 		return
 	end
-	if step == FtueConfig.Step.WaitDocksShipUpgrade and oilStep ~= FtueConfig.Step.WaitDocksShipUpgrade then
-		ftueDbg("onAcknowledge uid=%d reject WaitDocksShipUpgrade: oil.ftueStep=%s", player.UserId, tostring(oilStep))
+	if step == FtueConfig.Step.WaitSell and oilStep ~= FtueConfig.Step.WaitSell then
+		ftueDbg("onAcknowledge uid=%d reject WaitSell: oil.ftueStep=%s", player.UserId, tostring(oilStep))
 		return
 	end
 	if step == FtueConfig.Step.WaitDocksHire and oilStep ~= FtueConfig.Step.WaitDocksHire then
@@ -352,14 +356,21 @@ local function onAcknowledge(self: any, player: Player)
 	end
 	ftueDbg("onAcknowledge uid=%d resolvedStep=%s (Continue/Complete!)", player.UserId, step)
 	ftueDumpOilState(self._oilState, player, "onAcknowledge before")
-	-- Only steps that show **Continue** in `FtueDialogueController` advance here (Intro, WaitSell, docks legs, Done).
+	-- Only steps that show **Continue** in `FtueDialogueController` advance here (Intro, WIP drill skip, WaitSell, docks legs, Done).
 	if step == FtueConfig.Step.Intro then
 		applyWaitDrillEntry(self, player)
 		self:_setStep(player, FtueConfig.Step.WaitDrillOil_WIP)
+	elseif step == FtueConfig.Step.WaitDrillOil_WIP then
+		--- Testing shortcut: skip drill/pipe/pump leg; fill refinery HeavyCrude and continue FTUE.
+		self:_clearRestrictionAttributes(player)
+		local oil = self._oilState
+		if oil and typeof((oil :: any).FtueTestGrantRefineryBarrels) == "function" then
+			local n = floorPositive(tonumber(FtueConfig.FtueTestGrantRefineryHeavyCrudeBarrels) or 10);
+			(oil :: any):FtueTestGrantRefineryBarrels(player.UserId, "HeavyCrude", n)
+		end
+		self:_setStep(player, FtueConfig.Step.WaitPlotShipment)
 	elseif step == FtueConfig.Step.WaitSell then
 		self:_setStep(player, FtueConfig.Step.WaitDocksShipUpgrade)
-	elseif step == FtueConfig.Step.WaitDocksShipUpgrade then
-		self:_setStep(player, FtueConfig.Step.WaitDocksHire)
 	elseif step == FtueConfig.Step.WaitDocksHire then
 		ftueDbg("onAcknowledge uid=%d WaitDocksHire Continue -> _setStep(Done) (final modal)", player.UserId)
 		local oil = self._oilState
@@ -569,6 +580,74 @@ function FtueService:OnFtueWarehouseSaleSuccess(userId: number, payout: number)
 	self:SetStep(player, FtueConfig.Step.WaitSell)
 end
 
+--- After HUD **Town / Buy** teleports the player to docks while on **`WaitDocksShipUpgrade`**.
+function FtueService:OnFtueDocksTownTeleportSuccess(player: Player)
+	if FtueConfig.Enabled ~= true then
+		return
+	end
+	local st = self._oilState:GetState(player.UserId)
+	if not st or (st :: any).ftueStep ~= FtueConfig.Step.WaitDocksShipUpgrade then
+		return
+	end
+	self:_setStep(player, FtueConfig.Step.WaitDocksUpgradeShip)
+	player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, "Dockman")
+	fireState(player, FtueConfig.Step.WaitDocksUpgradeShip)
+end
+
+--- FTUE docks sub-leg: `DockmanOpened` → `CargoBuy`; `ShipPanelClosed` (after upgrade + close UI) → **`WaitDocksHire`**.
+function FtueService:OnFtueDocksProgress(player: Player, action: any)
+	if FtueConfig.Enabled ~= true then
+		return
+	end
+	local a = if typeof(action) == "string" then (action :: string):gsub("^%s+", ""):gsub("%s+$", "") else ""
+	if a == "" then
+		return
+	end
+	local st = self._oilState:GetState(player.UserId)
+	if not st then
+		return
+	end
+	if (st :: any).ftueStep ~= FtueConfig.Step.WaitDocksUpgradeShip then
+		return
+	end
+	local sub = player:GetAttribute(Constants.FtueDocksUpgradeSubStepAttribute)
+	if a == "DockmanOpened" then
+		if sub ~= "Dockman" then
+			return
+		end
+		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, "CargoBuy")
+		fireState(player, FtueConfig.Step.WaitDocksUpgradeShip)
+		--- `OilStateService` snapshot `upgradeShipCapacityCost` reads this attribute; push immediately so
+		--- Ship Management's first `InvokeServer` sees **$0** (free FTUE upgrade) instead of a stale price.
+		if typeof((self._oilState :: any).PushState) == "function" then
+			(self._oilState :: any):PushState(player.UserId)
+		end
+	elseif a == "ShipPanelClosed" then
+		if sub ~= "CloseModal" then
+			return
+		end
+		self:_setStep(player, FtueConfig.Step.WaitDocksHire)
+	else
+		return
+	end
+end
+
+--- After first free cargo upgrade succeeds during **`WaitDocksUpgradeShip`** (`CargoBuy` sub-step).
+function FtueService:OnFtueShipCapacityUpgradeSuccess(player: Player)
+	if FtueConfig.Enabled ~= true then
+		return
+	end
+	local st = self._oilState:GetState(player.UserId)
+	if not st or (st :: any).ftueStep ~= FtueConfig.Step.WaitDocksUpgradeShip then
+		return
+	end
+	if player:GetAttribute(Constants.FtueDocksUpgradeSubStepAttribute) ~= "CargoBuy" then
+		return
+	end
+	player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, "CloseModal")
+	fireState(player, FtueConfig.Step.WaitDocksUpgradeShip)
+end
+
 function FtueService:Start()
 	if self._drilling and typeof((self._drilling :: any).SetFtueService) == "function" then
 		(self._drilling :: any):SetFtueService(self)
@@ -579,6 +658,7 @@ function FtueService:Start()
 			if FtueConfig.Enabled ~= true then
 				self:_clearRestrictionAttributes(player)
 				player:SetAttribute(Constants.FtueStepAttribute, nil)
+				player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, nil)
 				return
 			end
 			for _ = 1, 160 do
@@ -600,6 +680,7 @@ function FtueService:Start()
 			if FtueConfig.Enabled ~= true then
 				self:_clearRestrictionAttributes(player)
 				player:SetAttribute(Constants.FtueStepAttribute, nil)
+				player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, nil)
 				return
 			end
 			local plot = self._plotService:GetOwnedPlot(player.UserId)
@@ -623,6 +704,14 @@ function FtueService:Start()
 			return
 		end
 		onSkip(self, player)
+	end))
+
+	local docksPr = _remoteService:GetEvent(RemoteNames.RequestFtueDocksProgress)
+	table.insert(_connections, docksPr.OnServerEvent:Connect(function(player: Player, action: any)
+		if not (player and player:IsA("Player")) then
+			return
+		end
+		self:OnFtueDocksProgress(player, action)
 	end))
 end
 

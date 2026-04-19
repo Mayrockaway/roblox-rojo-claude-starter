@@ -7,11 +7,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
-local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
 local SelectShipPopulate = require(script.Parent.SelectShipPopulate)
+local getClientRemotes = require(script.Parent.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
+local ClientRemotes = getClientRemotes()
 
 local SCREEN_NAME = "SelectShipPanelGui"
 local TEMPLATE_NAME = "ShipSelectCardTemplate"
@@ -29,12 +30,7 @@ local selectController: HudPanelTypes.HudPanelController? = nil
 local connections: { RBXScriptConnection } = {}
 local cardSelectButtons: { GuiButton } = {}
 local selectedShipSkinId = "DefaultTanker"
-local requestSetSelectedBoat: RemoteEvent? = nil
 local lastSelectFire = 0.0
-
-local function remotesFolder(): Folder
-	return Shared:WaitForChild("Remotes") :: Folder
-end
 
 local function sortedSkinList(): { SelectShipPopulate.SkinEntry }
 	local list: { SelectShipPopulate.SkinEntry } = {}
@@ -166,7 +162,6 @@ local function disconnectAll()
 	end
 	table.clear(connections)
 	table.clear(cardSelectButtons)
-	requestSetSelectedBoat = nil
 	wiredScreen = nil
 	selectController = nil
 end
@@ -229,10 +224,7 @@ local function wireSelectShip(_playerGui: PlayerGui, screen: ScreenGui, ctrl: Hu
 					return
 				end
 				lastSelectFire = now
-				local ev = requestSetSelectedBoat
-				if ev then
-					ev:FireServer({ skinId = skinId })
-				end
+				ClientRemotes.requestSetSelectedBoat:FireServer({ skinId = skinId })
 			end))
 		end
 	end
@@ -242,24 +234,17 @@ local function wireSelectShip(_playerGui: PlayerGui, screen: ScreenGui, ctrl: Hu
 		counter.Text = string.format("%d / %d skins", #skins, #skins)
 	end
 
-	local rf = remotesFolder()
-	requestSetSelectedBoat = rf:WaitForChild(RemoteNames.RequestSetSelectedBoat) :: RemoteEvent
-
-	local snapFn = rf:FindFirstChild(RemoteNames.RequestOilSnapshot)
-	if snapFn and snapFn:IsA("RemoteFunction") then
-		local okSnap, pack = pcall(function()
-			return (snapFn :: RemoteFunction):InvokeServer()
-		end)
-		if okSnap and typeof(pack) == "table" then
-			local st = (pack :: any).state
-			if typeof(st) == "table" and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then
-				selectedShipSkinId = st.shipSkinId
-			end
+	local okSnap, pack = pcall(function()
+		return ClientRemotes.requestOilSnapshot:InvokeServer()
+	end)
+	if okSnap and typeof(pack) == "table" then
+		local st = (pack :: any).state
+		if typeof(st) == "table" and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then
+			selectedShipSkinId = st.shipSkinId
 		end
 	end
 
-	local oilUp = rf:WaitForChild(RemoteNames.OilStateUpdate) :: RemoteEvent
-	table.insert(connections, oilUp.OnClientEvent:Connect(function(snap: any)
+	table.insert(connections, ClientRemotes.oilStateUpdate.OnClientEvent:Connect(function(snap: any)
 		if typeof(snap) ~= "table" then
 			return
 		end

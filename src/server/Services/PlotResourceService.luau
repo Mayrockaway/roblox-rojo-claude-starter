@@ -110,11 +110,11 @@ function PlotResourceService:Start()
 	local upSpeed = self._remoteService:GetEvent(RemoteNames.RequestUpgradeShipSpeed)
 	table.insert(self._connections, upSpeed.OnServerEvent:Connect(function(player)
 		if not self:_allow(player.UserId, "upgradeShipSpeed", 25, 10) then
-			self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many upgrade requests.")
+			self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many upgrade requests.", nil, "UpgradeShipSpeed")
 			return
 		end
 		local ok, code, msg = self._oilStateService:TryUpgradeShipSpeed(player.UserId)
-		self:_sendResult(player, ok, code, msg)
+		self:_sendResult(player, ok, code, msg, nil, "UpgradeShipSpeed")
 		if ok then
 			self._oilStateService:PushState(player.UserId)
 		end
@@ -123,11 +123,11 @@ function PlotResourceService:Start()
 	local upCap = self._remoteService:GetEvent(RemoteNames.RequestUpgradeShipCapacity)
 	table.insert(self._connections, upCap.OnServerEvent:Connect(function(player)
 		if not self:_allow(player.UserId, "upgradeShipCapacity", 25, 10) then
-			self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many upgrade requests.")
+			self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many upgrade requests.", nil, "UpgradeShipCapacity")
 			return
 		end
 		local ok, code, msg = self._oilStateService:TryUpgradeShipCapacity(player.UserId)
-		self:_sendResult(player, ok, code, msg)
+		self:_sendResult(player, ok, code, msg, nil, "UpgradeShipCapacity")
 		if ok then
 			self._oilStateService:PushState(player.UserId)
 		end
@@ -319,9 +319,10 @@ function PlotResourceService:_allow(userId: number, action: string, limit: numbe
 	return true
 end
 
-function PlotResourceService:_sendResult(player: Player, ok: boolean, code: string, message: string, data)
+function PlotResourceService:_sendResult(player: Player, ok: boolean, code: string, message: string, data, action: string?)
 	local event = self._remoteService:GetEvent(RemoteNames.OilActionResult)
 	event:FireClient(player, {
+		action = action,
 		ok = ok,
 		code = code,
 		message = message,

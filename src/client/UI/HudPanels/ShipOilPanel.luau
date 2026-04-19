@@ -11,12 +11,13 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
 local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
-local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
 local StepperHold = require(script.Parent.Parent:WaitForChild("StepperHold"))
 local FtueDispatchPointerSignals = require(script.Parent.Parent:WaitForChild("FtueDispatchPointerSignals"))
+local getClientRemotes = require(script.Parent.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
+local ClientRemotes = getClientRemotes()
 local UiSfx = require(script.Parent.Parent.Parent:WaitForChild("UiSfx")) :: {
 	playSetSail: () -> (),
 	playKaching: () -> (),
@@ -242,7 +243,6 @@ local warehouseCapTotal = 0
 local hasWarehouseTotals = false
 local dispatchButton: GuiButton? = nil
 local lastDispatchFire = 0.0
-local requestDispatchShipmentEvent: RemoteEvent? = nil
 -- Boat cooldown state: populated from snapshot (OilState.boatState/boatCooldownEndsAt) and
 -- from OilActionResult("ERR_BOAT_COOLDOWN") payloads. os.clock()-based timestamps.
 local latestBoatState: string? = nil
@@ -252,10 +252,6 @@ local defaultDispatchText: string? = nil
 --- Last values sent to FTUE pointer sequencing (avoid spamming refresh every 250ms boat tick).
 local lastFtueShipOilPeekOpen: boolean? = nil
 local lastFtueShipOilPeekBarrels: number? = nil
-
-local function remotesFolder(): Folder
-	return Shared:WaitForChild("Remotes") :: Folder
-end
 
 local function resolvedStats(): { capacity: number, dispatchFee: number }
 	local cap: number
@@ -626,12 +622,9 @@ local function tryDispatch()
 	for _, k in ipairs(TIER_KEYS) do
 		manifest[k] = (selected[k] or 0) * per
 	end
-	local ev = requestDispatchShipmentEvent
-	if ev then
-		ev:FireServer({
-			manifest = manifest,
-		})
-	end
+	ClientRemotes.requestDispatchShipment:FireServer({
+		manifest = manifest,
+	})
 end
 
 local function disconnectAll()
@@ -649,7 +642,6 @@ local function disconnectAll()
 	warehouseCapTotal = 0
 	hasWarehouseTotals = false
 	dispatchButton = nil
-	requestDispatchShipmentEvent = nil
 	wiredScreen = nil
 	latestResolved = nil
 	lastFtueShipOilPeekOpen = nil
@@ -739,9 +731,6 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 		warehouseCapacityLabel = whCap
 	end
 
-	local rf = remotesFolder()
-	requestDispatchShipmentEvent = rf:WaitForChild(RemoteNames.RequestDispatchShipment) :: RemoteEvent
-
 	if cargoRows and cargoRows:IsA("Instance") then
 		local tierSeen: { [string]: boolean } = {}
 		for _, ch in ipairs(cargoRows:GetChildren()) do
@@ -822,15 +811,13 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 		table.insert(connections, dispatchButton.Activated:Connect(tryDispatch))
 	end
 
-	local whUp = rf:WaitForChild(RemoteNames.WarehouseStateUpdate) :: RemoteEvent
-	table.insert(connections, whUp.OnClientEvent:Connect(function(data: any)
+	table.insert(connections, ClientRemotes.warehouseStateUpdate.OnClientEvent:Connect(function(data: any)
 		if mergeWarehouseTotalsFromPayload(data) then
 			refreshFooter()
 		end
 	end))
 
-	local oilUp = rf:WaitForChild(RemoteNames.OilStateUpdate) :: RemoteEvent
-	table.insert(connections, oilUp.OnClientEvent:Connect(function(snap: any)
+	table.insert(connections, ClientRemotes.oilStateUpdate.OnClientEvent:Connect(function(snap: any)
 		if typeof(snap) ~= "table" then
 			return
 		end
@@ -846,8 +833,7 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 		refreshFooter()
 	end))
 
-	local oilResult = rf:WaitForChild(RemoteNames.OilActionResult) :: RemoteEvent
-	table.insert(connections, oilResult.OnClientEvent:Connect(function(payload: any)
+	table.insert(connections, ClientRemotes.oilActionResult.OnClientEvent:Connect(function(payload: any)
 		if typeof(payload) ~= "table" then
 			return
 		end
@@ -917,10 +903,9 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 		end
 	end)
 
-	local snapFn = rf:FindFirstChild(RemoteNames.RequestOilSnapshot)
-	if snapFn and snapFn:IsA("RemoteFunction") then
+	do
 		local ok, snap = pcall(function()
-			return (snapFn :: RemoteFunction):InvokeServer()
+			return ClientRemotes.requestOilSnapshot:InvokeServer()
 		end)
 		if ok and typeof(snap) == "table" then
 			local st = (snap :: any).state
@@ -937,10 +922,9 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 		end
 	end
 
-	local snapWh = rf:FindFirstChild(RemoteNames.RequestWarehouseSnapshot)
-	if snapWh and snapWh:IsA("RemoteFunction") then
+	do
 		local ok, data = pcall(function()
-			return (snapWh :: RemoteFunction):InvokeServer()
+			return ClientRemotes.requestWarehouseSnapshot:InvokeServer()
 		end)
 		if ok then
 			mergeWarehouseTotalsFromPayload(data)

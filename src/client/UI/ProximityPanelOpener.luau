@@ -15,6 +15,13 @@
 
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Constants = require(Shared:WaitForChild("Constants"))
+local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
+
+local getClientRemotes = require(script.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
 
 local HudPanelRouter = require(script.Parent.HudPanelRouter)
 
@@ -46,6 +53,18 @@ function ProximityPanelOpener.start()
 				"prompt=",
 				prompt:GetFullName()
 			)
+			return
+		end
+		if screenName == "ShipManagementPanelGui" then
+			local plr = Players.LocalPlayer
+			if
+				plr
+				and plr:GetAttribute(Constants.FtueStepAttribute) == FtueConfig.Step.WaitDocksUpgradeShip
+				and plr:GetAttribute(Constants.FtueDocksUpgradeSubStepAttribute) == "Dockman"
+			then
+				local ClientRemotes = getClientRemotes()
+				ClientRemotes.requestFtueDocksProgress:FireServer("DockmanOpened")
+			end
 		end
 	end)
 

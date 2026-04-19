@@ -60,7 +60,7 @@ Catalog.MissileConfig = {
 -- Mine event config
 Catalog.MineConfig = {
 	MineCount = 15,          -- total mines that surface around the boat
-	HitChance = 0.50,        -- 50% path hit → total loss; 50% survive (no loss after sequence)
+	HitChance = 0.60,        -- 60% path hit → total loss; 40% survive (no loss after sequence)
 	RiseSeconds = 5.0,       -- SLOW rise to the surface
 	SpawnRadiusMin = 30,     -- minimum distance from ship
 	SpawnRadiusMax = 120,    -- maximum distance — wide spread around the ship

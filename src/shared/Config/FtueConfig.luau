@@ -39,6 +39,10 @@ local FtueConfig = {
 	--- Drill duration (seconds) on the FTUE highlighted tile during the drill leg of **`WaitDrillOil_WIP`**. Overrides biome `drillSeconds` / tier divisor.
 	FtueTutorialDrillSeconds = 5,
 
+	--- When the player hits **Continue** on `WaitDrillOil_WIP` (skips drill/pipe/pump leg), grant this many **HeavyCrude**
+	--- refinery barrels (capped by tank space) then advance to `WaitPlotShipment`. Set to **0** to disable the skip grant.
+	FtueTestGrantRefineryHeavyCrudeBarrels = 10,
+
 	--- Canonical step ids (also used for `Player` attribute `FtueStep`).
 	Step = {
 		Intro = "Intro",
@@ -50,7 +54,10 @@ local FtueConfig = {
 		--- Land at warehouse; sell at **warehouse** terminal (Sell Oil UI pointers may still apply).
 		WaitWarehouseSell = "WaitWarehouseSell",
 		WaitSell = "WaitSell",
+		--- Go to Town: complete this leg by using the HUD **Buy** (teleport to docks), not Continue.
 		WaitDocksShipUpgrade = "WaitDocksShipUpgrade",
+		--- Dockman → free first **cargo** upgrade → close ship panel (sub-steps on `FtueDocksUpgradeSubStep`).
+		WaitDocksUpgradeShip = "WaitDocksUpgradeShip",
 		WaitDocksHire = "WaitDocksHire",
 		Done = "Done",
 	},
@@ -64,47 +71,52 @@ local FtueConfig = {
 		"WaitWarehouseSell",
 		"WaitSell",
 		"WaitDocksShipUpgrade",
+		"WaitDocksUpgradeShip",
 		"WaitDocksHire",
 		"Done",
 	} :: { string },
 
-	--- UI copy for dialogue panel (title + body). Placeholders until each leg is finalized.
+	--- UI copy for dialogue panel (title + body). `FtueDialogueController` maps these by step id.
 	Copy = {
 		Intro = {
 			title = "CALLING ALL OIL TYCOONS!",
-			body = "SOS! Our country is desperate for oil and we need you to get through the Strait of Hormuz by any means!",
+			body = "HEY YOU! Looking to make a quick buck? Our country is desperate for oil and you look like you can get through the Strait of Hormuz by any means necessary!",
 		},
 		WaitDrillOil_WIP = {
-			title = "DRILL & COLLECT (WIP)",
-			body = "Placeholder: new drill flow goes here through your first oil collection. Details TBD.",
+			title = "FIRST STRIKE",
+			body = "On your plot: use the **free drill** on the **highlighted tile**, lay the **pipe** along the guided path, then place the **collector** on that same tile. When oil is moving, we'll get you ready to ship.\n\nNeed to move faster? **Continue** skips ahead with starter crude in your refinery.",
 		},
 		WaitPlotShipment = {
 			title = "SHIP YOUR CARGO",
-			body = "Placeholder: walk to the shipment terminal on your plot and send your cargo. No HUD Ship Oil button for this leg.",
+			body = "Walk to the **shipment terminal** on your plot and **dispatch** a load. This leg uses the plot board—no need for the Ship Oil HUD button.",
 		},
 		WaitShipment = {
 			title = "ACROSS THE STRAIT",
-			body = "Placeholder: wait for your shipment to finish. Check Strait status while you wait.",
+			body = "Your cargo is underway. Keep an eye on **Strait status**—things can get lively out there. When the run finishes, we'll guide you to the warehouse.",
 		},
 		WaitWarehouseSell = {
 			title = "SELL AT THE WAREHOUSE",
-			body = "Placeholder: land at the warehouse and use the terminal there to sell your oil.",
+			body = "Head to the **warehouse** and use the **sell** flow there to cash in your barrels.",
 		},
 		WaitSell = {
 			title = "WATCH THE MARKET",
-			body = "Placeholder: next time, check the oil market (top-left) before you sell.",
+			body = "Oil prices move. Next time you sell, glance at the **market readout** (top-left) so you don't leave money on the table.",
 		},
 		WaitDocksShipUpgrade = {
-			title = "UPGRADE YOUR SHIP",
-			body = "Placeholder: head to the docks and upgrade speed or cargo.",
+			title = "HEAD TO THE DOCKS",
+			body = "Open **Town** from the HUD and take the trip to the **docks**. You'll upgrade your operation where the big ships tie up—no **Continue** here; the leg finishes when you arrive.",
+		},
+		WaitDocksUpgradeShip = {
+			title = "VISIT THE DOCKMAN",
+			body = "Find the **dockman** by the water and use them to open **ship management**. Your **first cargo upgrade is on the house** during this tutorial—buy capacity, then **close** the panel when you're done.",
 		},
 		WaitDocksHire = {
 			title = "HIRE CREW",
-			body = "Placeholder: at the docks, review the hire contract at the NPC.",
+			body = "Follow the line to the **hire** spot and meet your next contact. When you're ready, tap **Continue**.",
 		},
 		Done = {
 			title = "WELCOME TO TOWN",
-			body = "Placeholder: FTUE completes in town — here's startup cash. Full script TBD.",
+			body = "You're cleared for the open economy. There's a **cash bonus** waiting in your account—spend it wisely, and good luck on the Strait.",
 		},
 	} :: { [string]: { title: string, body: string } },
 
@@ -129,6 +141,7 @@ local FtueConfig = {
 		WaitWarehouseSell = FtuePortraitAssets.OilManOilHead,
 		WaitSell = FtuePortraitAssets.OilmanPointAngry,
 		WaitDocksShipUpgrade = FtuePortraitAssets.OilmanSalute,
+		WaitDocksUpgradeShip = FtuePortraitAssets.OilmanDrilling,
 		WaitDocksHire = FtuePortraitAssets.OilmanCelebrate,
 		Done = FtuePortraitAssets.OilmanCelebrate,
 	} :: { [string]: string },

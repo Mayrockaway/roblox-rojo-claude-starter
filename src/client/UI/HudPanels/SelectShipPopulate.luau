@@ -7,6 +7,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
 local ViewportShipFit = require(script.Parent.Parent.ViewportShipFit)
+local ShipViewportPreviewFactory = require(script.Parent.Parent.ShipViewportPreviewFactory)
 
 export type SkinEntry = {
 	skinId: string,
@@ -15,7 +16,7 @@ export type SkinEntry = {
 	rarityDisplay: string?,
 }
 
-local function templateModel(templateName: string): Model?
+local function gameplayHullForTemplate(templateName: string): Model?
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	if not assets then
 		return nil
@@ -37,11 +38,10 @@ local function tryFillViewport(vp: ViewportFrame, templateName: string)
 			c:Destroy()
 		end
 	end
-	local template = templateModel(templateName)
-	if not template then
-		return
-	end
-	local clone = template:Clone()
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	local full = gameplayHullForTemplate(templateName)
+	local source = ShipViewportPreviewFactory.resolveViewportSourceModel(assets, templateName, full)
+	local clone = source:Clone()
 	clone.Parent = vp
 	if clone:IsA("Model") and not clone.PrimaryPart then
 		local pp = clone:FindFirstChildWhichIsA("BasePart", true)

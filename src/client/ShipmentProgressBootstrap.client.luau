@@ -4,12 +4,9 @@
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local Shared = ReplicatedStorage:WaitForChild("Shared")
-local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local function resolveClientScriptsFolder(): Instance
 	local p = script.Parent
@@ -22,6 +19,7 @@ local function resolveClientScriptsFolder(): Instance
 end
 
 local clientFolder = resolveClientScriptsFolder()
+local getClientRemotes = require(clientFolder:WaitForChild("GetClientRemotes")) :: () -> any
 
 local ui: Instance?
 local okUi, errUi = pcall(function()
@@ -54,24 +52,14 @@ else
 	warn("[ShipmentProgressBootstrap] ActiveManifestController ModuleScript missing under Client.UI")
 end
 
-local remotesFolder: Instance?
+local shipmentVisualEventTyped: RemoteEvent
 local okR, errR = pcall(function()
-	remotesFolder = Shared:WaitForChild("Remotes", 120)
+	shipmentVisualEventTyped = getClientRemotes().shipmentVisualEvent
 end)
-if not okR or not remotesFolder then
-	warn("[ShipmentProgressBootstrap] FAILED: Remotes — ", errR)
+if not okR or not shipmentVisualEventTyped then
+	warn("[ShipmentProgressBootstrap] FAILED: ClientRemotes.shipmentVisualEvent — ", errR)
 	return
 end
-
-local shipmentVisualEvent: Instance?
-local okE, errE = pcall(function()
-	shipmentVisualEvent = remotesFolder:WaitForChild(RemoteNames.ShipmentVisualEvent, 60)
-end)
-if not okE or not (shipmentVisualEvent and shipmentVisualEvent:IsA("RemoteEvent")) then
-	warn("[ShipmentProgressBootstrap] FAILED: ShipmentVisualEvent — ", errE)
-	return
-end
-local shipmentVisualEventTyped = shipmentVisualEvent :: RemoteEvent
 
 if RunService:IsStudio() then
 	print("[ShipmentProgressBootstrap] ShipmentVisualEvent listener active (oil uses { type, data }; legacy may be flat).")

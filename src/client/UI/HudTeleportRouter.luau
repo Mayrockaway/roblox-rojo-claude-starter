@@ -3,21 +3,25 @@
 -- Buttons live in two authored regions of `HUD.Canvas`:
 --   * `TeleportStack`           → `TeleportHomeButton`, `TeleportShipButton`
 --   * `Buttons` (right-side grid) → `BuyButton`, `SellButton`, `HireButton`
--- DAILY / SETTINGS / RobuxShop in the same `Buttons` grid open modal panels and
--- are wired by `HudPanelRouter`, not here.
+-- DAILY / SETTINGS in `Canvas.Buttons` open modal panels via `HudPanelRouter` (not here).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local HudTriggerHover = require(script.Parent.HudTriggerHover)
 local FtueTpHomePointerSignals = require(script.Parent:WaitForChild("FtueTpHomePointerSignals"))
 local RemoteNames = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Net"):WaitForChild("RemoteNames"))
+local getClientRemotes = require(script.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
+local ClientRemotes = getClientRemotes()
 
-local BUTTON_TO_REMOTE: { [string]: string } = {
-	TeleportHomeButton = RemoteNames.RequestTeleportHome,
-	TeleportShipButton = RemoteNames.RequestTeleportToShip,
-	BuyButton = RemoteNames.RequestTeleportToDocks,        -- "front of Shop" = DocksTeleportTarget
-	SellButton = RemoteNames.RequestTeleportToWarehouse,   -- player warehouse spawn
-	HireButton = RemoteNames.RequestTeleportToHire,        -- Workspace.HireTeleportTarget
+-- Each entry maps a HUD button name to the *typed* RemoteEvent on `ClientRemotes`.
+-- Keeping it as a function table (not a name string) means a typo here is a *type*
+-- error at module-load time instead of a silent `WaitForChild` timeout at runtime.
+local BUTTON_TO_REMOTE: { [string]: RemoteEvent } = {
+	TeleportHomeButton = ClientRemotes.requestTeleportHome,
+	TeleportShipButton = ClientRemotes.requestTeleportToShip,
+	BuyButton = ClientRemotes.requestTeleportToDocks,         -- "front of Shop" = DocksTeleportTarget
+	SellButton = ClientRemotes.requestTeleportToWarehouse,    -- player warehouse spawn
+	HireButton = ClientRemotes.requestTeleportToHire,         -- Workspace.HireTeleportTarget
 }
 
 local HudTeleportRouter = {}
@@ -32,37 +36,13 @@ local function passthroughDecorationsToTrigger(btn: GuiButton)
 	end
 end
 
-local function waitRemotesFolder(): Folder?
-	local shared = ReplicatedStorage:WaitForChild("Shared", 60)
-	if not shared then
-		return nil
-	end
-	return shared:WaitForChild("Remotes", 60) :: Folder?
-end
-
 function HudTeleportRouter.start(playerGui: PlayerGui)
 	if started then
 		return
 	end
-	print("[Client] HudTeleportRouter: start() — waiting for HUD Canvas + remotes…")
+	print("[Client] HudTeleportRouter: start() — waiting for HUD Canvas…")
 
 	task.spawn(function()
-		local remotesFolder = waitRemotesFolder()
-		if not remotesFolder then
-			warn("[Client] HudTeleportRouter: Shared.Remotes not found.")
-			return
-		end
-
-		local events: { [string]: RemoteEvent } = {}
-		for _, remoteName in pairs(BUTTON_TO_REMOTE) do
-			local ev = remotesFolder:WaitForChild(remoteName, 30)
-			if ev and ev:IsA("RemoteEvent") then
-				events[remoteName] = ev
-			else
-				warn("[Client] HudTeleportRouter: missing RemoteEvent", remoteName)
-			end
-		end
-
 		for attempt = 1, 120 do
 			if started then
 				return
@@ -128,18 +108,13 @@ function HudTeleportRouter.start(playerGui: PlayerGui)
 			end
 
 			local wired = 0
-			for buttonName, remoteName in pairs(BUTTON_TO_REMOTE) do
+			for buttonName, remote in pairs(BUTTON_TO_REMOTE) do
 				local btn = findTrigger(buttonName)
-				local ev = events[remoteName]
 				if not (btn and btn:IsA("GuiButton")) then
 					warn("[Client] HudTeleportRouter: missing button", buttonName)
 					continue
 				end
-				if not ev then
-					warn("[Client] HudTeleportRouter: missing event for", remoteName)
-					continue
-				end
-				wireTrigger(btn, ev)
+				wireTrigger(btn, remote)
 				wired += 1
 			end
 

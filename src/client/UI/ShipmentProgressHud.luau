@@ -14,28 +14,19 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local StraitEventCatalog = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("Catalog"))
-local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local getClientRemotes = require(script.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
 
 local localPlayer = Players.LocalPlayer
 
---- Lazy-resolve the `RequestTeleportToShip` remote so marker clicks can spectate
---- other players' voyages. Cached after first success; silently no-ops if the
---- Remotes folder isn't ready yet (marker clicks early after join become a no-op).
+--- Lazy-resolve `requestTeleportToShip` from `PlayerScripts.Client.ClientRemotes` for marker spectate clicks.
 local cachedTeleportShipRemote: RemoteEvent? = nil
 local function resolveTeleportShipRemote(): RemoteEvent?
 	if cachedTeleportShipRemote and cachedTeleportShipRemote.Parent then
 		return cachedTeleportShipRemote
 	end
-	local remotes = Shared:FindFirstChild("Remotes")
-	if not remotes then
-		return nil
-	end
-	local ev = remotes:FindFirstChild(RemoteNames.RequestTeleportToShip)
-	if ev and ev:IsA("RemoteEvent") then
-		cachedTeleportShipRemote = ev
-		return ev
-	end
-	return nil
+	local ev = getClientRemotes().requestTeleportToShip
+	cachedTeleportShipRemote = ev
+	return ev
 end
 
 export type Packet = { [string]: any }
@@ -115,6 +106,7 @@ local lastPanelForInputLock: Instance? = nil
 local lastFillStyled: Instance? = nil
 local hudStructureConn: RBXScriptConnection? = nil
 local hudWatchTarget: Instance? = nil
+local tryResolveScheduled = false
 
 local baselineTextColor: Color3 = COLORS.cruise
 local baselineRichText: boolean = false
@@ -183,14 +175,30 @@ local function scoreShipmentPanel(panel: Instance): number
 	return score
 end
 
---- May exist multiple times (templates vs live HUD). Prefer the instance that has track + fill + text.
-local function findShipmentProgressPanel(playerGui: PlayerGui, _hud: Instance?, _canvas: Instance?): Instance?
-	local candidates: { Instance } = {}
-	local seen: { [Instance]: boolean } = {}
-	for _, d in ipairs(playerGui:GetDescendants()) do
+local function gatherShipmentProgressPanelsUnderRoot(root: Instance, candidates: { Instance }, seen: { [Instance]: boolean })
+	for _, d in ipairs(root:GetDescendants()) do
 		if d.Name == "ShipmentProgressPanel" and d:IsA("GuiObject") and not seen[d] then
 			seen[d] = true
 			table.insert(candidates, d)
+		end
+	end
+end
+
+--- May exist multiple times (templates vs live HUD). Prefer the instance that has track + fill + text.
+--- Scopes `GetDescendants` to **`HUD`** (or top-level `LayerCollector`s) — **not** all of `PlayerGui` (avoids ~100k+ nodes when other ScreenGuis churn).
+local function findShipmentProgressPanel(playerGui: PlayerGui, hud: ScreenGui?, _canvas: Instance?): Instance?
+	local candidates: { Instance } = {}
+	local seen: { [Instance]: boolean } = {}
+	if hud then
+		gatherShipmentProgressPanelsUnderRoot(hud, candidates, seen)
+	else
+		for _, c in ipairs(playerGui:GetChildren()) do
+			if c:IsA("LayerCollector") then
+				gatherShipmentProgressPanelsUnderRoot(c, candidates, seen)
+			end
+		end
+		if #candidates == 0 then
+			gatherShipmentProgressPanelsUnderRoot(playerGui, candidates, seen)
 		end
 	end
 	if #candidates == 0 then
@@ -263,7 +271,8 @@ local function isLikelyShipmentPanelTitle(inst: Instance): boolean
 end
 
 --- Binds to Studio UI: **`Hint`** = `TextLabel` / `TextButton`, or container `Hint` holding one; else first line under panel / placeholder search.
-local function findHintLine(panel: Instance, track: Instance?, playerGui: PlayerGui): StatusText?
+--- `hintSearchRoot` is usually **`HUD`** so we never walk **`PlayerGui`** for the placeholder pass.
+local function findHintLine(panel: Instance, track: Instance?, hintSearchRoot: Instance?): StatusText?
 	local function resolveHintInstance(inst: Instance?): StatusText?
 		if not inst then
 			return nil
@@ -302,7 +311,8 @@ local function findHintLine(panel: Instance, track: Instance?, playerGui: Player
 			return d :: StatusText
 		end
 	end
-	for _, panelC in ipairs(playerGui:GetDescendants()) do
+	local scope = hintSearchRoot or panel
+	for _, panelC in ipairs(scope:GetDescendants()) do
 		if panelC.Name == "ShipmentProgressPanel" and panelC:IsA("GuiObject") then
 			for _, d in ipairs(panelC:GetDescendants()) do
 				if isStatusText(d) then
@@ -432,7 +442,7 @@ local function findControls(root: PlayerGui): (GuiObject?, StatusText?)
 		fillGo = fill
 		applyProgressFillStyle(fillGo)
 	end
-	local h: StatusText? = if panel then findHintLine(panel, track, root) else nil
+	local h: StatusText? = if panel then findHintLine(panel, track, hud) else nil
 	if panel and fillGo and not h then
 		h = ensureRuntimeHintLabel(panel)
 	end
@@ -487,13 +497,37 @@ local function crowdEnsureHost(track: GuiObject): Frame
 	return host
 end
 
---- All `ActiveShipmentBoat` models under Workspace (streaming / hierarchy-safe; matches `ShipmentOceanWavesSfx`).
+--- `BoatDockService` parents voyage hulls under **`dOCKS.Boats`** (see `_ensureBoatsFolder` / `CheckoutBoat`).
+--- Scan that folder only — avoids `Workspace:GetDescendants()` (~70k+ instances) on every Heartbeat cache miss.
+local function getDocksRootForShipmentBoats(): Instance?
+	return Workspace:FindFirstChild("dOCKS")
+		or Workspace:FindFirstChild("Docks")
+		or Workspace:FindFirstChild("DOCKS")
+		or Workspace:FindFirstChild("dOCKS", true)
+end
+
+local function getShipmentBoatsFolder(): Folder?
+	local docks = getDocksRootForShipmentBoats()
+	if not docks then
+		return nil
+	end
+	local boats = docks:FindFirstChild("Boats")
+	if boats and boats:IsA("Folder") then
+		return boats
+	end
+	return nil
+end
+
 local function collectAllActiveShipmentBoatModels(): { Model }
 	local out: { Model } = {}
-	for _, inst in ipairs(Workspace:GetDescendants()) do
-		if inst:IsA("Model") and inst.Name == "ActiveShipmentBoat" then
-			table.insert(out, inst)
+	local boatsFolder = getShipmentBoatsFolder()
+	if boatsFolder then
+		for _, inst in ipairs(boatsFolder:GetChildren()) do
+			if inst:IsA("Model") and inst.Name == "ActiveShipmentBoat" then
+				table.insert(out, inst)
+			end
 		end
+		return out
 	end
 	return out
 end
@@ -975,18 +1009,26 @@ local function bindHudStructureWatch(hud: Instance)
 	end
 	hudWatchTarget = hud
 	hudStructureConn = hud.DescendantAdded:Connect(function(desc)
-		if
-			desc.Name == "ShipmentProgressPanel"
-			or desc.Name == "ProgressTrack"
-			or desc.Name == "ProgressFill"
-			or desc.Name == "Hint"
-		then
+		local n = desc.Name
+		if n == "ShipmentProgressPanel" or n == "ProgressTrack" or n == "ProgressFill" then
 			task.defer(tryResolve)
+			return
+		end
+		-- `Hint` is a common name across HUDs; only re-resolve when it belongs to a shipment panel tree.
+		if n == "Hint" then
+			local a: Instance? = desc.Parent
+			while a do
+				if a.Name == "ShipmentProgressPanel" then
+					task.defer(tryResolve)
+					return
+				end
+				a = a.Parent
+			end
 		end
 	end)
 end
 
-local function tryResolve()
+local function tryResolveOnce()
 	local pg = playerGuiRef
 	if not pg then
 		return
@@ -1023,6 +1065,18 @@ local function tryResolve()
 			end
 		end
 	end
+end
+
+--- Coalesce bursts (e.g. many `DescendantAdded` in one frame) into a single bind pass.
+local function tryResolve()
+	if tryResolveScheduled then
+		return
+	end
+	tryResolveScheduled = true
+	task.defer(function()
+		tryResolveScheduled = false
+		tryResolveOnce()
+	end)
 end
 
 local function stopCruiseDots()

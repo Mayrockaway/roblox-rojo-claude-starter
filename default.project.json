@@ -75,7 +75,20 @@
               "Looped": false,
               "Playing": false
             }
+          },
+          "Upgrade": {
+            "$className": "Sound",
+            "$properties": {
+              "SoundId": "rbxassetid://82747115072860",
+              "Volume": 0.3,
+              "Looped": false,
+              "Playing": false
+            }
           }
+        },
+        "ShipViewportPreviews": {
+          "$className": "Folder",
+          "$ignoreUnknownInstances": true
         },
         "StraitWaypointsFx": {
           "$className": "Folder",

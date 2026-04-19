@@ -93,6 +93,8 @@ local RemoteNames = {
 	RequestFtueAcknowledge = "RequestFtueAcknowledge",
 	RequestFtueSkip = "RequestFtueSkip",
 	FtueStateUpdate = "FtueStateUpdate",
+	--- Client → server: docks FTUE progression (`DockmanOpened`, `ShipPanelClosed`). See `FtueService`.
+	RequestFtueDocksProgress = "RequestFtueDocksProgress",
 }
 
 return RemoteNames

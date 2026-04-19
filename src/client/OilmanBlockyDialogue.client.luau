@@ -1,16 +1,16 @@
 --!strict
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local Shared = ReplicatedStorage:WaitForChild("Shared")
-local remotes = Shared:WaitForChild("Remotes", 30)
-local oilmanSellRemote = remotes and remotes:FindFirstChild("RequestOilmanSell")
-local oilStateUpdate = remotes and remotes:FindFirstChild("OilStateUpdate")
+local clientFolder = player:WaitForChild("PlayerScripts"):WaitForChild("Client")
+local getClientRemotes = require(clientFolder:WaitForChild("GetClientRemotes")) :: () -> any
+local ClientRemotes = getClientRemotes()
+local oilmanSellRemote = ClientRemotes.requestOilmanSell
+local oilStateUpdate = ClientRemotes.oilStateUpdate
 
 -- Oilman buys at a FIXED discount price, not market price
 local OILMAN_PRICES = { HeavyCrude = 5, LightSweet = 8, PremiumRefined = 12 }
@@ -24,13 +24,11 @@ local oilmanGuiOpen = false
 local currentOilByTier = {}
 local AUTO_CLOSE_DIST = 12
 
-if oilStateUpdate and oilStateUpdate:IsA("RemoteEvent") then
-	oilStateUpdate.OnClientEvent:Connect(function(data)
-		if typeof(data) == "table" and typeof(data.oilByTier) == "table" then
-			currentOilByTier = data.oilByTier
-		end
-	end)
-end
+oilStateUpdate.OnClientEvent:Connect(function(data)
+	if typeof(data) == "table" and typeof(data.oilByTier) == "table" then
+		currentOilByTier = data.oilByTier
+	end
+end)
 
 local function blockyLine(name, text, order, isButton, parent)
 	local obj

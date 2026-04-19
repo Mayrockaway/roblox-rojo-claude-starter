@@ -7,16 +7,11 @@
 --
 -- Slots are re-resolved every time the panel opens so late-cloned StarterGui / layout changes still wire.
 
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
-
-local Shared = ReplicatedStorage:WaitForChild("Shared")
-local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
-
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
 local EquipmentHotbarController = require(script.Parent.Parent:WaitForChild("EquipmentHotbarController"))
 local EquipmentShopPopulate = require(script.Parent.EquipmentShopPopulate)
+local getClientRemotes = require(script.Parent.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
 
 local SCREEN_NAME = "ShopPanelGui"
 
@@ -69,15 +64,6 @@ local function firePurchase(requestPurchase: RemoteEvent, itemId: string)
 		quantity = 1,
 		requestId = HttpService:GenerateGUID(false),
 	})
-end
-
-local function waitRemotesFolder(): Folder
-	local rf = Shared:FindFirstChild("Remotes")
-	while rf == nil or not rf:IsA("Folder") do
-		task.wait(0.1)
-		rf = Shared:FindFirstChild("Remotes")
-	end
-	return rf
 end
 
 --- Resolve equipment cards under this ScreenGui (recursive so minor hierarchy drift still works).
@@ -210,11 +196,11 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 		return nil
 	end
 
-	local remotes = waitRemotesFolder()
-	local requestCatalog = remotes:WaitForChild(RemoteNames.RequestEquipmentShopCatalog) :: RemoteFunction
-	local requestPurchase = remotes:WaitForChild(RemoteNames.RequestPurchaseEquipment) :: RemoteEvent
-	local oilActionResult = remotes:WaitForChild(RemoteNames.OilActionResult) :: RemoteEvent
-	local stockUpdate = remotes:WaitForChild(RemoteNames.EquipmentShopStockUpdate) :: RemoteEvent
+	local ClientRemotes = getClientRemotes()
+	local requestCatalog = ClientRemotes.requestEquipmentShopCatalog
+	local requestPurchase = ClientRemotes.requestPurchaseEquipment
+	local oilActionResult = ClientRemotes.oilActionResult
+	local stockUpdate = ClientRemotes.equipmentShopStockUpdate
 
 	local screen = ctrl.ScreenGui
 	local slotBuyConns: { RBXScriptConnection } = {}

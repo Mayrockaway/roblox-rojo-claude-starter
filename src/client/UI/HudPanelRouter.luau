@@ -1,10 +1,15 @@
 --!strict
 -- Wires HUD modal-toggle buttons to `ScreenGui`s (exclusive group; second press closes).
--- Buttons live in three authored regions of `HUD.Canvas`:
---   * `TopRow`            — OilPriceButton / StraitStatusButton
---   * `Canvas` direct     — StraitControlCta, RobuxShop
---   * `Canvas.Buttons`    — DailyButton, SettingsButton (and BUY/SELL/HIRE owned by HudTeleportRouter)
--- Retries until every mapped button is wired or attempts exhaust — StarterGui clones can arrive late.
+-- Buttons live in authored regions of `HUD.Canvas` (see live Studio layout):
+--   * `TopRow`         — OilPriceButton, StraitStatusButton
+--   * `Canvas` direct  — StraitControlCta (aliases `StraitControlCTA`)
+--   * `Canvas.Buttons` — DailyButton, SettingsButton
+-- Shop / ship oil / sell / manage-ship / Robux entrypoints are **not** required here when those
+-- buttons were removed or moved (e.g. world `ProximityPrompt` + `openScreen`). `openScreen` lazy-binds
+-- any `SCREEN_BIND` panel so prompts do not depend on this loop finishing first.
+-- Retries until every **mapped** button is wired or attempts exhaust.
+
+local Players = game:GetService("Players")
 
 local ActiveManifestController = require(script.Parent.ActiveManifestController)
 local DailyPanel = require(script.Parent.HudPanels.DailyPanel)
@@ -25,19 +30,14 @@ local STRAIT_CONTROL_CTA_ALIASES = { "StraitControlCta", "StraitControlCTA" }
 -- Maps **HUD GuiButton.Name** → **target ScreenGui name**. `findHudModalButton`
 -- searches `Canvas` direct children, then `Canvas.Buttons`, then `Canvas.TopRow`,
 -- then a recursive HUD scan as a last resort.
+-- Legacy TopRow / grid names (`ShopButton`, `ManageShipButton`, `ShipOilButton`, `SellOilButton`,
+-- canvas `RobuxShop`) are intentionally omitted — open those modals from authored prompts / HUD v2.
 local BUTTON_TO_SCREEN: { [string]: string } = {
 	OilPriceButton = OilPriceInfoPanel.screenName(),
 	StraitStatusButton = StraitInfoPanel.screenName(),
 	StraitControlCta = StraitControlPanel.screenName(),
-	ShopButton = EquipmentShopPanel.screenName(),
-	ShipOilButton = ShipOilPanel.screenName(),
-	ManageShipButton = ShipManagementPanel.screenName(),
-	SellOilButton = SellOilPanel.screenName(),
-	-- HUD `Canvas.Buttons` grid (right-side modal-openers).
 	DailyButton = DailyPanel.screenName(),
 	SettingsButton = SettingsPanel.screenName(),
-	-- Standalone Robux button (direct child of `Canvas`, sits above the grid).
-	RobuxShop = RobuxShopPanel.screenName(),
 }
 
 local SCREEN_BIND: { [string]: (PlayerGui) -> HudPanelTypes.HudPanelController? } = {
@@ -57,10 +57,27 @@ local HudPanelRouter = {}
 
 local started = false
 
--- Module-scoped registry, populated once `start()` finishes binding panels.
+-- Module-scoped registry: filled from `start()` and lazily from `openScreen` when a `ScreenGui` appears later.
 -- Exposed via `openScreen` / `closeAll` for non-HUD-button triggers (e.g. ProximityPrompts).
-local controllersByScreen: { [string]: HudPanelTypes.HudPanelController } = {}
+local controllersByScreen: { [string]: HudPanelTypes.HudPanelController? } = {}
 local controllersList: { HudPanelTypes.HudPanelController } = {}
+
+local function bindPanelForScreen(playerGui: PlayerGui, screenName: string): HudPanelTypes.HudPanelController?
+	local existing = controllersByScreen[screenName]
+	if existing then
+		return existing
+	end
+	local binder = SCREEN_BIND[screenName]
+	if not binder then
+		return nil
+	end
+	local ctrl = binder(playerGui)
+	if ctrl then
+		controllersByScreen[screenName] = ctrl
+		table.insert(controllersList, ctrl)
+	end
+	return ctrl
+end
 
 local function closeAllExceptCtrl(keep: HudPanelTypes.HudPanelController?)
 	for _, c in ipairs(controllersList) do
@@ -90,11 +107,12 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 	if started then
 		return
 	end
-	print("[Client] HudPanelRouter: start() — waiting for HUD + all modal ScreenGuis…")
+	print("[Client] HudPanelRouter: start() — waiting for HUD + modal ScreenGuis (HUD buttons optional)…")
 
 	task.spawn(function()
 		local needButtons = expectedButtonCount()
 		local wiredButton: { [string]: boolean } = {}
+		local warnedMissingButton: { [string]: boolean } = {}
 
 		for attempt = 1, 120 do
 			if started then
@@ -118,31 +136,12 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 
 			ActiveManifestController.start(playerGui)
 
-			-- Populate module-scoped registry so external callers (e.g. ProximityPanelOpener)
-			-- can open panels by `screenName` without re-binding controllers.
-			local byScreen = controllersByScreen
-			local controllers = controllersList
-
-			local function ensurePanel(screenName: string)
-				if byScreen[screenName] then
-					return
-				end
-				local binder = SCREEN_BIND[screenName]
-				if not binder then
-					return
-				end
-				local ctrl = binder(playerGui)
-				if ctrl then
-					byScreen[screenName] = ctrl
-					table.insert(controllers, ctrl)
-				end
-			end
-
 			for screenName in pairs(SCREEN_BIND) do
-				ensurePanel(screenName)
+				bindPanelForScreen(playerGui, screenName)
 			end
 
 			local closeAllExcept = closeAllExceptCtrl
+			local byScreen = controllersByScreen
 
 			local function wireTrigger(btn: GuiButton, ctrl: HudPanelTypes.HudPanelController)
 				passthroughDecorationsToTrigger(btn)
@@ -170,7 +169,7 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 			local function findHudModalButton(name: string): GuiButton?
 				local names = if name == "StraitControlCta" then STRAIT_CONTROL_CTA_ALIASES else { name }
 				-- Search order:
-				--   1. Direct child of `Canvas`  (e.g. `RobuxShop`, `StraitControlCta`)
+				--   1. Direct child of `Canvas`  (e.g. `StraitControlCta`)
 				--   2. `Canvas.Buttons`           (right-side grid: DailyButton, SettingsButton)
 				--   3. `Canvas.TopRow`            (status bar: OilPriceButton, StraitStatusButton)
 				--   4. Recursive `HUD` fallback   (anywhere else in the HUD)
@@ -201,8 +200,13 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 				local btn = findHudModalButton(buttonName)
 				local ctrl = byScreen[screenName]
 				if not (btn and btn:IsA("GuiButton")) then
-					if attempt == 1 or attempt % 20 == 0 then
-						warn("[Client] HudPanelRouter: missing button", buttonName, "under HUD (Canvas / Buttons / TopRow)")
+					if not warnedMissingButton[buttonName] then
+						warnedMissingButton[buttonName] = true
+						warn(
+							"[Client] HudPanelRouter: no HUD button named",
+							buttonName,
+							"(modal still openable via ProximityPrompt / openScreen). Skipping wire."
+						)
 					end
 					continue
 				end
@@ -225,20 +229,20 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 			end
 
 			if attempt == 1 or attempt % 10 == 0 then
-				local missingScreens: { string } = {}
-				for _, screenName in pairs(BUTTON_TO_SCREEN) do
-					if not byScreen[screenName] then
-						table.insert(missingScreens, screenName)
+				local missingPanels: { string } = {}
+				for sn in pairs(SCREEN_BIND) do
+					if not byScreen[sn] then
+						table.insert(missingPanels, sn)
 					end
 				end
-				table.sort(missingScreens)
+				table.sort(missingPanels)
 				print(
-					"[Client] HudPanelRouter: waiting for ScreenGuis (",
+					"[Client] HudPanelRouter: HUD buttons",
 					wired,
 					"/",
 					needButtons,
-					" buttons) missing:",
-					table.concat(missingScreens, ", ")
+					" | ScreenGuis not yet in PlayerGui:",
+					#missingPanels > 0 and table.concat(missingPanels, ", ") or "(none)"
 				)
 			end
 
@@ -262,9 +266,17 @@ end
 
 --- Toggle a modal panel by its `ScreenGui.Name` (matches `<Panel>.screenName()` strings),
 --- closing all other panels first. Returns true when a panel was toggled, false when the
---- name is unknown or the router has not finished binding controllers yet.
+--- name is unknown or the `ScreenGui` is not in `PlayerGui` yet.
 function HudPanelRouter.openScreen(screenName: string): boolean
-	local ctrl = controllersByScreen[screenName]
+	local plr = Players.LocalPlayer
+	if not plr then
+		return false
+	end
+	local playerGui = plr:FindFirstChildOfClass("PlayerGui")
+	if not playerGui then
+		return false
+	end
+	local ctrl = bindPanelForScreen(playerGui, screenName)
 	if not ctrl then
 		return false
 	end

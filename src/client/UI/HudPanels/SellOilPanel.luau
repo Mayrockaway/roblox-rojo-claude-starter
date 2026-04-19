@@ -10,7 +10,6 @@ local TweenService = game:GetService("TweenService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
-local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
@@ -21,6 +20,8 @@ local UiSfx = require(script.Parent.Parent.Parent:WaitForChild("UiSfx")) :: {
 	playKaching: () -> (),
 	playUiDenied: () -> (),
 }
+local getClientRemotes = require(script.Parent.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
+local ClientRemotes = getClientRemotes()
 
 local SCREEN_NAME = "SellOilPanelGui"
 
@@ -243,16 +244,11 @@ local warehouseStoredTotal = 0
 local warehouseCapTotal = 0
 local hasWarehouseTotals = false
 local sellButton: GuiButton? = nil
-local requestSellWarehouseBarrels: RemoteEvent? = nil
 local lastSellFire = 0.0
 
 --- Last values sent to FTUE pointer sequencing (debounced).
 local lastFtueSellPeekOpen: boolean? = nil
 local lastFtueSellPeekBarrels: number? = nil
-
-local function remotesFolder(): Folder
-	return Shared:WaitForChild("Remotes") :: Folder
-end
 
 local function mergeWarehouseTotalsFromPayload(data: any): boolean
 	if typeof(data) ~= "table" then
@@ -547,15 +543,12 @@ local function trySell()
 		return
 	end
 	lastSellFire = now
-	local ev = requestSellWarehouseBarrels
-	if ev then
-		UiSfx.playKaching()
-		ev:FireServer({
-			HeavyCrude = h,
-			LightSweet = ls,
-			PremiumRefined = pr,
-		})
-	end
+	UiSfx.playKaching()
+	ClientRemotes.requestSellWarehouseBarrels:FireServer({
+		HeavyCrude = h,
+		LightSweet = ls,
+		PremiumRefined = pr,
+	})
 end
 
 local function disconnectAll()
@@ -571,7 +564,6 @@ local function disconnectAll()
 	warehouseCapTotal = 0
 	hasWarehouseTotals = false
 	sellButton = nil
-	requestSellWarehouseBarrels = nil
 	wiredScreen = nil
 	lastFtueSellPeekOpen = nil
 	lastFtueSellPeekBarrels = nil
@@ -620,9 +612,6 @@ local function wireSellOil(screen: ScreenGui, closePanel: (() -> ())?)
 			sellButton = btn
 		end
 	end
-
-	local rf = remotesFolder()
-	requestSellWarehouseBarrels = rf:WaitForChild(RemoteNames.RequestSellWarehouseBarrels) :: RemoteEvent
 
 	local crudeRowWired = false
 	if oilRows and oilRows:IsA("Instance") then
@@ -747,23 +736,20 @@ local function wireSellOil(screen: ScreenGui, closePanel: (() -> ())?)
 		table.insert(connections, sellButton.Activated:Connect(trySell))
 	end
 
-	local whUp = rf:WaitForChild(RemoteNames.WarehouseStateUpdate) :: RemoteEvent
-	table.insert(connections, whUp.OnClientEvent:Connect(function(data: any)
+	table.insert(connections, ClientRemotes.warehouseStateUpdate.OnClientEvent:Connect(function(data: any)
 		if mergeWarehouseFromPayload(data) then
 			clampSelectionsToInventory()
 			refreshRowUi()
 		end
 	end))
 
-	local mktUp = rf:WaitForChild(RemoteNames.MarketPriceUpdate) :: RemoteEvent
-	table.insert(connections, mktUp.OnClientEvent:Connect(function(data: any)
+	table.insert(connections, ClientRemotes.marketPriceUpdate.OnClientEvent:Connect(function(data: any)
 		if mergePricesFromMarketSnapshot(data) then
 			refreshRowUi()
 		end
 	end))
 
-	local oilResult = rf:WaitForChild(RemoteNames.OilActionResult) :: RemoteEvent
-	table.insert(connections, oilResult.OnClientEvent:Connect(function(payload: any)
+	table.insert(connections, ClientRemotes.oilActionResult.OnClientEvent:Connect(function(payload: any)
 		if typeof(payload) ~= "table" or payload.ok ~= true then
 			return
 		end
@@ -781,20 +767,18 @@ local function wireSellOil(screen: ScreenGui, closePanel: (() -> ())?)
 		end
 	end))
 
-	local snapWh = rf:FindFirstChild(RemoteNames.RequestWarehouseSnapshot)
-	if snapWh and snapWh:IsA("RemoteFunction") then
+	do
 		local ok, data = pcall(function()
-			return (snapWh :: RemoteFunction):InvokeServer()
+			return ClientRemotes.requestWarehouseSnapshot:InvokeServer()
 		end)
 		if ok then
 			mergeWarehouseFromPayload(data)
 		end
 	end
 
-	local snapMkt = rf:FindFirstChild(RemoteNames.RequestMarketSnapshot)
-	if snapMkt and snapMkt:IsA("RemoteFunction") then
+	do
 		local ok, data = pcall(function()
-			return (snapMkt :: RemoteFunction):InvokeServer()
+			return ClientRemotes.requestMarketSnapshot:InvokeServer()
 		end)
 		if ok then
 			mergePricesFromMarketSnapshot(data)

@@ -19,8 +19,8 @@ local UiSfx = require(script.Parent.Parent:WaitForChild("UiSfx"))
 
 local ACK_STEPS: { [string]: boolean } = {
 	[FtueConfig.Step.Intro] = true,
+	[FtueConfig.Step.WaitDrillOil_WIP] = true,
 	[FtueConfig.Step.WaitSell] = true,
-	[FtueConfig.Step.WaitDocksShipUpgrade] = true,
 	[FtueConfig.Step.WaitDocksHire] = true,
 }
 

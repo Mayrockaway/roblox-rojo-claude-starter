@@ -1,12 +1,12 @@
 --!strict
 -- Shipment voyage ocean loop — separate LocalScript so failures here do not block ShipmentProgressHud.
 
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 
-local Shared = ReplicatedStorage:WaitForChild("Shared")
-local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
-local remotes = Shared:WaitForChild("Remotes")
-local shipmentVisualEvent = remotes:WaitForChild(RemoteNames.ShipmentVisualEvent) :: RemoteEvent
+local playerScripts = Players.LocalPlayer:WaitForChild("PlayerScripts")
+local clientFolder = playerScripts:WaitForChild("Client")
+local getClientRemotes = require(clientFolder:WaitForChild("GetClientRemotes")) :: () -> any
+local shipmentVisualEvent = getClientRemotes().shipmentVisualEvent
 
 local ShipmentOceanWavesSfx = require(script.Parent:WaitForChild("ShipmentOceanWavesSfx"))
 

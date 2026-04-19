@@ -65,12 +65,23 @@ local function ownerIdFromData(data: any): number?
 	return nil
 end
 
---- Collect ActiveShipmentBoat models (real ship lives under Workspace.dOCKS.Boats, not OilVisuals).
+--- Collect ActiveShipmentBoat models under **`dOCKS.Boats`** (`BoatDockService:_ensureBoatsFolder`), not whole Workspace.
+local function getDocksRootForBoats(): Instance?
+	return Workspace:FindFirstChild("dOCKS")
+		or Workspace:FindFirstChild("Docks")
+		or Workspace:FindFirstChild("DOCKS")
+		or Workspace:FindFirstChild("dOCKS", true)
+end
+
 local function collectActiveShipmentBoats(): { Model }
 	local out: { Model } = {}
-	for _, inst in ipairs(Workspace:GetDescendants()) do
-		if inst:IsA("Model") and inst.Name == "ActiveShipmentBoat" then
-			table.insert(out, inst)
+	local docks = getDocksRootForBoats()
+	local boatsFolder = docks and docks:FindFirstChild("Boats")
+	if boatsFolder and boatsFolder:IsA("Folder") then
+		for _, inst in ipairs(boatsFolder:GetChildren()) do
+			if inst:IsA("Model") and inst.Name == "ActiveShipmentBoat" then
+				table.insert(out, inst)
+			end
 		end
 	end
 	return out
