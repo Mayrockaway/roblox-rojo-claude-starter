@@ -193,6 +193,17 @@ local requestWarehouseSnapshot = waitRemote(RemoteNames.RequestWarehouseSnapshot
 -- RequestClearObstacle remote no longer bound (obstacle system removed)
 local biomeRevealEvent = waitRemote(RemoteNames.BiomeRevealEvent) :: RemoteEvent
 local requestRevealTile = waitRemote(RemoteNames.RequestRevealTile) :: RemoteEvent
+local VeinCrateOpener = nil
+do
+	local ok, result = pcall(function()
+		return require(script:WaitForChild("UI"):WaitForChild("VeinCrateOpener"))
+	end)
+	if ok then
+		VeinCrateOpener = result
+	else
+		warn("[Client] VeinCrateOpener failed to load: " .. tostring(result))
+	end
+end
 local requestDispatchShipment = waitRemote(RemoteNames.RequestDispatchShipment) :: RemoteEvent
 local oilStateUpdate = waitRemote(RemoteNames.OilStateUpdate) :: RemoteEvent
 local oilActionResult = waitRemote(RemoteNames.OilActionResult) :: RemoteEvent
@@ -2504,6 +2515,25 @@ drillProgressUpdate.OnClientEvent:Connect(function(data)
 		local veinResult = data.veinResult
 		if not veinResult then return end
 
+		-- Open crate spinner UI — ground type determines the card pool
+		local veinTypeId = data.veinTypeId or (veinResult.veins and veinResult.veins[1] and veinResult.veins[1].oilType) or "rusty_dribble"
+		local groundType = data.groundType or "Bronze"
+		if VeinCrateOpener then
+			VeinCrateOpener.Open(veinTypeId, groundType, function()
+				requestRevealTile:FireServer({
+					chunkId = data.chunkId,
+					tileKey = data.tileKey,
+					stage = "startVisuals",
+				})
+			end)
+		else
+			requestRevealTile:FireServer({
+				chunkId = data.chunkId,
+				tileKey = data.tileKey,
+				stage = "startVisuals",
+			})
+		end
+
 		-- Find the tile Part in workspace by position
 		local VeinConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("VeinConfig"))
 		local displayName = VeinConfig.BuildDisplayName(veinResult)
@@ -2676,7 +2706,7 @@ drillProgressUpdate.OnClientEvent:Connect(function(data)
 								d:Emit(math.floor(100 * mult))
 							end
 						end
-						Debris:AddItem(spray, 5) -- server spray takes over
+						game:GetService("Debris"):AddItem(spray, 5) -- server spray takes over
 					end
 				end
 			end
