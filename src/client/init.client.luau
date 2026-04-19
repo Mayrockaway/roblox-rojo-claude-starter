@@ -666,6 +666,8 @@ PlacementClient.init({
 	OilConfig = OilConfig,
 	Constants = Constants,
 	requestPlacePipe = requestPlacePipe,
+	PlacementAnchor = PlacementAnchor,
+	PlotCellTileResolve = PlotCellTileResolve,
 	ClientPlotGrid = ClientPlotGrid,
 	resolveHammerTarget = resolveHammerTarget,
 	estimateRefundForTarget = estimateRefundForTarget,
