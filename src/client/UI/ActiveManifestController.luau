@@ -504,15 +504,25 @@ local function applyCollapseState(panel: Frame)
 		end
 		local sizeX = COLLAPSED_X_SCALE
 		local sizeY = COLLAPSED_Y_SCALE
-		-- Keep the top edge of the panel anchored where Studio authored it; only the
-		-- bottom contracts. AnchorPoint = (1, 0.5) means Position.Y is the *center*
-		-- of the panel on the Y axis, so we offset by half the size delta.
-		local deltaY = (authoredSize.Y.Scale - sizeY) * 0.5
+		-- Keep the collapsed pill aligned to the **top-left corner** of the expanded
+		-- panel's bounding box. That way the pill stays in line with the rest of the
+		-- left HUD column (Cash strip above, Teleport stack below) and doesn't drift
+		-- away from its authored slot when a voyage ends.
+		--
+		-- Math (Scale axis only; Offset is preserved verbatim):
+		--   expandedTopLeft = authoredPosition - anchor * authoredSize
+		--   collapsedPos    = expandedTopLeft + anchor * collapsedSize
+		--                   = authoredPosition - anchor * (authoredSize - collapsedSize)
+		-- This works for any authored AnchorPoint (Studio default (1, 0.5) included),
+		-- so designers can re-anchor the panel without breaking the collapse.
+		local anchor = panel.AnchorPoint
+		local newPosX = authoredPosition.X.Scale - anchor.X * (authoredSize.X.Scale - sizeX)
+		local newPosY = authoredPosition.Y.Scale - anchor.Y * (authoredSize.Y.Scale - sizeY)
 		panel.Size = UDim2.new(sizeX, 0, sizeY, 0)
 		panel.Position = UDim2.new(
-			authoredPosition.X.Scale,
+			newPosX,
 			authoredPosition.X.Offset,
-			authoredPosition.Y.Scale - deltaY,
+			newPosY,
 			authoredPosition.Y.Offset
 		)
 		-- Stretch the header to fill the whole pill so the `TextScaled` title
