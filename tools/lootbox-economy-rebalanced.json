@@ -1,0 +1,1248 @@
+{
+  "generatedAt": "2026-04-19T20:21:13.912Z",
+  "sheets": {
+    "master": {
+      "fileName": "roblox sprite sheet.png",
+      "imageSrc": "",
+      "width": 2560,
+      "height": 4608,
+      "columns": 5,
+      "rows": 9,
+      "cropInset": 1,
+      "frames": []
+    }
+  },
+  "spriteSheets": {
+    "master": {
+      "fileName": "roblox sprite sheet.png",
+      "width": 2560,
+      "height": 4608,
+      "columns": 5,
+      "rows": 9,
+      "cropInset": 1,
+      "frameCount": 45
+    }
+  },
+  "items": [
+    {
+      "id": "item-45",
+      "name": "Dry Hole",
+      "rarity": "Unlucky",
+      "sourceRarity": "Common",
+      "iconKey": "master:37",
+      "imageId": "rbxassetid://0",
+      "streamCount": 1,
+      "barrelsPerSecond": 0,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Crude"
+        }
+      ]
+    },
+    {
+      "id": "item-3",
+      "name": "Clean Leak",
+      "rarity": "Common",
+      "sourceRarity": "Uncommon",
+      "iconKey": "master:9",
+      "imageId": "rbxassetid://0",
+      "streamCount": 1,
+      "barrelsPerSecond": 0.005,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Refined"
+        }
+      ]
+    },
+    {
+      "id": "item-1",
+      "name": "Grease Spill",
+      "rarity": "Common",
+      "sourceRarity": "Uncommon",
+      "iconKey": "master:36",
+      "imageId": "rbxassetid://0",
+      "streamCount": 1,
+      "barrelsPerSecond": 0.005,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Crude"
+        }
+      ]
+    },
+    {
+      "id": "item-6",
+      "name": "Clean Cache",
+      "rarity": "Common",
+      "sourceRarity": "Rare",
+      "iconKey": "master:4",
+      "imageId": "rbxassetid://0",
+      "streamCount": 1,
+      "barrelsPerSecond": 0.0125,
+      "streams": [
+        {
+          "burstType": "Pocket",
+          "oilType": "Refined"
+        }
+      ]
+    },
+    {
+      "id": "item-5",
+      "name": "Grease Cache",
+      "rarity": "Common",
+      "sourceRarity": "Uncommon",
+      "iconKey": "master:1",
+      "imageId": "rbxassetid://0",
+      "streamCount": 1,
+      "barrelsPerSecond": 0.0125,
+      "streams": [
+        {
+          "burstType": "Pocket",
+          "oilType": "Crude"
+        }
+      ]
+    },
+    {
+      "id": "item-4",
+      "name": "Prime Leak",
+      "rarity": "Uncommon",
+      "sourceRarity": "Epic",
+      "iconKey": "master:15",
+      "imageId": "rbxassetid://0",
+      "streamCount": 1,
+      "barrelsPerSecond": 0.005,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-14",
+      "name": "Double Clean Chaos Leak",
+      "rarity": "Uncommon",
+      "sourceRarity": "Uncommon",
+      "iconKey": "master:28",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.01,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Drip",
+          "oilType": "Refined"
+        }
+      ]
+    },
+    {
+      "id": "item-7",
+      "name": "Prime Cache",
+      "rarity": "Uncommon",
+      "sourceRarity": "Epic",
+      "iconKey": "master:8",
+      "imageId": "rbxassetid://0",
+      "streamCount": 1,
+      "barrelsPerSecond": 0.0125,
+      "streams": [
+        {
+          "burstType": "Pocket",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-18",
+      "name": "Double Clean Janky Cache",
+      "rarity": "Uncommon",
+      "sourceRarity": "Uncommon",
+      "iconKey": "master:23",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.0175,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Refined"
+        }
+      ]
+    },
+    {
+      "id": "item-17",
+      "name": "Double Grease Jackpot Cache",
+      "rarity": "Uncommon",
+      "sourceRarity": "Uncommon",
+      "iconKey": "master:24",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.0175,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Crude"
+        }
+      ]
+    },
+    {
+      "id": "item-15",
+      "name": "Double Prime Bonanza Leak",
+      "rarity": "Special",
+      "sourceRarity": "Epic",
+      "iconKey": "master:29",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.01,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Drip",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-16",
+      "name": "Double Prime Gremlin Leak",
+      "rarity": "Special",
+      "sourceRarity": "Epic",
+      "iconKey": "master:30",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.01,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Drip",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-24",
+      "name": "Double Clean Gremlin Cache",
+      "rarity": "Special",
+      "sourceRarity": "Special",
+      "iconKey": "master:7",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.025,
+      "streams": [
+        {
+          "burstType": "Pocket",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Refined"
+        }
+      ]
+    },
+    {
+      "id": "item-9",
+      "name": "Clean Strike",
+      "rarity": "Special",
+      "sourceRarity": "Epic",
+      "iconKey": "master:5",
+      "imageId": "rbxassetid://0",
+      "streamCount": 1,
+      "barrelsPerSecond": 0.03,
+      "streams": [
+        {
+          "burstType": "Vein",
+          "oilType": "Refined"
+        }
+      ]
+    },
+    {
+      "id": "item-8",
+      "name": "Grease Strike",
+      "rarity": "Special",
+      "sourceRarity": "Rare",
+      "iconKey": "master:2",
+      "imageId": "rbxassetid://0",
+      "streamCount": 1,
+      "barrelsPerSecond": 0.03,
+      "streams": [
+        {
+          "burstType": "Vein",
+          "oilType": "Crude"
+        }
+      ]
+    },
+    {
+      "id": "item-22",
+      "name": "Double Clean Chaos Cache",
+      "rarity": "Rare",
+      "sourceRarity": "Exotic",
+      "iconKey": "master:26",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.0175,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Premium"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Refined"
+        }
+      ]
+    },
+    {
+      "id": "item-23",
+      "name": "Double Grease Bonanza Cache",
+      "rarity": "Rare",
+      "sourceRarity": "Epic",
+      "iconKey": "master:25",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.0175,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Premium"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Crude"
+        }
+      ]
+    },
+    {
+      "id": "item-19",
+      "name": "Double Prime Lucky Cache",
+      "rarity": "Rare",
+      "sourceRarity": "Legendary",
+      "iconKey": "master:22",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.0175,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-21",
+      "name": "Double Prime Turbo Cache",
+      "rarity": "Rare",
+      "sourceRarity": "Legendary",
+      "iconKey": "master:27",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.0175,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-25",
+      "name": "Double Prime Jackpot Cache",
+      "rarity": "Rare",
+      "sourceRarity": "Legendary",
+      "iconKey": "master:11",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.025,
+      "streams": [
+        {
+          "burstType": "Pocket",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-30",
+      "name": "Triple Prime Chaos Leak",
+      "rarity": "Epic",
+      "sourceRarity": "Ascendant",
+      "iconKey": "master:34",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.015,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Drip",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Drip",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-26",
+      "name": "Double Prime Janky Cache",
+      "rarity": "Epic",
+      "sourceRarity": "Ascendant",
+      "iconKey": "master:10",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.025,
+      "streams": [
+        {
+          "burstType": "Pocket",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-10",
+      "name": "Prime Strike",
+      "rarity": "Epic",
+      "sourceRarity": "Legendary",
+      "iconKey": "master:12",
+      "imageId": "rbxassetid://0",
+      "streamCount": 1,
+      "barrelsPerSecond": 0.03,
+      "streams": [
+        {
+          "burstType": "Vein",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-28",
+      "name": "Double Grease Hybrid Strike",
+      "rarity": "Epic",
+      "sourceRarity": "Legendary",
+      "iconKey": "master:16",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.034999999999999996,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Premium"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Crude"
+        }
+      ]
+    },
+    {
+      "id": "item-27",
+      "name": "Double Grease Lucky Strike",
+      "rarity": "Epic",
+      "sourceRarity": "Epic",
+      "iconKey": "master:14",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.034999999999999996,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Crude"
+        }
+      ]
+    },
+    {
+      "id": "item-29",
+      "name": "Double Clean Turbo Strike",
+      "rarity": "Exotic",
+      "sourceRarity": "Ascendant",
+      "iconKey": "master:17",
+      "imageId": "rbxassetid://0",
+      "streamCount": 2,
+      "barrelsPerSecond": 0.034999999999999996,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Premium"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Refined"
+        }
+      ]
+    },
+    {
+      "id": "item-34",
+      "name": "Triple Prime Janky Cache",
+      "rarity": "Exotic",
+      "sourceRarity": "Ascendant",
+      "iconKey": "master:21",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.037500000000000006,
+      "streams": [
+        {
+          "burstType": "Pocket",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-33",
+      "name": "Triple Prime Jackpot Strike",
+      "rarity": "Exotic",
+      "sourceRarity": "Top Secret",
+      "iconKey": "master:33",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.04,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Drip",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-43",
+      "name": "Triple Clean Lucky Strike",
+      "rarity": "Exotic",
+      "sourceRarity": "Top Secret",
+      "iconKey": "master:43",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.0475,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Refined"
+        }
+      ]
+    },
+    {
+      "id": "item-11",
+      "name": "Grease Blowout",
+      "rarity": "Exotic",
+      "sourceRarity": "Epic",
+      "iconKey": "master:3",
+      "imageId": "rbxassetid://0",
+      "streamCount": 1,
+      "barrelsPerSecond": 0.08,
+      "streams": [
+        {
+          "burstType": "Geiser",
+          "oilType": "Crude"
+        }
+      ]
+    },
+    {
+      "id": "item-32",
+      "name": "Triple Clean Gremlin Strike",
+      "rarity": "Legendary",
+      "sourceRarity": "Transcendent",
+      "iconKey": "master:32",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.039999999999999994,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Drip",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-31",
+      "name": "Triple Grease Bonanza Strike",
+      "rarity": "Legendary",
+      "sourceRarity": "Transcendent",
+      "iconKey": "master:31",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.039999999999999994,
+      "streams": [
+        {
+          "burstType": "Vein",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Drip",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Drip",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-41",
+      "name": "Triple Grease Jackpot Strike",
+      "rarity": "Legendary",
+      "sourceRarity": "Top Secret",
+      "iconKey": "master:41",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.0475,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Premium"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Crude"
+        }
+      ]
+    },
+    {
+      "id": "item-12",
+      "name": "Clean Blowout",
+      "rarity": "Legendary",
+      "sourceRarity": "Legendary",
+      "iconKey": "master:6",
+      "imageId": "rbxassetid://0",
+      "streamCount": 1,
+      "barrelsPerSecond": 0.08,
+      "streams": [
+        {
+          "burstType": "Geiser",
+          "oilType": "Refined"
+        }
+      ]
+    },
+    {
+      "id": "item-38",
+      "name": "Triple Clean Chaos Strike",
+      "rarity": "Ascendant",
+      "sourceRarity": "Ascendant",
+      "iconKey": "master:38",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.0475,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Premium"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Refined"
+        }
+      ]
+    },
+    {
+      "id": "item-40",
+      "name": "Triple Grease Gremlin Strike",
+      "rarity": "Ascendant",
+      "sourceRarity": "Top Secret",
+      "iconKey": "master:40",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.0475,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Premium"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Crude"
+        }
+      ]
+    },
+    {
+      "id": "item-42",
+      "name": "Triple Prime Janky Strike",
+      "rarity": "Ascendant",
+      "sourceRarity": "Mythic",
+      "iconKey": "master:42",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.0475,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-39",
+      "name": "Triple Prime Bonanza Strike",
+      "rarity": "Transcendent",
+      "sourceRarity": "Exotic",
+      "iconKey": "master:39",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.0475,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Pocket",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-37",
+      "name": "Triple Prime Turbo Strike",
+      "rarity": "Transcendent",
+      "sourceRarity": "Mythic",
+      "iconKey": "master:20",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.065,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-13",
+      "name": "Prime Blowout",
+      "rarity": "Transcendent",
+      "sourceRarity": "Mythic",
+      "iconKey": "master:13",
+      "imageId": "rbxassetid://0",
+      "streamCount": 1,
+      "barrelsPerSecond": 0.08,
+      "streams": [
+        {
+          "burstType": "Geiser",
+          "oilType": "Premium"
+        }
+      ]
+    },
+    {
+      "id": "item-36",
+      "name": "Triple Clean Hybrid Strike",
+      "rarity": "Top Secret",
+      "sourceRarity": "Transcendent",
+      "iconKey": "master:19",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.065,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Premium"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Refined"
+        }
+      ]
+    },
+    {
+      "id": "item-35",
+      "name": "Triple Clean Lucky Strike Tar",
+      "rarity": "Top Secret",
+      "sourceRarity": "Transcendent",
+      "iconKey": "master:18",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.065,
+      "streams": [
+        {
+          "burstType": "Drip",
+          "oilType": "Premium"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Crude"
+        }
+      ]
+    },
+    {
+      "id": "item-44",
+      "name": "Triple Prime Hybrid Strike",
+      "rarity": "Mythic",
+      "sourceRarity": "Mythic",
+      "iconKey": "master:44",
+      "imageId": "rbxassetid://0",
+      "streamCount": 3,
+      "barrelsPerSecond": 0.09,
+      "streams": [
+        {
+          "burstType": "Vein",
+          "oilType": "Crude"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Refined"
+        },
+        {
+          "burstType": "Vein",
+          "oilType": "Premium"
+        }
+      ]
+    }
+  ],
+  "rarityStyles": {
+    "Unlucky": {
+      "effect": "solid",
+      "bgStart": "#5f4b40",
+      "bgEnd": "#1d1511",
+      "glow": "#aa7d66",
+      "text": "#f1d3b2",
+      "spark": "#ffffff"
+    },
+    "Common": {
+      "effect": "solid",
+      "bgStart": "#8d939c",
+      "bgEnd": "#434952",
+      "glow": "#d7dde6",
+      "text": "#eef2f7",
+      "spark": "#ffffff"
+    },
+    "Uncommon": {
+      "effect": "solid",
+      "bgStart": "#27cb00",
+      "bgEnd": "#136100",
+      "glow": "#8bff72",
+      "text": "#38ff3f",
+      "spark": "#dfffd5"
+    },
+    "Special": {
+      "effect": "solid",
+      "bgStart": "#00c2a0",
+      "bgEnd": "#0a5a5d",
+      "glow": "#9ff9ee",
+      "text": "#84fff0",
+      "spark": "#e8fffb"
+    },
+    "Rare": {
+      "effect": "solid",
+      "bgStart": "#21c0da",
+      "bgEnd": "#0c4f8f",
+      "glow": "#82ebff",
+      "text": "#84efff",
+      "spark": "#d8fcff"
+    },
+    "Epic": {
+      "effect": "solid",
+      "bgStart": "#a100ff",
+      "bgEnd": "#4c0073",
+      "glow": "#ff83ff",
+      "text": "#ff6cff",
+      "spark": "#ffd8ff"
+    },
+    "Exotic": {
+      "effect": "solid",
+      "bgStart": "#ff3b7d",
+      "bgEnd": "#7f1137",
+      "glow": "#ffb1ce",
+      "text": "#ff7fb1",
+      "spark": "#ffe5f0"
+    },
+    "Legendary": {
+      "effect": "solid",
+      "bgStart": "#ff8b1a",
+      "bgEnd": "#8a2a00",
+      "glow": "#ffd66b",
+      "text": "#ffcf57",
+      "spark": "#fff0b6"
+    },
+    "Ascendant": {
+      "effect": "solid",
+      "bgStart": "#ffd66b",
+      "bgEnd": "#9b6200",
+      "glow": "#fff1bd",
+      "text": "#ffe08d",
+      "spark": "#fff9dd"
+    },
+    "Transcendent": {
+      "effect": "solid",
+      "bgStart": "#fff6de",
+      "bgEnd": "#8d97a8",
+      "glow": "#fff2b8",
+      "text": "#fff6cf",
+      "spark": "#ffffff"
+    },
+    "Top Secret": {
+      "effect": "solid",
+      "bgStart": "#ff2948",
+      "bgEnd": "#6f0015",
+      "glow": "#ff9bb3",
+      "text": "#ff4665",
+      "spark": "#ffe1e8"
+    },
+    "Mythic": {
+      "effect": "rainbow",
+      "bgStart": "#d500ff",
+      "bgEnd": "#56007d",
+      "glow": "#ff97ff",
+      "text": "#ff43ff",
+      "spark": "#ffe0ff"
+    }
+  },
+  "lootboxes": [
+    {
+      "id": "lootbox-1",
+      "name": "Row 4 Bronze Pool",
+      "groundType": "Bronze",
+      "plotRow": 4,
+      "sheetColumns": 5,
+      "rarityWeights": {
+        "Unlucky": 1800,
+        "Common": 3000,
+        "Uncommon": 2500,
+        "Special": 1400,
+        "Rare": 800,
+        "Epic": 350,
+        "Exotic": 120,
+        "Legendary": 25,
+        "Ascendant": 5
+      },
+      "itemIds": [
+        "item-45",
+        "item-3",
+        "item-1",
+        "item-6",
+        "item-5",
+        "item-4",
+        "item-14",
+        "item-7",
+        "item-18",
+        "item-17",
+        "item-15",
+        "item-16",
+        "item-24",
+        "item-9",
+        "item-8",
+        "item-22",
+        "item-23",
+        "item-19",
+        "item-21",
+        "item-25",
+        "item-30",
+        "item-26",
+        "item-10",
+        "item-28",
+        "item-27",
+        "item-29",
+        "item-34",
+        "item-33",
+        "item-43",
+        "item-11",
+        "item-32",
+        "item-31",
+        "item-41",
+        "item-12",
+        "item-38",
+        "item-40",
+        "item-42"
+      ]
+    },
+    {
+      "id": "lootbox-2",
+      "name": "Row 3 Silver Pool",
+      "groundType": "Silver",
+      "plotRow": 3,
+      "sheetColumns": 5,
+      "rarityWeights": {
+        "Unlucky": 1200,
+        "Common": 1700,
+        "Uncommon": 2100,
+        "Special": 1800,
+        "Rare": 1500,
+        "Epic": 900,
+        "Exotic": 500,
+        "Legendary": 220,
+        "Ascendant": 70,
+        "Transcendent": 10
+      },
+      "itemIds": [
+        "item-45",
+        "item-3",
+        "item-1",
+        "item-6",
+        "item-5",
+        "item-4",
+        "item-14",
+        "item-7",
+        "item-18",
+        "item-17",
+        "item-15",
+        "item-16",
+        "item-24",
+        "item-9",
+        "item-8",
+        "item-22",
+        "item-23",
+        "item-19",
+        "item-21",
+        "item-25",
+        "item-30",
+        "item-26",
+        "item-10",
+        "item-28",
+        "item-27",
+        "item-29",
+        "item-34",
+        "item-33",
+        "item-43",
+        "item-11",
+        "item-32",
+        "item-31",
+        "item-41",
+        "item-12",
+        "item-38",
+        "item-40",
+        "item-42",
+        "item-39",
+        "item-37",
+        "item-13"
+      ]
+    },
+    {
+      "id": "lootbox-3",
+      "name": "Row 2 Gold Pool",
+      "groundType": "Gold",
+      "plotRow": 2,
+      "sheetColumns": 5,
+      "rarityWeights": {
+        "Unlucky": 700,
+        "Common": 700,
+        "Uncommon": 1100,
+        "Special": 1500,
+        "Rare": 1800,
+        "Epic": 1800,
+        "Exotic": 1200,
+        "Legendary": 700,
+        "Ascendant": 350,
+        "Transcendent": 120,
+        "Top Secret": 30
+      },
+      "itemIds": [
+        "item-45",
+        "item-3",
+        "item-1",
+        "item-6",
+        "item-5",
+        "item-4",
+        "item-14",
+        "item-7",
+        "item-18",
+        "item-17",
+        "item-15",
+        "item-16",
+        "item-24",
+        "item-9",
+        "item-8",
+        "item-22",
+        "item-23",
+        "item-19",
+        "item-21",
+        "item-25",
+        "item-30",
+        "item-26",
+        "item-10",
+        "item-28",
+        "item-27",
+        "item-29",
+        "item-34",
+        "item-33",
+        "item-43",
+        "item-11",
+        "item-32",
+        "item-31",
+        "item-41",
+        "item-12",
+        "item-38",
+        "item-40",
+        "item-42",
+        "item-39",
+        "item-37",
+        "item-13",
+        "item-36",
+        "item-35"
+      ]
+    },
+    {
+      "id": "lootbox-4",
+      "name": "Row 1 Diamond Pool",
+      "groundType": "Diamond",
+      "plotRow": 1,
+      "sheetColumns": 5,
+      "rarityWeights": {
+        "Unlucky": 300,
+        "Common": 300,
+        "Uncommon": 500,
+        "Special": 700,
+        "Rare": 1100,
+        "Epic": 1600,
+        "Exotic": 1800,
+        "Legendary": 1600,
+        "Ascendant": 900,
+        "Transcendent": 600,
+        "Top Secret": 400,
+        "Mythic": 200
+      },
+      "itemIds": [
+        "item-45",
+        "item-3",
+        "item-1",
+        "item-6",
+        "item-5",
+        "item-4",
+        "item-14",
+        "item-7",
+        "item-18",
+        "item-17",
+        "item-15",
+        "item-16",
+        "item-24",
+        "item-9",
+        "item-8",
+        "item-22",
+        "item-23",
+        "item-19",
+        "item-21",
+        "item-25",
+        "item-30",
+        "item-26",
+        "item-10",
+        "item-28",
+        "item-27",
+        "item-29",
+        "item-34",
+        "item-33",
+        "item-43",
+        "item-11",
+        "item-32",
+        "item-31",
+        "item-41",
+        "item-12",
+        "item-38",
+        "item-40",
+        "item-42",
+        "item-39",
+        "item-37",
+        "item-13",
+        "item-36",
+        "item-35",
+        "item-44"
+      ]
+    }
+  ],
+  "activeItemId": "item-45",
+  "activeLootboxId": "lootbox-1",
+  "nextItemId": 46,
+  "nextLootboxId": 5
+}

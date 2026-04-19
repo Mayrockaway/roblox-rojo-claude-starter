@@ -641,6 +641,49 @@ VeinCrateConfig.GroundSpriteSheets = {
     },
 }
 
+VeinCrateConfig.GroundSpritePages = {
+    Bronze = {
+        {
+            index = 1,
+            assetId = VeinCrateConfig.GroundSpriteSheets.Bronze.assetId,
+            width = VeinCrateConfig.GroundSpriteSheets.Bronze.width,
+            height = VeinCrateConfig.GroundSpriteSheets.Bronze.height,
+            cellWidth = VeinCrateConfig.GroundSpriteSheets.Bronze.cellWidth,
+            cellHeight = VeinCrateConfig.GroundSpriteSheets.Bronze.cellHeight,
+        },
+    },
+    Silver = {
+        {
+            index = 1,
+            assetId = VeinCrateConfig.GroundSpriteSheets.Silver.assetId,
+            width = VeinCrateConfig.GroundSpriteSheets.Silver.width,
+            height = VeinCrateConfig.GroundSpriteSheets.Silver.height,
+            cellWidth = VeinCrateConfig.GroundSpriteSheets.Silver.cellWidth,
+            cellHeight = VeinCrateConfig.GroundSpriteSheets.Silver.cellHeight,
+        },
+    },
+    Gold = {
+        {
+            index = 1,
+            assetId = VeinCrateConfig.GroundSpriteSheets.Gold.assetId,
+            width = VeinCrateConfig.GroundSpriteSheets.Gold.width,
+            height = VeinCrateConfig.GroundSpriteSheets.Gold.height,
+            cellWidth = VeinCrateConfig.GroundSpriteSheets.Gold.cellWidth,
+            cellHeight = VeinCrateConfig.GroundSpriteSheets.Gold.cellHeight,
+        },
+    },
+    Diamond = {
+        {
+            index = 1,
+            assetId = VeinCrateConfig.GroundSpriteSheets.Diamond.assetId,
+            width = VeinCrateConfig.GroundSpriteSheets.Diamond.width,
+            height = VeinCrateConfig.GroundSpriteSheets.Diamond.height,
+            cellWidth = VeinCrateConfig.GroundSpriteSheets.Diamond.cellWidth,
+            cellHeight = VeinCrateConfig.GroundSpriteSheets.Diamond.cellHeight,
+        },
+    },
+}
+
 VeinCrateConfig.GroundSpriteRects = {
     Bronze = {
         ["item-45"] = {
@@ -1846,8 +1889,20 @@ function VeinCrateConfig.GetRaritySparkColor(rarity: string): Color3
 	return colorField(rarity, "spark")
 end
 
+function VeinCrateConfig.GetGroundSpritePages(groundType: string)
+	return VeinCrateConfig.GroundSpritePages[groundType]
+end
+
+function VeinCrateConfig.GetGroundSpritePage(groundType: string, pageIndex: number?)
+	local pages = VeinCrateConfig.GetGroundSpritePages(groundType)
+	if typeof(pages) ~= "table" then
+		return nil
+	end
+	return pages[pageIndex or 1]
+end
+
 function VeinCrateConfig.GetGroundSpriteSheet(groundType: string)
-	return VeinCrateConfig.GroundSpriteSheets[groundType]
+	return VeinCrateConfig.GetGroundSpritePage(groundType, 1) or VeinCrateConfig.GroundSpriteSheets[groundType]
 end
 
 function VeinCrateConfig.GetDisplaySprite(idOrDef: string | VeinTypeDef, groundType: string)
@@ -1856,7 +1911,85 @@ function VeinCrateConfig.GetDisplaySprite(idOrDef: string | VeinTypeDef, groundT
 		return nil
 	end
 	local byGround = VeinCrateConfig.GroundSpriteRects[groundType]
-	return byGround and byGround[def.id] or nil
+	local sprite = byGround and byGround[def.id] or nil
+	if typeof(sprite) ~= "table" then
+		return nil
+	end
+	local pageIndex = if typeof(sprite.pageIndex) == "number" and sprite.pageIndex >= 1 then sprite.pageIndex else 1
+	local page = VeinCrateConfig.GetGroundSpritePage(groundType, pageIndex)
+	local imageId = sprite.imageId or sprite.assetId or (page and (page.assetId or page.imageId)) or "rbxassetid://0"
+	return {
+		pageIndex = pageIndex,
+		imageId = imageId,
+		rectOffsetX = sprite.rectOffsetX or 0,
+		rectOffsetY = sprite.rectOffsetY or 0,
+		rectSizeX = sprite.rectSizeX or (page and page.cellWidth) or 0,
+		rectSizeY = sprite.rectSizeY or (page and page.cellHeight) or 0,
+	}
+end
+
+function VeinCrateConfig.ApplyGroundSpriteManifest(groundType: string, manifest)
+	if typeof(groundType) ~= "string" or typeof(manifest) ~= "table" then
+		return
+	end
+	local pages = {}
+	if typeof(manifest.pages) == "table" then
+		for _, page in ipairs(manifest.pages) do
+			if typeof(page) == "table" then
+				local pageIndex = if typeof(page.index) == "number" and page.index >= 1 then page.index else #pages + 1
+				pages[pageIndex] = {
+					index = pageIndex,
+					assetId = page.assetId or page.imageId or "rbxassetid://0",
+					width = page.width or 0,
+					height = page.height or 0,
+					cellWidth = page.cellWidth or 0,
+					cellHeight = page.cellHeight or 0,
+				}
+			end
+		end
+	end
+	if #pages > 0 then
+		VeinCrateConfig.GroundSpritePages[groundType] = pages
+	end
+	local rects = {}
+	if typeof(manifest.mapping) == "table" then
+		for _, entry in ipairs(manifest.mapping) do
+			if typeof(entry) == "table" and typeof(entry.itemId) == "string" then
+				rects[entry.itemId] = {
+					pageIndex = entry.pageIndex or 1,
+					imageId = entry.imageId,
+					rectOffsetX = entry.rectOffsetX or 0,
+					rectOffsetY = entry.rectOffsetY or 0,
+					rectSizeX = entry.rectSizeX or 0,
+					rectSizeY = entry.rectSizeY or 0,
+				}
+			end
+		end
+	end
+	if next(rects) ~= nil then
+		VeinCrateConfig.GroundSpriteRects[groundType] = rects
+	end
+	local firstPage = VeinCrateConfig.GetGroundSpritePage(groundType, 1)
+	if firstPage then
+		VeinCrateConfig.GroundSpriteSheets[groundType] = {
+			assetId = firstPage.assetId,
+			width = firstPage.width,
+			height = firstPage.height,
+			cellWidth = firstPage.cellWidth,
+			cellHeight = firstPage.cellHeight,
+		}
+	end
+end
+
+function VeinCrateConfig.ApplyAtlasProjectManifest(manifest)
+	if typeof(manifest) ~= "table" or typeof(manifest.lootboxes) ~= "table" then
+		return
+	end
+	for _, lootboxManifest in ipairs(manifest.lootboxes) do
+		if typeof(lootboxManifest) == "table" and typeof(lootboxManifest.groundType) == "string" then
+			VeinCrateConfig.ApplyGroundSpriteManifest(lootboxManifest.groundType, lootboxManifest)
+		end
+	end
 end
 
 function VeinCrateConfig.GetAllForGround(groundType: string): { VeinTypeDef }

@@ -11,6 +11,7 @@ local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local VeinConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
+local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
 
 export type Deps = {
 	player: Player,
@@ -38,7 +39,7 @@ function M.connect(deps: Deps)
 		if typeof(data) ~= "table" then return end
 		if data.ownerUserId ~= player.UserId then return end
 		if data.kind == "started" then
-			setStatus(string.format("Prospecting chunk %s — %.1fs", tostring(data.chunkId or "?"), tonumber(data.duration) or 0), false)
+			setStatus(string.format("Prospecting chunk %s â€” %.1fs", tostring(data.chunkId or "?"), tonumber(data.duration) or 0), false)
 		elseif data.kind == "completed" then
 			setStatus("Prospect complete! Oil tiles glowing green, dry tiles darkened.", false)
 		end
@@ -48,7 +49,7 @@ function M.connect(deps: Deps)
 	drillProgressUpdate.OnClientEvent:Connect(function(data)
 		if typeof(data) ~= "table" then return end
 		if data.kind == "started" and data.ownerUserId == player.UserId then
-			setStatus(string.format("Drilling (%s) — %.1fs", tostring(data.tier or "?"), tonumber(data.duration) or 0), false)
+			setStatus(string.format("Drilling (%s) â€” %.1fs", tostring(data.tier or "?"), tonumber(data.duration) or 0), false)
 		elseif data.kind == "completed" and data.ownerUserId == player.UserId then
 			-- Spawn DrillComplete model on the tile with ProximityPrompt
 			setStatus("Drill complete! Press E to reveal what's underneath.", false)
@@ -98,9 +99,10 @@ function M.connect(deps: Deps)
 			local veinResult = data.veinResult
 			if not veinResult then return end
 
-			-- Open crate spinner UI — ground type determines the card pool
-			local veinTypeId = data.veinTypeId or (veinResult.veins and veinResult.veins[1] and veinResult.veins[1].oilType) or "rusty_dribble"
+			-- Open crate spinner UI â€” ground type determines the card pool
+			local veinTypeId = data.veinTypeId or "item-1"
 			local groundType = data.groundType or "Bronze"
+			local veinType = VeinCrateConfig.GetById(veinTypeId)
 			if VeinCrateOpener then
 				VeinCrateOpener.Open(veinTypeId, groundType, function()
 					requestRevealTile:FireServer({
@@ -118,10 +120,12 @@ function M.connect(deps: Deps)
 			end
 
 			-- Find the tile Part in workspace by position
-			local displayName = VeinConfig.BuildDisplayName(veinResult)
-			local prob = VeinConfig.CalculateCombinedOdds(veinResult)
-			local oddsText = VeinConfig.FormatOdds(prob)
-			local rarity = VeinConfig.GetRarityFromOdds(prob)
+			local displayName = veinType and veinType.displayName or VeinConfig.BuildDisplayName(veinResult)
+			local oddsText = "ROW POOL"
+			local rarity = {
+				name = veinType and string.upper(veinType.rarity) or "ROW POOL",
+				color = veinType and VeinCrateConfig.GetRarityTextColor(veinType.rarity) or Color3.fromRGB(255, 255, 255),
+			}
 
 			-- Slot spin animation on the tile
 			-- Find tile part by searching owned plot sections
@@ -237,7 +241,7 @@ function M.connect(deps: Deps)
 					end
 				end
 				if oddsLabel then
-					oddsLabel.Text = oddsText .. " — " .. rarity.name
+					oddsLabel.Text = oddsText .. " - " .. rarity.name
 					oddsLabel.TextColor3 = rarity.color
 				end
 
@@ -258,7 +262,7 @@ function M.connect(deps: Deps)
 				toastLabel.TextColor3 = rarity.color
 				toastLabel.TextStrokeTransparency = 0
 				toastLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-				toastLabel.Text = displayName .. "  " .. oddsText
+				toastLabel.Text = displayName .. "  " .. (veinType and veinType.rarity or oddsText)
 				toastLabel.Parent = toast
 				local corner = Instance.new("UICorner")
 				corner.CornerRadius = UDim.new(0, 12)
@@ -301,7 +305,7 @@ function M.connect(deps: Deps)
 			end)
 
 		elseif data.kind == "pumpPlaced" and data.ownerUserId == player.UserId then
-			setStatus("Pump online — producing oil.", false)
+			setStatus("Pump online â€” producing oil.", false)
 		end
 	end)
 end

@@ -327,6 +327,14 @@ do
 					end
 				end
 			end
+		elseif cmd:sub(1, 11) == "/givedrills" then
+			local args = cmd:sub(12):gsub("^%s+", "")
+			local countArg, tierArg = args:match("^(%d+)%s*(%S*)")
+			local count = tonumber(countArg) or 10
+			local tier = tierArg and tierArg ~= "" and tierArg:lower() or "t3"
+			local itemId = "drill_" .. tier
+			EquipmentShopService:GrantFreeOwnedEquipment(player, itemId, count)
+			print(string.format("[Dev] Gave %s x%d %s drills", player.Name, count, tier:upper()))
 		elseif cmd == "/grant500" then
 			grantAllPlayersCash(500)
 		elseif cmd == "/wipedata" or cmd == "/dev_wipeme" then
@@ -368,7 +376,7 @@ do
 		"/fighterwave", "/fighters", "/fighterhere", "/jethere",
 		"/fighterretarget", "/jetretarget",
 		"/grant500", "/wipedata", "/dev_wipeme", "/wipealldata", "/dev_wipeall",
-		"/giveall", "/testvein",
+		"/giveall", "/testvein", "/givedrills",
 	}
 	for _, alias in ipairs(DEV_COMMAND_ALIASES) do
 		local ok, err = pcall(function()
