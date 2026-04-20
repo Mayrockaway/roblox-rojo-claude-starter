@@ -51,7 +51,7 @@ This document describes **fantasy**, **player feel**, and **how each row maps to
 
 ## Summary — active catalog (`Catalog.Events`)
 
-Waypoints follow **`StraitEventConfig.LaneWaypointTriggers`** (lane ordinals **2–9**).
+Waypoints follow **`StraitEventConfig.LaneWaypointTriggers`** (per-bracket allow-list): **Open** rolls at **3 / 6 / 9**, **Restricted** at **3 / 5 / 6 / 7 / 9**, **Closed** at the full **2–9** slate.
 
 | Severity | `id` | `displayName` | Server / client pipeline | Impacts (high level) |
 |----------|------|-----------------|--------------------------|----------------------|

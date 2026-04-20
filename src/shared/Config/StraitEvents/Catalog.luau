@@ -1,6 +1,8 @@
 --!strict
 
--- **Single source of truth** for strait waypoint shipment events (trigger ordinals from `StraitEventConfig.LaneWaypointTriggers`).
+-- **Single source of truth** for strait waypoint shipment events (trigger ordinals from
+-- `StraitEventConfig.LaneWaypointTriggers`, per-bracket allow-list:
+-- Open={3,6,9} / Restricted={3,5,6,7,9} / Closed={2..9}).
 -- Add new events here: flags drive server behavior; `MissileConfig` / `StormConfig` / … hold tuning; optional `StraitWaypointsFx/<id>` for generic FX.
 -- Human-oriented writeups: docs/features/strait-waypoint-events/EVENTS.md (keep in sync when changing rows).
 

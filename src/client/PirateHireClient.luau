@@ -7,15 +7,26 @@
 -- StraitEventPlaytestBanner is required as a sibling under `script.Parent.UI` (same pattern as
 -- `ShipmentVisualClient`), so the banner does not need to be threaded through deps.
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local StraitEventPlaytestBanner = require(script.Parent:WaitForChild("UI"):WaitForChild("StraitEventPlaytestBanner"))
+local HitContractConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("HitContractConfig"))
+local UiSfx = require(script.Parent:WaitForChild("UiSfx")) :: {
+	playPirateHitContract: () -> (),
+}
 
 export type PirateHireDeps = {
 	player: Player,
 	playerGui: PlayerGui,
 	setStatus: (message: string, ok: boolean?) -> (),
+	--- Optional locked-status writer from `ClientPlotGrid.setStatusLocked`. When
+	--- present, the contractor "your hit landed" alert paints in bright gold and
+	--- holds the shipment hint line for `PIRATE_HIT_CONTRACTOR_HOLD_SECONDS`
+	--- before any other `setStatus` call can overwrite it. Optional so callers
+	--- that haven't been updated still get the legacy (red) `setStatus` fallback.
+	setStatusLocked: ((message: string, color: Color3, holdSeconds: number) -> ())?,
 }
 
 export type PirateHireRemotes = {
@@ -33,12 +44,32 @@ local COLOR_PIRATE_DIM = Color3.fromRGB(210, 210, 210)
 local COLOR_PIRATE_MONEY = Color3.fromRGB(80, 220, 80)
 local COLOR_PIRATE_RED = Color3.fromRGB(255, 80, 80)
 
+--- Bright, very-readable gold for the contractor's "your hit landed" status
+--- write. Picked to clear the dark `ShipmentHint` background and read at a
+--- glance against neutral white drilling chatter. Distinct from
+--- `COLOR_PIRATE_HOVER` (broker dialogue accent) on purpose.
+local COLOR_CONTRACTOR_HIT_LANDED = Color3.fromRGB(255, 200, 60)
+--- Hold the shipment hint line for this many seconds after a contractor hit
+--- alert so background `setStatus` chatter (drilling progress, prospector
+--- pings) can't overwrite the breakdown before it's been read.
+local PIRATE_HIT_CONTRACTOR_HOLD_SECONDS = 5
+
+--- Big punchy red used for the victim's "RAIDED!" headline + body in
+--- `StraitEventPlaytestBanner`. Hot enough to read against the workspace and
+--- the typical sky/ocean background; the banner adds a black stroke on top.
+local COLOR_VICTIM_RAID_BANNER = Color3.fromRGB(255, 70, 70)
+--- How long the victim banner stays at full opacity before it fades out. A bit
+--- longer than the default banner hold (3.8s) so the longer sentence has time
+--- to read.
+local PIRATE_HIT_VICTIM_BANNER_HOLD_SECONDS = 5
+
 local PirateHireClient = {}
 
 function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemotes)
 	local player = deps.player
 	local playerGui = deps.playerGui
 	local setStatus = deps.setStatus
+	local setStatusLocked = deps.setStatusLocked
 
 	local requestPirateHireTargets = remotes.requestPirateHireTargets
 	local requestPirateHireAction = remotes.requestPirateHireAction
@@ -156,7 +187,16 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 		header.Size = UDim2.new(1, 0, 0, 50); header.TextSize = 44
 		uiState.header = header
 
-		local askBtn = blockyLine("AskButton", "Ask a question", 2, true, root)
+		-- Static pitch label (was a clickable "Ask a question" easter-egg button
+		-- that cycled flavor quotes). Replaced with a non-interactive description
+		-- of what hiring actually does so the broker dialog explains itself in
+		-- one read instead of needing a "click to learn more" round-trip.
+		local pitchText = string.format("I'll steal %s of your target's cargo for you.", HitContractConfig.formatStealPercent())
+		local pitchLabel = blockyLine("PitchLabel", pitchText, 2, false, root)
+		pitchLabel.TextSize = 26
+		pitchLabel.Size = UDim2.new(1, 0, 0, 60)
+		pitchLabel.TextWrapped = true
+		pitchLabel.TextColor3 = COLOR_PIRATE_DIM
 		local hireBtn = blockyLine("HireButton", string.format("Hire a hit ($%d)", uiState.hitCost), 3, true, root)
 		if uiState.freeHitTokens > 0 then
 			local freeLabel = blockyLine("FreeTokens", string.format("  Free tokens: %d", uiState.freeHitTokens), 4, false, root)
@@ -167,16 +207,9 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 		backBtn.MouseLeave:Connect(function() backBtn.TextColor3 = COLOR_PIRATE_DIM end)
 		backBtn.MouseButton1Click:Connect(closeUi)
 
-		askBtn.MouseButton1Click:Connect(function()
-			requestPirateHireAction:FireServer({ action = "ask" })
-			local quotes = {"Arrr, the seas be rough today!", "I know every ship in these waters.", "Gold talks, sailor.", "Need someone sunk? I know a crew.", "The strait takes what it wants!"}
-			header.Text = quotes[math.random(1, #quotes)]; header.TextSize = 28
-			task.delay(2, function() if header.Parent then header.Text = "Pirate Broker:"; header.TextSize = 44 end end)
-		end)
-
 		hireBtn.MouseButton1Click:Connect(function()
 			header.Text = "Pick a target:"; header.TextSize = 38
-			askBtn.Visible = false; hireBtn.Visible = false; backBtn.Visible = false
+			pitchLabel.Visible = false; hireBtn.Visible = false; backBtn.Visible = false
 			for _, c in ipairs(root:GetChildren()) do if c.Name:find("Target_") or c.Name == "FreeTokens" or c.Name == "NoTargets" or c.Name == "HireBack" then c:Destroy() end end
 
 			local ok, result = pcall(function()
@@ -251,13 +284,41 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 	end)
 
 	-- Server uses FireClient per recipient; banner only reaches impacted players.
+	-- `payload.kind` is "contractor" (their hire just landed, payout incoming) or
+	-- "victim" (they got robbed). Stamped by `OilShipmentService:_emitPirateHitAlert`
+	-- callers (see `_executeForcedContractPirateRaid`).
+	--
+	--   * Contractor side — paint the shipment hint bright gold, lock it for
+	--     `PIRATE_HIT_CONTRACTOR_HOLD_SECONDS` so the breakdown isn't clobbered
+	--     by routine status chatter, play the success cue, and show the legacy
+	--     "Pirate Hit" banner.
+	--   * Victim side — show a dedicated red "RAIDED!" banner with the
+	--     server-built sentence ("You got raided by X and lost 50% of your
+	--     barrels to them!") as the subtitle. We deliberately *do not* call
+	--     `setStatus` here — the banner is the whole notification, and the
+	--     status line stays free for ongoing shipment progress text.
+	--   * Anything else (legacy untagged) — fall back to the previous red
+	--     `setStatus` + generic banner so we don't silently drop alerts.
 	pirateHitAlertEvent.OnClientEvent:Connect(function(payload)
 		if typeof(payload) ~= "table" then
 			return
 		end
 		local message = tostring(payload.message or "Pirate hit event.")
-		setStatus(message, false)
-		StraitEventPlaytestBanner.show(playerGui, "Pirate Hit")
+		local kind = tostring(payload.kind or "")
+		if kind == "contractor" and setStatusLocked then
+			setStatusLocked(message, COLOR_CONTRACTOR_HIT_LANDED, PIRATE_HIT_CONTRACTOR_HOLD_SECONDS)
+			UiSfx.playPirateHitContract()
+			StraitEventPlaytestBanner.show(playerGui, "Pirate Hit")
+		elseif kind == "victim" then
+			StraitEventPlaytestBanner.show(playerGui, "RAIDED!", {
+				color = COLOR_VICTIM_RAID_BANNER,
+				subtitle = message,
+				holdSeconds = PIRATE_HIT_VICTIM_BANNER_HOLD_SECONDS,
+			})
+		else
+			setStatus(message, false)
+			StraitEventPlaytestBanner.show(playerGui, "Pirate Hit")
+		end
 	end)
 end
 

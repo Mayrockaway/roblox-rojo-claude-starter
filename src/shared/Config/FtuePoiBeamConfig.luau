@@ -59,6 +59,22 @@ export type PoiBeamStepRule = {
 local FtuePoiBeamConfig = {
 	Rules = {
 		{
+			--- Reveal leg: world beam from the player rig to the just-drilled tutorial tile
+			--- (the BasePart that **`OilStateService:SetFtueTutorialTileMarker`** stamps with
+			--- `IsFtueTutorialTile = true`). Scoped to the local player's plot so other
+			--- players' tutorial tiles do not pull the beam off-target.
+			ftueStep = FtueConfig.Step.WaitReveal,
+			docksSubStep = nil,
+			targets = {
+				{
+					id = "FtueTutorialTile",
+					attributeName = "IsFtueTutorialTile",
+					searchScope = "OwnedPlot",
+					style = nil,
+				},
+			},
+		},
+		{
 			ftueStep = FtueConfig.Step.WaitPlotShipment,
 			docksSubStep = nil,
 			targets = {
@@ -67,6 +83,23 @@ local FtuePoiBeamConfig = {
 					pointerGuiName = "FtuePlotDispatchWorldPointerRoot",
 					modelName = "PlotDispatch",
 					searchScope = "OwnedPlot",
+					style = nil,
+				},
+			},
+		},
+		{
+			--- Equipment shop leg: world beam from the player rig to the dock equipment
+			--- shop counter (`Workspace.Map.MapDecor.DocksShop`) so the player can spot
+			--- the prox prompt that opens `ShopPanelGui`. The shop has the prox prompt
+			--- with `OpensPanel = "ShopPanelGui"` parented to a child `Part`; targeting
+			--- the parent model lets `PlayerToPoiBeam.resolveBasePart` pick a sensible
+			--- anchor (PrimaryPart / first BasePart).
+			ftueStep = FtueConfig.Step.WaitDocksEquipmentShop,
+			docksSubStep = nil,
+			targets = {
+				{
+					id = "DocksEquipmentShop",
+					modelName = "DocksShop",
 					style = nil,
 				},
 			},
@@ -114,7 +147,10 @@ local FtuePoiBeamConfig = {
 				{
 					id = "ArmyGeneral",
 					pointerGuiName = "FtueArmyGeneralWorldPointerRoot",
-					modelName = "ArmyGeneral",
+					--- Authored model name has a space (`Workspace.Map.MapDecor.Army General`).
+					--- `PlayerToPoiBeam.resolveBasePart` then uses the rig's `HumanoidRootPart`
+					--- (this Model is itself the rig) so the beam lands on the actor.
+					modelName = "Army General",
 					style = {
 						--- Offset right so the two dock-hire beams don't overlap.
 						characterAttachOffset = Vector3.new(0.5, 1.4, 0.2),

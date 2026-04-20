@@ -6,8 +6,10 @@ local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local HitContractConfig = require(Shared:WaitForChild("Config"):WaitForChild("HitContractConfig"))
 
-local HIT_COST_CASH = 5000
+-- Re-bound for call-site readability; authoritative tuning lives in `HitContractConfig`.
+local HIT_COST_CASH = HitContractConfig.Cost
 
 local HitContractService = {}
 
@@ -57,6 +59,8 @@ function HitContractService:Init(remoteService, oilStateService, oilShipmentServ
 	self._contractsById = {} :: { [string]: { [string]: any } }
 	self._freeHitTokens = {} :: { [number]: number }
 	self._prompt = nil :: ProximityPrompt?
+	--- Once `Workspace.PirateHire` exists, listen for rig/parts streaming in under it.
+	self._pirateHireStreamingNpc = nil :: Instance?
 end
 
 function HitContractService:_tokenCount(userId: number): number
@@ -233,11 +237,24 @@ function HitContractService:_onPirateHirePrompt(player: Player)
 	self:_fireOpen(player)
 end
 
+function HitContractService:_hookPirateHireStreaming(npc: Instance)
+	if self._pirateHireStreamingNpc == npc then
+		return
+	end
+	self._pirateHireStreamingNpc = npc
+	table.insert(self._connections, npc.DescendantAdded:Connect(function()
+		task.defer(function()
+			self:_ensurePrompt()
+		end)
+	end))
+end
+
 function HitContractService:_ensurePrompt()
 	local npc = Workspace:FindFirstChild("PirateHire") or Workspace:FindFirstChild("PirateHire", true)
 	if not npc then
 		return
 	end
+	self:_hookPirateHireStreaming(npc)
 	local host = promptHostForPirateHire(npc)
 	if not host then
 		return
@@ -255,7 +272,7 @@ function HitContractService:_ensurePrompt()
 		p.ActionText = "Talk"
 		p.ObjectText = "Pirate Broker"
 		p.KeyboardKeyCode = Enum.KeyCode.E
-		p.MaxActivationDistance = 10
+		p.MaxActivationDistance = 20
 		p.RequiresLineOfSight = false
 		p.HoldDuration = 0
 		p.Parent = host
@@ -293,13 +310,9 @@ function HitContractService:_onRequestAction(player: Player, payload: any)
 		return
 	end
 	local action = tostring(payload.action or "")
-	if action == "ask" then
-		self:_fireResult(player, true, "Ask clean, pay quick. We strike when they sail.", {
-			freeHitTokens = self:_tokenCount(player.UserId),
-			hitCost = HIT_COST_CASH,
-		})
-		return
-	end
+	-- Legacy `action == "ask"` (broker quote easter-egg) was removed when the
+	-- client replaced the ask button with a static pitch label. The server no
+	-- longer responds to it; only "hire" is valid now.
 	if action ~= "hire" then
 		self:_fireResult(player, false, "Unknown pirate action.", nil)
 		return
@@ -355,6 +368,7 @@ function HitContractService:Stop()
 	end
 	self._connections = {}
 	self._prompt = nil
+	self._pirateHireStreamingNpc = nil
 	self._contractsByVictim = {}
 	self._contractsById = {}
 	self._freeHitTokens = {}

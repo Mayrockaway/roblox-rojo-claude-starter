@@ -29,6 +29,12 @@ export type SkinDef = {
 	fxParticleScale: number?,
 	rarityDisplay: string?,
 	rig: RigOverride?,
+	--- 2D icon for the Ship Management hero slot + Select Ship card slot
+	--- (post-viewport-swap). Painted into the `ImageLabel` shell by
+	--- `ShipManagementPanel.applyOilState` and `SelectShipPopulate.Apply`.
+	--- When `nil` the slot stays as the empty grey shell so a missing icon is
+	--- visually obvious in Studio rather than crashing the panel.
+	icon: string?,
 }
 
 local DEFAULT_RIG: RigDef = {
@@ -47,13 +53,13 @@ local TEMPLATE_RIG_OVERRIDES: { [string]: RigOverride } = {
 	Tanker = {
 		deckYOffsetFallback = 15,
 	},
-	Ship3 = {
+	Raft = {
 		deckYOffsetFallback = 15,
 	},
-	Ship4 = {
+	PirateShip = {
 		deckYOffsetFallback = 15,
 	},
-	Ship5 = {
+	Ducky = {
 		deckYOffsetFallback = 15,
 	},
 	Whale = {
@@ -114,48 +120,35 @@ local ShipSkinCatalog = {
 			templateName = "Tanker",
 			fxParticleScale = 1,
 			rarityDisplay = "Common",
-		},
-		RustSkiffSkin = {
-			displayName = "Rust Skiff",
-			templateName = "Tanker",
-			fxParticleScale = 1,
-			rarityDisplay = "Common",
-		},
-		HaulerSkin = {
-			displayName = "Hauler",
-			templateName = "Tanker",
-			fxParticleScale = 1,
-			rarityDisplay = "Uncommon",
-		},
-		ArmoredSkin = {
-			displayName = "Armored Tanker",
-			templateName = "Tanker",
-			fxParticleScale = 1.05,
-			rarityDisplay = "Rare",
+			icon = "rbxassetid://110257950618296",
 		},
 		Ship3Skin = {
-			displayName = "Ship 3",
-			templateName = "Ship3",
+			displayName = "Raft",
+			templateName = "Raft",
 			fxParticleScale = 1,
 			rarityDisplay = "Uncommon",
+			-- icon: not yet authored — slot renders as empty grey shell.
 		},
 		Ship4Skin = {
-			displayName = "Ship 4",
-			templateName = "Ship4",
+			displayName = "The Sparrow",
+			templateName = "PirateShip",
 			fxParticleScale = 1,
 			rarityDisplay = "Rare",
+			icon = "rbxassetid://80699672548624",
 		},
 		Ship5Skin = {
-			displayName = "Ship 5",
-			templateName = "Ship5",
+			displayName = "Jet Duck",
+			templateName = "Ducky",
 			fxParticleScale = 1,
 			rarityDisplay = "Epic",
+			icon = "rbxassetid://122817352338651",
 		},
 		WhaleSkin = {
-			displayName = "Whale",
+			displayName = "Moby",
 			templateName = "Whale",
 			fxParticleScale = 1.2,
 			rarityDisplay = "Legendary",
+			icon = "rbxassetid://77447218245868",
 		},
 	} :: { [string]: SkinDef },
 }

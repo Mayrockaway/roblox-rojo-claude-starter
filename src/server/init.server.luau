@@ -42,6 +42,7 @@ local OilMarketService = require(serviceFolder:WaitForChild("OilMarketService"))
 local EquipmentShopService = require(serviceFolder:WaitForChild("EquipmentShopService"))
 local OilmanService = require(serviceFolder:WaitForChild("OilmanService"))
 local InstantSellService = require(serviceFolder:WaitForChild("InstantSellService"))
+local MonetizationService = require(serviceFolder:WaitForChild("MonetizationService"))
 local DrillingService = require(serviceFolder:WaitForChild("DrillingService"))
 local FtueService = require(serviceFolder:WaitForChild("FtueService"))
 local OilTankService = require(serviceFolder:WaitForChild("OilTankService"))
@@ -49,6 +50,7 @@ local FighterPlaneWaveService = require(serviceFolder:WaitForChild("FighterPlane
 local HitContractService = require(serviceFolder:WaitForChild("HitContractService"))
 local ArmyGeneralService = require(serviceFolder:WaitForChild("ArmyGeneralService"))
 local KillZoneService = require(serviceFolder:WaitForChild("KillZoneService"))
+local LeaderboardService = require(serviceFolder:WaitForChild("LeaderboardService"))
 
 local DevLog = require(Shared:WaitForChild("DevLog"))
 
@@ -94,6 +96,7 @@ DevLog.SetBroadcaster(function(msg)
 	ev:FireAllClients(msg)
 end)
 TelemetryService:Init()
+LeaderboardService:Init()
 StraitStateService:Init(RemoteService, TelemetryService)
 PlotService:Init()
 OilStateService:Init(RemoteService, PlotService)
@@ -103,12 +106,16 @@ OilShipmentService:Init(RemoteService, OilStateService, PlotService, WarehouseSe
 HitContractService:Init(RemoteService, OilStateService, OilShipmentService)
 ArmyGeneralService:Init(RemoteService, OilStateService, OilShipmentService)
 OilShipmentService:SetHitContractService(HitContractService)
+OilShipmentService:SetLeaderboardService(LeaderboardService)
 ChunkOwnershipService:Init(PlotService, OilStateService)
 WarehouseService:Init(RemoteService, OilStateService)
 OilMarketService:Init(RemoteService, StraitStateService, WarehouseService, OilStateService)
 EquipmentShopService:Init(RemoteService, OilStateService, PlotService)
 OilmanService:Init(RemoteService, OilStateService)
 InstantSellService:Init(RemoteService, OilStateService)
+MonetizationService:Init(RemoteService, OilStateService, StraitStateService)
+ArmyGeneralService:SetMonetizationService(MonetizationService)
+EquipmentShopService:SetMonetizationService(MonetizationService)
 PlotResourceService:Init(RemoteService, OilStateService, PlotService, OilVisualService, OilShipmentService, ChunkOwnershipService)
 OilProductionService:Init(OilStateService)
 DrillingService:Init(RemoteService, OilStateService)
@@ -116,6 +123,7 @@ FtueService:Init(RemoteService, PlotService, OilStateService, EquipmentShopServi
 OilStateService:SetFtueService(FtueService)
 OilShipmentService:SetFtueService(FtueService)
 OilMarketService:SetFtueService(FtueService)
+EquipmentShopService:SetFtueService(FtueService)
 OilStateService:SetStateReadyForTimersCallback(function(userId: number, drillDone: { any })
 	DrillingService:ReplayCompletedDrills(userId, drillDone)
 	if #drillDone > 0 then
@@ -123,6 +131,15 @@ OilStateService:SetStateReadyForTimersCallback(function(userId: number, drillDon
 	end
 	DrillingService:ResumePendingDrillDelays(userId)
 	DrillingService:ReplayUnrevealedTiles(userId)
+	--- FTUE rejoin: `RehydrateExpiredTimers` calls `OilStateService:CompleteDrill`
+	--- directly (not through `DrillingService:_scheduleDrillCompletion`), so the
+	--- normal `OnFtueTutorialDrillFinished` notification that advances `WaitDrillOil_WIP`
+	--- → `WaitReveal` is skipped. Replay it here for any drill the player completed
+	--- while offline so they don't rejoin stuck on the old drill step + restrict
+	--- attribute (which would also keep the old beam + tile highlight active).
+	for _, done in ipairs(drillDone) do
+		FtueService:OnFtueTutorialDrillFinished(userId, done)
+	end
 end)
 OilTankService:Init(RemoteService, OilStateService)
 ToolService:Init()
@@ -145,6 +162,7 @@ OilMarketService:Start()
 EquipmentShopService:Start()
 OilmanService:Start()
 InstantSellService:Start()
+MonetizationService:Start()
 PlotResourceService:Start()
 OilProductionService:Start()
 DrillingService:Start()
@@ -152,6 +170,7 @@ FtueService:Start()
 OilTankService:Start()
 ToolService:Start()
 FighterPlaneWaveService:Start()
+LeaderboardService:Start()
 
 game:BindToClose(function()
 	KillZoneService:Stop()
@@ -159,6 +178,7 @@ game:BindToClose(function()
 	ToolService:Stop()
 	OilTankService:Stop()
 	FighterPlaneWaveService:Stop()
+	LeaderboardService:Stop()
 	DrillingService:Stop()
 	FtueService:Stop()
 	OilProductionService:Stop()
@@ -166,6 +186,8 @@ game:BindToClose(function()
 	OilMarketService:Stop()
 	EquipmentShopService:Stop()
 	OilmanService:Stop()
+	MonetizationService:Stop()
+	InstantSellService:Stop()
 	WarehouseService:Stop()
 	ChunkOwnershipService:Stop()
 	OilShipmentService:Stop()
@@ -323,6 +345,16 @@ do
 			local itemId = "drill_" .. tier
 			EquipmentShopService:GrantFreeOwnedEquipment(player, itemId, count)
 			print(string.format("[Dev] Gave %s x%d %s drills", player.Name, count, tier:upper()))
+		elseif cmd == "/straitopen" or cmd == "/straitclose" then
+			-- Mirrors the `MonetizationService` consumable handlers for the
+			-- Robux strait force-open / force-close products without going
+			-- through `MarketplaceService`. Same `ForceStateForDuration`
+			-- conflict policy applies — second invocation in the same 120s
+			-- window is rejected (returns false) so QA can validate the
+			-- refund branch by chaining two commands quickly.
+			local state = if cmd == "/straitopen" then "Open" else "Closed"
+			local ok = StraitStateService:ForceStateForDuration(state, 120, player)
+			print(string.format("[Dev] /strait%s by %s -> applied=%s", string.lower(state), player.Name, tostring(ok)))
 		elseif cmd == "/grant500" then
 			grantAllPlayersCash(500)
 		elseif cmd == "/wipedata" or cmd == "/dev_wipeme" then
@@ -365,6 +397,7 @@ do
 		"/fighterretarget", "/jetretarget",
 		"/grant500", "/wipedata", "/dev_wipeme", "/wipealldata", "/dev_wipeall",
 		"/giveall", "/testvein", "/givedrills",
+		"/straitopen", "/straitclose",
 	}
 	for _, alias in ipairs(DEV_COMMAND_ALIASES) do
 		local ok, err = pcall(function()

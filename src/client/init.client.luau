@@ -34,10 +34,14 @@ local PirateHireClient = require(resolveClientModule(script, "PirateHireClient")
 local OilSnapshotClient = require(resolveClientModule(script, "OilSnapshotClient"))
 local ClientAudioPreferences = require(resolveClientModule(script, "ClientAudioPreferences"))
 ClientAudioPreferences.init()
+local NpcProximityVoice = require(resolveClientModule(script, "NpcProximityVoice"))
+NpcProximityVoice.start()
 local ClientPlotGrid = require(resolveClientModule(script, "ClientPlotGrid"))
 local DrillAnimationClient = require(resolveClientModule(script, "DrillAnimationClient"))
 local DrillReplicationClient = require(resolveClientModule(script, "DrillReplicationClient"))
 local PlacementClient = require(resolveClientModule(script, "PlacementClient"))
+local IconPreloader = require(resolveClientModule(script, "IconPreloader"))
+task.defer(IconPreloader.start)
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
@@ -146,8 +150,8 @@ do
 		VeinCrateOpener = result
 	else
 		warn("[Client] VeinCrateOpener failed to load: " .. tostring(result))
-	end
-end
+					end
+				end
 local requestDispatchShipment = Remotes.requestDispatchShipment :: RemoteEvent
 local oilStateUpdate = Remotes.oilStateUpdate :: RemoteEvent
 local oilActionResult = Remotes.oilActionResult :: RemoteEvent
@@ -234,8 +238,8 @@ local function requireSkyMissileAmbience(): { Start: () -> (), Stop: () -> () }?
 		local sibling = script.Parent and script.Parent:FindFirstChild("SkyMissileAmbience")
 		if sibling and sibling:IsA("ModuleScript") then
 			modScript = sibling
-		end
 	end
+end
 
 	if not modScript then
 		local ps = player:FindFirstChild("PlayerScripts") or player:WaitForChild("PlayerScripts", 30)
@@ -248,8 +252,8 @@ local function requireSkyMissileAmbience(): { Start: () -> (), Stop: () -> () }?
 
 	if not modScript then
 		warn("[Client] SkyMissileAmbience module missing; sky missiles disabled.")
-		return nil
-	end
+	return nil
+end
 
 	local ok, loaded = pcall(require, modScript)
 	if ok and typeof(loaded) == "table" then
@@ -292,8 +296,8 @@ local function requireStraitDevPanel(): { mount: (PlayerGui, RemoteEvent, Remote
 			if m:IsA("ModuleScript") then
 				modScript = m
 			end
-		end
-	end
+					end
+				end
 	if not modScript then
 		warn("[Client] StraitDevPanel not found — ensure Rojo syncs `src/client/UI/StraitDevPanel.luau` under PlayerScripts.Client.UI")
 		return nil
@@ -363,6 +367,33 @@ local bindOwnedPlot = function()
 	ownedPlot = ClientPlotGrid.getOwnedPlot()
 	chunkPartById = ClientPlotGrid.getChunkPartById()
 end
+
+-- Pirate Hire: subscribe to `PirateHireOpen` as soon as `setStatus` exists. Previously this
+-- wired near the end of the file; a fast prompt could fire `FireClient` before `OnClientEvent`
+-- was connected, so the first activation did nothing (second try worked).
+PirateHireClient.connect({
+	player = player,
+	playerGui = playerGui,
+	setStatus = setStatus,
+	setStatusLocked = ClientPlotGrid.setStatusLocked,
+}, {
+	requestPirateHireTargets = requestPirateHireTargets,
+	requestPirateHireAction = requestPirateHireAction,
+	pirateHireOpenEvent = pirateHireOpenEvent,
+	pirateHireResultEvent = pirateHireResultEvent,
+	pirateHitAlertEvent = pirateHitAlertEvent,
+})
+
+StrategicStrikeClient.connectArmyGeneralEarly({
+	playerGui = playerGui,
+	setStatus = setStatus,
+}, {
+	armyGeneralOpenEvent = armyGeneralOpenEvent,
+	armyGeneralResultEvent = armyGeneralResultEvent,
+	requestArmyGeneralAction = requestArmyGeneralAction,
+	requestArmyGeneralTargets = requestArmyGeneralTargets,
+	requestPromptRobuxPurchase = Remotes.requestPromptRobuxPurchase :: RemoteEvent,
+})
 
 -- =================== ALIASES TO PlacementClient MODULE ===================
 local getTargetedChunkHit = PlacementClient.getTargetedChunkHit
@@ -470,8 +501,8 @@ local function tryBindEquipmentHotbarAsync()
 		local hbMod = uiFolder:WaitForChild("EquipmentHotbarController", 30)
 		if not (hbMod and hbMod:IsA("ModuleScript")) then
 			warn("[Client] EquipmentHotbar: `EquipmentHotbarController` ModuleScript missing under Client/UI (sync Rojo).")
-			return
-		end
+		return
+	end
 		local EquipmentHotbarController = require(hbMod) :: { tryStart: (PlayerGui) -> boolean }
 		local ok = EquipmentHotbarController.tryStart(playerGui)
 		if ok then
@@ -480,8 +511,8 @@ local function tryBindEquipmentHotbarAsync()
 			end)
 			if not okHide then
 				warn("[Client] EquipmentHotbar: SetCoreGuiEnabled(Backpack) failed: ", errHide)
-			end
-		end
+	end
+end
 	end)
 end
 
@@ -506,8 +537,8 @@ local function startHudModalWiring()
 		local routerMod = uiFolder:WaitForChild("HudPanelRouter", 30)
 		if not (routerMod and routerMod:IsA("ModuleScript")) then
 			warn("[Client] HUD wiring: HudPanelRouter ModuleScript missing under UI folder.")
-			return
-		end
+		return
+	end
 		local HudPanelRouter = require(routerMod) :: { start: (PlayerGui) -> () }
 		HudPanelRouter.start(playerGui)
 
@@ -723,7 +754,7 @@ player.CharacterAdded:Connect(function()
 end)
 
 mouse.Button1Down:Connect(function()
-	tryPrimaryAction()
+		tryPrimaryAction()
 end)
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -791,8 +822,8 @@ task.defer(function()
 	local bind = (mod :: any).bind :: (PlayerGui) -> boolean
 	for _ = 1, 100 do
 		if bind(playerGui) then
-			return
-		end
+		return
+	end
 		task.wait(0.25)
 	end
 end)
@@ -853,10 +884,6 @@ StrategicStrikeClient.connect({
 	nukeCountdownEvent = nukeCountdownEvent,
 	nukeDetonateEvent = nukeDetonateEvent,
 	airStrikeEvent = airStrikeEvent,
-	armyGeneralOpenEvent = armyGeneralOpenEvent,
-	armyGeneralResultEvent = armyGeneralResultEvent,
-	requestArmyGeneralAction = requestArmyGeneralAction,
-	requestArmyGeneralTargets = requestArmyGeneralTargets,
 })
 
 StraitMarketHudClient.connect({
@@ -879,18 +906,6 @@ ShipmentVisualClient.connect({
 	setStatus = setStatus,
 	playEventSFX = playEventSFX,
 }, shipmentVisualEvent)
-
-PirateHireClient.connect({
-	player = player,
-	playerGui = playerGui,
-	setStatus = setStatus,
-}, {
-	requestPirateHireTargets = requestPirateHireTargets,
-	requestPirateHireAction = requestPirateHireAction,
-	pirateHireOpenEvent = pirateHireOpenEvent,
-	pirateHireResultEvent = pirateHireResultEvent,
-	pirateHitAlertEvent = pirateHitAlertEvent,
-})
 
 -- ShipmentVisualEvent strait FX + HUD status + delivery SFX live in `ShipmentVisualClient`
 -- (wired above with `StraitWaypointWorldFx` + `setStatus` + `playEventSFX`).
@@ -1040,8 +1055,8 @@ end)
 		local mod = uiRoot:FindFirstChild("FtueTutorialTileHighlight")
 	if not (mod and mod:IsA("ModuleScript")) then
 		warn("[FTUE] FtueTutorialTileHighlight ModuleScript not found under " .. uiRoot:GetFullName())
-		return
-	end
+					return
+				end
 	local ok, FtueTutorialTileHighlight = pcall(require, mod)
 	if not ok then
 		warn("[FTUE] FtueTutorialTileHighlight require failed: " .. tostring(FtueTutorialTileHighlight))

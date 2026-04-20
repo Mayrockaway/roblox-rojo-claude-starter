@@ -108,6 +108,13 @@
         }
       }
     },
+    "ReplicatedFirst": {
+      "$className": "ReplicatedFirst",
+      "$ignoreUnknownInstances": true,
+      "LoadingBootstrap": {
+        "$path": "src/replicated_first"
+      }
+    },
     "ServerScriptService": {
       "$className": "ServerScriptService",
       "Server": {
@@ -223,6 +230,10 @@
     "Workspace": {
       "$className": "Workspace",
       "$ignoreUnknownInstances": true,
+      "DocksLeaderboard": {
+        "$className": "Folder",
+        "$ignoreUnknownInstances": true
+      },
       "FXDev": {
         "$className": "Folder",
         "$ignoreUnknownInstances": true

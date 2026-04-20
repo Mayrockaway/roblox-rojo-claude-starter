@@ -41,7 +41,12 @@ local speedCostLabel: TextLabel? = nil
 local capacityCostLabel: TextLabel? = nil
 local speedBuyButton: GuiButton? = nil
 local capacityBuyButton: GuiButton? = nil
-local shipViewport: ViewportFrame? = nil
+--- Hero ship preview slot. Currently authored as a `ViewportFrame` (legacy 3D
+--- preview path) **or** as an `ImageLabel` (icon-based path, post-swap). Held
+--- as `GuiObject` so the resolver can accept either; `fillShipViewport` /
+--- icon-paint code branch on the actual class. Kept nullable so the panel
+--- stays bound even if a designer removes the slot temporarily.
+local shipViewport: GuiObject? = nil
 local shipNameHeader: TextLabel? = nil
 
 -- Right-column placard accessories: 8 segment frames per placard plus the level
@@ -475,7 +480,18 @@ local function applyShipManagementUi(snap: any)
 		shipNameHeader.Text = ShipSkinCatalog.GetSkin(skinId).displayName
 	end
 	if shipViewport then
-		fillShipViewport(shipViewport, skinId)
+		-- Two authoring paths supported:
+		--   * `ViewportFrame` (legacy 3D preview) — clone + fit the hull.
+		--   * `ImageLabel` (post-viewport-swap icon shell) — paint the per-skin
+		--     `icon` from `ShipSkinCatalog`. When the skin has no `icon` we
+		--     leave `Image = ""` so a missing asset reads as the empty grey
+		--     shell rather than a broken-image badge.
+		if shipViewport:IsA("ViewportFrame") then
+			fillShipViewport(shipViewport, skinId)
+		elseif shipViewport:IsA("ImageLabel") then
+			local iconAsset = ShipSkinCatalog.GetSkin(skinId).icon
+			shipViewport.Image = if typeof(iconAsset) == "string" then iconAsset else ""
+		end
 	end
 end
 
@@ -561,13 +577,16 @@ local function wireShipManagement(screen: ScreenGui)
 		capacityDescriptionLabel = nil
 	end
 
+	-- `ShipViewport` may be a `ViewportFrame` (legacy 3D preview) or an
+	-- `ImageLabel` (post-swap icon shell). Accept either; the fill-time branch
+	-- (`fillShipViewport` vs. the upcoming icon writer) decides what to do.
 	local vpHolder = screen:FindFirstChild("ShipViewportHolder", true)
 	local vp = vpHolder and vpHolder:FindFirstChild("ShipViewport")
-	if vp and vp:IsA("ViewportFrame") then
+	if vp and vp:IsA("GuiObject") then
 		shipViewport = vp
 	else
 		local vpAny = findFirstNamed(screen, { "ShipViewport" })
-		shipViewport = if vpAny and vpAny:IsA("ViewportFrame") then vpAny else nil
+		shipViewport = if vpAny and vpAny:IsA("GuiObject") then vpAny else nil
 	end
 
 	local nameHdr = findFirstNamed(screen, { "ShipNameHeader", "shipnameheader" })

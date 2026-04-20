@@ -25,6 +25,12 @@ local FtueUiPointers = {}
 local POINTER_ROOT_BY_STEP: { [string]: string } = {
 	[FtueConfig.Step.WaitShipment] = "StraitPointerRoot",
 	[FtueConfig.Step.WaitDocksShipUpgrade] = "TownPointerRoot",
+	--- `WaitDocksEquipmentShop` resolves through `resolveWaitDocksEquipmentShopPointer`
+	--- (sub-step driven: `BuyDrill` → `BuyDrillPointerRoot`, `ClosePanel` →
+	--- `CloseButtonPointerRoot`). Both pointers live **inside** `ShopPanelGui` so
+	--- they're only visible while the panel is open; the world beam
+	--- (`PlayerToPoiBeam` → `DocksShop`) guides the player to the prox prompt before
+	--- the panel opens.
 	[FtueConfig.Step.WaitDocksHire] = "HirePointerRoot",
 	[FtueConfig.Step.WaitSell] = "OilPricePointerRoot",
 }
@@ -42,6 +48,8 @@ local ALL_POINTER_ROOT_NAMES = {
 	"CargoUpgradePointerRoot",
 	"ClosePointerRoot",
 	"OilPricePointerRoot",
+	"BuyDrillPointerRoot",
+	"CloseButtonPointerRoot",
 	"TPHomePointerRoot",
 	-- Legacy roots kept so any prior Studio authoring is force-hidden when not active:
 	"PlotShipmentPointerRoot",
@@ -57,6 +65,7 @@ local ALL_POINTER_ROOT_NAMES = {
 local SELL_OIL_PANEL_GUI = "SellOilPanelGui"
 local SHIP_MANAGEMENT_PANEL_GUI = "ShipManagementPanelGui"
 local SHIP_OIL_PANEL_GUI = "ShipOilPanelGui"
+local SHOP_PANEL_GUI = "ShopPanelGui"
 local HUD_SCREEN_GUI = "HUD"
 
 --- World-hierarchy `GuiObject` roots (e.g. under `BillboardGui` / `SurfaceGui` in `Workspace`).
@@ -76,11 +85,32 @@ local PANEL_FIRST_ROOT: { [string]: string } = {
 	ClosePointerRoot = SHIP_MANAGEMENT_PANEL_GUI,
 	ShipBarrelPointerRoot = SHIP_OIL_PANEL_GUI,
 	DispatchPointerRoot = SHIP_OIL_PANEL_GUI,
+	BuyDrillPointerRoot = SHOP_PANEL_GUI,
+	CloseButtonPointerRoot = SHOP_PANEL_GUI,
 	-- Legacy authored roots (kept so they're still discoverable for hide-when-inactive):
 	SellButtonPointerRoot = SELL_OIL_PANEL_GUI,
 	ShipCapacityUpgradeBuyPointerRoot = SHIP_MANAGEMENT_PANEL_GUI,
 	ShipManagementClosePointerRoot = SHIP_MANAGEMENT_PANEL_GUI,
 }
+
+--- Equipment shop leg pointer is two-phase, both inside `ShopPanelGui`:
+---   `BuyDrill`   → `BuyDrillPointerRoot`   (highlight the free drill_t3 Buy button)
+---   `ClosePanel` → `CloseButtonPointerRoot` (after purchase, prompt the player to close;
+---                   closing fires `EquipmentShopPanelClosed` which advances FTUE).
+--- Sub-step is set server-side (`Constants.FtueDocksEquipmentShopSubStepAttribute`).
+local function resolveWaitDocksEquipmentShopPointer(player: Player, step: string): string?
+	if step ~= FtueConfig.Step.WaitDocksEquipmentShop then
+		return nil
+	end
+	local subAny = player:GetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute)
+	local sub = if typeof(subAny) == "string" then (subAny :: string) else ""
+	if sub == "ClosePanel" then
+		return "CloseButtonPointerRoot"
+	end
+	--- Default to the buy pointer for `BuyDrill` (or unset, while the attribute is
+	--- replicating on first entry).
+	return "BuyDrillPointerRoot"
+end
 
 local function resolveWaitDocksUpgradeShipPointer(player: Player, step: string): string?
 	if step ~= FtueConfig.Step.WaitDocksUpgradeShip then
@@ -124,6 +154,10 @@ local function resolveActivePointerRootName(player: Player, step: string): strin
 	local docksShip = resolveWaitDocksUpgradeShipPointer(player, step)
 	if docksShip then
 		return docksShip
+	end
+	local equipShop = resolveWaitDocksEquipmentShopPointer(player, step)
+	if equipShop then
+		return equipShop
 	end
 	return POINTER_ROOT_BY_STEP[step]
 end
@@ -266,6 +300,34 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 	local basePosByGui: { [GuiObject]: UDim2 } = {}
 	local stepFromRemote: string = ""
 
+	--- Debounced `refresh` scheduler.
+	---
+	--- Several signals (`DescendantAdded` on multiple ScreenGuis, attribute changes,
+	--- remote events) all want to re-evaluate which pointer is active. Without a
+	--- guard, opening a single panel can queue dozens of `task.defer(refresh)`
+	--- calls in one frame because each descendant added fires the connection
+	--- separately and `task.defer` does **not** dedupe. Each `refresh()` does up
+	--- to 22 recursive `FindFirstChild(_, true)` walks across `PlayerGui`, so the
+	--- pile-up shows up as a multi-hundred-ms hitch in the microprofiler when
+	--- the FTUE dialogue or a modal panel pops in.
+	---
+	--- The flag collapses every request inside the same frame into a single
+	--- end-of-frame refresh.
+	local refreshScheduled = false
+	local refresh -- forward declared so `scheduleRefresh` can capture it
+	local function scheduleRefresh()
+		if refreshScheduled then
+			return
+		end
+		refreshScheduled = true
+		task.defer(function()
+			refreshScheduled = false
+			if refresh then
+				refresh()
+			end
+		end)
+	end
+
 	local function currentFtueStep(): string
 		return pickDisplayedStep(normStep(player:GetAttribute(Constants.FtueStepAttribute)), stepFromRemote)
 	end
@@ -298,7 +360,7 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 
 	local warnedMissingHost = false
 
-	local function refresh()
+	function refresh()
 		if FtueConfig.Enabled ~= true then
 			for _, rootName in ipairs(ALL_POINTER_ROOT_NAMES) do
 				local fr = findPointerRootFrame(playerGui, rootName)
@@ -381,18 +443,17 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 	end
 
 	refresh()
-	task.defer(refresh)
-	task.delay(0.5, refresh)
+	scheduleRefresh()
+	task.delay(0.5, scheduleRefresh)
 	player:GetAttributeChangedSignal(Constants.FtueStepAttribute):Connect(function()
 		local a = normStep(player:GetAttribute(Constants.FtueStepAttribute))
 		if a == "" then
 			stepFromRemote = ""
 		end
-		refresh()
+		scheduleRefresh()
 	end)
-	player:GetAttributeChangedSignal(Constants.FtueDocksUpgradeSubStepAttribute):Connect(function()
-		refresh()
-	end)
+	player:GetAttributeChangedSignal(Constants.FtueDocksUpgradeSubStepAttribute):Connect(scheduleRefresh)
+	player:GetAttributeChangedSignal(Constants.FtueDocksEquipmentShopSubStepAttribute):Connect(scheduleRefresh)
 	if ftueStateUpdate then
 		ftueStateUpdate.OnClientEvent:Connect(function(payload: any)
 			if typeof(payload) == "table" then
@@ -403,14 +464,16 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 					stepFromRemote = normStep(s)
 				end
 			end
-			task.defer(refresh)
+			scheduleRefresh()
 		end)
 	end
 
+	--- Hook a `ScreenGui` so any descendant change schedules a single coalesced
+	--- refresh at end of frame instead of one per descendant. Opening a panel
+	--- can produce dozens of `DescendantAdded` events; the debouncer collapses
+	--- them into one `refresh()` call.
 	local function hookDescendantRefresh(sg: ScreenGui)
-		sg.DescendantAdded:Connect(function()
-			task.defer(refresh)
-		end)
+		sg.DescendantAdded:Connect(scheduleRefresh)
 	end
 
 	local dlg0 = findDialogueScreenGui(playerGui)
@@ -436,23 +499,23 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 	playerGui.ChildAdded:Connect(function(ch)
 		if ch:IsA("ScreenGui") and (ch.Name == "FTUEDialogueGui" or ch.Name == "FtueDialogueGui") then
 			hookDescendantRefresh(ch)
-			task.defer(refresh)
+			scheduleRefresh()
 		end
 		if
 			ch:IsA("ScreenGui")
 			and (ch.Name == SELL_OIL_PANEL_GUI or ch.Name == SHIP_MANAGEMENT_PANEL_GUI or ch.Name == SHIP_OIL_PANEL_GUI)
 		then
 			hookDescendantRefresh(ch)
-			task.defer(refresh)
+			scheduleRefresh()
 		end
 	end)
 
 	playerGui.DescendantAdded:Connect(function(inst)
 		if inst.Name == "FTUEDialogueGui" or inst.Name == "FtueDialogueGui" then
-			task.defer(refresh)
+			scheduleRefresh()
 		end
 		if inst.Name == "Pointers" then
-			task.defer(refresh)
+			scheduleRefresh()
 		end
 		if
 			inst.Name == SELL_OIL_PANEL_GUI
@@ -460,23 +523,27 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 			or inst.Name == SHIP_OIL_PANEL_GUI
 			or inst.Name == HUD_SCREEN_GUI
 		then
-			task.defer(refresh)
+			scheduleRefresh()
 		end
 	end)
 
-	Workspace.DescendantAdded:Connect(function(inst)
-		if WORKSPACE_POINTER_ROOT_NAMES[inst.Name] then
-			task.defer(refresh)
-		end
-	end)
+	--- **Removed:** previously this module had a `Workspace.DescendantAdded` listener
+	--- that fired `task.defer(refresh)` for instances named `FtueDockmanWorldPointerRoot`
+	--- or `FtuePirateHireWorldPointerRoot`. With ~37k Workspace descendants, that
+	--- callback was invoked once per streamed-in instance, contributing to multi-hundred-ms
+	--- hitches when streaming chunks arrived.
+	---
+	--- The world-hierarchy pointer roots in `WORKSPACE_POINTER_ROOT_NAMES` are
+	--- already re-resolved on every FTUE step / sub-step transition (see
+	--- attribute-changed signals above) and on every `ftueStateUpdate` remote
+	--- payload. If a world pointer root is authored to spawn at a specific step,
+	--- those signals will pick it up. If a future caller needs immediate world
+	--- discovery, prefer **`CollectionService` tags** so the engine filters in
+	--- C++ instead of firing into Lua per descendant.
 
-	FtueDispatchPointerSignals.subscribeRefresh(function()
-		refresh()
-	end)
+	FtueDispatchPointerSignals.subscribeRefresh(scheduleRefresh)
 
-	FtueTpHomePointerSignals.subscribeTeleportHomePressed(function()
-		refresh()
-	end)
+	FtueTpHomePointerSignals.subscribeTeleportHomePressed(scheduleRefresh)
 end
 
 return FtueUiPointers

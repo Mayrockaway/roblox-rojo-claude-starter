@@ -15,6 +15,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local EquipmentCatalog = require(Shared:WaitForChild("Config"):WaitForChild("EquipmentCatalog"))
 local EquipmentShopConfig = require(Shared:WaitForChild("Config"):WaitForChild("EquipmentShopConfig"))
+local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
 local ErrorCodes = require(Shared:WaitForChild("Net"):WaitForChild("ErrorCodes"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
@@ -45,6 +46,7 @@ function EquipmentShopService:Init(remoteService, oilStateService, plotService)
 	self._remoteService = remoteService
 	self._oilStateService = oilStateService
 	self._plotService = plotService
+	self._ftueService = nil :: any?
 	self._connections = {}
 	self._running = false
 	self._templateFolder = nil :: Folder?
@@ -176,6 +178,42 @@ function EquipmentShopService:_broadcastStock()
 		stock = self._currentStock,
 		refreshEndsAt = self._refreshEndsAt,
 	})
+end
+
+--- Late wire-up — `FtueService` is constructed **after** `EquipmentShopService` in
+--- `init.server`. Setting this lets `_handlePurchase` notify the FTUE state machine
+--- after a successful free dock-equipment-shop drill purchase.
+function EquipmentShopService:SetFtueService(ftueService)
+	self._ftueService = ftueService
+end
+
+--- True when this purchase should be granted free + bypass rotation stock as the
+--- one-shot `WaitDocksEquipmentShop` reward. Reads both player attribute (live step)
+--- and persisted oil state (`ftueStep` + `ftueFreeDocksDrillUsed`) so a stale
+--- replication frame can't re-arm the discount after the flag is consumed.
+function EquipmentShopService:_isFtueFreeDocksDrillPurchase(player: Player, itemId: string): boolean
+	if FtueConfig.Enabled ~= true then
+		return false
+	end
+	local freeId = FtueConfig.FtueDocksFreeDrillItemId
+	if typeof(freeId) ~= "string" or freeId == "" or itemId ~= freeId then
+		return false
+	end
+	local stepAttr = player:GetAttribute(Constants.FtueStepAttribute)
+	if stepAttr ~= FtueConfig.Step.WaitDocksEquipmentShop then
+		return false
+	end
+	local state = self._oilStateService:GetState(player.UserId)
+	if not state then
+		return false
+	end
+	if (state :: any).ftueStep ~= FtueConfig.Step.WaitDocksEquipmentShop then
+		return false
+	end
+	if (state :: any).ftueFreeDocksDrillUsed == true then
+		return false
+	end
+	return true
 end
 
 function EquipmentShopService:Stop()
@@ -327,7 +365,7 @@ function EquipmentShopService:_findItem(itemId: string)
 	return nil
 end
 
-function EquipmentShopService:GetCatalogForClient(_player: Player)
+function EquipmentShopService:GetCatalogForClient(player: Player)
 	local rows = {}
 	for _, item in ipairs(EquipmentShopConfig.Items) do
 		local templateAvailable = false
@@ -338,18 +376,27 @@ function EquipmentShopService:GetCatalogForClient(_player: Player)
 		end
 		local stockCount = self._currentStock[item.id]
 		local isRotating = stockCount ~= nil
+		--- FTUE one-shot free dock drill: force this row to **$0** AND treat it as
+		--- in stock so the rotation roll (`drill_t3 = { min = 0, max = 1 }`) can't
+		--- strand the player on this leg. Both the cost and the `available` flag
+		--- are mirrored to the live `_handlePurchase` checks below.
+		local cost = item.cost
+		local ftueFreeOverride = self:_isFtueFreeDocksDrillPurchase(player, item.id)
+		if ftueFreeOverride then
+			cost = 0
+		end
 		-- `available` = buyable right now (template present AND, if rotating, stock > 0).
-		local available = templateAvailable and (not isRotating or stockCount > 0)
+		local available = templateAvailable and (ftueFreeOverride or not isRotating or stockCount > 0)
 		table.insert(rows, {
 			id = item.id,
 			displayName = item.displayName,
-			cost = item.cost,
+			cost = cost,
 			toolTemplateName = item.toolTemplateName,
 			toolKind = item.toolKind,
 			tier = item.tier,
 			subtitle = item.subtitle,
 			available = available,
-			stock = stockCount, -- nil for non-rotating items
+			stock = if ftueFreeOverride then nil else stockCount, -- hide stock during FTUE freebie
 		})
 	end
 	return {
@@ -421,7 +468,17 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 		return
 	end
 
-	local totalCost = item.cost * qty
+	--- FTUE freebie gate: while on `WaitDocksEquipmentShop`, the configured drill
+	--- (`FtueConfig.FtueDocksFreeDrillItemId`) is **free** and **bypasses rotation
+	--- stock** so the rotation roll cannot strand the player. Limited to **qty=1**
+	--- per leg (one-shot via `ftueFreeDocksDrillUsed`); any extras on the same
+	--- click follow the normal price + stock path.
+	local ftueFreeQty = 0
+	if qty > 0 and self:_isFtueFreeDocksDrillPurchase(player, itemId) then
+		ftueFreeQty = 1
+	end
+	local paidQty = qty - ftueFreeQty
+	local totalCost = item.cost * paidQty
 	if totalCost < 0 or totalCost ~= totalCost then
 		self:_sendOilAction(player, false, ErrorCodes.Unknown, "Invalid item cost.")
 		return
@@ -429,9 +486,10 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 
 	-- Rotating-shop stock check. Only gate items listed in the rotation; items
 	-- absent from `_currentStock` are treated as always-available (future-proofing).
+	-- The FTUE freebie unit (`ftueFreeQty`) is exempt from this check.
 	local stockCount = self._currentStock[itemId]
 	local isRotating = stockCount ~= nil
-	if isRotating and stockCount < qty then
+	if isRotating and stockCount < paidQty then
 		self:_sendOilAction(player, false, ErrorCodes.EquipmentOutOfStock, "That item is sold out this rotation.", {
 			itemId = itemId,
 			stockRemaining = stockCount,
@@ -449,16 +507,17 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 	end
 
 	-- Reserve the stock now so a concurrent request can't double-allocate the
-	-- last unit. Refunded below if backpack-grant fails.
+	-- last unit. Refunded below if backpack-grant fails. Only the **paid** units
+	-- consume rotation stock; the FTUE freebie does not.
 	if isRotating then
-		self._currentStock[itemId] = stockCount - qty
+		self._currentStock[itemId] = stockCount - paidQty
 	end
 
 	local backpack = player:FindFirstChild("Backpack") or player:WaitForChild("Backpack", 5)
 	if not backpack or not backpack:IsA("Backpack") then
 		self._oilStateService:AddCash(player.UserId, totalCost)
 		if isRotating then
-			self._currentStock[itemId] = (self._currentStock[itemId] or 0) + qty
+			self._currentStock[itemId] = (self._currentStock[itemId] or 0) + paidQty
 		end
 		self:_sendOilAction(player, false, ErrorCodes.Unknown, "Backpack not ready.")
 		return
@@ -476,6 +535,22 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 		clone.Parent = backpack
 	end
 
+	--- FTUE one-shot consumption: stamp the flag **before** notifying the FTUE
+	--- service so any same-frame catalog re-fetch / duplicate purchase can no
+	--- longer read this row as the freebie.
+	if ftueFreeQty > 0 then
+		local oilState = self._oilStateService
+		if oilState and typeof((oilState :: any).GetState) == "function" then
+			local st = (oilState :: any):GetState(player.UserId)
+			if st then
+				(st :: any).ftueFreeDocksDrillUsed = true
+				if typeof((oilState :: any)._markDirty) == "function" then
+					(oilState :: any):_markDirty(player.UserId)
+				end
+			end
+		end
+	end
+
 	self._oilStateService:PushState(player.UserId)
 
 	if isRotating then
@@ -490,6 +565,13 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 		quantity = qty,
 		totalCost = totalCost,
 	})
+
+	--- FTUE step advance: notify after the inventory + state are committed so the
+	--- next step transition (`WaitDocksUpgradeShip` + `Dockman` sub-step) is
+	--- driven from a consistent server snapshot.
+	if ftueFreeQty > 0 and self._ftueService and typeof((self._ftueService :: any).OnFtueEquipmentShopPurchase) == "function" then
+		(self._ftueService :: any):OnFtueEquipmentShopPurchase(player, item.id)
+	end
 end
 
 --- FTUE / rewards: add owned shop stacks without charging cash; clones or merges into Backpack like a purchase.
@@ -523,6 +605,44 @@ function EquipmentShopService:GrantFreeOwnedEquipment(player: Player, itemId: st
 	self._oilStateService:AddShopEquipmentOwned(player.UserId, itemId, qty)
 	self:_reconcileOwnedShopTools(player)
 	self._oilStateService:PushState(player.UserId)
+end
+
+--- Inject `MonetizationService` from `init.server.luau` and register the
+--- global `Equipment` grant handler so Robux bundles (e.g. the Starter
+--- Pack `drill_t5 x2` sub-grant) land here. Returning `(false, code)`
+--- causes the parent `_grantBundle` to log a warn and continue with the
+--- other sub-grants — see `MonetizationService:_grantBundle` for the
+--- best-effort policy.
+function EquipmentShopService:SetMonetizationService(monetizationService)
+	self._monetizationService = monetizationService
+	if not monetizationService then
+		return
+	end
+	monetizationService:SetEquipmentHandler(function(userId: number, itemId: string, quantity: number): (boolean, string?)
+		if not self._running then
+			return false, "ERR_EQUIPMENT_SHOP_NOT_RUNNING"
+		end
+		local player = Players:GetPlayerByUserId(userId)
+		if not player then
+			return false, "ERR_EQUIPMENT_BUYER_OFFLINE"
+		end
+		local item = self:_findItem(itemId)
+		if not item then
+			return false, "ERR_EQUIPMENT_UNKNOWN_ITEM"
+		end
+		local folder = self._templateFolder
+		if not folder then
+			return false, "ERR_EQUIPMENT_NO_TEMPLATE_FOLDER"
+		end
+		local template = folder:FindFirstChild(item.toolTemplateName)
+		if not template or not template:IsA("Tool") then
+			return false, "ERR_EQUIPMENT_MISSING_TEMPLATE"
+		end
+		-- Reuse the canonical grant path so backpack reconciliation + state
+		-- push behave identically to the FTUE / dev-grant flows.
+		self:GrantFreeOwnedEquipment(player, itemId, quantity)
+		return true, nil
+	end)
 end
 
 return EquipmentShopService

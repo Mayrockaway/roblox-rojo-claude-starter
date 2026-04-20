@@ -21,6 +21,7 @@ local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("Qualit
 local StraitEventCatalog = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("Catalog"))
 local ManifestIncidentTitle = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("ManifestIncidentTitle"))
 local StraitEventConfig = require(Shared:WaitForChild("Config"):WaitForChild("StraitEventConfig"))
+local HitContractConfig = require(Shared:WaitForChild("Config"):WaitForChild("HitContractConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local ParticleFxScale = require(Shared:WaitForChild("ParticleFxScale"))
 local ShipRig = require(Shared:WaitForChild("Utils"):WaitForChild("ShipRig"))
@@ -28,7 +29,11 @@ local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 local DevLog = require(Shared:WaitForChild("DevLog"))
 
 local OilShipmentService = {}
-local FORCED_CONTRACT_PIRATE_LOSS_FRACTION = 0.50
+-- Player-hired pirate contract loss fraction. Sourced from `HitContractConfig`
+-- so the broker pitch label on the client and the server math here can never
+-- drift. Random PirateRaid strait events use a separate per-event fraction in
+-- `StraitEvents/Catalog.luau` (currently `looseBarrelLossFraction = 0.25`).
+local FORCED_CONTRACT_PIRATE_LOSS_FRACTION = HitContractConfig.StealRatio
 
 local TIER_ORDER = {
 	"Premium",
@@ -314,6 +319,7 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 	self._shipmentContexts = {} :: { [string]: { [string]: any } }
 	self._hitContractService = nil
 	self._ftueService = nil :: any
+	self._leaderboardService = nil :: any
 
 	-- Collision: `ShipmentShip` hull (see `_setupShip`) ignores other ships and `MarinaDock` pier geometry
 	-- (registered/tagged in `BoatDockService:Init`); still collides with `Default` so players walk decks.
@@ -336,6 +342,10 @@ end
 
 function OilShipmentService:SetFtueService(ftueService: any)
 	self._ftueService = ftueService
+end
+
+function OilShipmentService:SetLeaderboardService(leaderboardService: any)
+	self._leaderboardService = leaderboardService
 end
 
 function OilShipmentService:_discoverLanes()
@@ -934,8 +944,15 @@ function OilShipmentService:_runShipment(shipment)
 		if #triggerSlots == 0 then
 			warn(
 				string.format(
-					"[StraitShipment DEBUG] shipment %s: NO strait trigger slots (need lane waypoints 3,6,9 on path). Path has %d vertices.",
+					"[StraitShipment DEBUG] shipment %s: NO strait trigger slots (need lane waypoints %s on path). Path has %d vertices.",
 					shipment.shipmentId,
+					(function()
+						local parts = {}
+						for _, n in ipairs(StraitEventConfig.GetAllLaneWaypointTriggers()) do
+							table.insert(parts, tostring(n))
+						end
+						return table.concat(parts, ",")
+					end)(),
 					#path
 				)
 			)
@@ -1143,6 +1160,17 @@ function OilShipmentService:_runShipment(shipment)
 		dispatchFee = shipment.dispatchFee,
 		deliveredByTier = deliveredManifest,
 	})
+
+	local lb = self._leaderboardService
+	if lb and typeof((lb :: any).OnStraitVoyageSuccess) == "function" then
+		(lb :: any):OnStraitVoyageSuccess(ownerUserId, totalDelivered)
+	else
+		warn(string.format(
+			"[OilShipmentService] Leaderboard hook skipped (no service or method) — userId=%d delivered=%d",
+			ownerUserId,
+			totalDelivered
+		))
+	end
 
 	-- Owner on strait / ocean -> warehouse spawn; on StartBeach / FinishBeach footprint -> stay; at home plot -> no-op
 	if boardConnection then
@@ -1707,7 +1735,10 @@ end
 
 function OilShipmentService:_buildStraitTriggerSlots(path: { Vector3 }, segDists: { number })
 	local slots = {}
-	for _, laneN in ipairs(StraitEventConfig.LaneWaypointTriggers) do
+	-- Slots are the *union* of every bracket's allow-list — the per-bracket
+	-- gate happens at roll time in `_handleStraitWaypointTrigger`, so a strait
+	-- bracket flip mid-voyage still fires the right waypoints from that point on.
+	for _, laneN in ipairs(StraitEventConfig.GetAllLaneWaypointTriggers()) do
 		local pathIndex = 1 + laneN
 		if pathIndex <= #path and pathIndex >= 2 then
 			table.insert(slots, {
@@ -1723,13 +1754,49 @@ function OilShipmentService:_buildStraitTriggerSlots(path: { Vector3 }, segDists
 	return slots
 end
 
-function OilShipmentService:_emitPirateHitAlert(userId: number, message: string)
+function OilShipmentService:_emitPirateHitAlert(userId: number, message: string, extra: { [string]: any }?)
 	local player = Players:GetPlayerByUserId(userId)
 	if not player then
 		return
 	end
 	local ev = self._remoteService:GetEvent(RemoteNames.PirateHitAlert)
-	ev:FireClient(player, { message = message })
+	local payload: { [string]: any } = { message = message }
+	if typeof(extra) == "table" then
+		-- Forward-compat: ship structured fields alongside the rendered string
+		-- (e.g. `stolenByTier`, `barrelsStolen`, `contractId`) so a future hit-
+		-- history panel can read them without us needing a new RemoteEvent or
+		-- a wire-format bump. Today only `PirateHireClient` consumes
+		-- `payload.message`; extra keys are inert.
+		for k, v in pairs(extra) do
+			if payload[k] == nil then
+				payload[k] = v
+			end
+		end
+	end
+	ev:FireClient(player, payload)
+end
+
+--- Format a `stolenByTier` map ({ Crude=3, Premium=2 }) into a stable, readable
+--- breakdown string ("3 Crude, 2 Premium"). Order follows `QualityConfig.TierOrder`
+--- (Premium → Refined → Crude — the same order manifests use everywhere else)
+--- so the broker alert reads consistently with the cargo HUD. Returns "" when
+--- nothing was stolen so callers can fall back to the legacy total-only line.
+function OilShipmentService:_formatStolenBreakdown(stolenByTier: { [string]: number }?): string
+	if typeof(stolenByTier) ~= "table" then
+		return ""
+	end
+	local parts: { string } = {}
+	for _, tier in ipairs(QualityConfig.TierOrder) do
+		local raw = (stolenByTier :: { [string]: any })[tier]
+		local n = math.floor(tonumber(raw) or 0)
+		if n > 0 then
+			table.insert(parts, string.format("%d %s", n, QualityConfig.hudShortLabel(tier)))
+		end
+	end
+	if #parts == 0 then
+		return ""
+	end
+	return table.concat(parts, ", ")
 end
 
 function OilShipmentService:_deliverContractStolenOil(contractorUserId: number, stolenByTier: { [string]: number })
@@ -1786,8 +1853,53 @@ function OilShipmentService:_executeForcedContractPirateRaid(
 		isContractHit = true,
 	})
 
-	self:_emitPirateHitAlert(ownerUserId, string.format("BOUNTY RAID! Pirates stole %d barrels.", barrelsStolen))
-	self:_emitPirateHitAlert(contractorUserId, string.format("Your hit landed. Pirates stole %d barrels.", barrelsStolen))
+	-- Per-tier breakdown for the contractor: "3 Crude, 2 Premium". When zero
+	-- barrels were on deck we fall back to the legacy total-only line so the
+	-- contractor still hears that the hit *resolved*, just paid out nothing.
+	local breakdown = self:_formatStolenBreakdown(stolenByTier)
+	local contractorMessage = if breakdown ~= ""
+		then string.format("Your hit landed. You received %d barrels: %s.", barrelsStolen, breakdown)
+		else string.format("Your hit landed. Pirates stole %d barrels.", barrelsStolen)
+
+	-- Look up the contractor's name for the victim's banner text. Prefer
+	-- `DisplayName` (matches what the victim sees over the contractor's head /
+	-- in chat); fall back to `Name`, then a generic label if the contractor has
+	-- already left the server before the hit resolves.
+	local contractorPlayer = Players:GetPlayerByUserId(contractorUserId)
+	local contractorDisplayName = "another captain"
+	if contractorPlayer then
+		local dn = contractorPlayer.DisplayName
+		if typeof(dn) == "string" and dn ~= "" then
+			contractorDisplayName = dn
+		else
+			contractorDisplayName = contractorPlayer.Name
+		end
+	end
+	-- Steal percent string (e.g. "50%") sourced from `HitContractConfig` so the
+	-- victim banner copy and the broker pitch label can never drift apart.
+	local stealPercent = HitContractConfig.formatStealPercent()
+	local victimMessage = string.format(
+		"You got raided by %s and lost %s of your barrels to them!",
+		contractorDisplayName,
+		stealPercent
+	)
+
+	self:_emitPirateHitAlert(ownerUserId, victimMessage, {
+		kind = "victim",
+		stolenByTier = stolenByTier,
+		barrelsStolen = barrelsStolen,
+		contractId = contractId,
+		contractorUserId = contractorUserId,
+		contractorDisplayName = contractorDisplayName,
+	})
+	-- `kind = "contractor"` tells `PirateHireClient` to use the gold locked-status
+	-- treatment + `UiSfx.playPirateHitContract()` instead of the default red status.
+	self:_emitPirateHitAlert(contractorUserId, contractorMessage, {
+		kind = "contractor",
+		stolenByTier = stolenByTier,
+		barrelsStolen = barrelsStolen,
+		contractId = contractId,
+	})
 
 	if barrelsStolen > 0 then
 		self:_deliverContractStolenOil(contractorUserId, stolenByTier)
@@ -1866,6 +1978,32 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	if dbg.ForceBracket then
 		bracket = dbg.ForceBracket
 		bracketNote = string.format("  [FORCE] event bracket overridden → %s (engine maps to %s)", tostring(dbg.ForceBracket), bracketFromEngine)
+	end
+
+	-- Per-bracket allow-list gate: a waypoint that isn't enabled for the
+	-- *current* bracket short-circuits before rolling occurrence. Debug
+	-- `ForceOccurrenceAtWaypoint` still fires every reachable waypoint
+	-- regardless of bracket so QA can validate any slot.
+	local triggerEnabled = StraitEventConfig.IsTriggerEnabledForBracket(bracket, laneWaypointIndex)
+	if not triggerEnabled and not dbg.ForceOccurrenceAtWaypoint then
+		if log then
+			print(
+				string.format(
+					"  [StraitShipment DEBUG] shipment=%s laneWP=%d → SKIP (laneWP not enabled for bracket %s; bracket allow-list = %s)",
+					shipment.shipmentId,
+					laneWaypointIndex,
+					bracket,
+					(function()
+						local parts = {}
+						for _, n in ipairs(StraitEventConfig.LaneWaypointTriggers[bracket] or {}) do
+							table.insert(parts, tostring(n))
+						end
+						return "{" .. table.concat(parts, ",") .. "}"
+					end)()
+				)
+			)
+		end
+		return false
 	end
 
 	local occurrenceChance = StraitEventConfig.GetOccurrenceChance(bracket)

@@ -278,6 +278,30 @@ function PlayerToPoiBeam.detach()
 	PlayerToPoiBeam.detachAll()
 end
 
+--- Walks a Model and returns the **rig HumanoidRootPart** of the first descendant
+--- `Humanoid` it finds (preferring `Humanoid.RootPart`, falling back to a sibling
+--- named `HumanoidRootPart`). Used by `resolveBasePart` so beams pointed at humanoid
+--- NPCs (e.g. `PirateHire` Model > `Pirate` rig, `PlotDispatch` Model > `Model > StarterCharacter`)
+--- snap to the actor instead of a random nested decoration `BasePart`.
+local function resolveHumanoidRigPart(model: Model): BasePart?
+	for _, d in model:GetDescendants() do
+		if d:IsA("Humanoid") then
+			local hum = d :: Humanoid
+			if hum.RootPart then
+				return hum.RootPart
+			end
+			local rigParent = hum.Parent
+			if rigParent then
+				local hrp = rigParent:FindFirstChild("HumanoidRootPart")
+				if hrp and hrp:IsA("BasePart") then
+					return hrp
+				end
+			end
+		end
+	end
+	return nil
+end
+
 function PlayerToPoiBeam.resolveBasePart(inst: Instance?): BasePart?
 	if not inst then
 		return nil
@@ -287,6 +311,10 @@ function PlayerToPoiBeam.resolveBasePart(inst: Instance?): BasePart?
 	end
 	if inst:IsA("Model") then
 		local m = inst :: Model
+		local hrp = resolveHumanoidRigPart(m)
+		if hrp then
+			return hrp
+		end
 		if m.PrimaryPart then
 			return m.PrimaryPart
 		end

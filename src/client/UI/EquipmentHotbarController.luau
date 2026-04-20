@@ -11,8 +11,26 @@ local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
+local EquipmentCatalog = require(Shared:WaitForChild("Config"):WaitForChild("EquipmentCatalog"))
 
 local STACK_ATTR = Constants.EquipmentStackCountAttribute
+
+--- Resolve the player-facing label for a tool slot. Prefer the catalog
+--- `displayName` (e.g. "Sundae Driller") over the internal `Tool.Name`
+--- (e.g. "Drill_T4") so flavor names show up in the hotbar without
+--- renaming the Tool instances that server / animation code looks up.
+--- Falls back to `Tool.Name` when the tool has no `EquipmentItemId`
+--- attribute or the id isn't in the catalog (hammer, future tools).
+local function resolveDisplayName(tool: Tool): string
+	local id = tool:GetAttribute("EquipmentItemId")
+	if typeof(id) == "string" and id ~= "" then
+		local row = EquipmentCatalog.getRowById(id)
+		if row and typeof(row.displayName) == "string" and row.displayName ~= "" then
+			return row.displayName
+		end
+	end
+	return tool.Name
+end
 
 export type SlotEntry = {
 	tool: Tool,
@@ -479,37 +497,30 @@ local function rebuild(player: Player)
 		end
 
 		local icon = clone:FindFirstChild("Icon")
-		local hasTexture = false
 		if icon and icon:IsA("ImageLabel") then
 			local tid = entry.tool.TextureId
+			local resolved: string? = nil
 			if typeof(tid) == "string" and tid ~= "" then
-				icon.Image = tid
-				hasTexture = true
+				if tid:match("^rbxthumb://") or tid:match("^rbxasset://") or tid:match("^http") then
+					resolved = tid
+				else
+					local id = tid:match("rbxassetid://(%d+)") or tid:match("^(%d+)$")
+					resolved = id and string.format("rbxthumb://type=Asset&id=%s&w=150&h=150", id) or tid
+				end
+			end
+			if resolved then
+				icon.Image = resolved
 				icon.ImageTransparency = 0
 			else
 				icon.Image = ""
 				icon.ImageTransparency = 1
 			end
 		end
-		if not hasTexture then
-			-- Shop tools often have no `TextureId`; show name on the clone (not StarterGui authoring).
-			local stub = Instance.new("TextLabel")
-			stub.Name = "ToolNameStub"
-			stub.BackgroundTransparency = 1
-			stub.Font = Enum.Font.GothamMedium
-			stub.TextColor3 = Color3.fromRGB(235, 235, 240)
-			stub.TextScaled = true
-			stub.TextWrapped = true
-			stub.Text = entry.tool.Name
-			stub.Size = UDim2.fromScale(0.88, 0.55)
-			stub.Position = UDim2.fromScale(0.5, 0.52)
-			stub.AnchorPoint = Vector2.new(0.5, 0.5)
-			stub.ZIndex = (icon and icon.ZIndex or 0) + 1
-			local tsc = Instance.new("UITextSizeConstraint")
-			tsc.MaxTextSize = 14
-			tsc.MinTextSize = 8
-			tsc.Parent = stub
-			stub.Parent = clone
+
+		local nameLabel = clone:FindFirstChild("NameLabel")
+		if nameLabel and nameLabel:IsA("TextLabel") then
+			nameLabel.Text = resolveDisplayName(entry.tool)
+			nameLabel.Visible = true
 		end
 
 		local hotkey = clone:FindFirstChild("HotkeyLabel")

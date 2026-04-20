@@ -79,6 +79,9 @@ export type ClientRemotes = {
 	marketPriceUpdate: RemoteEvent,
 	requestSellWarehouseType: RemoteEvent,
 	requestMarketSnapshot: RemoteFunction,
+	requestPromptRobuxPurchase: RemoteEvent,
+	monetizationResult: RemoteEvent,
+	requestMonetizationCatalog: RemoteFunction,
 }
 
 local Remotes: ClientRemotes = {
@@ -137,6 +140,9 @@ local Remotes: ClientRemotes = {
 	marketPriceUpdate = waitRemote(RemoteNames.MarketPriceUpdate) :: RemoteEvent,
 	requestSellWarehouseType = waitRemote(RemoteNames.RequestSellWarehouseType) :: RemoteEvent,
 	requestMarketSnapshot = waitRemote(RemoteNames.RequestMarketSnapshot) :: RemoteFunction,
+	requestPromptRobuxPurchase = waitRemote(RemoteNames.RequestPromptRobuxPurchase) :: RemoteEvent,
+	monetizationResult = waitRemote(RemoteNames.MonetizationResult) :: RemoteEvent,
+	requestMonetizationCatalog = waitRemote(RemoteNames.RequestMonetizationCatalog) :: RemoteFunction,
 }
 
 local devLogEvent = waitRemote(RemoteNames.DevLog) :: RemoteEvent

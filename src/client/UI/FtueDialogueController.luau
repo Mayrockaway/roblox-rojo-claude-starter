@@ -17,9 +17,14 @@ local FtueTpHomePointerSignals = require(script.Parent:WaitForChild("FtueTpHomeP
 local FtueDispatchPointerSignals = require(script.Parent:WaitForChild("FtueDispatchPointerSignals"))
 local UiSfx = require(script.Parent.Parent:WaitForChild("UiSfx"))
 
+--- Steps that show the **Continue** button. `WaitDrillOil_WIP` was previously
+--- ackable (dev skip that filled the refinery and jumped to `WaitPlotShipment`)
+--- but now that the drill leg is fully implemented (highlighted tile, free fast
+--- drill, lootbox, instant first barrel) the player must actually drill — no
+--- skip. Removing it from this set is the **client-side** half of locking the
+--- step; the server-side reject lives in `FtueService.onAcknowledge`.
 local ACK_STEPS: { [string]: boolean } = {
 	[FtueConfig.Step.Intro] = true,
-	[FtueConfig.Step.WaitDrillOil_WIP] = true,
 	[FtueConfig.Step.WaitSell] = true,
 	[FtueConfig.Step.WaitDocksHire] = true,
 }

@@ -114,6 +114,8 @@ function M.connect(deps: Deps)
 				name = veinType and string.upper(veinType.rarity) or "ROW POOL",
 				color = veinType and VeinCrateConfig.GetRarityTextColor(veinType.rarity) or Color3.fromRGB(255, 255, 255),
 			}
+			--- Billboard title after spin: show rarity only (not vein displayName e.g. "Clean Cache").
+			local rarityBillboardText = if veinType then veinType.rarity elseif veinResult.isDead then "Unlucky" else oddsText
 
 			-- Slot spin animation on the tile
 			-- Find tile part by searching owned plot sections
@@ -222,14 +224,14 @@ function M.connect(deps: Deps)
 					end
 				end
 				if nameLabel then
-					nameLabel.Text = displayName
+					nameLabel.Text = rarityBillboardText
 					nameLabel.TextColor3 = rarity.color
 					if rarity.name == "LEGENDARY" or rarity.name == "EPIC" then
 						nameLabel.TextSize = 34
 					end
 				end
 				if oddsLabel then
-					oddsLabel.Text = oddsText .. " - " .. rarity.name
+					oddsLabel.Text = oddsText
 					oddsLabel.TextColor3 = rarity.color
 				end
 

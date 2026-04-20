@@ -6,7 +6,11 @@ Authoritative handoff for **oil shipment** strait events: design intent, tuning 
 
 ## 1. Goal
 
-- During each **oil shipment** voyage, evaluate **up to eight** independent strait events at **fixed lane waypoints** (ordinals **2–9** along the sorted route polyline; see `StraitEventConfig.LaneWaypointTriggers`).
+- During each **oil shipment** voyage, evaluate independent strait events at **per-bracket lane waypoints** along the sorted route polyline (see `StraitEventConfig.LaneWaypointTriggers`):
+  - **Open:** ordinals **3, 6, 9** (3 rolls).
+  - **Restricted:** ordinals **3, 5, 6, 7, 9** (5 rolls).
+  - **Closed:** ordinals **2, 3, 4, 5, 6, 7, 8, 9** (8 rolls — full slate).
+  - The voyage builds candidate slots from the **union** of these (8 total) so a mid-voyage bracket flip still fires the right waypoints from that point on; per-trigger gating runs at roll time against the bracket *current at crossing*.
 - Event **chance** and **severity pool** depend on the **current global strait state** at the moment the ship **crosses** each trigger (strait may change mid-voyage).
 - Outcomes are **server-authoritative**; **all clients** receive notifications so other players can see that something happened to a shipment.
 - **Legacy** time-random voyage hazard ticks on the shipment timeline are **removed** for oil in favor of this system.

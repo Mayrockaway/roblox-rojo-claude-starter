@@ -81,6 +81,21 @@ local RemoteNames = {
 	-- Drill vein reveal (player presses E on DrillComplete model)
 	RequestRevealTile = "RequestRevealTile",
 
+	-- Robux monetization (`MonetizationCatalog` + `MonetizationService`).
+	-- Client → server: "open the Roblox prompt for catalog item id X". Server
+	-- looks up the item, validates `productId`, and calls
+	-- `MarketplaceService:PromptProductPurchase` (or `PromptGamePassPurchase`).
+	RequestPromptRobuxPurchase = "RequestPromptRobuxPurchase",
+	-- Server → one client: receipt outcome ({ ok, code, itemId, ... }) so the
+	-- ship-select / shop UI can show "purchased!" / "cancelled" toasts
+	-- without parsing `OilActionResult`.
+	MonetizationResult = "MonetizationResult",
+	-- Server → one client: full `MonetizationCatalog.ListForClient()` snapshot.
+	-- RemoteFunction so clients can fetch on-demand (panel open) instead of
+	-- waiting for a push. Keeps the wire small and snapshot-shaped like
+	-- `RequestEquipmentShopCatalog`.
+	RequestMonetizationCatalog = "RequestMonetizationCatalog",
+
 	-- Per-plot oil tanks: three tubes (Crude/Refined/Premium) upgradable 1..10.
 	RequestUpgradeOilTank = "RequestUpgradeOilTank",
 

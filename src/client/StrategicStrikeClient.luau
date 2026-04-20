@@ -18,13 +18,238 @@ export type StrategicStrikeRemotes = {
 	nukeCountdownEvent: RemoteEvent,
 	nukeDetonateEvent: RemoteEvent,
 	airStrikeEvent: RemoteEvent,
+}
+
+export type ArmyGeneralEarlyDeps = {
+	playerGui: PlayerGui,
+	setStatus: (message: string, ok: boolean?) -> (),
+}
+
+export type ArmyGeneralEarlyRemotes = {
 	armyGeneralOpenEvent: RemoteEvent,
 	armyGeneralResultEvent: RemoteEvent,
 	requestArmyGeneralAction: RemoteEvent,
 	requestArmyGeneralTargets: RemoteFunction,
+	-- `requestPromptRobuxPurchase` routes the Launch-Nuke button through the
+	-- Robux purchase funnel (`MonetizationCatalog.consumable.nuke_x1`) instead
+	-- of firing `RequestArmyGeneralAction { action = "nuke" }` directly. The
+	-- legacy direct action is still wired server-side as a Studio debug shortcut.
+	requestPromptRobuxPurchase: RemoteEvent,
 }
 
 local StrategicStrikeClient = {}
+
+--- Subscribe to `ArmyGeneralOpen` / result as soon as `setStatus` exists (same race as Pirate Hire).
+function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDeps, remotes: ArmyGeneralEarlyRemotes)
+	local playerGui = deps.playerGui
+	local setStatus = deps.setStatus
+	local armyGeneralOpenEvent = remotes.armyGeneralOpenEvent
+	local armyGeneralResultEvent = remotes.armyGeneralResultEvent
+	local requestArmyGeneralAction = remotes.requestArmyGeneralAction
+	local requestArmyGeneralTargets = remotes.requestArmyGeneralTargets
+	local requestPromptRobuxPurchase = remotes.requestPromptRobuxPurchase
+
+	-- =================== ARMY GENERAL PANEL UI ===================
+	-- Army General dialogue — same visual style as Oilman (LuckiestGuy blocky text)
+	armyGeneralOpenEvent.OnClientEvent:Connect(function(data)
+		if typeof(data) ~= "table" then return end
+
+		local existing = playerGui:FindFirstChild("ArmyGeneralGui")
+		if existing then existing:Destroy() end
+
+		local airstrikeCost = tonumber(data.airstrikeCost) or 10000
+		local nukeCooldownRemaining = tonumber(data.nukeCooldownRemaining) or 0
+
+		local COLOR_IDLE = Color3.fromRGB(255, 255, 255)
+		local COLOR_HOVER = Color3.fromRGB(255, 205, 80)
+
+		local screenGui = Instance.new("ScreenGui")
+		screenGui.Name = "ArmyGeneralGui"
+		screenGui.ResetOnSpawn = false
+		screenGui.IgnoreGuiInset = true
+		screenGui.DisplayOrder = 60
+		screenGui.Parent = playerGui
+
+		-- Auto-close when walking away
+		local generalModel = Workspace:FindFirstChild("Army General", true)
+		local autoCloseConn
+		autoCloseConn = RunService.Heartbeat:Connect(function()
+			if not screenGui.Parent then
+				if autoCloseConn then autoCloseConn:Disconnect() end
+				return
+			end
+			local char = player.Character
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			if hrp and generalModel then
+				if (hrp.Position - generalModel:GetPivot().Position).Magnitude > 12 then
+					screenGui:Destroy()
+					if autoCloseConn then autoCloseConn:Disconnect() end
+				end
+			end
+		end)
+
+		-- Root frame — center-right like Oilman
+		local root = Instance.new("Frame")
+		root.Name = "Root"
+		root.BackgroundTransparency = 1
+		root.BorderSizePixel = 0
+		root.Active = false
+		root.AnchorPoint = Vector2.new(0.5, 0.5)
+		root.Position = UDim2.fromScale(0.68, 0.55)
+		root.Size = UDim2.fromOffset(500, 320)
+		root.Parent = screenGui
+
+		local layout = Instance.new("UIListLayout")
+		layout.FillDirection = Enum.FillDirection.Vertical
+		layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+		layout.VerticalAlignment = Enum.VerticalAlignment.Center
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.Padding = UDim.new(0, 6)
+		layout.Parent = root
+
+		local function blockyLine(name, text, order, isButton)
+			local obj
+			if isButton then
+				obj = Instance.new("TextButton")
+				obj.AutoButtonColor = false
+				obj.Active = true
+				obj.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+				obj.BackgroundTransparency = 0.99
+				obj.MouseEnter:Connect(function()
+					obj.TextColor3 = COLOR_HOVER
+					obj.BackgroundTransparency = 0.35
+				end)
+				obj.MouseLeave:Connect(function()
+					obj.TextColor3 = COLOR_IDLE
+					obj.BackgroundTransparency = 0.99
+				end)
+				local c = Instance.new("UICorner")
+				c.CornerRadius = UDim.new(0, 6)
+				c.Parent = obj
+			else
+				obj = Instance.new("TextLabel")
+				obj.BackgroundTransparency = 1
+			end
+			obj.Name = name
+			obj.Text = text
+			obj.Size = UDim2.new(1, 0, 0, 42)
+			obj.LayoutOrder = order
+			obj.BorderSizePixel = 0
+			obj.Font = Enum.Font.LuckiestGuy
+			obj.TextSize = 34
+			obj.TextColor3 = COLOR_IDLE
+			obj.TextStrokeTransparency = 0
+			obj.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+			obj.TextXAlignment = Enum.TextXAlignment.Left
+			obj.TextYAlignment = Enum.TextYAlignment.Center
+			return obj
+		end
+
+		-- Header
+		local header = blockyLine("Header", "Army General:", 1, false)
+		header.Size = UDim2.new(1, 0, 0, 50)
+		header.TextSize = 44
+		header.Parent = root
+
+		-- Launch Nuke (Robux purchase via `MonetizationCatalog.consumable.nuke_x1`)
+		local nukeOnCooldown = nukeCooldownRemaining > 0
+		local nukeText = if nukeOnCooldown
+			then string.format("Nuke (cooldown %ds)", math.ceil(nukeCooldownRemaining))
+			else "Launch Nuke (R$)"
+		local nukeBtn = blockyLine("NukeButton", nukeText, 2, true)
+		nukeBtn.Parent = root
+		if nukeOnCooldown then
+			nukeBtn.TextColor3 = Color3.fromRGB(140, 140, 140)
+			nukeBtn.AutoButtonColor = false
+		end
+
+		-- Call Airstrike
+		local airBtn = blockyLine("AirstrikeButton", string.format("Call Airstrike ($%d)", airstrikeCost), 3, true)
+		airBtn.Parent = root
+
+		-- Back
+		local backBtn = blockyLine("BackButton", "back", 4, true)
+		backBtn.TextSize = 28
+		backBtn.TextColor3 = Color3.fromRGB(210, 210, 210)
+		backBtn.MouseLeave:Connect(function()
+			backBtn.TextColor3 = Color3.fromRGB(210, 210, 210)
+		end)
+		backBtn.Parent = root
+
+		-- Close on back
+		backBtn.MouseButton1Click:Connect(function()
+			screenGui:Destroy()
+		end)
+
+		-- Nuke click — opens the Robux purchase prompt for `consumable.nuke_x1`.
+		-- A successful receipt routes server-side through
+		-- `MonetizationService` → `ArmyGeneralService:_executeNuke`.
+		nukeBtn.MouseButton1Click:Connect(function()
+			if nukeOnCooldown then
+				return
+			end
+			requestPromptRobuxPurchase:FireServer({ itemId = "consumable.nuke_x1" })
+			screenGui:Destroy()
+		end)
+
+		-- Airstrike click — show target list as additional blocky lines
+		airBtn.MouseButton1Click:Connect(function()
+			-- Remove existing target buttons
+			for _, c in ipairs(root:GetChildren()) do
+				if c.Name:find("Target_") then c:Destroy() end
+			end
+
+			-- Fetch targets
+			local result = requestArmyGeneralTargets:InvokeServer()
+			if typeof(result) ~= "table" or typeof(result.targets) ~= "table" then return end
+
+			-- Replace the options with target list
+			header.Text = "Pick Target:"
+			nukeBtn.Visible = false
+			airBtn.Visible = false
+
+			local order = 5
+			for _, target in ipairs(result.targets) do
+				local label = target.displayName
+				if not target.hasShipment then
+					label = label .. " (no ship)"
+				end
+				local tBtn = blockyLine("Target_" .. tostring(target.userId), label, order, true)
+				tBtn.TextSize = 28
+				if not target.hasShipment then
+					tBtn.TextColor3 = Color3.fromRGB(100, 100, 100)
+				end
+				tBtn.Parent = root
+				order += 1
+
+				if target.hasShipment then
+					tBtn.MouseButton1Click:Connect(function()
+						requestArmyGeneralAction:FireServer({ action = "airstrike", victimUserId = target.userId })
+						screenGui:Destroy()
+					end)
+				end
+			end
+
+			if #result.targets == 0 then
+				local noTargets = blockyLine("NoTargets", "No ships on the strait", 5, false)
+				noTargets.TextSize = 28
+				noTargets.TextColor3 = Color3.fromRGB(180, 80, 80)
+				noTargets.Parent = root
+			end
+
+			-- Back returns to main menu
+			backBtn.MouseButton1Click:Connect(function()
+				screenGui:Destroy()
+			end)
+		end)
+	end)
+
+	-- Army General result messages
+	armyGeneralResultEvent.OnClientEvent:Connect(function(data)
+		if typeof(data) ~= "table" then return end
+		setStatus(tostring(data.message or "?"), data.ok == true)
+	end)
+end
 
 function StrategicStrikeClient.connect(deps: StrategicStrikeDeps, remotes: StrategicStrikeRemotes)
 	local player = deps.player
@@ -36,10 +261,6 @@ function StrategicStrikeClient.connect(deps: StrategicStrikeDeps, remotes: Strat
 	local nukeCountdownEvent = remotes.nukeCountdownEvent
 	local nukeDetonateEvent = remotes.nukeDetonateEvent
 	local airStrikeEvent = remotes.airStrikeEvent
-	local armyGeneralOpenEvent = remotes.armyGeneralOpenEvent
-	local armyGeneralResultEvent = remotes.armyGeneralResultEvent
-	local requestArmyGeneralAction = remotes.requestArmyGeneralAction
-	local requestArmyGeneralTargets = remotes.requestArmyGeneralTargets
 
 	-- =================== NUKE COUNTDOWN ===================
 	nukeCountdownEvent.OnClientEvent:Connect(function(data)
@@ -768,198 +989,6 @@ function StrategicStrikeClient.connect(deps: StrategicStrikeDeps, remotes: Strat
 				end
 			end
 		end)
-	end)
-
-	-- =================== ARMY GENERAL PANEL UI ===================
-	-- Army General dialogue — same visual style as Oilman (LuckiestGuy blocky text)
-	armyGeneralOpenEvent.OnClientEvent:Connect(function(data)
-		if typeof(data) ~= "table" then return end
-
-		local existing = playerGui:FindFirstChild("ArmyGeneralGui")
-		if existing then existing:Destroy() end
-
-		local airstrikeCost = tonumber(data.airstrikeCost) or 10000
-		local nukeCooldownRemaining = tonumber(data.nukeCooldownRemaining) or 0
-
-		local COLOR_IDLE = Color3.fromRGB(255, 255, 255)
-		local COLOR_HOVER = Color3.fromRGB(255, 205, 80)
-
-		local screenGui = Instance.new("ScreenGui")
-		screenGui.Name = "ArmyGeneralGui"
-		screenGui.ResetOnSpawn = false
-		screenGui.IgnoreGuiInset = true
-		screenGui.DisplayOrder = 60
-		screenGui.Parent = playerGui
-
-		-- Auto-close when walking away
-		local generalModel = Workspace:FindFirstChild("Army General", true)
-		local autoCloseConn
-		autoCloseConn = RunService.Heartbeat:Connect(function()
-			if not screenGui.Parent then
-				if autoCloseConn then autoCloseConn:Disconnect() end
-				return
-			end
-			local char = player.Character
-			local hrp = char and char:FindFirstChild("HumanoidRootPart")
-			if hrp and generalModel then
-				if (hrp.Position - generalModel:GetPivot().Position).Magnitude > 12 then
-					screenGui:Destroy()
-					if autoCloseConn then autoCloseConn:Disconnect() end
-				end
-			end
-		end)
-
-		-- Root frame — center-right like Oilman
-		local root = Instance.new("Frame")
-		root.Name = "Root"
-		root.BackgroundTransparency = 1
-		root.BorderSizePixel = 0
-		root.Active = false
-		root.AnchorPoint = Vector2.new(0.5, 0.5)
-		root.Position = UDim2.fromScale(0.68, 0.55)
-		root.Size = UDim2.fromOffset(500, 320)
-		root.Parent = screenGui
-
-		local layout = Instance.new("UIListLayout")
-		layout.FillDirection = Enum.FillDirection.Vertical
-		layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
-		layout.VerticalAlignment = Enum.VerticalAlignment.Center
-		layout.SortOrder = Enum.SortOrder.LayoutOrder
-		layout.Padding = UDim.new(0, 6)
-		layout.Parent = root
-
-		local function blockyLine(name, text, order, isButton)
-			local obj
-			if isButton then
-				obj = Instance.new("TextButton")
-				obj.AutoButtonColor = false
-				obj.Active = true
-				obj.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-				obj.BackgroundTransparency = 0.99
-				obj.MouseEnter:Connect(function()
-					obj.TextColor3 = COLOR_HOVER
-					obj.BackgroundTransparency = 0.35
-				end)
-				obj.MouseLeave:Connect(function()
-					obj.TextColor3 = COLOR_IDLE
-					obj.BackgroundTransparency = 0.99
-				end)
-				local c = Instance.new("UICorner")
-				c.CornerRadius = UDim.new(0, 6)
-				c.Parent = obj
-			else
-				obj = Instance.new("TextLabel")
-				obj.BackgroundTransparency = 1
-			end
-			obj.Name = name
-			obj.Text = text
-			obj.Size = UDim2.new(1, 0, 0, 42)
-			obj.LayoutOrder = order
-			obj.BorderSizePixel = 0
-			obj.Font = Enum.Font.LuckiestGuy
-			obj.TextSize = 34
-			obj.TextColor3 = COLOR_IDLE
-			obj.TextStrokeTransparency = 0
-			obj.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-			obj.TextXAlignment = Enum.TextXAlignment.Left
-			obj.TextYAlignment = Enum.TextYAlignment.Center
-			return obj
-		end
-
-		-- Header
-		local header = blockyLine("Header", "Army General:", 1, false)
-		header.Size = UDim2.new(1, 0, 0, 50)
-		header.TextSize = 44
-		header.Parent = root
-
-		-- Launch Nuke
-		local nukeText = "Launch Nuke"
-		if nukeCooldownRemaining > 0 then
-			nukeText = string.format("Nuke (cooldown %ds)", math.ceil(nukeCooldownRemaining))
-		end
-		local nukeBtn = blockyLine("NukeButton", nukeText, 2, true)
-		nukeBtn.Parent = root
-
-		-- Call Airstrike
-		local airBtn = blockyLine("AirstrikeButton", string.format("Call Airstrike ($%d)", airstrikeCost), 3, true)
-		airBtn.Parent = root
-
-		-- Back
-		local backBtn = blockyLine("BackButton", "back", 4, true)
-		backBtn.TextSize = 28
-		backBtn.TextColor3 = Color3.fromRGB(210, 210, 210)
-		backBtn.MouseLeave:Connect(function()
-			backBtn.TextColor3 = Color3.fromRGB(210, 210, 210)
-		end)
-		backBtn.Parent = root
-
-		-- Close on back
-		backBtn.MouseButton1Click:Connect(function()
-			screenGui:Destroy()
-		end)
-
-		-- Nuke click
-		nukeBtn.MouseButton1Click:Connect(function()
-			requestArmyGeneralAction:FireServer({ action = "nuke" })
-			screenGui:Destroy()
-		end)
-
-		-- Airstrike click — show target list as additional blocky lines
-		airBtn.MouseButton1Click:Connect(function()
-			-- Remove existing target buttons
-			for _, c in ipairs(root:GetChildren()) do
-				if c.Name:find("Target_") then c:Destroy() end
-			end
-
-			-- Fetch targets
-			local result = requestArmyGeneralTargets:InvokeServer()
-			if typeof(result) ~= "table" or typeof(result.targets) ~= "table" then return end
-
-			-- Replace the options with target list
-			header.Text = "Pick Target:"
-			nukeBtn.Visible = false
-			airBtn.Visible = false
-
-			local order = 5
-			for _, target in ipairs(result.targets) do
-				local label = target.displayName
-				if not target.hasShipment then
-					label = label .. " (no ship)"
-				end
-				local tBtn = blockyLine("Target_" .. tostring(target.userId), label, order, true)
-				tBtn.TextSize = 28
-				if not target.hasShipment then
-					tBtn.TextColor3 = Color3.fromRGB(100, 100, 100)
-				end
-				tBtn.Parent = root
-				order += 1
-
-				if target.hasShipment then
-					tBtn.MouseButton1Click:Connect(function()
-						requestArmyGeneralAction:FireServer({ action = "airstrike", victimUserId = target.userId })
-						screenGui:Destroy()
-					end)
-				end
-			end
-
-			if #result.targets == 0 then
-				local noTargets = blockyLine("NoTargets", "No ships on the strait", 5, false)
-				noTargets.TextSize = 28
-				noTargets.TextColor3 = Color3.fromRGB(180, 80, 80)
-				noTargets.Parent = root
-			end
-
-			-- Back returns to main menu
-			backBtn.MouseButton1Click:Connect(function()
-				screenGui:Destroy()
-			end)
-		end)
-	end)
-
-	-- Army General result messages
-	armyGeneralResultEvent.OnClientEvent:Connect(function(data)
-		if typeof(data) ~= "table" then return end
-		setStatus(tostring(data.message or "?"), data.ok == true)
 	end)
 
 end

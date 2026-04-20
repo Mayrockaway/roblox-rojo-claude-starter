@@ -559,7 +559,7 @@ local function highestWorldYOfPartOBB(part: BasePart): number
 end
 
 local function getActiveDrillTimerAnchorPosition(model: Instance, fallbackPosition: Vector3): Vector3
-	if model:IsA("Model") then
+			if model:IsA("Model") then
 		local topY = -math.huge
 		for _, d in ipairs(model:GetDescendants()) do
 			if d:IsA("BasePart") then
@@ -1125,12 +1125,12 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 			-- Float-down animation for newly placed center pumps
 			if justCreated and drill.isCenterPump then
 				local startCf = CFrame.new(px, py + 60 + pivotToBottom + extraLift, pz)
-				if model:IsA("Model") then
+			if model:IsA("Model") then
 					model:PivotTo(startCf)
-				elseif model:IsA("BasePart") then
+			elseif model:IsA("BasePart") then
 					model.CFrame = startCf
-				end
-				anchorAllBaseParts(model)
+			end
+			anchorAllBaseParts(model)
 				-- Sparkle particles during descent
 				local emitter = Instance.new("ParticleEmitter")
 				emitter.Name = "PumpDropFx"
@@ -1183,7 +1183,7 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 					model:PivotTo(targetCf)
 				elseif model:IsA("BasePart") then
 					model.CFrame = targetCf
-				end
+			end
 			end
 			anchorAllBaseParts(model)
 			-- Write Connected attribute so the OilBurstSpawner script can pause emission
@@ -1363,8 +1363,8 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 					-- Max tier, remove prompt
 					existingUpg:Destroy()
 				end
-			end
 		end
+	end
 	end
 	for _, child in ipairs(drillsFolder:GetChildren()) do
 		local key = string.gsub(child.Name, "^Drill_", "")

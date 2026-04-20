@@ -9,17 +9,17 @@ local ShipManagementUiConfig = require(Shared:WaitForChild("Config"):WaitForChil
 
 local HULL_BY_TEMPLATE: { [string]: Vector3 } = {
 	Tanker = Vector3.new(6, 2.2, 18),
-	Ship3 = Vector3.new(5.5, 2.2, 15),
-	Ship4 = Vector3.new(6, 2.3, 16),
-	Ship5 = Vector3.new(6.5, 2.4, 17),
+	Raft = Vector3.new(5.5, 2.2, 15),
+	PirateShip = Vector3.new(6, 2.3, 16),
+	Ducky = Vector3.new(6.5, 2.4, 17),
 	Whale = Vector3.new(8, 3, 22),
 }
 
 local COLOR_BY_TEMPLATE: { [string]: Color3 } = {
 	Tanker = Color3.fromRGB(110, 118, 128),
-	Ship3 = Color3.fromRGB(120, 100, 90),
-	Ship4 = Color3.fromRGB(95, 105, 120),
-	Ship5 = Color3.fromRGB(130, 120, 95),
+	Raft = Color3.fromRGB(120, 100, 90),
+	PirateShip = Color3.fromRGB(95, 105, 120),
+	Ducky = Color3.fromRGB(130, 120, 95),
 	Whale = Color3.fromRGB(70, 85, 110),
 }
 

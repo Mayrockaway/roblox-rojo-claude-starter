@@ -820,11 +820,11 @@ local function playSoundTemplateOn(root: Instance, eventId: string, assetName: s
 	s.Parent = root
 	s.Volume = s.Volume * (volumeScale or 1)
 	s.RollOffMaxDistance = math.max(s.RollOffMaxDistance, 220)
-	s.Ended:Connect(function()
-		s:Destroy()
-	end)
-	s:Play()
-end
+		s.Ended:Connect(function()
+			s:Destroy()
+		end)
+		s:Play()
+	end
 
 local function shakeCameraIfNear(center: Vector3, radius: number, intensity: number, duration: number)
 	local cam = Workspace.CurrentCamera
@@ -2619,7 +2619,9 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 	if not assets then
 		return
 	end
-	local pirateShipTemplate = assets:FindFirstChild("PirateShip")
+	-- NPC pirate-raid hull. Renamed from `PirateShip` -> `PirateShipNpc` when the
+	-- player-purchasable `Ship4Skin` claimed the `PirateShip` model name.
+	local pirateShipTemplate = assets:FindFirstChild("PirateShipNpc")
 	local pirateNpcTemplate = assets:FindFirstChild("Pirate")
 	if not pirateShipTemplate or not pirateNpcTemplate then
 		return

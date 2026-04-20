@@ -14,6 +14,9 @@ export type UiSfxApi = {
 	playUiDenied: () -> (),
 	--- FTUE dialogue panel opens for a new step (`FtueDialogueController`).
 	playFtueDialogueOpen: () -> (),
+	--- Contractor-side "your hit landed" pirate-contract success cue. Plays
+	--- alongside the gold locked-status text written by `PirateHireClient`.
+	playPirateHitContract: () -> (),
 }
 
 local function findTemplate(canonicalName: string): Sound?
@@ -70,6 +73,12 @@ local UI_DENIED_SOUND_ID = "rbxassetid://80835117736204"
 local FTUE_DIALOGUE_OPEN_SOUND_ID = "rbxassetid://117079675822991"
 local FTUE_DIALOGUE_OPEN_VOLUME = 0.2
 
+--- Contractor-side success cue for the player-hired pirate contract — fires
+--- when the contractor receives the `pirateHitAlertEvent` with
+--- `kind = "contractor"` (see `OilShipmentService:_emitPirateHitAlert`).
+local PIRATE_HIT_CONTRACT_SOUND_ID = "rbxassetid://104707278494253"
+local PIRATE_HIT_CONTRACT_VOLUME = 0.7
+
 local function playOneShotByAssetId(assetId: string, volume: number)
 	if not ClientAudioPreferences.isSfxEnabled() then
 		return
@@ -102,6 +111,9 @@ local UiSfx: UiSfxApi = {
 	end,
 	playFtueDialogueOpen = function()
 		playOneShotByAssetId(FTUE_DIALOGUE_OPEN_SOUND_ID, FTUE_DIALOGUE_OPEN_VOLUME)
+	end,
+	playPirateHitContract = function()
+		playOneShotByAssetId(PIRATE_HIT_CONTRACT_SOUND_ID, PIRATE_HIT_CONTRACT_VOLUME)
 	end,
 }
 

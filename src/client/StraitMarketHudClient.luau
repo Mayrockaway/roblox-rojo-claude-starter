@@ -33,8 +33,14 @@ local marketState = {
 }
 
 local straitStatusHudModule: { refresh: (PlayerGui, string) -> () }? = nil
-local straitStatusChangeFxModule: { trigger: (PlayerGui, string) -> () }? = nil
+local straitStatusChangeFxModule: {
+	trigger: (PlayerGui, string, string?) -> (),
+	triggerForceLock: (PlayerGui, string, string?, number) -> (),
+}? = nil
+local straitForceLockTimerModule: { refresh: (PlayerGui, any) -> () }? = nil
 local oilPriceHudModule: { refresh: (PlayerGui, any) -> () }? = nil
+
+local lastForceLockVersion = 0
 
 local function getStraitStatusHud(deps: StraitMarketHudDeps): { refresh: (PlayerGui, string) -> () }?
 	if straitStatusHudModule then
@@ -51,7 +57,7 @@ local function getStraitStatusHud(deps: StraitMarketHudDeps): { refresh: (Player
 	return straitStatusHudModule
 end
 
-local function getStraitStatusChangeFx(deps: StraitMarketHudDeps): { trigger: (PlayerGui, string) -> () }?
+local function getStraitStatusChangeFx(deps: StraitMarketHudDeps)
 	if straitStatusChangeFxModule then
 		return straitStatusChangeFxModule
 	end
@@ -61,9 +67,24 @@ local function getStraitStatusChangeFx(deps: StraitMarketHudDeps): { trigger: (P
 	end
 	local m = ui:FindFirstChild("StraitStatusChangeFx")
 	if m and m:IsA("ModuleScript") then
-		straitStatusChangeFxModule = require(m) :: { trigger: (PlayerGui, string) -> () }
+		straitStatusChangeFxModule = require(m) :: any
 	end
 	return straitStatusChangeFxModule
+end
+
+local function getStraitForceLockTimer(deps: StraitMarketHudDeps): { refresh: (PlayerGui, any) -> () }?
+	if straitForceLockTimerModule then
+		return straitForceLockTimerModule
+	end
+	local ui = deps.getHudUiFolder()
+	if not ui then
+		return nil
+	end
+	local m = ui:FindFirstChild("StraitForceLockTimer")
+	if m and m:IsA("ModuleScript") then
+		straitForceLockTimerModule = require(m) :: { refresh: (PlayerGui, any) -> () }
+	end
+	return straitForceLockTimerModule
 end
 
 local function getOilPriceHud(deps: StraitMarketHudDeps): { refresh: (PlayerGui, any) -> () }?
@@ -123,15 +144,46 @@ function StraitMarketHudClient.connect(deps: StraitMarketHudDeps, remotes: Strai
 		if typeof(snapshot) ~= "table" then
 			return
 		end
+		-- Resolve the new force lock first so we can decide whether the
+		-- banner should be the player-attribution one (Robux force-open /
+		-- close) or the regular "THE STRAIT IS NOW X" rotation banner. We
+		-- always refresh the timer panel — it owns its own show/hide gate.
+		local forceLock = snapshot.forceLock
+		local timer = getStraitForceLockTimer(deps)
+		if timer then
+			timer.refresh(deps.playerGui, forceLock)
+		end
+
+		local newForceLock = false
+		if typeof(forceLock) == "table" and typeof(forceLock.version) == "number" and forceLock.version > lastForceLockVersion then
+			lastForceLockVersion = forceLock.version
+			newForceLock = true
+		end
+
 		if typeof(snapshot.state) == "string" then
 			local prev = marketState.straitState
 			marketState.straitState = snapshot.state
 			updateMarketUi(deps)
-			if prev and prev ~= snapshot.state then
+			local stateChanged = prev and prev ~= snapshot.state
+			-- Either trigger fires the banner; we never fire both because
+			-- `StraitStatusChangeFx.trigger`'s `activeToken` would clip the
+			-- earlier one mid-fade. Force-lock takes priority since it's the
+			-- moment the player paid for.
+			if newForceLock then
+				local fx = getStraitStatusChangeFx(deps)
+				if fx and typeof(forceLock) == "table" then
+					local untilTs = tonumber(forceLock.untilTimestamp) or 0
+					local duration = math.max(untilTs - workspace:GetServerTimeNow(), 0)
+					fx.triggerForceLock(deps.playerGui, tostring(forceLock.state), forceLock.byName, duration)
+				end
+			elseif stateChanged then
 				local fx = getStraitStatusChangeFx(deps)
 				if fx then
 					fx.trigger(deps.playerGui, snapshot.state)
 				end
+			end
+
+			if stateChanged then
 				print("[StraitSFX] State changed: " .. tostring(prev) .. " -> " .. tostring(snapshot.state))
 				local newState = snapshot.state
 				if newState == "Closed" then

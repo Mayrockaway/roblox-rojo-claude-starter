@@ -163,6 +163,22 @@ local function buildDefaultPersisted()
 		ftueDispatchCashGranted = false,
 		ftueTutorialCompleteCashGranted = false,
 		ftueFreeCargoCapacityUpgradeUsed = false,
+		--- One-shot flag: when `false`, the dock equipment shop FTUE leg
+		--- (`WaitDocksEquipmentShop`) hands the player **one** free drill of
+		--- `FtueConfig.FtueDocksFreeDrillItemId` (cost forced to 0 + rotation stock
+		--- bypass in `EquipmentShopService:_handlePurchase`). Flips to `true` on the
+		--- successful free purchase so the discount cannot be replayed.
+		ftueFreeDocksDrillUsed = false,
+		--- One-shot flag: when `false`, the very next FTUE drill reveal is locked to a
+		--- vein of **exactly Rare** rarity (see `OilStateService:CompleteDrill`). Flips
+		--- to `true` after the locked roll fires so subsequent reveals roll normally.
+		ftueFirstRevealApplied = false,
+		--- One-shot flag: when `false`, the **first barrel** produced from the FTUE
+		--- tutorial vein is granted instantly the moment production visuals start
+		--- (see `OilStateService:StartRevealVisuals`) so the player isn't stuck
+		--- waiting for their first `barrelsPerSecond` tick before they can dispatch.
+		--- Flips to `true` after the boost fires; subsequent barrels accumulate normally.
+		ftueFirstBarrelGranted = false,
 		storageCapacity = OilConfig.StartingStorageCapacity,
 		oilByTier = {
 			Crude = 0,
@@ -178,9 +194,24 @@ local function buildDefaultPersisted()
 		shipSpeedLevel = 1,
 		shipCapacityLevel = 1,
 		shipSkinId = "DefaultTanker",
+		--- Seeded so a freshly persisted profile is never written without the
+		--- starter tanker entry — keeps `_applyPersistedIntoState` and
+		--- `MonetizationService` from disagreeing on first save.
+		ownedShipSkinIds = { DefaultTanker = true },
+		--- Ship skins the player is allowed to equip via `SetShipSkinId`. Every
+		--- new profile starts with the starter `DefaultTanker`; everything else
+		--- is granted by `MonetizationService` on a verified Robux receipt.
+		--- Stored as `[skinId] = true` so JSON round-trip is order-stable.
+		ownedShipSkinIds = { DefaultTanker = true },
 		ftueStep = if FtueConfig.Enabled then FtueConfig.Step.Intro else nil,
 		ftueCompleted = not FtueConfig.Enabled,
 		ftueDoneScreenAcknowledged = false,
+		--- Persisted **sub-step** within `WaitDocksUpgradeShip` so a player who quits
+		--- mid-leg (after talking to the dockman / mid-cargo-buy / about to close
+		--- the modal) resumes on the **same** dock ship beam + UI pointer they last
+		--- saw. Values: `"Dockman"` | `"CargoBuy"` | `"CloseModal"`. `nil` outside
+		--- that step. Mirrors `Constants.FtueDocksUpgradeSubStepAttribute` 1-to-1.
+		ftueDocksUpgradeSubStep = nil :: string?,
 	}
 end
 
@@ -563,6 +594,12 @@ function OilStateService:SetFtueProgress(userId: number, step: string?)
 	if step == nil then
 		self:_clearFtuePlacementNoSellback(state)
 	end
+	-- Drop the dock-ship sub-step persistence whenever we leave that step so a
+	-- save flush mid-transition can never re-arm a stale Dockman / CargoBuy /
+	-- CloseModal value on a future rejoin.
+	if step ~= FtueConfig.Step.WaitDocksUpgradeShip then
+		(state :: any).ftueDocksUpgradeSubStep = nil
+	end
 	-- Tutorial escort vessel is only for the first dispatch during **`WaitPlotShipment`**; never after FTUE completes or past that leg.
 	if state.ftueCompleted or step == FtueConfig.Step.Done or step == FtueConfig.Step.WaitShipment then
 		state.ftueEscortShipmentRemaining = 0
@@ -591,6 +628,25 @@ function OilStateService:SetFtueDoneScreenAcknowledged(userId: number, acknowled
 		return
 	end
 	(state :: any).ftueDoneScreenAcknowledged = acknowledged
+	self:_markDirty(userId)
+end
+
+--- Persist the dock-ship sub-step (`Dockman` / `CargoBuy` / `CloseModal` / `nil`)
+--- so a player who quits mid-leg rejoins on the **same** dockman beam / cargo
+--- upgrade pointer / close-modal pointer they last saw. `FtueService` mirrors its
+--- `Constants.FtueDocksUpgradeSubStepAttribute` writes through this setter.
+function OilStateService:SetFtueDocksUpgradeSubStep(userId: number, sub: string?)
+	local state = self._statesByUserId[userId]
+	if not state then
+		return
+	end
+	if sub ~= nil and sub ~= "Dockman" and sub ~= "CargoBuy" and sub ~= "CloseModal" then
+		sub = nil
+	end
+	if (state :: any).ftueDocksUpgradeSubStep == sub then
+		return
+	end
+	(state :: any).ftueDocksUpgradeSubStep = sub
 	self:_markDirty(userId)
 end
 
@@ -982,6 +1038,21 @@ function OilStateService:GetStateForClient(userId: number)
 		shipSpeedLevel = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel),
 		shipCapacityLevel = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel),
 		shipSkinId = (typeof(state.shipSkinId) == "string" and state.shipSkinId) or "DefaultTanker",
+		--- Sent on every snapshot + push so `SelectShipPanel` can render the
+		--- locked / owned state without invoking a separate snapshot RemoteFn.
+		--- Keys are skin ids, values are always `true`. Unknown ids are
+		--- filtered defensively (catalog rename safety).
+		ownedShipSkinIds = (function()
+			local out: { [string]: boolean } = { DefaultTanker = true }
+			if typeof(state.ownedShipSkinIds) == "table" then
+				for skinId, owned in pairs(state.ownedShipSkinIds) do
+					if typeof(skinId) == "string" and skinId ~= "" and owned == true and ShipSkinCatalog.Skins[skinId] then
+						out[skinId] = true
+					end
+				end
+			end
+			return out
+		end)(),
 		resolvedShip = (function()
 			local spd = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
 			local capL = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
@@ -1519,6 +1590,15 @@ function OilStateService:TryStartDrill(userId: number, payload): (boolean, strin
 
 	local depthMeters = baseSeconds -- 1 second = 1 meter
 	local metersPerSecond = tierCfg.timeDivisor or 1
+	--- FTUE freebie shortens `effectiveSeconds` without touching the tile's
+	--- `baseSeconds`, which would leave the billboard "Xm / Ym" depth counter
+	--- creeping at the slow tier-1 speed while the drill itself finishes in a
+	--- few seconds (visual mismatch — depth caps mid-drill, then the tile spawns
+	--- oil "early"). Recompute `metersPerSecond` so the counter counts up to the
+	--- full `depthMeters` over `effectiveSeconds`, matching the on-screen timer.
+	if ftueFreeNoSellback and effectiveSeconds > 0 then
+		metersPerSecond = math.max(1, math.ceil(depthMeters / effectiveSeconds))
+	end
 
 	local now = workspace:GetServerTimeNow()
 	local entry = {
@@ -1578,6 +1658,27 @@ function OilStateService:CompleteDrill(userId: number, drillId: number): (boolea
 	local groundTypeName = chunk.groundType or chunk.biome or "Bronze"
 	local rng = Random.new(userId * 13 + drillId * 7 + math.floor(workspace:GetServerTimeNow() * 1000))
 	local rolledType = VeinCrateConfig.RollVeinType(groundTypeName, rng)
+
+	--- FTUE first reveal: lock the result to **exactly Rare** so the lootbox sequence
+	--- always lands on the same celebrate-worthy tier — never lower (commons feel flat)
+	--- and never higher (epic/legendary should stay aspirational). Only applies once per
+	--- profile (`ftueFirstRevealApplied`); subsequent reveals roll normally per
+	--- `GroundRarityWeights`.
+	if (state :: any).ftueFirstRevealApplied ~= true then
+		if rolledType.rarity ~= "Rare" then
+			local pool: { any } = {}
+			for _, def in ipairs(VeinCrateConfig.VeinTypes) do
+				if def.rarity == "Rare" and not def.isUnlucky then
+					table.insert(pool, def)
+				end
+			end
+			if #pool > 0 then
+				rolledType = pool[rng:NextInteger(1, #pool)]
+			end
+		end
+		(state :: any).ftueFirstRevealApplied = true
+	end
+
 	local veinResult = VeinCrateConfig.BuildVeinResult(rolledType, groundTypeName)
 
 	tile.veinTypeId = rolledType.id
@@ -1655,6 +1756,24 @@ function OilStateService:StartRevealVisuals(userId: number, chunkId: string, til
 	if tile.hasOil ~= false and typeof(tile.visualsStartedAt) ~= "number" then
 		tile.visualsStartedAt = workspace:GetServerTimeNow()
 		self:_markDirty(userId)
+		--- FTUE one-shot: grant a single barrel of the rolled vein's primary tier the
+		--- moment production visuals begin so the new player can see oil in their tank
+		--- and dispatch a shipment without waiting on the normal `barrelsPerSecond`
+		--- accumulation. Only fires for the very first revealed FTUE tile per profile.
+		if (state :: any).ftueFirstBarrelGranted ~= true then
+			local primaryTier = tile.oilType
+			if typeof(primaryTier) == "string" and OilTankConfig.OilColors[primaryTier] ~= nil then
+				local cap = tankCapacity(state, primaryTier)
+				local space = cap - (state.oilByTier[primaryTier] or 0)
+				if space > 0 then
+					state.oilByTier[primaryTier] += 1
+					state.totalOil += 1
+					(state :: any).ftueFirstBarrelGranted = true
+					self:_markDirty(userId)
+					self:PushState(userId)
+				end
+			end
+		end
 	end
 
 	return true, {
@@ -2206,6 +2325,12 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		ftueDispatchCashGranted = false,
 		ftueTutorialCompleteCashGranted = false,
 		ftueFreeCargoCapacityUpgradeUsed = false,
+		--- See `buildDefaultPersisted` — runtime mirror of the one-shot free dock equipment shop drill flag.
+		ftueFreeDocksDrillUsed = false,
+		--- See `buildDefaultPersisted` — runtime mirror of the one-shot exact-Rare FTUE first-reveal flag.
+		ftueFirstRevealApplied = false,
+		--- See `buildDefaultPersisted` — runtime mirror of the one-shot fast first-barrel grant.
+		ftueFirstBarrelGranted = false,
 		-- Per-tank upgrade levels. storageCapacity is derived = sum of tank capacities.
 		tankTiers = defaultTankTiers(),
 		storageCapacity = 0, -- set below from tankTiers
@@ -2224,6 +2349,11 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		shipSpeedLevel = 1,
 		shipCapacityLevel = 1,
 		shipSkinId = "DefaultTanker",
+		--- See `buildDefaultPersisted` — same field, runtime side. Always
+		--- includes the starter tanker; `_applyPersistedIntoState` overlays
+		--- saved entries on top and `MonetizationService` mutates this via
+		--- `OilStateService:GrantShipSkin` after a verified receipt.
+		ownedShipSkinIds = { DefaultTanker = true } :: { [string]: boolean },
 		chunksById = chunksById,
 		drillsById = {},         -- each record is a placed PUMP (center pumps + legacy migrated)
 		activeDrills = {},       -- in-progress drills; also persisted (wall-clock start/end)
@@ -2235,6 +2365,9 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		ftueStep = if FtueConfig.Enabled then FtueConfig.Step.Intro else nil,
 		ftueCompleted = not FtueConfig.Enabled,
 		ftueDoneScreenAcknowledged = false,
+		--- See `buildDefaultPersisted` — runtime mirror of the persisted `WaitDocksUpgradeShip`
+		--- sub-step (`Dockman` / `CargoBuy` / `CloseModal`) so rejoin restores the right beam + pointer.
+		ftueDocksUpgradeSubStep = nil :: string?,
 	}
 
 	local persisted = self:_loadPersistedProfile(userId)
@@ -2333,6 +2466,21 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 	else
 		(state :: any).ftueFreeCargoCapacityUpgradeUsed = false
 	end
+	if (persisted :: any).ftueFreeDocksDrillUsed == true then
+		(state :: any).ftueFreeDocksDrillUsed = true
+	else
+		(state :: any).ftueFreeDocksDrillUsed = false
+	end
+	if (persisted :: any).ftueFirstRevealApplied == true then
+		(state :: any).ftueFirstRevealApplied = true
+	else
+		(state :: any).ftueFirstRevealApplied = false
+	end
+	if (persisted :: any).ftueFirstBarrelGranted == true then
+		(state :: any).ftueFirstBarrelGranted = true
+	else
+		(state :: any).ftueFirstBarrelGranted = false
+	end
 
 	-- FTUE step (v7+). Saves without these keys are pre-FTUE-progress profiles: skip tutorial.
 	local pFtue = persisted :: any
@@ -2390,6 +2538,22 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		(state :: any).ftueDoneScreenAcknowledged = false
 	else
 		(state :: any).ftueDoneScreenAcknowledged = (state.ftueCompleted == true and typeof((state :: any).ftueStep) ~= "string")
+	end
+
+	-- Restore the persisted dock-ship sub-step (only valid while ftueStep ==
+	-- WaitDocksUpgradeShip; otherwise force-clear so a stale value can't bleed
+	-- through if the step was advanced from a save flush in between).
+	do
+		local subAny = (pFtue :: any).ftueDocksUpgradeSubStep
+		local sub = if typeof(subAny) == "string" then (subAny :: string) else nil
+		if sub ~= "Dockman" and sub ~= "CargoBuy" and sub ~= "CloseModal" then
+			sub = nil
+		end
+		if (state :: any).ftueStep == FtueConfig.Step.WaitDocksUpgradeShip then
+			(state :: any).ftueDocksUpgradeSubStep = sub
+		else
+			(state :: any).ftueDocksUpgradeSubStep = nil
+		end
 	end
 
 	-- Tutorial escort ship only applies on **`WaitPlotShipment`**; clear stale flag after that leg or when FTUE is done.
@@ -2469,6 +2633,27 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		state.shipSkinId = migrated.skinId
 		state.shipSpeedLevel = math.clamp(migrated.speedLevel, 1, ShipUpgradeConfig.MaxSpeedLevel)
 		state.shipCapacityLevel = math.clamp(migrated.capacityLevel, 1, ShipUpgradeConfig.MaxCapacityLevel)
+	end
+
+	-- Restore the ship-skin ownership map (set in `buildDefaultPersisted`).
+	-- Pre-`ownedShipSkinIds` profiles still played the legacy "all skins
+	-- selectable" UX, so we honor whatever they had as `shipSkinId` at the
+	-- time of the migration: the starter tanker plus the equipped skin gets
+	-- seeded as owned. `MonetizationService` will only ever add to this set
+	-- on a verified DevProduct receipt — there's no way to lose a skin.
+	state.ownedShipSkinIds = { DefaultTanker = true } :: { [string]: boolean }
+	if typeof(persisted.ownedShipSkinIds) == "table" then
+		for skinId, owned in pairs(persisted.ownedShipSkinIds) do
+			if typeof(skinId) == "string" and skinId ~= "" and owned == true and ShipSkinCatalog.Skins[skinId] then
+				state.ownedShipSkinIds[skinId] = true
+			end
+		end
+	end
+	-- Always grant the equipped skin so a returning player can't be locked
+	-- out of the boat they last sailed if their saved ownership map drifted
+	-- (e.g. catalog rename, old profile written before this field existed).
+	if typeof(state.shipSkinId) == "string" and ShipSkinCatalog.Skins[state.shipSkinId] then
+		state.ownedShipSkinIds[state.shipSkinId] = true
 	end
 
 	if typeof(persisted.unlockedChunkIds) == "table" then
@@ -2942,6 +3127,9 @@ function OilStateService:_serializeState(state)
 	persisted.ftueDispatchCashGranted = state.ftueDispatchCashGranted == true
 	persisted.ftueTutorialCompleteCashGranted = (state :: any).ftueTutorialCompleteCashGranted == true
 	(persisted :: any).ftueFreeCargoCapacityUpgradeUsed = (state :: any).ftueFreeCargoCapacityUpgradeUsed == true
+	(persisted :: any).ftueFreeDocksDrillUsed = (state :: any).ftueFreeDocksDrillUsed == true
+	(persisted :: any).ftueFirstRevealApplied = (state :: any).ftueFirstRevealApplied == true
+	(persisted :: any).ftueFirstBarrelGranted = (state :: any).ftueFirstBarrelGranted == true
 	if typeof((state :: any).ftueStep) == "string" then
 		(persisted :: any).ftueStep = (state :: any).ftueStep
 	elseif (state :: any).ftueCompleted == true then
@@ -2951,6 +3139,18 @@ function OilStateService:_serializeState(state)
 	end
 	(persisted :: any).ftueCompleted = (state :: any).ftueCompleted == true
 	(persisted :: any).ftueDoneScreenAcknowledged = (state :: any).ftueDoneScreenAcknowledged == true
+	-- Only persist the dock-ship sub-step while we're actually in that leg.
+	-- Anywhere else it's nil and `_applyPersistedIntoState` re-clears anyway.
+	if (state :: any).ftueStep == FtueConfig.Step.WaitDocksUpgradeShip then
+		local sub = (state :: any).ftueDocksUpgradeSubStep
+		if sub == "Dockman" or sub == "CargoBuy" or sub == "CloseModal" then
+			(persisted :: any).ftueDocksUpgradeSubStep = sub
+		else
+			(persisted :: any).ftueDocksUpgradeSubStep = nil
+		end
+	else
+		(persisted :: any).ftueDocksUpgradeSubStep = nil
+	end
 	persisted.storageCapacity = math.max(1, floorPositive(state.storageCapacity))
 	persisted.oilByTier = copyTierMap(state.oilByTier)
 	persisted.tankTiers = {
@@ -3049,6 +3249,20 @@ function OilStateService:_serializeState(state)
 	persisted.shipCapacityLevel = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
 	persisted.shipSkinId = (typeof(state.shipSkinId) == "string" and state.shipSkinId) or "DefaultTanker"
 
+	-- Persist the Robux-granted ship skin ownership set. Only emit known
+	-- catalog ids so a stale skin removed from `ShipSkinCatalog` doesn't
+	-- linger in DataStores and a typo in `GrantShipSkin` can't pollute
+	-- saves. DefaultTanker is always written so the seed is explicit.
+	local ownedOut: { [string]: boolean } = { DefaultTanker = true }
+	if typeof(state.ownedShipSkinIds) == "table" then
+		for skinId, owned in pairs(state.ownedShipSkinIds) do
+			if typeof(skinId) == "string" and skinId ~= "" and owned == true and ShipSkinCatalog.Skins[skinId] then
+				ownedOut[skinId] = true
+			end
+		end
+	end
+	persisted.ownedShipSkinIds = ownedOut
+
 	persisted.equipmentOwned = {}
 	for itemId, n in pairs(state.equipmentOwnedByItemId or {}) do
 		local c = floorPositive(n)
@@ -3068,6 +3282,45 @@ function OilStateService:SetSkinChangedHandler(fn: (number, string) -> ())
 	self._skinChangedHandler = fn
 end
 
+function OilStateService:OwnsShipSkin(userId: number, skinId: string?): boolean
+	if typeof(skinId) ~= "string" or skinId == "" then
+		return false
+	end
+	-- Starter tanker is always owned, even before state loads, so the UI
+	-- shouldn't briefly render "locked" on the very first frame after join.
+	if skinId == "DefaultTanker" then
+		return true
+	end
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false
+	end
+	local owned = state.ownedShipSkinIds
+	return typeof(owned) == "table" and owned[skinId] == true
+end
+
+--- Idempotent — called by `MonetizationService` on a verified DevProduct
+--- receipt. Returns (didChange, errCode). Caller is responsible for
+--- `PushState`/auto-equip side effects so this stays a pure data mutation.
+function OilStateService:GrantShipSkin(userId: number, skinId: string): (boolean, string)
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false, "ERR_NO_STATE"
+	end
+	if typeof(skinId) ~= "string" or not ShipSkinCatalog.Skins[skinId] then
+		return false, "ERR_BAD_SKIN"
+	end
+	if typeof(state.ownedShipSkinIds) ~= "table" then
+		state.ownedShipSkinIds = { DefaultTanker = true }
+	end
+	if state.ownedShipSkinIds[skinId] == true then
+		return false, "OK_ALREADY_OWNED"
+	end
+	state.ownedShipSkinIds[skinId] = true
+	self:_markDirty(userId)
+	return true, "OK"
+end
+
 function OilStateService:SetShipSkinId(userId: number, skinId: string): (boolean, string)
 	local state = self._statesByUserId[userId]
 	if not state then
@@ -3075,6 +3328,13 @@ function OilStateService:SetShipSkinId(userId: number, skinId: string): (boolean
 	end
 	if typeof(skinId) ~= "string" or not ShipSkinCatalog.Skins[skinId] then
 		return false, "ERR_BAD_SKIN"
+	end
+	-- Robux-gating: refuse to equip skins the player hasn't unlocked. Without
+	-- this check a malicious client could fire `RequestSetShipSkin` directly
+	-- and bypass `MonetizationService` entirely. `OwnsShipSkin` treats the
+	-- starter tanker as always-owned so the default flow is unaffected.
+	if not self:OwnsShipSkin(userId, skinId) then
+		return false, "ERR_NOT_OWNED"
 	end
 	local prev = state.shipSkinId
 	state.shipSkinId = skinId
@@ -3205,49 +3465,81 @@ function OilStateService:DevRemovePersistedOilProfile(userId: number)
 	self._memoryStore[key] = nil
 end
 
---- FTUE drill tile (drills-only refactor): **two cells past** the `Lab Machine` along its
---- LookVector. Pipes / drums no longer exist, so the rig and pump are derived from the
---- Lab Machine pivot directly. Same authored cell as before (Drum — front pipe — drill),
---- now reachable without persisted drum / pipe state.
+--- FTUE drill tile: **adjacent to the auto-placed center pump** (T33 of the starting chunk).
+--- Pumps now spawn automatically at section center, so the tutorial tile sits one cell next to
+--- it (preferred direction = toward the `Lab Machine` if present, so the pipe path the player
+--- sees from spawn flows naturally; falls back to the cell directly "below" the pump otherwise).
 function OilStateService:GetFtueDrillTargetCellKeyForPlot(plot: Model, _state: any, _userId: number): string?
-	local labRow: number?, labCol: number? = nil, nil
+	local s = staticGridConstants()
+	local startSectionRow = OilConfig.Chunks.StartingRow
+	local startSectionCol = OilConfig.Chunks.StartingCol
+	local pumpRow = (startSectionRow - 1) * s.subTilesPerSide + 3
+	local pumpCol = (startSectionCol - 1) * s.subTilesPerSide + 3
+	if not inBoundsCell(pumpRow, pumpCol) then
+		return nil
+	end
+
 	local labModel = plot:FindFirstChild("Lab Machine")
+	local nbrRow: number?, nbrCol: number? = nil, nil
 	if labModel and labModel:IsA("Model") then
-		labRow, labCol = findNearestPlotTileCell(plot, labModel:GetPivot().Position)
+		local labPos = labModel:GetPivot().Position
+		local pumpTile = findTilePartForCell(plot, pumpRow, pumpCol)
+		if pumpTile then
+			local dirToLab = Vector3.new(labPos.X - pumpTile.Position.X, 0, labPos.Z - pumpTile.Position.Z)
+			if dirToLab.Magnitude > 0.001 then
+				nbrRow, nbrCol = pickNeighborCellByDirection(plot, pumpRow, pumpCol, dirToLab)
+			end
+		end
 	end
-	if not labRow or not labCol then
-		local startSectionRow = OilConfig.Chunks.StartingRow
-		local startSectionCol = OilConfig.Chunks.StartingCol
-		local s = staticGridConstants()
-		labRow = (startSectionRow - 1) * s.subTilesPerSide + s.subTilesPerSide
-		labCol = (startSectionCol - 1) * s.subTilesPerSide + math.ceil(s.subTilesPerSide / 2)
+	if not nbrRow or not nbrCol then
+		nbrRow, nbrCol = pumpRow + 1, pumpCol
 	end
-	if not labRow or not labCol then
-		return nil
+	if not inBoundsCell(nbrRow, nbrCol) then
+		nbrRow, nbrCol = pumpRow - 1, pumpCol
+		if not inBoundsCell(nbrRow, nbrCol) then
+			return nil
+		end
+	end
+	return cellKey(nbrRow, nbrCol)
+end
+
+--- Stamps `IsFtueTutorialTile=true` on the BasePart for the player's current FTUE
+--- tutorial cell (read from `Constants.FtueRestrictDrillCellKeyAttribute`) and clears
+--- the same attribute on every other tile of the player's plot. Idempotent. Used by
+--- **`FtueService`** so the per-plot world beam (see `FtuePoiBeamConfig` `WaitReveal`
+--- rule + `PlayerToPoiBeamBootstrap`) can find the tile reliably even after streaming
+--- in late or after respawn.
+function OilStateService:SetFtueTutorialTileMarker(userId: number, enabled: boolean)
+	local plr = Players:GetPlayerByUserId(userId)
+	if not plr then return end
+	local plot = self._plotService and self._plotService:GetOwnedPlot(userId)
+	if not plot then return end
+
+	local function clearAll()
+		local ground = plot:FindFirstChild("PlotGround")
+		if not (ground and ground:IsA("Model")) then return end
+		for _, sect in ipairs(ground:GetChildren()) do
+			if sect:IsA("Model") then
+				for _, d in ipairs(sect:GetDescendants()) do
+					if d:IsA("BasePart") and d:GetAttribute("IsFtueTutorialTile") == true then
+						d:SetAttribute("IsFtueTutorialTile", nil)
+					end
+				end
+			end
+		end
 	end
 
-	local frontRow: number?, frontCol: number? = nil, nil
-	if labModel and labModel:IsA("Model") then
-		frontRow, frontCol = pickNeighborCellByDirection(plot, labRow, labCol, labModel:GetPivot().LookVector)
-	end
-	if not frontRow or not frontCol then
-		frontRow, frontCol = labRow - 1, labCol
-	end
-	if not inBoundsCell(frontRow, frontCol) then
-		return nil
-	end
+	clearAll()
+	if not enabled then return end
 
-	local dRow = frontRow - labRow
-	local dCol = frontCol - labCol
-	if dRow == 0 and dCol == 0 then
-		return nil
+	local ck = readFtueCellAttribute(userId, Constants.FtueRestrictDrillCellKeyAttribute)
+	if not ck then return end
+	local row, col = globalCellFromCellKeyString(ck)
+	if not row or not col then return end
+	local part = findTilePartForCell(plot, row, col)
+	if part then
+		part:SetAttribute("IsFtueTutorialTile", true)
 	end
-	local drillRow = frontRow + dRow
-	local drillCol = frontCol + dCol
-	if not inBoundsCell(drillRow, drillCol) then
-		return nil
-	end
-	return cellKey(drillRow, drillCol)
 end
 
 --- Used while `ftueStep == WaitDrillOil_WIP` to restore drill restriction attributes after join.

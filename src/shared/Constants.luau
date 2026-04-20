@@ -20,6 +20,12 @@ local Constants = {
 	StraitLeaderLockSeconds = 12,
 	StraitLeaderHeartbeatSeconds = 4,
 	StraitFollowerPollSeconds = 6,
+	-- Robux strait force-open / force-close hold (`MonetizationService` consumables
+	-- `strait_open_2min` / `strait_close_2min` — see `MonetizationCatalog.luau`).
+	-- Server-wide: while the lock is active no organic rotation, no other player's
+	-- force flip, and no dev UI override can change the strait. Tune carefully —
+	-- this is the marketed product duration, not just a UI animation length.
+	StraitForceLockSeconds = 120,
 	LocalSellMultiplier = 0.5,
 	LocalSellFlatBasePerBarrel = 10,
 	MaxTotalPayoutMultiplier = 20,
@@ -56,6 +62,10 @@ local Constants = {
 	FtueStepAttribute = "FtueStep",
 	--- Docks upgrade leg (`WaitDocksUpgradeShip`): `"Dockman"` → talk opens ship UI → `"CargoBuy"` → upgrade → `"CloseModal"`.
 	FtueDocksUpgradeSubStepAttribute = "FtueDocksUpgradeSubStep",
+	--- Equipment shop leg (`WaitDocksEquipmentShop`): `"BuyDrill"` (purchase the free
+	--- Tier 3 drill) → `"ClosePanel"` (close the modal). Closing while in
+	--- `ClosePanel` advances FTUE to `WaitDocksUpgradeShip` (Dockman sub-step).
+	FtueDocksEquipmentShopSubStepAttribute = "FtueDocksEquipmentShopSubStep",
 
 	-- After Humanoid.Died: seconds before `LoadCharacter()` (PlotService; CharacterAutoLoads=false).
 	-- Lower = faster respawn. Ignores `Players.RespawnTime` so tuning is explicit.

@@ -9,11 +9,21 @@
 --
 -- Catalog + purchase: `RequestEquipmentShopCatalog` / `RequestPurchaseEquipment` + `OilActionResult`.
 
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Constants = require(Shared:WaitForChild("Constants"))
+local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
+
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
 local EquipmentHotbarController = require(script.Parent.Parent:WaitForChild("EquipmentHotbarController"))
 local EquipmentShopPopulate = require(script.Parent.EquipmentShopPopulate)
 local getClientRemotes = require(script.Parent.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
+local UiSfx = require(script.Parent.Parent.Parent:WaitForChild("UiSfx")) :: {
+	playKaching: () -> (),
+}
 
 local SCREEN_NAME = "ShopPanelGui"
 
@@ -270,6 +280,18 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 	-- Re-populate whenever this bound instance becomes visible so cards rebuild from the latest catalog.
 	screen:GetPropertyChangedSignal("Enabled"):Connect(function()
 		if not screen.Enabled then
+			--- FTUE equipment-shop leg: closing the modal *after* the free Tier 3
+			--- drill is purchased advances the player to the dockman leg
+			--- (`WaitDocksUpgradeShip`). Server validates step + sub-step before
+			--- transitioning so this fire is harmless outside the FTUE.
+			local plr = Players.LocalPlayer
+			if
+				plr
+				and plr:GetAttribute(Constants.FtueStepAttribute) == FtueConfig.Step.WaitDocksEquipmentShop
+				and plr:GetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute) == "ClosePanel"
+			then
+				ClientRemotes.requestFtueDocksProgress:FireServer("EquipmentShopPanelClosed")
+			end
 			return
 		end
 		refreshAndPopulate()
@@ -291,6 +313,7 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 			end
 			-- Purchase can merge stacks (**no `ChildAdded`**) or replicate a tick late — force hotbar sync.
 			if msg.ok == true then
+				UiSfx.playKaching()
 				EquipmentHotbarController.requestRebuild()
 			end
 		end

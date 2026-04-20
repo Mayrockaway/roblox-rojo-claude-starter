@@ -10,6 +10,7 @@
 ]]
 
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 
 -- ===================== types =====================
 export type InitParams = {
@@ -167,7 +168,128 @@ local function resolveShipmentHintLine(): (TextLabel | TextButton)?
 	return nil
 end
 
+--- High-priority status writes (e.g. contractor "your hit landed" alert) can
+--- claim the shipment hint line for a few seconds so the breakdown isn't
+--- clobbered by routine `setStatus` chatter (drilling progress, prospector
+--- pings, etc.). `setStatus` checks this gate and silently drops while the
+--- lock is still in effect; once it expires, the next `setStatus` wins.
+local statusLockUntilClock = 0
+
+-- ===================== shipment-hint auto-fade =====================
+-- The shipment-hint `TextLabel` (under `ShipmentProgressPanel.Hint`) is a
+-- shared notification surface: written by `setStatus` / `setStatusLocked`
+-- here, **and** directly by `ShipmentProgressHud` (cruise dots animation,
+-- "Ship halted!", "Shipment lost…", success line, etc.). To make *every*
+-- update auto-fade after 5s of no further updates — regardless of who wrote
+-- it — we hook the label's `Text` property change signal and drive the fade
+-- from there. Side benefits:
+--   * `ShipmentProgressHud.startCruiseDots` writes Text every ~0.42s, which
+--     keeps the timer reset → cruise text never fades during an active
+--     shipment, only once the dots stop.
+--   * `setStatusLocked`'s 5s lock window lines up with the 5s fade hold, so
+--     the contractor's gold notification stays opaque the entire lock then
+--     fades cleanly when the lock expires.
+local STATUS_FADE_HOLD_SECONDS = 5
+local STATUS_FADE_DURATION = 0.6
+local STATUS_FADE_INFO = TweenInfo.new(STATUS_FADE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+
+local hintFadeAttachedTo: Instance? = nil
+local hintFadeTextConn: RBXScriptConnection? = nil
+local hintFadeAncestryConn: RBXScriptConnection? = nil
+local hintFadeToken: number = 0
+local hintFadeTextTween: Tween? = nil
+local hintFadeStrokeTweens: { Tween } = {}
+
+local function snapHintOpaque(line: TextLabel | TextButton)
+	hintFadeToken += 1
+	if hintFadeTextTween then
+		hintFadeTextTween:Cancel()
+		hintFadeTextTween = nil
+	end
+	for _, tw in ipairs(hintFadeStrokeTweens) do
+		tw:Cancel()
+	end
+	table.clear(hintFadeStrokeTweens)
+	line.TextTransparency = 0
+	for _, child in ipairs(line:GetChildren()) do
+		if child:IsA("UIStroke") then
+			child.Transparency = 0
+		end
+	end
+end
+
+local function scheduleHintFade(line: TextLabel | TextButton)
+	local myToken = hintFadeToken
+	task.delay(STATUS_FADE_HOLD_SECONDS, function()
+		-- Newer write happened — abort; the new write already snapped opaque
+		-- and started its own timer.
+		if myToken ~= hintFadeToken then
+			return
+		end
+		if not (line and line.Parent) then
+			return
+		end
+		local tw = TweenService:Create(line, STATUS_FADE_INFO, { TextTransparency = 1 })
+		hintFadeTextTween = tw
+		for _, child in ipairs(line:GetChildren()) do
+			if child:IsA("UIStroke") then
+				local st = TweenService:Create(child, STATUS_FADE_INFO, { Transparency = 1 })
+				table.insert(hintFadeStrokeTweens, st)
+				st:Play()
+			end
+		end
+		tw:Play()
+	end)
+end
+
+local function ensureHintFadeWatch(line: TextLabel | TextButton)
+	if hintFadeAttachedTo == line then
+		return
+	end
+	if hintFadeTextConn then
+		hintFadeTextConn:Disconnect()
+		hintFadeTextConn = nil
+	end
+	if hintFadeAncestryConn then
+		hintFadeAncestryConn:Disconnect()
+		hintFadeAncestryConn = nil
+	end
+	hintFadeAttachedTo = line
+	-- Catch every Text write — ours and anyone else's (e.g. ShipmentProgressHud).
+	-- Setting Text inside the callback would loop, but we only mutate transparency
+	-- here, so this is safe.
+	hintFadeTextConn = line:GetPropertyChangedSignal("Text"):Connect(function()
+		if not line.Parent then
+			return
+		end
+		snapHintOpaque(line)
+		scheduleHintFade(line)
+	end)
+	-- If the label is destroyed (Studio rebuild, ShipmentProgressHud fallback
+	-- recreates Hint), forget it so the next `setStatus` re-resolves and
+	-- attaches a fresh watcher.
+	hintFadeAncestryConn = line.AncestryChanged:Connect(function(_, parent)
+		if not parent and hintFadeAttachedTo == line then
+			hintFadeAttachedTo = nil
+			if hintFadeTextConn then
+				hintFadeTextConn:Disconnect()
+				hintFadeTextConn = nil
+			end
+		end
+	end)
+	-- Kick off a timer for the current text so an authored idle string still
+	-- fades after 5s (matches the "any update lasts 5s then fades" rule).
+	snapHintOpaque(line)
+	scheduleHintFade(line)
+end
+
 local function setStatus(message: string, ok: boolean?)
+	if os.clock() < statusLockUntilClock then
+		if RunService:IsStudio() then
+			print("[Client] status (suppressed by lock):", message, " ok=", ok)
+		end
+		return
+	end
 	local line = resolveShipmentHintLine()
 	if line then
 		if line:IsA("TextLabel") or line:IsA("TextButton") then
@@ -182,9 +304,35 @@ local function setStatus(message: string, ok: boolean?)
 		else
 			line.TextColor3 = Color3.fromRGB(218, 228, 240)
 		end
+		ensureHintFadeWatch(line)
 	end
 	if RunService:IsStudio() then
 		print("[Client] status:", message, " ok=", ok)
+	end
+end
+
+--- Paint the shipment hint with an explicit color and **lock** the line for
+--- `holdSeconds` so subsequent `setStatus` calls are dropped. Used for
+--- high-stakes one-shot notifications that must read clearly (e.g. contractor
+--- pirate-hit landed: bright gold, 5-second hold). Pass `holdSeconds <= 0` to
+--- paint without locking. The line is not auto-restored after the hold —
+--- whatever calls `setStatus` next once the lock expires wins.
+local function setStatusLocked(message: string, color: Color3, holdSeconds: number)
+	local line = resolveShipmentHintLine()
+	if line then
+		if line:IsA("TextLabel") or line:IsA("TextButton") then
+			line.Font = Enum.Font.Merriweather
+		end
+		line.RichText = false
+		line.Text = message
+		line.TextColor3 = color
+		ensureHintFadeWatch(line)
+	end
+	if typeof(holdSeconds) == "number" and holdSeconds > 0 then
+		statusLockUntilClock = os.clock() + holdSeconds
+	end
+	if RunService:IsStudio() then
+		print(string.format("[Client] status (locked %.1fs):", math.max(0, holdSeconds)), message)
 	end
 end
 
@@ -413,6 +561,7 @@ M.clientWorldToCell = clientWorldToCell
 M.clientCellToWorld = clientCellToWorld
 M.clientCellInBounds = clientCellInBounds
 M.setStatus = setStatus
+M.setStatusLocked = setStatusLocked
 M.getEquippedToolName = getEquippedToolName
 M.getEquippedToolInfo = getEquippedToolInfo
 M.getOwnedPlotByAttribute = getOwnedPlotByAttribute

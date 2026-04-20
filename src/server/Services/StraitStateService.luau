@@ -26,7 +26,12 @@ function StraitStateService:Init(remoteService, telemetryService)
 	self._onStateChangedCallbacks = {}
 	self._version = 1
 	self._nextRollAt = workspace:GetServerTimeNow() + self:_sampleRollDelaySeconds()
-	self._forcedClosedUntil = nil
+	-- Generalised force lock for both Robux purchases (Open / Closed) and
+	-- legacy admin force-close. `version` increments per *new* lock so clients
+	-- can detect "a new attribution arrived, fire the announcement banner"
+	-- vs. "the snapshot is the same lock arriving on a follower poll".
+	self._forceLock = nil :: { state: string, untilTimestamp: number, byUserId: number?, byName: string?, version: number }?
+	self._forceLockSeq = 0
 	self._isLeader = false
 	self._useCloudSync = not RunService:IsStudio()
 
@@ -47,7 +52,7 @@ end
 
 --- Every server session starts with engine strait **Open**, publishes that snapshot (MemoryStore / Messaging when enabled), and bumps `version` past any stale cross-server snapshot.
 function StraitStateService:_forceStraitOpenAtLaunch()
-	self._forcedClosedUntil = nil
+	self._forceLock = nil
 	self._state = "Open"
 	local maxVer = self._version
 	if self._stateMap ~= nil then
@@ -123,6 +128,13 @@ end
 
 function StraitStateService:GetSnapshot()
 	local stateRecord = StraitConfig.States[self._state]
+	-- Backwards compat: `forcedClosedUntil` keeps existing readers (UI legacy /
+	-- diagnostics) happy; `forceLock` is the canonical generalised field.
+	local lock = self._forceLock
+	local forcedClosedUntil: number? = nil
+	if lock and lock.state == "Closed" then
+		forcedClosedUntil = lock.untilTimestamp
+	end
 	return {
 		state = self._state,
 		version = self._version,
@@ -130,7 +142,8 @@ function StraitStateService:GetSnapshot()
 		baseSuccessChance = stateRecord.baseSuccessChance,
 		nextRollAt = self._nextRollAt,
 		isLeader = self._isLeader,
-		forcedClosedUntil = self._forcedClosedUntil,
+		forcedClosedUntil = forcedClosedUntil,
+		forceLock = lock,
 	}
 end
 
@@ -138,17 +151,63 @@ function StraitStateService:OnStateChanged(callback)
 	table.insert(self._onStateChangedCallbacks, callback)
 end
 
-function StraitStateService:ForceCloseForDuration(seconds: number)
+--- Public API: force the strait into `state` ("Open" or "Closed") for `seconds`,
+--- attributed to `byPlayer` (optional; nil = system / admin / dev).
+---
+--- Conflict policy: if a force lock is already active (any state, any owner)
+--- this returns `false` and does not mutate state. Callers (e.g.
+--- `MonetizationService` consumable handler) should propagate the false back
+--- so `ProcessReceipt` returns `NotProcessedYet` and Roblox auto-refunds the
+--- second buyer in the same window. Doing the refund this way (instead of
+--- queueing) keeps the marketed product semantics honest: "you bought 2 min,
+--- you got 2 min" is always true for the lock owner, and a contender who
+--- couldn't override doesn't lose Robux.
+---
+--- Idempotency: caller-side dedup is not required; on success the
+--- `forceLock.version` increments so client banners only fire once even on
+--- snapshot replay.
+function StraitStateService:ForceStateForDuration(state: string, seconds: number, byPlayer: Player?): boolean
+	if state ~= "Open" and state ~= "Closed" then
+		return false
+	end
+	if typeof(seconds) ~= "number" or seconds <= 0 then
+		return false
+	end
 	local now = workspace:GetServerTimeNow()
-	self._forcedClosedUntil = math.max(now + seconds, self._forcedClosedUntil or 0)
-	self._state = "Closed"
+	if self._forceLock and (self._forceLock.untilTimestamp or 0) > now then
+		return false
+	end
+
+	self._forceLockSeq += 1
+	local untilTs = now + seconds
+	self._forceLock = {
+		state = state,
+		untilTimestamp = untilTs,
+		byUserId = byPlayer and byPlayer.UserId or nil,
+		byName = byPlayer and byPlayer.DisplayName or nil,
+		version = self._forceLockSeq,
+	}
+	self._state = state
 	self._version += 1
-	self._nextRollAt = math.max(self._nextRollAt, self._forcedClosedUntil)
+	-- Defer next organic roll until after the lock expires.
+	self._nextRollAt = math.max(self._nextRollAt, untilTs)
 	self:_publishState()
 	self:_broadcast()
-	self._telemetryService:Track("strait_forced_close", {
-		untilTimestamp = self._forcedClosedUntil,
-	})
+	if self._telemetryService then
+		self._telemetryService:Track("strait_force_lock", {
+			state = state,
+			byUserId = byPlayer and byPlayer.UserId or nil,
+			durationSeconds = seconds,
+			untilTimestamp = untilTs,
+		})
+	end
+	return true
+end
+
+--- Back-compat shim for legacy `AdminService:_onRequestForceClose`. Same lock
+--- semantics as `ForceStateForDuration("Closed", seconds, nil)`.
+function StraitStateService:ForceCloseForDuration(seconds: number): boolean
+	return self:ForceStateForDuration("Closed", seconds, nil)
 end
 
 function StraitStateService:_tickLeadership()
@@ -189,17 +248,24 @@ end
 
 function StraitStateService:_leaderTick()
 	local now = workspace:GetServerTimeNow()
-	if self._forcedClosedUntil ~= nil and now < self._forcedClosedUntil then
-		self._state = "Closed"
-		self._nextRollAt = self._forcedClosedUntil
+	local lock = self._forceLock
+	if lock and now < lock.untilTimestamp then
+		self._state = lock.state
+		self._nextRollAt = lock.untilTimestamp
 		self:_publishState()
 		self:_broadcast()
 		return
 	end
 
-	if self._forcedClosedUntil ~= nil and now >= self._forcedClosedUntil then
-		self._forcedClosedUntil = nil
+	if lock and now >= lock.untilTimestamp then
+		self._forceLock = nil
+		-- Bump version so followers and clients clear their lock UI immediately
+		-- on the next snapshot, and the timer panel hides as soon as the
+		-- broadcast lands rather than waiting for the next roll.
+		self._version += 1
 		self._nextRollAt = now + self:_sampleRollDelaySeconds()
+		self:_publishState()
+		self:_broadcast()
 	end
 
 	if now >= self._nextRollAt then
@@ -287,7 +353,36 @@ function StraitStateService:_applySnapshot(snapshot)
 	self._state = state
 	self._version = snapshot.version
 	self._nextRollAt = tonumber(snapshot.nextRollAt) or (workspace:GetServerTimeNow() + self:_sampleRollDelaySeconds())
-	self._forcedClosedUntil = snapshot.forcedClosedUntil
+
+	-- Prefer the new generalised `forceLock` envelope; fall back to the
+	-- legacy `forcedClosedUntil` so a freshly-deployed server can still ingest
+	-- snapshots written by an older sibling mid-rollout.
+	local incomingLock = snapshot.forceLock
+	if typeof(incomingLock) == "table"
+		and typeof(incomingLock.state) == "string"
+		and typeof(incomingLock.untilTimestamp) == "number"
+	then
+		self._forceLock = {
+			state = incomingLock.state,
+			untilTimestamp = incomingLock.untilTimestamp,
+			byUserId = tonumber(incomingLock.byUserId),
+			byName = typeof(incomingLock.byName) == "string" and incomingLock.byName or nil,
+			version = tonumber(incomingLock.version) or (self._forceLockSeq + 1),
+		}
+		self._forceLockSeq = math.max(self._forceLockSeq, self._forceLock.version)
+	elseif typeof(snapshot.forcedClosedUntil) == "number" and snapshot.forcedClosedUntil > workspace:GetServerTimeNow() then
+		self._forceLockSeq += 1
+		self._forceLock = {
+			state = "Closed",
+			untilTimestamp = snapshot.forcedClosedUntil,
+			byUserId = nil,
+			byName = nil,
+			version = self._forceLockSeq,
+		}
+	else
+		self._forceLock = nil
+	end
+
 	self:_broadcast()
 end
 
@@ -343,7 +438,10 @@ function StraitStateService:_applyDevEngineState(engineState: string)
 	if StraitConfig.States[engineState] == nil then
 		return
 	end
-	self._forcedClosedUntil = nil
+	-- Dev override clears any active Robux force lock — intentional, so QA can
+	-- always reset state from the dev panel without waiting 2 minutes. Live
+	-- (non-Studio, dev UI off) gates this whole entry point upstream.
+	self._forceLock = nil
 	self._state = engineState
 	self._version += 1
 	self._nextRollAt = workspace:GetServerTimeNow() + Constants.StraitDevStateHoldSeconds

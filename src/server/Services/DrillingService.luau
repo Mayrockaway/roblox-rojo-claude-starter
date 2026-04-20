@@ -181,6 +181,16 @@ function DrillingService:Start()
 
 		-- Push state so OilVisualService can now spawn sprays
 		self._oilStateService:PushState(player.UserId)
+
+		--- FTUE hand-off: while on `WaitReveal`, advance to `WaitPlotShipment`.
+		--- `OnFtueTutorialRevealFinished` is a no-op for any other step / non-FTUE players.
+		local ftue = self._ftueService
+		if ftue and typeof((ftue :: any).OnFtueTutorialRevealFinished) == "function" then
+			(ftue :: any):OnFtueTutorialRevealFinished(player.UserId, {
+				chunkId = result.chunkId,
+				tileKey = result.tileKey,
+			})
+		end
 	end))
 
 	-- When a player leaves, cancel any pending completion tasks so we don't double-complete

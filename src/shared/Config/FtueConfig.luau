@@ -34,18 +34,26 @@ local FtueConfig = {
 
 	DrillItemId = "drill_t1",
 
+	--- Equipment shop FTUE leg (`WaitDocksEquipmentShop`): the player gets **one** free
+	--- drill of this id from the dock equipment shop. `EquipmentShopService` reads this
+	--- to (a) override that row's cost to **$0** in the catalog snapshot, (b) bypass the
+	--- rotation stock check, and (c) advance the FTUE on a successful purchase. After
+	--- the one-shot fires, `ftueFreeDocksDrillUsed` is set so the discount can never
+	--- be replayed.
+	FtueDocksFreeDrillItemId = "drill_t3",
+
 	--- Drill duration (seconds) on the FTUE highlighted tile during the drill leg of **`WaitDrillOil_WIP`**. Overrides biome `drillSeconds` / tier divisor.
 	FtueTutorialDrillSeconds = 5,
-
-	--- When the player hits **Continue** on `WaitDrillOil_WIP` (skips the drill leg), grant this many **Crude**
-	--- refinery barrels (capped by tank space) then advance to `WaitPlotShipment`. Set to **0** to disable the skip grant.
-	FtueTestGrantRefineryCrudeBarrels = 10,
 
 	--- Canonical step ids (also used for `Player` attribute `FtueStep`).
 	Step = {
 		Intro = "Intro",
 		--- Placeholder bucket: drill + oil setup through **first oil collection** (exact gates TBD when drill/pipe systems land).
 		WaitDrillOil_WIP = "WaitDrillOil_WIP",
+		--- After the FTUE drill completes: prompt the player to interact with the shovel
+		--- on the just-drilled tile. The lootbox sequence plays (locked to exactly **Rare**
+		--- on this first FTUE roll only — see `OilStateService:CompleteDrill`).
+		WaitReveal = "WaitReveal",
 		--- Walk to **plot** shipment terminal and fulfill a shipment (no Ship Oil HUD pointer).
 		WaitPlotShipment = "WaitPlotShipment",
 		WaitShipment = "WaitShipment",
@@ -54,6 +62,10 @@ local FtueConfig = {
 		WaitSell = "WaitSell",
 		--- Go to Town: complete this leg by using the HUD **Buy** (teleport to docks), not Continue.
 		WaitDocksShipUpgrade = "WaitDocksShipUpgrade",
+		--- Visit the **Dock Equipment Shop** prox prompt → buy the free Tier 3 drill
+		--- (`FtueDocksFreeDrillItemId`). `EquipmentShopService` advances the FTUE on
+		--- successful purchase. No Continue button — the leg finishes only on purchase.
+		WaitDocksEquipmentShop = "WaitDocksEquipmentShop",
 		--- Dockman → free first **cargo** upgrade → close ship panel (sub-steps on `FtueDocksUpgradeSubStep`).
 		WaitDocksUpgradeShip = "WaitDocksUpgradeShip",
 		WaitDocksHire = "WaitDocksHire",
@@ -64,11 +76,13 @@ local FtueConfig = {
 	Order = {
 		"Intro",
 		"WaitDrillOil_WIP",
+		"WaitReveal",
 		"WaitPlotShipment",
 		"WaitShipment",
 		"WaitWarehouseSell",
 		"WaitSell",
 		"WaitDocksShipUpgrade",
+		"WaitDocksEquipmentShop",
 		"WaitDocksUpgradeShip",
 		"WaitDocksHire",
 		"Done",
@@ -81,20 +95,24 @@ local FtueConfig = {
 			body = "HEY YOU! Looking to make a quick buck? Our country is desperate for oil and you look like you can get through the Strait of Hormuz by any means necessary!",
 		},
 		WaitDrillOil_WIP = {
-			title = "FIRST STRIKE",
-			body = "On your plot: use the **free drill** on the **highlighted tile**. The **pump** at the chunk center will start collecting oil automatically. When the first barrels show up, we'll get you ready to ship.\n\nNeed to move faster? **Continue** skips ahead with starter crude in your refinery.",
+			title = "FIRST STRIKE!",
+			body = "Here's your first drill on the house - slap that baby on that tile over there and get to drilling! Your pump will automatically collect it for you.",
+		},
+		WaitReveal = {
+			title = "STRUCK GOLD!",
+			body = "Drill complete! Grab that shovel to find out what you struck. The deeper the vein, the richer the haul.",
 		},
 		WaitPlotShipment = {
 			title = "SHIP YOUR CARGO!",
-			body = "Great work! Head over to the delivery man to dispatch your first haul.",
+			body = "Great work! Head over to the delivery man to dispatch your first haul - each barrel costs a fee, but here's some cash to get started.",
 		},
 		WaitShipment = {
 			title = "SAIL THE STRAIT!",
-			body = "Time to set sea! I'll give you my best ship so nobody should bother you this time. But be careful, that won't always be the case. Keep an eye on the status of the Strait!",
+			body = "Time to set sea! I'll give you my fastest ship so you can cross undisturbed. But be careful, that won't always be the case. Keep an eye on the status of the Strait!",
 		},
 		WaitWarehouseSell = {
 			title = "TIME TO CASH IN!",
-			body = "You've landed at your warehouse! Here you'll store all your oil that's successfully crossed the Strait. Head to the terminal to sell your first barrel.",
+			body = "You've landed at your warehouse! Your cargo will automatically deposit here each run. Head to the terminal to sell your first barrel.",
 		},
 		WaitSell = {
 			title = "WATCH THE MARKET!",
@@ -104,17 +122,21 @@ local FtueConfig = {
 			title = "TO THE DOCKS!",
 			body = "Now head to the town - that's where you'll buy all your equipment, upgrade your ship, and hire some Secret Services.",
 		},
+		WaitDocksEquipmentShop = {
+			title = "GEAR UP!",
+			body = "First stop, the Equipment Shop - here's where you'll find all your drilling gear. Step up to the counter and grab that Advanced Drill - first one's free.",
+		},
 		WaitDocksUpgradeShip = {
 			title = "VISIT THE DOCKMAN",
 			body = "Find the Dockman to upgrade your ship - your first upgrade is on the house! Close the panel when you're done to proceed.",
 		},
 		WaitDocksHire = {
 			title = "SUSPICIOUS PERSONS",
-			body = "One more thing, there's been some shady personnel around town. If you're curious, find out what they're up to.",
+			body = "One more thing, there's been some shady personnel around town. If you're curious, find out what they're up to, then hit Continue to move on.",
 		},
 		Done = {
 			title = "WELCOME TO TOWN",
-			body = "That's it! You're a seasoned veteran of the Strait now. Don't forget to check the store often and explore. Now get to drilling!",
+			body = "That's it! You're a seasoned veteran of the Strait now. Here's some cash to get started. Don't forget to check the store often and explore. Now get to drilling!",
 		},
 	} :: { [string]: { title: string, body: string } },
 
@@ -130,11 +152,13 @@ local FtueConfig = {
 	PortraitImageByStep = {
 		Intro = FtuePortraitAssets.OilManOilHead,
 		WaitDrillOil_WIP = FtuePortraitAssets.OilmanDrilling,
+		WaitReveal = FtuePortraitAssets.OilmanCelebrate,
 		WaitPlotShipment = FtuePortraitAssets.OilmanSalute,
 		WaitShipment = FtuePortraitAssets.OilmanBurger,
 		WaitWarehouseSell = FtuePortraitAssets.OilManOilHead,
 		WaitSell = FtuePortraitAssets.OilmanPointAngry,
 		WaitDocksShipUpgrade = FtuePortraitAssets.OilmanSalute,
+		WaitDocksEquipmentShop = FtuePortraitAssets.OilmanDrilling,
 		WaitDocksUpgradeShip = FtuePortraitAssets.OilmanDrilling,
 		WaitDocksHire = FtuePortraitAssets.OilmanCelebrate,
 		Done = FtuePortraitAssets.OilmanCelebrate,

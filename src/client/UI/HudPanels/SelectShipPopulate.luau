@@ -6,6 +6,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
+local MonetizationCatalog = require(Shared:WaitForChild("Config"):WaitForChild("MonetizationCatalog"))
 local ViewportShipFit = require(script.Parent.Parent.ViewportShipFit)
 local ShipViewportPreviewFactory = require(script.Parent.Parent.ShipViewportPreviewFactory)
 
@@ -14,6 +15,16 @@ export type SkinEntry = {
 	displayName: string,
 	templateName: string,
 	rarityDisplay: string?,
+}
+
+--- `Apply` context — ownership + Robux pricing fed by `SelectShipPanel`.
+--- Kept optional so legacy callers don't need to change immediately; the
+--- helper degrades to "always owned" when ctx is nil (matches pre-Robux
+--- behavior) so a half-wired panel stays at least navigable.
+export type ApplyContext = {
+	owned: boolean,
+	robuxPrice: number?,
+	monetizationItemId: string?,
 }
 
 local function gameplayHullForTemplate(templateName: string): Model?
@@ -64,7 +75,26 @@ end
 
 local SelectShipPopulate = {}
 
-function SelectShipPopulate.Apply(root: Instance, entry: SkinEntry)
+local function setLockedPriceLabel(locked: GuiObject, robuxPrice: number?)
+	-- Authoring fallback: Studio template can include a `LockedPriceLabel` /
+	-- `PriceLabel` / `Robux` text under `LockedPill`. We populate whichever
+	-- exists with "R$ <price>"; if none exist that's fine — the locked pill
+	-- itself is still visible and the click target is still wired.
+	local candidates = { "LockedPriceLabel", "PriceLabel", "Robux", "RobuxLabel" }
+	for _, name in ipairs(candidates) do
+		local child = locked:FindFirstChild(name, true)
+		if child and child:IsA("TextLabel") then
+			if typeof(robuxPrice) == "number" and robuxPrice > 0 then
+				child.Text = string.format("R$ %d", math.floor(robuxPrice))
+			else
+				child.Text = "R$ —"
+			end
+			break
+		end
+	end
+end
+
+function SelectShipPopulate.Apply(root: Instance, entry: SkinEntry, ctx: ApplyContext?)
 	local nameLabel = root:FindFirstChild("ShipCardName", true)
 	if nameLabel and nameLabel:IsA("TextLabel") then
 		nameLabel.Text = entry.displayName
@@ -76,23 +106,64 @@ function SelectShipPopulate.Apply(root: Instance, entry: SkinEntry)
 		rarity.Text = if rarityDisplay then `Rarity: {rarityDisplay}` else "Rarity: —"
 	end
 
-	local locked = root:FindFirstChild("LockedPill", true)
-	if locked and locked:IsA("GuiObject") then
-		locked.Visible = false
-	end
-	local owned = root:FindFirstChild("OwnedPill", true)
-	if owned and owned:IsA("GuiObject") then
-		owned.Visible = true
+	local owned: boolean = if ctx and typeof(ctx.owned) == "boolean" then ctx.owned else true
+	local robuxPrice: number? = ctx and ctx.robuxPrice or nil
+	-- Stamp the resolved state on the card so `SelectShipPanel`'s click
+	-- handler can branch (equip vs prompt purchase) without re-resolving.
+	root:SetAttribute("ShipCardOwned", owned)
+	if ctx and typeof(ctx.monetizationItemId) == "string" and ctx.monetizationItemId ~= "" then
+		root:SetAttribute("MonetizationItemId", ctx.monetizationItemId)
+	else
+		root:SetAttribute("MonetizationItemId", nil)
 	end
 
+	local lockedPill = root:FindFirstChild("LockedPill", true)
+	if lockedPill and lockedPill:IsA("GuiObject") then
+		lockedPill.Visible = not owned
+		if not owned then
+			setLockedPriceLabel(lockedPill, robuxPrice)
+		end
+	end
+	local ownedPill = root:FindFirstChild("OwnedPill", true)
+	if ownedPill and ownedPill:IsA("GuiObject") then
+		ownedPill.Visible = owned
+	end
+
+	-- `ShipCardViewport` is authored as a `ViewportFrame` (legacy 3D preview)
+	-- or an `ImageLabel` (post-swap icon shell). Branch on the actual class so
+	-- both authoring paths render correctly without requiring the panel to be
+	-- rebuilt during the migration. When a skin has no `icon` (e.g. Raft
+	-- pending art) the slot stays as the empty grey shell.
 	local vp = root:FindFirstChild("ShipCardViewport", true)
 	if vp and vp:IsA("ViewportFrame") then
 		tryFillViewport(vp, entry.templateName)
+	elseif vp and vp:IsA("ImageLabel") then
+		local iconAsset = ShipSkinCatalog.GetSkin(entry.skinId).icon
+		vp.Image = if typeof(iconAsset) == "string" then iconAsset else ""
 	end
 end
 
 function SelectShipPopulate.ValidateSkin(entry: SkinEntry): boolean
 	return ShipSkinCatalog.Skins[entry.skinId] ~= nil
+end
+
+--- Resolve the Robux pricing context for a skin id from `MonetizationCatalog`.
+--- Centralized here so both `SelectShipPanel.wireSelectShip` (initial paint)
+--- and the `oilStateUpdate` re-render path stay in sync. Starter tanker (no
+--- monetization entry) returns nil so the caller treats it as always-owned.
+function SelectShipPopulate.ResolveContext(skinId: string, ownedSet: { [string]: boolean }?): ApplyContext
+	local owned = ownedSet ~= nil and ownedSet[skinId] == true
+	-- Starter tanker is always owned even if the snapshot hasn't seeded the
+	-- ownership map yet (avoids first-frame "locked" flash on join).
+	if skinId == "DefaultTanker" then
+		owned = true
+	end
+	local item = MonetizationCatalog.GetShipItemBySkinId(skinId)
+	return {
+		owned = owned,
+		robuxPrice = item and item.robuxPrice or nil,
+		monetizationItemId = item and item.id or nil,
+	}
 end
 
 return SelectShipPopulate

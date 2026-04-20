@@ -28,6 +28,12 @@ export type EquipmentRow = {
 	--- Display rarity bucket for shop UI (`ShopPanelTemplates.Rarities`).
 	--- Server treats this as cosmetic only; it never gates purchases or affects price.
 	rarity: string?,
+	--- Decal asset (`rbxassetid://...`) used for shop card Icon and the
+	--- Tool's `TextureId` (hotbar / native backpack). Optional — when nil
+	--- the shop falls back to its `IconHint` and the hotbar shows the tool
+	--- name stub. The Tool template's `TextureId` should be set in Studio
+	--- to the same id so the native backpack icon stays in sync.
+	iconAssetId: string?,
 }
 
 --- Edit this list only. Keep `tierKey` as "T1"|"T2"|"T3" for active drills; T4-T6 are
@@ -48,6 +54,7 @@ local ITEMS: { EquipmentRow } = {
 		drillFallbackSeconds = 10,
 		shopSubtitle = "1 m/s",
 		rarity = "COMMON",
+		iconAssetId = "rbxassetid://106727111593273",
 	},
 	{
 		id = "drill_t2",
@@ -63,6 +70,7 @@ local ITEMS: { EquipmentRow } = {
 		drillFallbackSeconds = 10,
 		shopSubtitle = "10 m/s",
 		rarity = "UNCOMMON",
+		iconAssetId = "rbxassetid://116861633893420",
 	},
 	{
 		id = "drill_t3",
@@ -78,6 +86,7 @@ local ITEMS: { EquipmentRow } = {
 		drillFallbackSeconds = 10,
 		shopSubtitle = "30 m/s",
 		rarity = "RARE",
+		iconAssetId = "rbxassetid://90931184788322",
 	},
 	-- Placeholder drills (EPIC / LEGENDARY / MYTHIC). They render in the shop
 	-- (`purchasable = true`) but `tierKey = nil` keeps them out of
@@ -90,7 +99,7 @@ local ITEMS: { EquipmentRow } = {
 		toolName = "Drill_T4",
 		toolKind = "Drill",
 		tierKey = "T4",
-		displayName = "Heavy Bore",
+		displayName = "Sundae Driller",
 		cashCost = 12000,
 		shopPrice = nil,
 		purchasable = true,
@@ -99,13 +108,14 @@ local ITEMS: { EquipmentRow } = {
 		drillFallbackSeconds = 10,
 		shopSubtitle = "100 m/s",
 		rarity = "EPIC",
+		iconAssetId = "rbxassetid://123969726593017",
 	},
 	{
 		id = "drill_t5",
 		toolName = "Drill_T5",
 		toolKind = "Drill",
 		tierKey = "T5",
-		displayName = "Diesel Rig",
+		displayName = "Glizzy Grinder",
 		cashCost = 35000,
 		shopPrice = nil,
 		purchasable = true,
@@ -114,13 +124,14 @@ local ITEMS: { EquipmentRow } = {
 		drillFallbackSeconds = 10,
 		shopSubtitle = "300 m/s",
 		rarity = "LEGENDARY",
+		iconAssetId = "rbxassetid://129251905585363",
 	},
 	{
 		id = "drill_t6",
 		toolName = "Drill_T6",
 		toolKind = "Drill",
 		tierKey = "T6",
-		displayName = "Tycoon Auger",
+		displayName = "Ground Pounder",
 		cashCost = 100000,
 		shopPrice = nil,
 		purchasable = true,
@@ -129,6 +140,7 @@ local ITEMS: { EquipmentRow } = {
 		drillFallbackSeconds = 10,
 		shopSubtitle = "1000 m/s",
 		rarity = "MYTHIC",
+		iconAssetId = "rbxassetid://135865747560987",
 	},
 }
 
@@ -141,6 +153,7 @@ export type ShopCatalogRow = {
 	tier: string?,
 	subtitle: string?,
 	rarity: string?,
+	iconAssetId: string?,
 }
 
 export type ShopStockBand = { min: number, max: number }
@@ -223,6 +236,7 @@ function EquipmentCatalog.buildShopItems(): { ShopCatalogRow }
 				tier = r.tierKey,
 				subtitle = r.shopSubtitle,
 				rarity = r.rarity,
+				iconAssetId = r.iconAssetId,
 			})
 		end
 	end

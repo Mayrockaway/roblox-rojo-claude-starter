@@ -2,14 +2,16 @@
 -- Wires HUD modal-toggle buttons to `ScreenGui`s (exclusive group; second press closes).
 -- Buttons live in authored regions of `HUD.Canvas` (see live Studio layout):
 --   * `TopRow`         — OilPriceButton, StraitStatusButton
---   * `Canvas` direct  — StraitControlCta (aliases `StraitControlCTA`)
+--   * `Canvas` direct  — StraitControlCta (aliases `StraitControlCTA`), RobuxShop
 --   * `Canvas.Buttons` — DailyButton, SettingsButton
--- Shop / ship oil / sell / manage-ship / Robux entrypoints are **not** required here when those
+-- Shop / ship oil / sell / manage-ship entrypoints are **not** required here when those
 -- buttons were removed or moved (e.g. world `ProximityPrompt` + `openScreen`). `openScreen` lazy-binds
 -- any `SCREEN_BIND` panel so prompts do not depend on this loop finishing first.
 -- Retries until every **mapped** button is wired or attempts exhaust.
 
 local Players = game:GetService("Players")
+
+local getClientRemotes = require(script.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
 
 local ActiveManifestController = require(script.Parent.ActiveManifestController)
 local DailyPanel = require(script.Parent.HudPanels.DailyPanel)
@@ -30,14 +32,33 @@ local STRAIT_CONTROL_CTA_ALIASES = { "StraitControlCta", "StraitControlCTA" }
 -- Maps **HUD GuiButton.Name** → **target ScreenGui name**. `findHudModalButton`
 -- searches `Canvas` direct children, then `Canvas.Buttons`, then `Canvas.TopRow`,
 -- then a recursive HUD scan as a last resort.
--- Legacy TopRow / grid names (`ShopButton`, `ManageShipButton`, `ShipOilButton`, `SellOilButton`,
--- canvas `RobuxShop`) are intentionally omitted — open those modals from authored prompts / HUD v2.
+-- Legacy TopRow / grid names (`ShopButton`, `ManageShipButton`, `ShipOilButton`, `SellOilButton`)
+-- are intentionally omitted — open those modals from authored prompts / HUD v2.
 local BUTTON_TO_SCREEN: { [string]: string } = {
 	OilPriceButton = OilPriceInfoPanel.screenName(),
 	StraitStatusButton = StraitInfoPanel.screenName(),
 	StraitControlCta = StraitControlPanel.screenName(),
 	DailyButton = DailyPanel.screenName(),
 	SettingsButton = SettingsPanel.screenName(),
+	RobuxShop = RobuxShopPanel.screenName(),
+}
+
+-- Buttons that should get the same `HudTriggerHover` lift as modal triggers but
+-- don't open a `ScreenGui` here — typically because they fire something else
+-- (e.g. `MarketplaceService:PromptGamePassPurchase` /
+-- `MarketplaceService:PromptProductPurchase`) and that wiring lives elsewhere.
+-- The decorator pass below attaches to **every** matching `GuiButton`, so it's
+-- safe even if the same name ever repeats on the rail.
+local HOVER_ONLY_BUTTON_NAMES: { string } = {
+	"EarningsGamepass",
+}
+
+-- HUD buttons that fire `RequestPromptRobuxPurchase` directly (no modal).
+-- Keys = `GuiButton.Name`, values = `MonetizationCatalog` item id. The wiring
+-- pass below attaches Activated → fire prompt, plus the same `HudTriggerHover`
+-- lift modal triggers get. Debounced per item id so spam-clicks don't multi-prompt.
+local ROBUX_PURCHASE_HUD_BUTTONS: { [string]: string } = {
+	NukeDevProduct = "consumable.nuke_x1",
 }
 
 local SCREEN_BIND: { [string]: (PlayerGui) -> HudPanelTypes.HudPanelController? } = {
@@ -191,6 +212,77 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 					end
 				end
 				return nil
+			end
+
+			-- Hover-only decoration pass. Runs every retry tick so any button that
+			-- streams in late still picks up the lift; `HudTriggerHover.attach`
+			-- guards itself with the `HudTriggerHoverBound` attribute so re-calls
+			-- are no-ops. We disable `AutoButtonColor` first so Roblox's built-in
+			-- press-tint doesn't fight the hover `ImageColor3` darken tween.
+			local function decorateHoverOnly(name: string)
+				local roots: { Instance } = { canvas }
+				if buttonsFrame and buttonsFrame:IsA("GuiObject") then
+					table.insert(roots, buttonsFrame)
+				end
+				if topRow and topRow:IsA("GuiObject") then
+					table.insert(roots, topRow)
+				end
+				for _, root in ipairs(roots) do
+					for _, ch in ipairs(root:GetChildren()) do
+						if ch.Name == name and ch:IsA("GuiButton") then
+							local btn = ch :: GuiButton
+							if btn:IsA("ImageButton") then
+								(btn :: ImageButton).AutoButtonColor = false
+							end
+							HudTriggerHover.attach(btn)
+						end
+					end
+				end
+			end
+			for _, name in ipairs(HOVER_ONLY_BUTTON_NAMES) do
+				decorateHoverOnly(name)
+			end
+
+			-- Robux purchase HUD buttons: wire `Activated` → fire
+			-- `RequestPromptRobuxPurchase` with the catalog item id. Idempotent
+			-- via the `RobuxPurchaseWired` attribute so re-runs don't stack
+			-- multiple click handlers on the same button. Lift hover applied
+			-- the same way as modal triggers.
+			local function wireRobuxButton(name: string, itemId: string)
+				local roots: { Instance } = { canvas }
+				if buttonsFrame and buttonsFrame:IsA("GuiObject") then
+					table.insert(roots, buttonsFrame)
+				end
+				if topRow and topRow:IsA("GuiObject") then
+					table.insert(roots, topRow)
+				end
+				for _, root in ipairs(roots) do
+					for _, ch in ipairs(root:GetChildren()) do
+						if ch.Name == name and ch:IsA("GuiButton") then
+							local btn = ch :: GuiButton
+							if btn:IsA("ImageButton") then
+								(btn :: ImageButton).AutoButtonColor = false
+							end
+							HudTriggerHover.attach(btn)
+							if btn:GetAttribute("RobuxPurchaseWired") ~= true then
+								btn:SetAttribute("RobuxPurchaseWired", true)
+								local lastFire = 0
+								btn.Activated:Connect(function()
+									local now = os.clock()
+									if now - lastFire < 0.6 then
+										return
+									end
+									lastFire = now
+									local remotes = getClientRemotes()
+									remotes.requestPromptRobuxPurchase:FireServer({ itemId = itemId })
+								end)
+							end
+						end
+					end
+				end
+			end
+			for name, itemId in pairs(ROBUX_PURCHASE_HUD_BUTTONS) do
+				wireRobuxButton(name, itemId)
 			end
 
 			for buttonName, screenName in pairs(BUTTON_TO_SCREEN) do

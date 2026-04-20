@@ -16,11 +16,14 @@
 --
 -- Returns a `{Slot}` list (card + itemId) the panel binds buy clicks against.
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local SharedConfig = Shared:WaitForChild("Config")
 local EquipmentCatalog = require(SharedConfig:WaitForChild("EquipmentCatalog"))
 local ShopPanelTemplates = require(SharedConfig:WaitForChild("ShopPanelTemplates"))
+local Constants = require(Shared:WaitForChild("Constants"))
+local FtueConfig = require(SharedConfig:WaitForChild("FtueConfig"))
 
 export type CatalogRow = {
 	id: string,
@@ -47,6 +50,27 @@ local M = {}
 ----------------------------------------------------------------------
 -- Internal helpers.
 ----------------------------------------------------------------------
+
+--- Convert a catalog `iconAssetId` into a URI that `ImageLabel.Image` can render.
+--- Catalog assets may have been uploaded as Decals (the upload path Studio's
+--- Asset Manager defaults to). `Tool.TextureId` resolves Decal -> Image
+--- transparently, but `ImageLabel.Image` does not for many recently-uploaded
+--- decals -- the label silently stays `IsLoaded = false`. `rbxthumb://` always
+--- renders, regardless of underlying asset type, so we route numeric ids
+--- through it. Pass-through for content URIs and pre-formed `rbxthumb://`.
+local function toImageUri(raw: string?): string?
+	if typeof(raw) ~= "string" or raw == "" then
+		return nil
+	end
+	if raw:match("^rbxthumb://") or raw:match("^rbxasset://") or raw:match("^http") then
+		return raw
+	end
+	local id = raw:match("rbxassetid://(%d+)") or raw:match("^(%d+)$")
+	if id then
+		return string.format("rbxthumb://type=Asset&id=%s&w=150&h=150", id)
+	end
+	return raw
+end
 
 --- Format an integer with thousands separators (12000 -> "12,000").
 local function formatPrice(n: number): string
@@ -89,6 +113,29 @@ local function pickText(node: Instance?, attr: string, fromCategory: string?, fa
 	return fallback
 end
 
+--- True only for the **one** Tier 3 drill the FTUE hands the player for free
+--- during `WaitDocksEquipmentShop` (sub-step `BuyDrill`). The server already
+--- forces `cost = 0` + bypasses rotation stock for this exact item / step / sub
+--- combo, so the UI just mirrors that policy: BUY → FREE label until the
+--- purchase consumes the freebie (server flips sub to `ClosePanel` and the
+--- normal cost / stock copy returns).
+local function isFtueFreeFreebie(itemId: string): boolean
+	if FtueConfig.Enabled ~= true then
+		return false
+	end
+	if itemId ~= FtueConfig.FtueDocksFreeDrillItemId then
+		return false
+	end
+	local plr = Players.LocalPlayer
+	if not plr then
+		return false
+	end
+	if plr:GetAttribute(Constants.FtueStepAttribute) ~= FtueConfig.Step.WaitDocksEquipmentShop then
+		return false
+	end
+	return plr:GetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute) == "BuyDrill"
+end
+
 --- Find a child (or self) carrying `Role == role`. Mirrors
 --- `ShopPanelTemplates.FindRole` but inlined to avoid a module call per slot.
 local function findRole(card: Instance, role: string): Instance?
@@ -117,6 +164,29 @@ local function applyRoles(
 	if stripe and stripe:IsA("GuiObject") then
 		stripe.BackgroundColor3 = rarity.stripeColor
 		stripe.BackgroundTransparency = 0
+	end
+
+	-- Icon (decal in IconBox) -------------------------------------------------
+	-- When `iconAssetId` is set we paint the role-tagged Icon ImageLabel and
+	-- hide the placeholder `IconHint` text. With no asset we leave both alone
+	-- so the authored hint ("?", etc.) stays visible.
+	local iconAssetUri = toImageUri(item.iconAssetId)
+	local iconLbl = findRole(card, "Icon")
+	local iconHint = findRole(card, "IconHint")
+	if iconLbl and iconLbl:IsA("ImageLabel") then
+		if iconAssetUri then
+			iconLbl.Image = iconAssetUri
+			iconLbl.ImageTransparency = 0
+			iconLbl.ImageColor3 = Color3.new(1, 1, 1)
+			iconLbl.Visible = true
+		else
+			iconLbl.Image = ""
+			iconLbl.ImageTransparency = 1
+			iconLbl.Visible = false
+		end
+	end
+	if iconHint and iconHint:IsA("GuiObject") then
+		iconHint.Visible = (iconAssetUri == nil)
 	end
 
 	-- Name --------------------------------------------------------------------
@@ -168,13 +238,21 @@ local function applyRoles(
 	end
 
 	-- Cost --------------------------------------------------------------------
+	-- During the FTUE free-drill window we replace the price string entirely
+	-- (no `$` glyph, no thousands-formatted zero) so the player reads "FREE"
+	-- where the price normally lives. Server already forces `cost = 0`, so
+	-- charging math stays correct regardless of what we draw here.
 	local costLbl = findRole(card, "Cost")
 	if costLbl and costLbl:IsA("TextLabel") then
-		local format = costLbl:GetAttribute("Format")
-		if typeof(format) ~= "string" or format == "" then
-			format = defaults and defaults.CostFormat or "$ %s"
+		if isFtueFreeFreebie(item.id) then
+			costLbl.Text = pickText(costLbl, "FreeText", defaults and defaults.CostFreeText, "FREE")
+		else
+			local format = costLbl:GetAttribute("Format")
+			if typeof(format) ~= "string" or format == "" then
+				format = defaults and defaults.CostFormat or "$ %s"
+			end
+			costLbl.Text = string.format(format, formatPrice(item.cost))
 		end
-		costLbl.Text = string.format(format, formatPrice(item.cost))
 	end
 
 	-- Buy button text + background color -------------------------------------

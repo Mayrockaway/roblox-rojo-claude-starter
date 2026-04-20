@@ -21,9 +21,54 @@ function ArmyGeneralService:Init(remoteService, oilStateService, oilShipmentServ
 	self._remoteService = remoteService
 	self._oilStateService = oilStateService
 	self._oilShipmentService = oilShipmentService
+	-- `_monetizationService` is wired by `init.server.luau:SetMonetizationService` after both
+	-- services exist. Until then nuke purchases route through the Studio-only debug path.
+	self._monetizationService = nil
 	self._connections = {}
 	self._lastNukeTime = 0
 	self._hookedPrompts = {}
+	--- Models we attached `DescendantAdded` to so we retry when rig parts stream in.
+	self._armyGeneralStreamingHooked = {} :: { [Model]: boolean }
+end
+
+--- Inject `MonetizationService` from `init.server.luau` and register the
+--- `"nuke"` consumable handler. A successful Robux receipt for
+--- `consumable.nuke_x1` lands here → cooldown gate → fire the nuke.
+---
+--- Refund policy: returning `false` from this handler causes
+--- `_processReceipt` to return `NotProcessedYet`, which Roblox treats as
+--- "do not consume Robux" — the buyer is auto-refunded on next session.
+--- That's the right behaviour when the cooldown is active or no player is
+--- present (player left between prompt and receipt).
+function ArmyGeneralService:SetMonetizationService(monetizationService)
+	self._monetizationService = monetizationService
+	if not monetizationService then
+		return
+	end
+	monetizationService:SetConsumableHandler("nuke", function(userId: number, _quantity: number): (boolean, string?)
+		local player = Players:GetPlayerByUserId(userId)
+		if not player then
+			return false, "ERR_NUKE_BUYER_OFFLINE"
+		end
+		local now = workspace:GetServerTimeNow()
+		if now - self._lastNukeTime < NUKE_COOLDOWN then
+			-- Reject: receipt will retry/refund. Client should have gated this
+			-- before prompting, but a race (two buyers) can land here.
+			return false, "ERR_NUKE_COOLDOWN"
+		end
+		-- Reserve the cooldown SYNCHRONOUSLY so a same-tick second buy can't
+		-- pass this gate before `_executeNuke` runs (it sets `_lastNukeTime`
+		-- again at its top, which is fine — same value).
+		self._lastNukeTime = now
+		-- The actual nuke runs `task.wait(NukeConfig.CountdownSeconds)` and
+		-- must NOT block the `ProcessReceipt` callback. Spawn it so the
+		-- receipt returns `PurchaseGranted` immediately and Roblox finalises
+		-- the Robux charge while the countdown plays.
+		task.spawn(function()
+			self:_executeNuke(player)
+		end)
+		return true, nil
+	end)
 end
 
 function ArmyGeneralService:Start()
@@ -59,6 +104,8 @@ end
 function ArmyGeneralService:Stop()
 	for _, c in ipairs(self._connections) do c:Disconnect() end
 	self._connections = {}
+	self._hookedPrompts = {}
+	self._armyGeneralStreamingHooked = {}
 end
 
 -- =================== NPC PROMPT ===================
@@ -66,15 +113,26 @@ end
 function ArmyGeneralService:_hookArmyGeneral()
 	for _, d in ipairs(workspace:GetDescendants()) do
 		if d.Name == "Army General" and d:IsA("Model") and not self._hookedPrompts[d] then
-			self._hookedPrompts[d] = true
-
 			-- Find a part to attach prompt to
 			local attachPart = d:FindFirstChild("HumanoidRootPart")
 				or d:FindFirstChild("UpperTorso")
 				or d:FindFirstChild("Torso")
 				or d:FindFirstChild("Head")
 				or d:FindFirstChildWhichIsA("BasePart")
-			if not attachPart then continue end
+			if not attachPart then
+				-- Was: marked hooked before this check — rig never got a prompt. Retry when parts stream.
+				if not self._armyGeneralStreamingHooked[d] then
+					self._armyGeneralStreamingHooked[d] = true
+					table.insert(self._connections, d.DescendantAdded:Connect(function()
+						task.defer(function()
+							self:_hookArmyGeneral()
+						end)
+					end))
+				end
+				continue
+			end
+
+			self._hookedPrompts[d] = true
 
 			-- Remove existing prompts
 			for _, child in ipairs(attachPart:GetChildren()) do
@@ -88,7 +146,7 @@ function ArmyGeneralService:_hookArmyGeneral()
 			prompt.ActionText = "Talk"
 			prompt.ObjectText = "Army General"
 			prompt.KeyboardKeyCode = Enum.KeyCode.E
-			prompt.MaxActivationDistance = 10
+			prompt.MaxActivationDistance = 20
 			prompt.RequiresLineOfSight = false
 			prompt.HoldDuration = 0
 			prompt.Parent = attachPart
@@ -131,6 +189,12 @@ end
 
 -- =================== NUKE ===================
 
+--- Legacy direct-action path. Production buyers go through the
+--- `MonetizationService` consumable handler (`SetMonetizationService`); this
+--- one is kept as a Studio-only debug shortcut so designers can test the nuke
+--- without spending Robux. In live servers it surfaces a "Nuke purchase not
+--- yet available" toast — clients should be calling `RequestPromptRobuxPurchase`
+--- with `consumable.nuke_x1` instead.
 function ArmyGeneralService:_handleNuke(player: Player)
 	local resultEvent = self._remoteService:GetEvent(RemoteNames.ArmyGeneralResult)
 	local now = workspace:GetServerTimeNow()
@@ -145,20 +209,28 @@ function ArmyGeneralService:_handleNuke(player: Player)
 		return
 	end
 
-	-- TODO: Robux purchase via MarketplaceService:PromptProductPurchase
-	-- For now, allow it freely in Studio for testing
 	if not RunService:IsStudio() then
 		resultEvent:FireClient(player, {
 			ok = false,
-			message = "Nuke purchase not yet available.",
+			message = "Nuke must be purchased via Robux.",
 		})
 		return
 	end
 
+	self:_executeNuke(player)
+end
+
+--- Actual nuke execution: marks cooldown, fires countdown to all clients,
+--- waits, then destroys every active shipment. Shared between the Robux
+--- receipt handler (`SetMonetizationService`) and the Studio debug path
+--- (`_handleNuke`). Caller is responsible for the cooldown check; this
+--- function unconditionally fires.
+function ArmyGeneralService:_executeNuke(player: Player)
+	local now = workspace:GetServerTimeNow()
 	self._lastNukeTime = now
 
-	-- Fire countdown to ALL clients
 	local countdownEvent = self._remoteService:GetEvent(RemoteNames.NukeCountdownEvent)
+	local resultEvent = self._remoteService:GetEvent(RemoteNames.ArmyGeneralResult)
 	local cfg = StraitEventCatalog.NukeConfig
 	countdownEvent:FireAllClients({
 		detonateAt = now + cfg.CountdownSeconds,
@@ -167,13 +239,10 @@ function ArmyGeneralService:_handleNuke(player: Player)
 
 	DevLog.log(string.format("[ArmyGeneralService] NUKE launched by %s! Detonating in %ds", player.Name, cfg.CountdownSeconds))
 
-	-- Wait for countdown
 	task.wait(cfg.CountdownSeconds)
 
-	-- Detonate: destroy all active shipments
 	local detonateEvent = self._remoteService:GetEvent(RemoteNames.NukeDetonateEvent)
 
-	-- Collect all active shipment positions for client visuals
 	local shipmentPositions = {}
 	local activeShipments = self._oilShipmentService:GetAllActiveShipments()
 	if activeShipments then
@@ -197,7 +266,6 @@ function ArmyGeneralService:_handleNuke(player: Player)
 		shipments = shipmentPositions,
 	})
 
-	-- Mark all active shipments as total loss (with extended respawn delay for nuke cinematic)
 	self._oilShipmentService._nukeActive = true
 	for _, info in ipairs(shipmentPositions) do
 		self._oilShipmentService:ForceDestroyShipment(info.shipmentId, "Nuclear strike")
@@ -206,10 +274,12 @@ function ArmyGeneralService:_handleNuke(player: Player)
 		self._oilShipmentService._nukeActive = false
 	end)
 
-	resultEvent:FireClient(player, {
-		ok = true,
-		message = string.format("NUKE DETONATED! %d boats destroyed.", #shipmentPositions),
-	})
+	if player.Parent then
+		resultEvent:FireClient(player, {
+			ok = true,
+			message = string.format("NUKE DETONATED! %d boats destroyed.", #shipmentPositions),
+		})
+	end
 end
 
 -- =================== AIRSTRIKE ===================
@@ -324,7 +394,7 @@ end
 
 function ArmyGeneralService:DebugNuke(player: Player)
 	self._lastNukeTime = 0 -- Reset cooldown
-	self:_handleNuke(player)
+	self:_executeNuke(player)
 end
 
 function ArmyGeneralService:DebugAirstrike(player: Player, victimUserId: number?)

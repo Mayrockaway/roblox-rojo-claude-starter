@@ -4,10 +4,48 @@
 local ContentProvider = game:GetService("ContentProvider")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local SoundService = game:GetService("SoundService")
 local TweenService = game:GetService("TweenService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
+
+local ClientAudioPreferences = require(script.Parent.Parent:WaitForChild("ClientAudioPreferences"))
+
+--- Per-card tick (one play each time a card crosses the center pointer — naturally syncs with the
+--- cubic ease-out: fast at the start, slowing toward the winner). Resolve plays once on snap.
+local TICK_SOUND_ID = "rbxassetid://132417511885299"
+local TICK_VOLUME = 0.15
+local RESOLVE_SOUND_ID = "rbxassetid://102778985624056"
+local RESOLVE_VOLUME = 0.2125
+
+local function playOneShotSfx(soundId: string, volume: number)
+	if not ClientAudioPreferences.isSfxEnabled() then
+		return
+	end
+	local s = Instance.new("Sound")
+	s.Name = "VeinCrateSfx"
+	s.SoundId = soundId
+	s.Volume = volume
+	s.Looped = false
+	s.RollOffMode = Enum.RollOffMode.Linear
+	s.Parent = SoundService
+	s.Ended:Once(function()
+		if s.Parent then
+			s:Destroy()
+		end
+	end)
+	pcall(function()
+		s.TimePosition = 0
+	end)
+	s:Play()
+	--- Hard-cap cleanup in case `Ended` never fires (asset failed to stream).
+	task.delay(3, function()
+		if s.Parent then
+			s:Destroy()
+		end
+	end)
+end
 
 local VeinCrateOpener = {}
 
@@ -81,10 +119,19 @@ task.spawn(function()
 		img.Image = id
 		table.insert(targets, img)
 	end
+	--- Preload the crate-open SFX alongside the icons so the first tick / resolve isn't silent.
+	local tickSound = Instance.new("Sound")
+	tickSound.SoundId = TICK_SOUND_ID
+	table.insert(targets, tickSound)
+	local resolveSound = Instance.new("Sound")
+	resolveSound.SoundId = RESOLVE_SOUND_ID
+	table.insert(targets, resolveSound)
 	if #targets > 0 then
-		ContentProvider:PreloadAsync(targets)
-		for _, img in ipairs(targets) do
-			img:Destroy()
+		pcall(function()
+			ContentProvider:PreloadAsync(targets)
+		end)
+		for _, t in ipairs(targets) do
+			t:Destroy()
 		end
 	end
 	_preloadDone = true
@@ -434,12 +481,10 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 	skipBtn.Position = UDim2.new(0.5, 0, 0, 106 + CARD_HEIGHT + 16)
 	skipBtn.BackgroundColor3 = Color3.fromRGB(200, 40, 40)
 	skipBtn.BorderSizePixel = 0
-	skipBtn.Font = Enum.Font.GothamBold
-	skipBtn.TextSize = 28
-	skipBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	skipBtn.TextStrokeTransparency = 0
-	skipBtn.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	skipBtn.Text = "SKIP"
+	--- Text rendering moved to an inner TextLabel so we can attach a real UIStroke around the
+	--- glyphs (a UIStroke parented to this TextButton outlines the rectangle, not the font).
+	skipBtn.Text = ""
+	skipBtn.AutoButtonColor = true
 	skipBtn.ZIndex = 3
 	skipBtn.Parent = centerFrame
 
@@ -452,21 +497,54 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 	skipStroke.Color = Color3.fromRGB(255, 80, 80)
 	skipStroke.Parent = skipBtn
 
+	local skipLabel = Instance.new("TextLabel")
+	skipLabel.Name = "Label"
+	skipLabel.Size = UDim2.fromScale(1, 1)
+	skipLabel.BackgroundTransparency = 1
+	skipLabel.Font = Enum.Font.GothamBold
+	skipLabel.TextSize = 28
+	skipLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	skipLabel.Text = "SKIP"
+	skipLabel.ZIndex = 4
+	skipLabel.Parent = skipBtn
+
+	local skipLabelStroke = Instance.new("UIStroke")
+	skipLabelStroke.Name = "TextStroke"
+	skipLabelStroke.Thickness = 2
+	skipLabelStroke.Color = Color3.fromRGB(0, 0, 0)
+	skipLabelStroke.LineJoinMode = Enum.LineJoinMode.Round
+	skipLabelStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+	skipLabelStroke.Parent = skipLabel
+
 	-- Animation state
 	local skipped = false
 	local dismissed = false
+	--- After the spin resolves, the same button becomes "NEXT". Without this, `skipped` is still
+	--- false if the player never pressed SKIP — first click wrongly sets `skipped` instead of
+	--- `dismissed`, so NEXT takes two clicks.
+	local awaitingDismiss = false
 
 	skipBtn.MouseButton1Click:Connect(function()
+		if awaitingDismiss then
+			dismissed = true
+			return
+		end
 		if not skipped then
 			skipped = true
-		else
-			dismissed = true
 		end
 	end)
 
 	-- Animate the spin
 	task.spawn(function()
 		local t0 = os.clock()
+
+		--- Ratchet tick: fire `TICK_SOUND_ID` each time the card under the pointer changes. The
+		--- pointer sits at `STRIP_WIDTH / 2` in container space; with strip offset `X` (negative
+		--- and growing more negative), the card index under it is `floor((-X + STRIP_WIDTH/2) / pitch)`.
+		--- Because `X` follows the cubic ease-out, ticks come fast at first and slow toward the snap —
+		--- exactly synced to the visual speed of cards flying by.
+		local PITCH = CARD_WIDTH + CARD_GAP
+		local lastTickIndex = -1
 
 		while not skipped do
 			local elapsed = os.clock() - t0
@@ -476,11 +554,22 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 			local eased = 1 - (1 - alpha) ^ 3
 			local x = (targetX) * eased
 			strip.Position = UDim2.fromOffset(math.floor(x), 0)
+
+			local idx = math.floor((-x + STRIP_WIDTH / 2) / PITCH)
+			if idx ~= lastTickIndex then
+				lastTickIndex = idx
+				playOneShotSfx(TICK_SOUND_ID, TICK_VOLUME)
+			end
+
 			task.wait()
 		end
 
 		-- Snap to winner
 		strip.Position = UDim2.fromOffset(math.floor(targetX), 0)
+
+		--- Resolve cue — plays once on snap (also when the player presses SKIP, since the snap still
+		--- happens). Slight delay so it doesn't pile on top of the final tick.
+		playOneShotSfx(RESOLVE_SOUND_ID, RESOLVE_VOLUME)
 
 		-- Highlight winner card
 		local winnerCard = cards[WINNER_INDEX]
@@ -499,7 +588,8 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 		end
 
 		-- Change button to NEXT — player must click to dismiss
-		skipBtn.Text = "NEXT"
+		awaitingDismiss = true
+		skipLabel.Text = "NEXT"
 		skipBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 40)
 		skipStroke.Color = Color3.fromRGB(80, 255, 80)
 

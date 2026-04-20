@@ -80,15 +80,31 @@ local function hookDetector(detector: ClickDetector)
 	connectionsByDetector[detector] = conns
 end
 
-for _, d in ipairs(Workspace:GetDescendants()) do
-	if d:IsA("ClickDetector") and d.Name == CLICK_NAME then
-		hookDetector(d)
-	end
-end
-
+--- **Streaming/perf note:** this script previously did a full `Workspace:GetDescendants()`
+--- walk inline at module-load time. With ~37k Workspace descendants, that walk shows
+--- up as a one-shot ~50–200 ms hitch on the first frame after spawn.
+---
+--- The startup walk now runs after a short delay (off the join-frame critical path)
+--- and the `DescendantAdded` listener is established **first**, so any tank-sign
+--- click detector that arrives before the walk completes is still hooked promptly.
+--- Late detectors are deduped by the `connectionsByDetector` guard inside
+--- `hookDetector`, so running both paths is safe.
+---
+--- Longer-term, this should move to `CollectionService:GetInstanceAddedSignal(tag)`
+--- with the relevant detectors tagged on the server. That removes the per-Workspace-
+--- descendant Lua cost entirely, which is the real driver of multi-hundred-ms
+--- hitches during streaming-chunk arrival.
 Workspace.DescendantAdded:Connect(function(d)
 	if d:IsA("ClickDetector") and d.Name == CLICK_NAME then
 		hookDetector(d)
+	end
+end)
+
+task.delay(2, function()
+	for _, d in ipairs(Workspace:GetDescendants()) do
+		if d:IsA("ClickDetector") and d.Name == CLICK_NAME then
+			hookDetector(d)
+		end
 	end
 end)
 

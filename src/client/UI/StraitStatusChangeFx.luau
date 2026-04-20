@@ -413,7 +413,12 @@ end
 
 
 
-function StraitStatusChangeFx.trigger(playerGui: PlayerGui, newState: string)
+--- `customText` (optional) overrides the default "THE STRAIT IS NOW X" copy.
+--- Used by `triggerForceLock` so the same banner / skybox / horn pipeline can
+--- announce a Robux force-open / force-close with player attribution without
+--- duplicating the FX setup. Skybox + color still come from `newState` so the
+--- atmosphere matches what the strait is *now*, just the headline changes.
+function StraitStatusChangeFx.trigger(playerGui: PlayerGui, newState: string, customText: string?)
 
 	local color = COLOR_FOR_STATE[newState] or Color3.fromRGB(200, 200, 200)
 
@@ -493,13 +498,18 @@ function StraitStatusChangeFx.trigger(playerGui: PlayerGui, newState: string)
 
 	label.BackgroundTransparency = 1
 
-	label.Text = string.format("THE STRAIT IS NOW %s", string.upper(newState))
+	label.Text = customText or string.format("THE STRAIT IS NOW %s", string.upper(newState))
 
 	label.Font = Enum.Font.Merriweather
 
 	label.TextScaled = true
 
-	label.TextColor3 = Color3.new(1, 1, 1)
+	-- Readability swap (test, may revert): paint the glyph fill in the strait
+	-- status color (green / orange / red) and outline in **black** instead of
+	-- white-on-status-color. White text wrapped in a status-tinted `UIStroke`
+	-- below was washing the headline out, especially against `Sky_Restricted`
+	-- and `Sky_Closed` which are themselves orange / red.
+	label.TextColor3 = color
 
 	label.TextStrokeColor3 = Color3.new(0, 0, 0)
 
@@ -517,7 +527,7 @@ function StraitStatusChangeFx.trigger(playerGui: PlayerGui, newState: string)
 
 	stroke.Thickness = 5
 
-	stroke.Color = color
+	stroke.Color = Color3.new(0, 0, 0)
 
 	stroke.Transparency = 1
 
@@ -594,6 +604,32 @@ function StraitStatusChangeFx.trigger(playerGui: PlayerGui, newState: string)
 end
 
 
+
+--- Repurposed announcement banner for Robux force-open / force-close
+--- (`MonetizationCatalog` consumables `strait_open_2min` / `strait_close_2min`
+--- → `StraitStateService:ForceStateForDuration`). Same banner + horn + skybox
+--- swap as a normal state rotation, but the headline is the player attribution
+--- string requested by the product owner: "<NAME> HAS OPENED THE STRAIT FOR
+--- 2 MINUTES!".
+---
+--- Driver is `StraitMarketHudClient` — it watches `globalStateUpdate` for a new
+--- `forceLock.version` and calls this *instead of* `trigger` so we do not
+--- stack two banners on top of each other (the activeToken in `trigger` would
+--- otherwise cancel the first one mid-fade).
+---
+--- `byName` is `nil` when the buyer left between purchase and receipt replay;
+--- we fall back to "A Player" so the banner still reads as a player action
+--- rather than a system event.
+function StraitStatusChangeFx.triggerForceLock(playerGui: PlayerGui, state: string, byName: string?, _durationSeconds: number)
+	local verb = if state == "Open" then "OPENED" else "CLOSED"
+	local who = (byName ~= nil and byName ~= "") and byName or "A PLAYER"
+	-- Hard-coded "2 MINUTES" copy matches the marketed product name in
+	-- `MonetizationCatalog.luau`. If `Constants.StraitForceLockSeconds` ever
+	-- diverges from 120 we should derive the suffix from `_durationSeconds`
+	-- here so the banner stays truthful.
+	local text = string.format("%s HAS %s THE STRAIT FOR 2 MINUTES!", string.upper(who), verb)
+	StraitStatusChangeFx.trigger(playerGui, state, text)
+end
 
 return StraitStatusChangeFx
 
