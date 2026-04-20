@@ -110,18 +110,18 @@ export type StreamDef = {
 }
 
 VeinConfig.BurstOutputBps = {
-	Dribble = 0.005,
-	Stream = 0.0125,
-	Burst = 0.03,
-	Geyser = 0.08,
+	Dribble = 0.004,
+	Stream = 0.012,
+	Burst = 0.032,
+	Geyser = 0.09,
 }
 
 VeinConfig.Streams = {
 	Dead = { name = "Dead", barrelsPerSecond = 0, productionMult = 0, particleMult = 0, color = Color3.fromRGB(150, 150, 150), bold = false, shaking = false },
 	Dribble = { name = "Dribble", barrelsPerSecond = VeinConfig.BurstOutputBps.Dribble, productionMult = VeinConfig.BurstOutputBps.Dribble, particleMult = 0.4, color = Color3.fromRGB(255, 255, 255), bold = false, shaking = false },
-	Stream = { name = "Stream", barrelsPerSecond = VeinConfig.BurstOutputBps.Stream, productionMult = VeinConfig.BurstOutputBps.Stream, particleMult = 1, color = Color3.fromRGB(80, 220, 80), bold = false, shaking = false },
-	Burst = { name = "Burst", barrelsPerSecond = VeinConfig.BurstOutputBps.Burst, productionMult = VeinConfig.BurstOutputBps.Burst, particleMult = 2, color = Color3.fromRGB(50, 150, 255), bold = true, shaking = false },
-	Geyser = { name = "Geyser", barrelsPerSecond = VeinConfig.BurstOutputBps.Geyser, productionMult = VeinConfig.BurstOutputBps.Geyser, particleMult = 4, color = Color3.fromRGB(255, 170, 60), bold = true, shaking = true },
+	Stream = { name = "Stream", barrelsPerSecond = VeinConfig.BurstOutputBps.Stream, productionMult = VeinConfig.BurstOutputBps.Stream, particleMult = 1.0, color = Color3.fromRGB(80, 220, 80), bold = false, shaking = false },
+	Burst = { name = "Burst", barrelsPerSecond = VeinConfig.BurstOutputBps.Burst, productionMult = VeinConfig.BurstOutputBps.Burst, particleMult = 2.5, color = Color3.fromRGB(50, 150, 255), bold = true, shaking = false },
+	Geyser = { name = "Geyser", barrelsPerSecond = VeinConfig.BurstOutputBps.Geyser, productionMult = VeinConfig.BurstOutputBps.Geyser, particleMult = 5, color = Color3.fromRGB(255, 170, 60), bold = true, shaking = true },
 } :: { [string]: StreamDef }
 
 VeinConfig.StreamOrder = { "Dribble", "Stream", "Burst", "Geyser" }
@@ -136,8 +136,8 @@ export type OilTypeDef = {
 
 VeinConfig.OilTypes = {
 	DirtOil = { name = "DirtOil", displayName = "Crude", internalName = "Crude", color = Color3.fromRGB(200, 200, 200), valueMult = 1 },
-	GoodOil = { name = "GoodOil", displayName = "Refined", internalName = "Refined", color = Color3.fromRGB(240, 200, 70), valueMult = 2 },
-	GoldOil = { name = "GoldOil", displayName = "Premium", internalName = "Premium", color = Color3.fromRGB(255, 150, 200), valueMult = 4 },
+	GoodOil = { name = "GoodOil", displayName = "Refined", internalName = "Refined", color = Color3.fromRGB(240, 200, 70), valueMult = 2.5 },
+	GoldOil = { name = "GoldOil", displayName = "Premium", internalName = "Premium", color = Color3.fromRGB(255, 150, 200), valueMult = 5.83 },
 } :: { [string]: OilTypeDef }
 
 VeinConfig.OilOrder = { "DirtOil", "GoodOil", "GoldOil" }

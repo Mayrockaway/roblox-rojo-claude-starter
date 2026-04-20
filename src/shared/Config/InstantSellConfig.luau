@@ -13,9 +13,9 @@ local InstantSellConfig = {
 	--- Flat $/barrel per tier. NOT scaled by market — price is fixed regardless
 	--- of strait state, by design.
 	PricePerBarrel = {
-		Crude = 2,
-		Refined = 4,
-		Premium = 8,
+		Crude = 1,
+		Refined = 3,
+		Premium = 7,
 	} :: { [string]: number },
 
 	--- Tier render order in the InstantSell modal (matches ShipOilPanel cargo).

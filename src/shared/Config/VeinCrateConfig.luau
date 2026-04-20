@@ -60,10 +60,57 @@ VeinCrateConfig.RarityBackgroundAssets = {
 }
 
 VeinCrateConfig.GroundRarityWeights = {
-	Bronze = { Unlucky = 1800, Common = 3000, Uncommon = 2500, Special = 1400, Rare = 800, Epic = 350, Exotic = 120, Legendary = 25, Ascendant = 5 },
-	Silver = { Unlucky = 1200, Common = 1700, Uncommon = 2100, Special = 1800, Rare = 1500, Epic = 900, Exotic = 500, Legendary = 220, Ascendant = 70, Transcendent = 10 },
-	Gold = { Unlucky = 700, Common = 700, Uncommon = 1100, Special = 1500, Rare = 1800, Epic = 1800, Exotic = 1200, Legendary = 700, Ascendant = 350, Transcendent = 120, ["Top Secret"] = 30 },
-	Diamond = { Unlucky = 300, Common = 300, Uncommon = 500, Special = 700, Rare = 1100, Epic = 1600, Exotic = 1800, Legendary = 1600, Ascendant = 900, Transcendent = 600, ["Top Secret"] = 400, Mythic = 200 },
+	Bronze = { Unlucky = 2000, Common = 4500, Uncommon = 2500, Special = 1500, Rare = 800, Epic = 500, Legendary = 200 },
+	Silver = { Unlucky = 1500, Common = 3500, Uncommon = 2500, Special = 2000, Rare = 1500, Exotic = 250, Legendary = 150 },
+	Gold = { Unlucky = 400, Common = 600, Uncommon = 1000, Special = 2200, Rare = 2200, Epic = 1800, Exotic = 1000, Legendary = 500, Ascendant = 250, Transcendent = 30 },
+	Diamond = { Unlucky = 200, Common = 200, Uncommon = 300, Special = 500, Rare = 800, Epic = 1400, Exotic = 1800, Legendary = 1800, Ascendant = 1400, Mythic = 300 },
+}
+
+-- Per-ground rarity assignments: same item can have different rarity per ground.
+-- Rarity reflects value WITHIN that ground's context.
+VeinCrateConfig.GroundItemRarities = {
+	Bronze = {
+		["item-45"] = "Unlucky",
+		["item-1"] = "Common", ["item-5"] = "Common",
+		["item-3"] = "Uncommon", ["item-14"] = "Uncommon",
+		["item-17"] = "Special", ["item-6"] = "Special",
+		["item-8"] = "Rare", ["item-18"] = "Rare",
+		["item-24"] = "Epic", ["item-27"] = "Epic",
+		["item-11"] = "Legendary",
+	},
+	Silver = {
+		["item-45"] = "Unlucky",
+		["item-1"] = "Common", ["item-5"] = "Common", ["item-14"] = "Common",
+		["item-3"] = "Uncommon", ["item-17"] = "Uncommon", ["item-6"] = "Uncommon", ["item-4"] = "Uncommon", ["item-15"] = "Uncommon",
+		["item-8"] = "Special", ["item-18"] = "Special", ["item-24"] = "Special",
+		["item-27"] = "Rare", ["item-9"] = "Rare", ["item-11"] = "Rare",
+		["item-43"] = "Exotic",
+		["item-12"] = "Legendary",
+	},
+	Gold = {
+		["item-45"] = "Unlucky",
+		["item-1"] = "Common", ["item-5"] = "Common",
+		["item-14"] = "Uncommon", ["item-3"] = "Uncommon", ["item-17"] = "Uncommon",
+		["item-6"] = "Special", ["item-8"] = "Special", ["item-18"] = "Special", ["item-24"] = "Special", ["item-4"] = "Special", ["item-15"] = "Special",
+		["item-27"] = "Rare", ["item-9"] = "Rare", ["item-11"] = "Rare", ["item-16"] = "Rare", ["item-23"] = "Rare", ["item-30"] = "Rare",
+		["item-22"] = "Epic", ["item-28"] = "Epic", ["item-7"] = "Epic", ["item-31"] = "Epic", ["item-43"] = "Epic", ["item-12"] = "Epic",
+		["item-21"] = "Exotic", ["item-19"] = "Exotic", ["item-25"] = "Exotic", ["item-40"] = "Exotic", ["item-26"] = "Exotic", ["item-29"] = "Exotic",
+		["item-41"] = "Legendary", ["item-32"] = "Legendary", ["item-34"] = "Legendary",
+		["item-38"] = "Ascendant", ["item-35"] = "Ascendant", ["item-36"] = "Ascendant",
+		["item-10"] = "Transcendent",
+	},
+	Diamond = {
+		["item-45"] = "Unlucky",
+		["item-1"] = "Common", ["item-5"] = "Common", ["item-14"] = "Common",
+		["item-3"] = "Uncommon", ["item-17"] = "Uncommon", ["item-6"] = "Uncommon", ["item-8"] = "Uncommon",
+		["item-18"] = "Special", ["item-24"] = "Special", ["item-27"] = "Special", ["item-4"] = "Special", ["item-15"] = "Special", ["item-9"] = "Special",
+		["item-11"] = "Rare", ["item-16"] = "Rare", ["item-23"] = "Rare", ["item-30"] = "Rare", ["item-22"] = "Rare", ["item-28"] = "Rare", ["item-31"] = "Rare", ["item-7"] = "Rare",
+		["item-21"] = "Epic", ["item-19"] = "Epic", ["item-25"] = "Epic", ["item-40"] = "Epic", ["item-26"] = "Epic", ["item-29"] = "Epic", ["item-43"] = "Epic",
+		["item-41"] = "Exotic", ["item-32"] = "Exotic", ["item-34"] = "Exotic", ["item-38"] = "Exotic", ["item-35"] = "Exotic", ["item-36"] = "Exotic", ["item-12"] = "Exotic",
+		["item-10"] = "Legendary", ["item-33"] = "Legendary", ["item-39"] = "Legendary",
+		["item-42"] = "Ascendant", ["item-37"] = "Ascendant", ["item-44"] = "Ascendant",
+		["item-13"] = "Mythic",
+	},
 }
 
 VeinCrateConfig.VeinTypes = {
@@ -76,10 +123,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Common",
 		sourceRarity = "Uncommon",
 		streamCount = 1,
-		barrelsPerSecond = 0.005,
+		barrelsPerSecond = 0.004,
 		primaryInternalOilType = "Crude",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.005 } },
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.004 } },
 	},
 	{
 		id = "item-3",
@@ -90,10 +137,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Common",
 		sourceRarity = "Uncommon",
 		streamCount = 1,
-		barrelsPerSecond = 0.005,
+		barrelsPerSecond = 0.004,
 		primaryInternalOilType = "Refined",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.005 } },
+		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.004 } },
 	},
 	{
 		id = "item-5",
@@ -104,10 +151,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Common",
 		sourceRarity = "Uncommon",
 		streamCount = 1,
-		barrelsPerSecond = 0.0125,
+		barrelsPerSecond = 0.012,
 		primaryInternalOilType = "Crude",
 		isUnlucky = false,
-		streams = { { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.0125 } },
+		streams = { { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.012 } },
 	},
 	{
 		id = "item-6",
@@ -118,10 +165,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Common",
 		sourceRarity = "Rare",
 		streamCount = 1,
-		barrelsPerSecond = 0.0125,
+		barrelsPerSecond = 0.012,
 		primaryInternalOilType = "Refined",
 		isUnlucky = false,
-		streams = { { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.0125 } },
+		streams = { { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.012 } },
 	},
 	{
 		id = "item-4",
@@ -132,10 +179,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Uncommon",
 		sourceRarity = "Epic",
 		streamCount = 1,
-		barrelsPerSecond = 0.005,
+		barrelsPerSecond = 0.004,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.005 } },
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.004 } },
 	},
 	{
 		id = "item-14",
@@ -149,7 +196,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0.01,
 		primaryInternalOilType = "Refined",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.005 }, { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.005 } },
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.004 }, { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.004 } },
 	},
 	{
 		id = "item-7",
@@ -160,10 +207,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Uncommon",
 		sourceRarity = "Epic",
 		streamCount = 1,
-		barrelsPerSecond = 0.0125,
+		barrelsPerSecond = 0.012,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Stream", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.0125 } },
+		streams = { { burstType = "Stream", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.012 } },
 	},
 	{
 		id = "item-18",
@@ -177,7 +224,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0.0175,
 		primaryInternalOilType = "Refined",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.0125 } },
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.004 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.012 } },
 	},
 	{
 		id = "item-17",
@@ -191,7 +238,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0.0175,
 		primaryInternalOilType = "Refined",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.0125 } },
+		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.004 }, { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.012 } },
 	},
 	{
 		id = "item-15",
@@ -205,7 +252,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0.01,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.005 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.005 } },
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.004 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.004 } },
 	},
 	{
 		id = "item-8",
@@ -216,10 +263,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Special",
 		sourceRarity = "Rare",
 		streamCount = 1,
-		barrelsPerSecond = 0.03,
+		barrelsPerSecond = 0.032,
 		primaryInternalOilType = "Crude",
 		isUnlucky = false,
-		streams = { { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-16",
@@ -233,7 +280,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0.01,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.005 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.005 } },
+		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.004 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.004 } },
 	},
 	{
 		id = "item-24",
@@ -247,7 +294,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0.025,
 		primaryInternalOilType = "Refined",
 		isUnlucky = false,
-		streams = { { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.0125 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.0125 } },
+		streams = { { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.012 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.012 } },
 	},
 	{
 		id = "item-9",
@@ -258,10 +305,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Special",
 		sourceRarity = "Epic",
 		streamCount = 1,
-		barrelsPerSecond = 0.03,
+		barrelsPerSecond = 0.032,
 		primaryInternalOilType = "Refined",
 		isUnlucky = false,
-		streams = { { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-21",
@@ -275,7 +322,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0.0175,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.0125 } },
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.004 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.012 } },
 	},
 	{
 		id = "item-23",
@@ -289,7 +336,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0.0175,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.0125 } },
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.004 }, { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.012 } },
 	},
 	{
 		id = "item-22",
@@ -303,7 +350,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0.0175,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.0125 } },
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.004 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.012 } },
 	},
 	{
 		id = "item-19",
@@ -317,7 +364,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0.0175,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.0125 } },
+		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.004 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.012 } },
 	},
 	{
 		id = "item-25",
@@ -331,7 +378,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0.025,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.0125 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.0125 } },
+		streams = { { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.012 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.012 } },
 	},
 	{
 		id = "item-10",
@@ -342,10 +389,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Epic",
 		sourceRarity = "Legendary",
 		streamCount = 1,
-		barrelsPerSecond = 0.03,
+		barrelsPerSecond = 0.032,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Burst", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Burst", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-27",
@@ -356,10 +403,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Epic",
 		sourceRarity = "Epic",
 		streamCount = 2,
-		barrelsPerSecond = 0.034999999999999996,
+		barrelsPerSecond = 0.036,
 		primaryInternalOilType = "Refined",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.004 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-30",
@@ -373,7 +420,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0.015,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.005 }, { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.005 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.005 } },
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.004 }, { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.004 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.004 } },
 	},
 	{
 		id = "item-26",
@@ -387,7 +434,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0.025,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.0125 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.0125 } },
+		streams = { { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.012 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.012 } },
 	},
 	{
 		id = "item-28",
@@ -398,10 +445,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Epic",
 		sourceRarity = "Legendary",
 		streamCount = 2,
-		barrelsPerSecond = 0.034999999999999996,
+		barrelsPerSecond = 0.036,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.004 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-29",
@@ -412,10 +459,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Exotic",
 		sourceRarity = "Ascendant",
 		streamCount = 2,
-		barrelsPerSecond = 0.034999999999999996,
+		barrelsPerSecond = 0.036,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.004 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-34",
@@ -426,10 +473,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Exotic",
 		sourceRarity = "Ascendant",
 		streamCount = 3,
-		barrelsPerSecond = 0.037500000000000006,
+		barrelsPerSecond = 0.036,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.0125 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.0125 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.0125 } },
+		streams = { { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.012 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.012 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.012 } },
 	},
 	{
 		id = "item-43",
@@ -440,10 +487,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Exotic",
 		sourceRarity = "Top Secret",
 		streamCount = 3,
-		barrelsPerSecond = 0.0475,
+		barrelsPerSecond = 0.048,
 		primaryInternalOilType = "Refined",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.0125 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.004 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.012 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-11",
@@ -454,10 +501,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Exotic",
 		sourceRarity = "Epic",
 		streamCount = 1,
-		barrelsPerSecond = 0.08,
+		barrelsPerSecond = 0.09,
 		primaryInternalOilType = "Crude",
 		isUnlucky = false,
-		streams = { { burstType = "Geyser", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.08 } },
+		streams = { { burstType = "Geyser", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.09 } },
 	},
 	{
 		id = "item-33",
@@ -471,7 +518,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0.04,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.005 }, { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.004 }, { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.004 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-32",
@@ -482,10 +529,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Legendary",
 		sourceRarity = "Transcendent",
 		streamCount = 3,
-		barrelsPerSecond = 0.039999999999999994,
+		barrelsPerSecond = 0.04,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.03 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.005 } },
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.004 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.032 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.004 } },
 	},
 	{
 		id = "item-31",
@@ -496,10 +543,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Legendary",
 		sourceRarity = "Transcendent",
 		streamCount = 3,
-		barrelsPerSecond = 0.039999999999999994,
+		barrelsPerSecond = 0.04,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.03 }, { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.005 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.005 } },
+		streams = { { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.032 }, { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.004 }, { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.004 } },
 	},
 	{
 		id = "item-41",
@@ -510,10 +557,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Legendary",
 		sourceRarity = "Top Secret",
 		streamCount = 3,
-		barrelsPerSecond = 0.0475,
+		barrelsPerSecond = 0.048,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.0125 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.004 }, { burstType = "Stream", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.012 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-12",
@@ -524,10 +571,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Legendary",
 		sourceRarity = "Legendary",
 		streamCount = 1,
-		barrelsPerSecond = 0.08,
+		barrelsPerSecond = 0.09,
 		primaryInternalOilType = "Refined",
 		isUnlucky = false,
-		streams = { { burstType = "Geyser", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.08 } },
+		streams = { { burstType = "Geyser", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.09 } },
 	},
 	{
 		id = "item-42",
@@ -538,10 +585,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Ascendant",
 		sourceRarity = "Mythic",
 		streamCount = 3,
-		barrelsPerSecond = 0.0475,
+		barrelsPerSecond = 0.048,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.0125 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.004 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.012 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-38",
@@ -552,10 +599,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Ascendant",
 		sourceRarity = "Ascendant",
 		streamCount = 3,
-		barrelsPerSecond = 0.0475,
+		barrelsPerSecond = 0.048,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.0125 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.004 }, { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.012 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-40",
@@ -566,10 +613,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Ascendant",
 		sourceRarity = "Top Secret",
 		streamCount = 3,
-		barrelsPerSecond = 0.0475,
+		barrelsPerSecond = 0.048,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.0125 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.004 }, { burstType = "Stream", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.012 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-39",
@@ -580,10 +627,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Transcendent",
 		sourceRarity = "Exotic",
 		streamCount = 3,
-		barrelsPerSecond = 0.0475,
+		barrelsPerSecond = 0.048,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.005 }, { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.0125 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Dribble", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.004 }, { burstType = "Stream", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.012 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-13",
@@ -594,10 +641,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Transcendent",
 		sourceRarity = "Mythic",
 		streamCount = 1,
-		barrelsPerSecond = 0.08,
+		barrelsPerSecond = 0.09,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Geyser", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.08 } },
+		streams = { { burstType = "Geyser", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.09 } },
 	},
 	{
 		id = "item-37",
@@ -608,10 +655,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Transcendent",
 		sourceRarity = "Mythic",
 		streamCount = 3,
-		barrelsPerSecond = 0.065,
+		barrelsPerSecond = 0.068,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.03 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.004 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.032 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-36",
@@ -622,10 +669,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Top Secret",
 		sourceRarity = "Transcendent",
 		streamCount = 3,
-		barrelsPerSecond = 0.065,
+		barrelsPerSecond = 0.068,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.03 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.004 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.032 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-35",
@@ -636,10 +683,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Top Secret",
 		sourceRarity = "Transcendent",
 		streamCount = 3,
-		barrelsPerSecond = 0.065,
+		barrelsPerSecond = 0.068,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.005 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.03 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Dribble", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.004 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.032 }, { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-44",
@@ -650,10 +697,10 @@ VeinCrateConfig.VeinTypes = {
 		rarity = "Mythic",
 		sourceRarity = "Mythic",
 		streamCount = 3,
-		barrelsPerSecond = 0.09,
+		barrelsPerSecond = 0.096,
 		primaryInternalOilType = "Premium",
 		isUnlucky = false,
-		streams = { { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.03 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.03 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.03 } },
+		streams = { { burstType = "Burst", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.032 }, { burstType = "Burst", oilType = "GoodOil", internalOilType = "Refined", barrelsPerSecond = 0.032 }, { burstType = "Burst", oilType = "GoldOil", internalOilType = "Premium", barrelsPerSecond = 0.032 } },
 	},
 	{
 		id = "item-45",
@@ -667,7 +714,7 @@ VeinCrateConfig.VeinTypes = {
 		barrelsPerSecond = 0,
 		primaryInternalOilType = "Crude",
 		isUnlucky = true,
-		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.005 } },
+		streams = { { burstType = "Dribble", oilType = "DirtOil", internalOilType = "Crude", barrelsPerSecond = 0.004 } },
 	},
 }
 
@@ -2066,22 +2113,35 @@ end
 
 function VeinCrateConfig.GetAllForGround(groundType: string): { VeinTypeDef }
 	local weights = VeinCrateConfig.GroundRarityWeights[groundType]
+	local groundItems = VeinCrateConfig.GroundItemRarities[groundType]
 	if typeof(weights) ~= "table" then
 		return table.clone(VeinCrateConfig.VeinTypes)
 	end
 	local result = {}
-	for rarity, bucket in pairs(byRarity) do
-		if (weights[rarity] or 0) > 0 then
-			for _, def in ipairs(bucket) do
-				table.insert(result, def)
+	if groundItems then
+		-- Per-ground filtered pool
+		for itemId, itemRarity in pairs(groundItems) do
+			if (weights[itemRarity] or 0) > 0 and byId[itemId] then
+				table.insert(result, byId[itemId])
+			end
+		end
+	else
+		for rarity, bucket in pairs(byRarity) do
+			if (weights[rarity] or 0) > 0 then
+				for _, def in ipairs(bucket) do
+					table.insert(result, def)
+				end
 			end
 		end
 	end
+	-- Sort by ground-specific rarity then name
 	table.sort(result, function(a, b)
+		local aRarity = groundItems and groundItems[a.id] or a.rarity
+		local bRarity = groundItems and groundItems[b.id] or b.rarity
 		local ai, bi = 999, 999
 		for i, rarity in ipairs(VeinCrateConfig.RarityOrder) do
-			if rarity == a.rarity then ai = i end
-			if rarity == b.rarity then bi = i end
+			if rarity == aRarity then ai = i end
+			if rarity == bRarity then bi = i end
 		end
 		if ai ~= bi then return ai < bi end
 		return a.displayName < b.displayName
@@ -2091,6 +2151,7 @@ end
 
 function VeinCrateConfig.RollVeinType(groundType: string, rng: Random): VeinTypeDef
 	local weights = VeinCrateConfig.GroundRarityWeights[groundType] or VeinCrateConfig.GroundRarityWeights.Bronze
+	local groundItems = VeinCrateConfig.GroundItemRarities[groundType]
 	local totalWeight = 0
 	for _, rarity in ipairs(VeinCrateConfig.RarityOrder) do
 		totalWeight += weights[rarity] or 0
@@ -2108,17 +2169,38 @@ function VeinCrateConfig.RollVeinType(groundType: string, rng: Random): VeinType
 			break
 		end
 	end
-	local bucket = byRarity[pickedRarity]
-	if not bucket or #bucket == 0 then
-		for _, rarity in ipairs(VeinCrateConfig.RarityOrder) do
-			local fallback = byRarity[rarity]
-			if fallback and #fallback > 0 then
-				bucket = fallback
+	-- Build bucket from per-ground rarity assignments
+	local bucket: { VeinTypeDef } = {}
+	if groundItems then
+		for itemId, itemRarity in pairs(groundItems) do
+			if itemRarity == pickedRarity and byId[itemId] then
+				table.insert(bucket, byId[itemId])
+			end
+		end
+	else
+		bucket = byRarity[pickedRarity] or {}
+	end
+	-- Fallback: if bucket empty, try lower rarities within this ground
+	if #bucket == 0 then
+		for i = #VeinCrateConfig.RarityOrder, 1, -1 do
+			local fallbackRarity = VeinCrateConfig.RarityOrder[i]
+			local fb: { VeinTypeDef } = {}
+			if groundItems then
+				for itemId, itemRarity in pairs(groundItems) do
+					if itemRarity == fallbackRarity and byId[itemId] then
+						table.insert(fb, byId[itemId])
+					end
+				end
+			else
+				fb = byRarity[fallbackRarity] or {}
+			end
+			if #fb > 0 then
+				bucket = fb
 				break
 			end
 		end
 	end
-	if not bucket or #bucket == 0 then
+	if #bucket == 0 then
 		return VeinCrateConfig.VeinTypes[1]
 	end
 	return bucket[rng:NextInteger(1, #bucket)]
@@ -2166,6 +2248,18 @@ function VeinCrateConfig.GetSignatureLabel(def: VeinTypeDef): string
 		table.insert(parts, string.format("%s/%s", stream.burstType, stream.oilType))
 	end
 	return table.concat(parts, "  +  ")
+end
+
+function VeinCrateConfig.GetItemRarityForGround(def: VeinTypeDef, groundType: string): string
+	local groundItems = VeinCrateConfig.GroundItemRarities[groundType]
+	if groundItems and groundItems[def.id] then
+		return groundItems[def.id]
+	end
+	return def.rarity
+end
+
+function VeinCrateConfig.GetById(itemId: string): VeinTypeDef?
+	return byId[itemId]
 end
 
 function VeinCrateConfig._rebuildLookup()

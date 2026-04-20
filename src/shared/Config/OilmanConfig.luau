@@ -12,9 +12,9 @@ local OilmanConfig = {
 	--- Per-tier price scalar. Final $/barrel = floor(BaseBarrelPrice * multiplier).
 	--- Crude $4, Refined $7, Premium $10.
 	TierMultiplier = {
-		Crude = 0.8,
-		Refined = 1.4,
-		Premium = 2.0,
+		Crude = 0.6,
+		Refined = 1.5,
+		Premium = 3.5,
 	} :: { [string]: number },
 
 	--- Tiers rendered on the sell panel, in vertical order.

@@ -23,9 +23,9 @@ local PricingConfig = {
 	-- Per-type multiplier on the base price
 	-- Crude = worst, Premium = best
 	TypeMultipliers = {
-		Crude = 0.8, -- $8 at base (all sub-light crude)
-		Refined = 1.4, -- $14 at base
-		Premium = 2.0, -- $20 at base
+		Crude = 0.6, -- $6 at base
+		Refined = 1.5, -- $15 at base
+		Premium = 3.5, -- $35 at base
 	},
 
 	-- Strait state bands for the SINGLE base oil price

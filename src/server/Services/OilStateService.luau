@@ -1659,22 +1659,12 @@ function OilStateService:CompleteDrill(userId: number, drillId: number): (boolea
 	local rng = Random.new(userId * 13 + drillId * 7 + math.floor(workspace:GetServerTimeNow() * 1000))
 	local rolledType = VeinCrateConfig.RollVeinType(groundTypeName, rng)
 
-	--- FTUE first reveal: lock the result to **exactly Rare** so the lootbox sequence
-	--- always lands on the same celebrate-worthy tier — never lower (commons feel flat)
-	--- and never higher (epic/legendary should stay aspirational). Only applies once per
-	--- profile (`ftueFirstRevealApplied`); subsequent reveals roll normally per
-	--- `GroundRarityWeights`.
+	--- FTUE first reveal: force Crude Geyser (item-11) — the Bronze Legendary jackpot.
+	--- Gives new players an immediate exciting hook. Only applies once per profile.
 	if (state :: any).ftueFirstRevealApplied ~= true then
-		if rolledType.rarity ~= "Rare" then
-			local pool: { any } = {}
-			for _, def in ipairs(VeinCrateConfig.VeinTypes) do
-				if def.rarity == "Rare" and not def.isUnlucky then
-					table.insert(pool, def)
-				end
-			end
-			if #pool > 0 then
-				rolledType = pool[rng:NextInteger(1, #pool)]
-			end
+		local ftueDef = VeinCrateConfig.GetById("item-11")
+		if ftueDef then
+			rolledType = ftueDef
 		end
 		(state :: any).ftueFirstRevealApplied = true
 	end
