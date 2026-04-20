@@ -85,36 +85,36 @@ local FtueConfig = {
 			body = "On your plot: use the **free drill** on the **highlighted tile**. The **pump** at the chunk center will start collecting oil automatically. When the first barrels show up, we'll get you ready to ship.\n\nNeed to move faster? **Continue** skips ahead with starter crude in your refinery.",
 		},
 		WaitPlotShipment = {
-			title = "SHIP YOUR CARGO",
-			body = "Walk to the **shipment terminal** on your plot and **dispatch** a load. This leg uses the plot board—no need for the Ship Oil HUD button.",
+			title = "SHIP YOUR CARGO!",
+			body = "Great work! Head over to the delivery man to dispatch your first haul.",
 		},
 		WaitShipment = {
-			title = "ACROSS THE STRAIT",
-			body = "Your cargo is underway. Keep an eye on **Strait status**—things can get lively out there. When the run finishes, we'll guide you to the warehouse.",
+			title = "SAIL THE STRAIT!",
+			body = "Time to set sea! I'll give you my best ship so nobody should bother you this time. But be careful, that won't always be the case. Keep an eye on the status of the Strait!",
 		},
 		WaitWarehouseSell = {
-			title = "SELL AT THE WAREHOUSE",
-			body = "Head to the **warehouse** and use the **sell** flow there to cash in your barrels.",
+			title = "TIME TO CASH IN!",
+			body = "You've landed at your warehouse! Here you'll store all your oil that's successfully crossed the Strait. Head to the terminal to sell your first barrel.",
 		},
 		WaitSell = {
-			title = "WATCH THE MARKET",
-			body = "Oil prices move. Next time you sell, glance at the **market readout** (top-left) so you don't leave money on the table.",
+			title = "WATCH THE MARKET!",
+			body = "Watch out! Oil prices move in real time, so make sure you check the market to get a good price before you sell.",
 		},
 		WaitDocksShipUpgrade = {
-			title = "HEAD TO THE DOCKS",
-			body = "Open **Town** from the HUD and take the trip to the **docks**. You'll upgrade your operation where the big ships tie up—no **Continue** here; the leg finishes when you arrive.",
+			title = "TO THE DOCKS!",
+			body = "Now head to the town - that's where you'll buy all your equipment, upgrade your ship, and hire some Secret Services.",
 		},
 		WaitDocksUpgradeShip = {
 			title = "VISIT THE DOCKMAN",
-			body = "Find the **dockman** by the water and use them to open **ship management**. Your **first cargo upgrade is on the house** during this tutorial—buy capacity, then **close** the panel when you're done.",
+			body = "Find the Dockman to upgrade your ship - your first upgrade is on the house! Close the panel when you're done to proceed.",
 		},
 		WaitDocksHire = {
-			title = "HIRE CREW",
-			body = "Follow the line to the **hire** spot and meet your next contact. When you're ready, tap **Continue**.",
+			title = "SUSPICIOUS PERSONS",
+			body = "One more thing, there's been some shady personnel around town. If you're curious, find out what they're up to.",
 		},
 		Done = {
 			title = "WELCOME TO TOWN",
-			body = "You're cleared for the open economy. There's a **cash bonus** waiting in your account—spend it wisely, and good luck on the Strait.",
+			body = "That's it! You're a seasoned veteran of the Strait now. Don't forget to check the store often and explore. Now get to drilling!",
 		},
 	} :: { [string]: { title: string, body: string } },
 
