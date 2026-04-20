@@ -13,6 +13,7 @@ local VeinCrateOpener = {}
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
+local _preloadDone = false
 
 local CARD_WIDTH = 358
 local CARD_HEIGHT = 358
@@ -36,6 +37,14 @@ local function preloadSpritesForPool(pool, winnerDef, groundType: string)
 	for _, def in ipairs(pool) do
 		collect(def)
 	end
+	-- Also preload rarity background images
+	for _, rarity in ipairs(VeinCrateConfig.RarityOrder) do
+		local bgId = VeinCrateConfig.RarityBackgroundAssets and VeinCrateConfig.RarityBackgroundAssets[rarity]
+		if typeof(bgId) == "string" and bgId ~= "" and bgId ~= "rbxassetid://0" and not uniqueIds[bgId] then
+			uniqueIds[bgId] = true
+			table.insert(orderedIds, bgId)
+		end
+	end
 	if #orderedIds == 0 then
 		return
 	end
@@ -50,6 +59,36 @@ local function preloadSpritesForPool(pool, winnerDef, groundType: string)
 		preloadImg:Destroy()
 	end
 end
+
+-- Preload ALL item icons + rarity backgrounds in the background on first require
+task.spawn(function()
+	local allIds = {}
+	for _, def in ipairs(VeinCrateConfig.VeinTypes) do
+		if def.iconAssetId and def.iconAssetId ~= "" and def.iconAssetId ~= "rbxassetid://0" then
+			allIds[def.iconAssetId] = true
+		end
+	end
+	if VeinCrateConfig.RarityBackgroundAssets then
+		for _, bgId in pairs(VeinCrateConfig.RarityBackgroundAssets) do
+			if typeof(bgId) == "string" and bgId ~= "" and bgId ~= "rbxassetid://0" then
+				allIds[bgId] = true
+			end
+		end
+	end
+	local targets = {}
+	for id in pairs(allIds) do
+		local img = Instance.new("ImageLabel")
+		img.Image = id
+		table.insert(targets, img)
+	end
+	if #targets > 0 then
+		ContentProvider:PreloadAsync(targets)
+		for _, img in ipairs(targets) do
+			img:Destroy()
+		end
+	end
+	_preloadDone = true
+end)
 
 -- ═══════════════════════════════════════════════════════════
 -- Build a single card — the sprite IS the card, no extra FX
@@ -78,7 +117,7 @@ local function createCard(veinType: VeinCrateConfig.VeinTypeDef, groundType: str
 		bgImg.Size = UDim2.fromScale(1, 1)
 		bgImg.Position = UDim2.fromScale(0, 0)
 		bgImg.BackgroundTransparency = 1
-		bgImg.ZIndex = 0
+		bgImg.ZIndex = 1
 		bgImg.ScaleType = Enum.ScaleType.Stretch
 		bgImg.Image = bgAssetId
 		bgImg.Parent = card
@@ -91,7 +130,7 @@ local function createCard(veinType: VeinCrateConfig.VeinTypeDef, groundType: str
 		img.Size = UDim2.fromScale(1, 1)
 		img.Position = UDim2.fromScale(0, 0)
 		img.BackgroundTransparency = 1
-		img.ZIndex = 1
+		img.ZIndex = 2
 		img.ScaleType = Enum.ScaleType.Stretch
 		img.Image = displaySprite.imageId
 		img.Parent = card
@@ -113,83 +152,133 @@ local function createCard(veinType: VeinCrateConfig.VeinTypeDef, groundType: str
 		placeholder.Parent = card
 	end
 
-	-- ── Text: Name at top ──
-	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Name = "NameLabel"
-	nameLabel.Size = UDim2.new(0.92, 0, 0, 28)
-	nameLabel.AnchorPoint = Vector2.new(0.5, 0)
-	nameLabel.Position = UDim2.new(0.5, 0, 0.02, 0)
-	nameLabel.BackgroundTransparency = 1
-	nameLabel.Font = Enum.Font.GothamBold
-	nameLabel.TextSize = 22
-	nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-	nameLabel.TextStrokeTransparency = 0
-	nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	nameLabel.Text = veinType.displayName
-	nameLabel.ZIndex = 3
-	nameLabel.TextScaled = false
-	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
-	nameLabel.Parent = card
-
-	-- ── Oil type summary below name ──
-	-- e.g. "Crude Dribble + Refined Stream"
-	local OIL_DISPLAY = { DirtOil = "Crude", GoodOil = "Refined", GoldOil = "Premium" }
-	local streamParts = {}
-	for _, stream in ipairs(veinType.streams) do
-		local oilName = OIL_DISPLAY[stream.oilType] or stream.oilType
-		local burstName = stream.burstType or "?"
-		table.insert(streamParts, oilName .. " " .. burstName)
+	-- ── Vein count header at top ──
+	local streamCount = veinType.streamCount or #veinType.streams
+	local veinLabel = Instance.new("TextLabel")
+	veinLabel.Name = "VeinLabel"
+	veinLabel.Size = UDim2.new(0.92, 0, 0, 34)
+	veinLabel.AnchorPoint = Vector2.new(0.5, 0)
+	veinLabel.Position = UDim2.new(0.5, 0, 0.02, 0)
+	veinLabel.BackgroundTransparency = 1
+	veinLabel.Font = Enum.Font.GothamBold
+	veinLabel.TextSize = 28
+	veinLabel.TextStrokeTransparency = 0
+	veinLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	veinLabel.ZIndex = 3
+	veinLabel.Parent = card
+	if streamCount >= 3 then
+		veinLabel.Text = "TRIPLE VEIN!!!"
+		veinLabel.TextColor3 = Color3.fromRGB(255, 170, 60)
+	elseif streamCount >= 2 then
+		veinLabel.Text = "DOUBLE VEIN!!"
+		veinLabel.TextColor3 = Color3.fromRGB(180, 80, 255)
+	else
+		veinLabel.Text = "SINGLE VEIN"
+		veinLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 	end
-	local oilSummary = table.concat(streamParts, " + ")
 
-	local oilLabel = Instance.new("TextLabel")
-	oilLabel.Name = "OilLabel"
-	oilLabel.Size = UDim2.new(0.92, 0, 0, 22)
-	oilLabel.AnchorPoint = Vector2.new(0.5, 0)
-	oilLabel.Position = UDim2.new(0.5, 0, 0.10, 0)
-	oilLabel.BackgroundTransparency = 1
-	oilLabel.Font = Enum.Font.GothamMedium
-	oilLabel.TextSize = 16
-	oilLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
-	oilLabel.TextStrokeTransparency = 0
-	oilLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	oilLabel.Text = oilSummary
-	oilLabel.ZIndex = 3
-	oilLabel.TextScaled = false
-	oilLabel.TextTruncate = Enum.TextTruncate.AtEnd
-	oilLabel.Parent = card
+	-- ── Oil stream columns (side by side, centered) ──
+	local OIL_DISPLAY = { DirtOil = "Crude", GoodOil = "Refined", GoldOil = "Premium" }
+	local OIL_COLOR = {
+		DirtOil = Color3.fromRGB(200, 200, 200),
+		GoodOil = Color3.fromRGB(240, 200, 70),
+		GoldOil = Color3.fromRGB(255, 150, 200),
+	}
+	-- Best possible bps for color scaling (Geyser = 0.08)
+	local MAX_BPS = 0.08
+	-- Scale sizes based on how many streams need to fit
+	local COL_FRAC = if streamCount >= 3 then 0.30 elseif streamCount >= 2 then 0.44 else 0.85
+	local NAME_SIZE = if streamCount >= 3 then 18 elseif streamCount >= 2 then 24 else 30
+	local RATE_SIZE = if streamCount >= 3 then 14 elseif streamCount >= 2 then 18 else 24
+	local NAME_H = if streamCount >= 3 then 24 elseif streamCount >= 2 then 30 else 36
+	local RATE_H = if streamCount >= 3 then 20 elseif streamCount >= 2 then 24 else 30
+	local COL_GAP = if streamCount >= 3 then 4 else 8
+	local COL_WIDTH = math.floor(CARD_WIDTH * COL_FRAC)
+	local totalColWidth = streamCount * COL_WIDTH + (streamCount - 1) * COL_GAP
+	local startX = (CARD_WIDTH - totalColWidth) / 2
 
-	-- ── Production rate ──
-	local bpsLabel = Instance.new("TextLabel")
-	bpsLabel.Name = "BpsLabel"
-	bpsLabel.Size = UDim2.new(0.92, 0, 0, 22)
-	bpsLabel.AnchorPoint = Vector2.new(0.5, 0)
-	bpsLabel.Position = UDim2.new(0.5, 0, 0.17, 0)
-	bpsLabel.BackgroundTransparency = 1
-	bpsLabel.Font = Enum.Font.GothamBold
-	bpsLabel.TextSize = 18
-	bpsLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
-	bpsLabel.TextStrokeTransparency = 0
-	bpsLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	bpsLabel.Text = string.format("%.4g bbl/s", veinType.barrelsPerSecond)
-	bpsLabel.ZIndex = 3
-	bpsLabel.Parent = card
+	for i, stream in ipairs(veinType.streams) do
+		local oilName = OIL_DISPLAY[stream.oilType] or stream.oilType
+		local colX = startX + (i - 1) * (COL_WIDTH + COL_GAP)
+		local bps = stream.barrelsPerSecond or 0
+
+		-- Oil type name
+		local oilNameLbl = Instance.new("TextLabel")
+		oilNameLbl.Name = "OilName_" .. i
+		oilNameLbl.Size = UDim2.fromOffset(COL_WIDTH, NAME_H)
+		oilNameLbl.Position = UDim2.fromOffset(colX, CARD_HEIGHT * 0.14)
+		oilNameLbl.BackgroundTransparency = 1
+		oilNameLbl.Font = Enum.Font.GothamBold
+		oilNameLbl.TextSize = NAME_SIZE
+		oilNameLbl.TextColor3 = OIL_COLOR[stream.oilType] or Color3.fromRGB(255, 255, 255)
+		oilNameLbl.TextStrokeTransparency = 0
+		oilNameLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		oilNameLbl.Text = oilName .. " Oil"
+		oilNameLbl.ZIndex = 3
+		oilNameLbl.Parent = card
+
+		-- Rate with color based on quality
+		local ratio = math.clamp(bps / MAX_BPS, 0, 1)
+		local rateColor
+		if ratio >= 0.8 then
+			rateColor = Color3.fromRGB(255, 170, 60)
+		elseif ratio >= 0.5 then
+			rateColor = Color3.fromRGB(80, 255, 80)
+		elseif ratio >= 0.2 then
+			rateColor = Color3.fromRGB(255, 255, 0)
+		else
+			rateColor = Color3.fromRGB(255, 255, 255)
+		end
+
+		local secsPerBarrel = if bps > 0 then 1 / bps else 999
+		local rateLbl = Instance.new("TextLabel")
+		rateLbl.Name = "Rate_" .. i
+		rateLbl.Size = UDim2.fromOffset(COL_WIDTH, RATE_H)
+		rateLbl.Position = UDim2.fromOffset(colX, CARD_HEIGHT * 0.14 + NAME_H + 2)
+		rateLbl.BackgroundTransparency = 1
+		rateLbl.Font = Enum.Font.GothamMedium
+		rateLbl.TextSize = RATE_SIZE
+		rateLbl.TextColor3 = rateColor
+		rateLbl.TextStrokeTransparency = 0
+		rateLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		rateLbl.Text = string.format("1 bbl / %.0fs", secsPerBarrel)
+		rateLbl.ZIndex = 3
+		rateLbl.Parent = card
+	end
 
 	-- ── Rarity label at bottom ──
 	local rarityLabel = Instance.new("TextLabel")
 	rarityLabel.Name = "RarityLabel"
-	rarityLabel.Size = UDim2.new(0.92, 0, 0, 32)
+	rarityLabel.Size = UDim2.new(0.92, 0, 0, 38)
 	rarityLabel.AnchorPoint = Vector2.new(0.5, 1)
 	rarityLabel.Position = UDim2.new(0.5, 0, 0.97, 0)
 	rarityLabel.BackgroundTransparency = 1
 	rarityLabel.Font = Enum.Font.GothamBold
-	rarityLabel.TextSize = 26
+	rarityLabel.TextSize = 30
 	rarityLabel.TextColor3 = rarityStyle.text
 	rarityLabel.TextStrokeTransparency = 0
 	rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 	rarityLabel.Text = veinType.rarity
 	rarityLabel.ZIndex = 3
 	rarityLabel.Parent = card
+
+	-- ── Animate vein label for Double/Triple ──
+	if streamCount >= 2 then
+		task.spawn(function()
+			local baseRot = 0
+			local amplitude = if streamCount >= 3 then 6 else 3
+			local speed = if streamCount >= 3 then 8 else 5
+			while veinLabel and veinLabel.Parent do
+				baseRot = baseRot + speed * task.wait()
+				veinLabel.Rotation = math.sin(baseRot) * amplitude
+				-- Rainbow cycling for triple
+				if streamCount >= 3 then
+					local hue = (os.clock() * 0.5) % 1
+					veinLabel.TextColor3 = Color3.fromHSV(hue, 1, 1)
+				end
+			end
+		end)
+	end
 
 	card.Parent = parent
 	return card
@@ -216,7 +305,9 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 		return
 	end
 
-	preloadSpritesForPool(pool, winnerDef, groundType)
+	if not _preloadDone then
+		preloadSpritesForPool(pool, winnerDef, groundType)
+	end
 
 	-- ── ScreenGui ──
 	local gui = Instance.new("ScreenGui")
