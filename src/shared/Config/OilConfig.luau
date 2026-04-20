@@ -85,7 +85,7 @@ local OilConfig = {
 	-- Barrel display system
 	Barrels = {
 		PerBarrelOil = 1,
-		MaxVisualPerTier = 20,
+		MaxVisualPerTier = 40,
 		BarrelHeight = 3.5,
 		ConveyorTweenSeconds = 4,
 		MaxOnConveyor = 5,

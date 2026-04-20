@@ -47,6 +47,7 @@ local estimateRefundForTarget: (target: any) -> (number, Instance?)
 
 -- ===================== constants =====================
 local TOOL_DRILL = "Drill"
+local IGNORE_FOR_VISUAL_BOUNDS_ATTR = "IgnoreForVisualBounds"
 
 -- ===================== internal state =====================
 local ghostDrill: Model? = nil
@@ -203,7 +204,7 @@ end
 local function getGhostTimerAnchorPosition(model: Model, fallbackPosition: Vector3): Vector3
 	local topY = -math.huge
 	for _, d in ipairs(model:GetDescendants()) do
-		if d:IsA("BasePart") then
+		if d:IsA("BasePart") and d:GetAttribute(IGNORE_FOR_VISUAL_BOUNDS_ATTR) ~= true then
 			topY = math.max(topY, highestWorldYOfPartOBB(d))
 		end
 	end
@@ -269,6 +270,7 @@ local function ensureGhost(): Model?
 	timerAnchor.CanCollide = false
 	timerAnchor.CanQuery = false
 	timerAnchor.CanTouch = false
+	timerAnchor:SetAttribute(IGNORE_FOR_VISUAL_BOUNDS_ATTR, true)
 	timerAnchor.Parent = _Workspace
 
 	local bb = Instance.new("BillboardGui")

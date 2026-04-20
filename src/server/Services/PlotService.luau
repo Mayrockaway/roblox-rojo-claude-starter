@@ -46,6 +46,30 @@ local function getSpawnPart(plot: Model): BasePart?
 	return nil
 end
 
+local function resetUnclaimedPlotTankUi(plot: Model)
+	local tanks = plot:FindFirstChild("OilTanks")
+	if not tanks then
+		return
+	end
+
+	for _, descendant in ipairs(tanks:GetDescendants()) do
+		if descendant:IsA("BillboardGui") then
+			if descendant.Name == "TankSign" or descendant.Name == "HoloGui" then
+				descendant.Enabled = false
+			end
+		elseif descendant:IsA("SurfaceGui") then
+			descendant.Enabled = false
+			descendant.Active = false
+		elseif descendant:IsA("ClickDetector") or descendant:IsA("ProximityPrompt") then
+			descendant:Destroy()
+		elseif descendant:IsA("BasePart") then
+			if string.sub(descendant.Name, 1, 9) == "TankHolo_" then
+				descendant:Destroy()
+			end
+		end
+	end
+end
+
 function PlotService:Init()
 	self._assignedByUserId = {}
 	self._characterAddedByUserId = {}
@@ -249,6 +273,7 @@ function PlotService:_initializePlots()
 		self:_ensurePlotMarkers(plot)
 		self:_ensurePerPlotDecor(plot)
 		self:_refreshPlotVisual(plot)
+		resetUnclaimedPlotTankUi(plot)
 		self:_updatePlotNameBillboard(plot, nil)
 	end
 end
@@ -629,6 +654,7 @@ function PlotService:_releasePlot(plot: Model?)
 	end
 	plot:SetAttribute("OwnerUserId", 0)
 	self:_refreshPlotVisual(plot)
+	resetUnclaimedPlotTankUi(plot)
 	self:_updatePlotNameBillboard(plot, nil)
 end
 

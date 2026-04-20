@@ -13,6 +13,7 @@ local OIL_TUBE_REVEAL_DURATION = 1.5
 local OIL_TUBE_VISIBLE_TRANSPARENCY = 0.5
 local OIL_TUBE_ENDPOINT_EPSILON = 0.05
 local BARREL_CONVEYOR_MIN_EJECT_INTERVAL = 0.25
+local IGNORE_FOR_VISUAL_BOUNDS_ATTR = "IgnoreForVisualBounds"
 local TIER_ORDER = { "Crude", "Refined", "Premium" }
 local function floorPositive(value: number): number
 	return math.max(0, math.floor(value))
@@ -30,6 +31,55 @@ local function getFirstBasePart(instance: Instance): BasePart?
 		end
 	end
 	return nil
+end
+local function shouldIgnoreForVisualBounds(part: BasePart): boolean
+	if part:GetAttribute(IGNORE_FOR_VISUAL_BOUNDS_ATTR) == true then
+		return true
+	end
+	-- Backward-compatible safety for tiny invisible helper anchors even when the
+	-- explicit attribute hasn't been authored yet.
+	if part.Transparency >= 1 and part.Size.Magnitude < 2 then
+		return true
+	end
+	return false
+end
+local function ensureBarrelMultiplierGui(instance: Instance, multiplier: number)
+	if multiplier <= 1 then
+		return
+	end
+	local adornee = getFirstBasePart(instance)
+	if not adornee then
+		return
+	end
+	local gui = adornee:FindFirstChild("BarrelMultiplierGui")
+	if gui and not gui:IsA("BillboardGui") then
+		gui:Destroy()
+		gui = nil
+	end
+	local bb = if gui and gui:IsA("BillboardGui") then gui else Instance.new("BillboardGui")
+	bb.Name = "BarrelMultiplierGui"
+	bb.Size = UDim2.fromOffset(110, 42)
+	bb.StudsOffsetWorldSpace = Vector3.new(0, 4.2, 0)
+	bb.AlwaysOnTop = true
+	bb.MaxDistance = 180
+	bb.Parent = adornee
+
+	local label = bb:FindFirstChild("Label")
+	if label and not label:IsA("TextLabel") then
+		label:Destroy()
+		label = nil
+	end
+	local text = if label and label:IsA("TextLabel") then label else Instance.new("TextLabel")
+	text.Name = "Label"
+	text.Size = UDim2.fromScale(1, 1)
+	text.BackgroundTransparency = 1
+	text.Font = Enum.Font.GothamBlack
+	text.TextScaled = true
+	text.Text = string.format("x%d", multiplier)
+	text.TextColor3 = Color3.fromRGB(255, 212, 74)
+	text.TextStrokeTransparency = 0
+	text.TextStrokeColor3 = Color3.fromRGB(72, 48, 10)
+	text.Parent = bb
 end
 local function anchorAllBaseParts(instance: Instance)
 	if instance:IsA("BasePart") then
@@ -101,8 +151,7 @@ local function getHighestBasePartTopPosition(instance: Instance?): Vector3?
 	local bestTop = -math.huge
 	local bestPos = nil :: Vector3?
 	local function considerPart(part: BasePart)
-		-- Skip hologram anchor parts (invisible, not real geometry)
-		if part.Transparency >= 1 and part.Size.Magnitude < 2 then return end
+		if shouldIgnoreForVisualBounds(part) then return end
 		local topY = part.Position.Y + part.Size.Y / 2
 		if topY > bestTop then
 			bestTop = topY
@@ -602,7 +651,7 @@ local function getActiveDrillTimerAnchorPosition(model: Instance, fallbackPositi
 			if model:IsA("Model") then
 		local topY = -math.huge
 		for _, d in ipairs(model:GetDescendants()) do
-			if d:IsA("BasePart") then
+			if d:IsA("BasePart") and not shouldIgnoreForVisualBounds(d) then
 				topY = math.max(topY, highestWorldYOfPartOBB(d))
 			end
 		end
@@ -662,6 +711,7 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			anchor.CanCollide = false
 			anchor.CanQuery = false
 			anchor.CanTouch = false
+			anchor:SetAttribute(IGNORE_FOR_VISUAL_BOUNDS_ATTR, true)
 			anchor.Parent = folder
 			local bb = Instance.new("BillboardGui")
 			bb.Name = "TimerGui"
@@ -1270,14 +1320,8 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 			local holoName = "PumpHologram"
 			local holoPart = model:FindFirstChild(holoName)
 			if not holoPart then
-				-- Find the topmost point of the pump for billboard placement
-				local topY = -math.huge
-				for _, p in ipairs(model:GetDescendants()) do
-					if p:IsA("BasePart") then
-						local partTop = p.Position.Y + p.Size.Y / 2
-						if partTop > topY then topY = partTop end
-					end
-				end
+				local topPos = getHighestBasePartTopPosition(model)
+				local topY = topPos and topPos.Y or model:GetPivot().Position.Y
 				holoPart = Instance.new("Part")
 				holoPart.Name = holoName
 				holoPart.Size = Vector3.new(1, 1, 1)
@@ -1286,6 +1330,7 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				holoPart.CanCollide = false
 				holoPart.CanQuery = false
 				holoPart.CanTouch = false
+				holoPart:SetAttribute(IGNORE_FOR_VISUAL_BOUNDS_ATTR, true)
 				holoPart.Position = Vector3.new(model:GetPivot().Position.X, topY + 3.6, model:GetPivot().Position.Z)
 				holoPart.Parent = model
 				local billboard = Instance.new("BillboardGui")
@@ -1324,13 +1369,8 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 			local holoGui = holoPart:FindFirstChild("HoloGui")
 			local infoLabel = holoGui and holoGui:FindFirstChild("Info")
 			if infoLabel then
-				local topY2 = -math.huge
-				for _, p2 in ipairs(model:GetDescendants()) do
-					if p2:IsA("BasePart") then
-						local pt = p2.Position.Y + p2.Size.Y / 2
-						if pt > topY2 then topY2 = pt end
-					end
-				end
+				local topPos = getHighestBasePartTopPosition(model)
+				local topY2 = topPos and topPos.Y or model:GetPivot().Position.Y
 				holoPart.Position = Vector3.new(model:GetPivot().Position.X, topY2 + 3.6, model:GetPivot().Position.Z)
 
 				local flowRate = getFlowRate(drill)
@@ -1493,6 +1533,30 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 	local beltSpeed = totalLen / math.max(0.1, tweenSeconds)
 	local now = workspace:GetServerTimeNow()
 	local nextEjectAt = tonumber(barrelsFolder:GetAttribute("NextEjectAt")) or 0
+	local bootstrapped = barrelsFolder:GetAttribute("VisualStateBootstrapped") == true
+
+	-- Freshly recreated plot visuals should reconcile to the current stored oil state,
+	-- not replay every historical barrel through the conveyor as if it was newly produced.
+	-- We only animate deltas that happen after this initial snapshot has been established.
+	if not bootstrapped then
+		for _, child in ipairs(barrelsFolder:GetChildren()) do
+			child:Destroy()
+		end
+		barrelsFolder:SetAttribute("NextEjectAt", now)
+		for _, tier in ipairs(TIER_ORDER) do
+			local oil = oilByTier[tier] or 0
+			local currentBarrels = math.max(0, math.floor(oil / perBarrel))
+			barrelsFolder:SetAttribute("PendingEject_" .. tier, 0)
+			barrelsFolder:SetAttribute("ScheduledBarrels_" .. tier, currentBarrels)
+			barrelsFolder:SetAttribute(
+				"BarrelRevision_" .. tier,
+				math.max(1, math.floor(tonumber(barrelsFolder:GetAttribute("BarrelRevision_" .. tier)) or 0) + 1)
+			)
+		end
+		barrelsFolder:SetAttribute("VisualStateBootstrapped", true)
+		nextEjectAt = now
+		bootstrapped = true
+	end
 	-- Set drum fill level
 	local drumsFolder = barrelsFolder.Parent and barrelsFolder.Parent:FindFirstChild("Drums")
 	if drumsFolder then
@@ -1510,31 +1574,22 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 	end
 	for _, tier in ipairs(TIER_ORDER) do
 		local oil = oilByTier[tier] or 0
-		local desired = clamp(math.floor(oil / perBarrel), 0, maxPerTier)
+		local currentBarrels = math.max(0, math.floor(oil / perBarrel))
 		local pendingAttr = "PendingEject_" .. tier
 		local scheduledAttr = "ScheduledBarrels_" .. tier
 		local revisionAttr = "BarrelRevision_" .. tier
 		local pendingCount = math.max(0, math.floor(tonumber(barrelsFolder:GetAttribute(pendingAttr)) or 0))
 		local scheduledCount = math.max(0, math.floor(tonumber(barrelsFolder:GetAttribute(scheduledAttr)) or 0))
 		local revision = math.max(0, math.floor(tonumber(barrelsFolder:GetAttribute(revisionAttr)) or 0))
-		-- Count existing piled + conveyor barrels for this tier
-		local piledCount = 0
-		local conveyorCount = 0
-		for _, child in ipairs(barrelsFolder:GetChildren()) do
-			if child:GetAttribute("Tier") == tier then
-				if child:GetAttribute("OnConveyor") then
-					conveyorCount += 1
-				else
-					piledCount += 1
-				end
-			end
-		end
-		local totalVisual = piledCount + conveyorCount
-		local effectiveVisual = totalVisual + pendingCount
-		if desired > scheduledCount then
-			local toSpawn = desired - scheduledCount
-			barrelsFolder:SetAttribute(scheduledAttr, desired)
-			for _ = 1, toSpawn do
+		local delta = currentBarrels - scheduledCount
+		if delta > 0 then
+			local remainingToRepresent = delta
+			local multiplier = if delta > maxPerTier then math.ceil(delta / maxPerTier) else 1
+			local spawnCount = math.ceil(delta / multiplier)
+			barrelsFolder:SetAttribute(scheduledAttr, currentBarrels)
+			for _ = 1, spawnCount do
+				local representedUnits = math.min(multiplier, remainingToRepresent)
+				remainingToRepresent -= representedUnits
 				local previewBarrel = self:_createBarrelForTier(tier, tierTemplates[tier])
 				local queueSpacing = math.max(4, getInstanceFootprint(previewBarrel) + 0.75)
 				previewBarrel:Destroy()
@@ -1561,7 +1616,9 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 					local barrel = self:_createBarrelForTier(tier, tierTemplates[tier])
 					barrel:SetAttribute("Tier", tier)
 					barrel:SetAttribute("OnConveyor", true)
+					barrel:SetAttribute("RepresentedUnits", representedUnits)
 					barrel.Parent = barrelsFolder
+					ensureBarrelMultiplierGui(barrel, representedUnits)
 					local barrelBottomOffset = getInstanceBottomOffset(barrel)
 					local function moveBarrel(pos)
 						local cf = CFrame.new(pos.X, pos.Y + barrelBottomOffset, pos.Z)
@@ -1614,43 +1671,17 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 				end)
 			end
 			barrelsFolder:SetAttribute("NextEjectAt", nextEjectAt)
-		elseif desired < scheduledCount then
+		elseif delta < 0 then
 			revision += 1
 			barrelsFolder:SetAttribute(revisionAttr, revision)
-			barrelsFolder:SetAttribute(scheduledAttr, desired)
+			barrelsFolder:SetAttribute(scheduledAttr, currentBarrels)
 			if pendingCount > 0 then
 				barrelsFolder:SetAttribute(pendingAttr, 0)
 				pendingCount = 0
 			end
-		end
-		if desired < effectiveVisual then
-			-- Remove excess barrels: pile first (top down), then conveyor
-			local toRemove = totalVisual - desired
-			-- Collect piled barrels sorted by pile position (highest first)
-			local piledBarrels = {}
 			for _, child in ipairs(barrelsFolder:GetChildren()) do
-				if child:GetAttribute("Tier") == tier and not child:GetAttribute("OnConveyor") then
-					table.insert(piledBarrels, child)
-				end
-			end
-			table.sort(piledBarrels, function(a, b)
-				local ay = a:IsA("BasePart") and a.Position.Y or (a:IsA("Model") and a:GetPivot().Position.Y or 0)
-				local by = b:IsA("BasePart") and b.Position.Y or (b:IsA("Model") and b:GetPivot().Position.Y or 0)
-				return ay > by -- highest first
-			end)
-			for _, barrel in ipairs(piledBarrels) do
-				if toRemove <= 0 then break end
-				barrel:Destroy()
-				toRemove -= 1
-			end
-			-- If still need to remove, take from conveyor
-			if toRemove > 0 then
-				for _, child in ipairs(barrelsFolder:GetChildren()) do
-					if toRemove <= 0 then break end
-					if child:GetAttribute("Tier") == tier and child:GetAttribute("OnConveyor") then
-						child:Destroy()
-						toRemove -= 1
-					end
+				if child:GetAttribute("Tier") == tier then
+					child:Destroy()
 				end
 			end
 		end
@@ -1819,6 +1850,7 @@ function OilVisualService:_syncOilTanks(plot: Model, snapshot)
 				holoPart.CanCollide = false
 				holoPart.CanQuery = false
 				holoPart.CanTouch = false
+				holoPart:SetAttribute(IGNORE_FOR_VISUAL_BOUNDS_ATTR, true)
 				holoPart.Position = Vector3.new(union.Position.X, shellTopY + 4, union.Position.Z)
 				holoPart.Parent = tube
 
@@ -1928,6 +1960,7 @@ function OilVisualService:_syncOilTanks(plot: Model, snapshot)
 			local surfaceGui = woodSignPart:FindFirstChildOfClass("SurfaceGui")
 			if surfaceGui then
 				-- Let ClickDetector handle click; sign text does not need GUI input.
+				surfaceGui.Enabled = true
 				surfaceGui.Active = false
 				local signLabel = surfaceGui:FindFirstChild("SIGN")
 				if not (signLabel and signLabel:IsA("TextLabel")) then

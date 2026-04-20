@@ -250,6 +250,18 @@ end
 
 function WarehouseService:_onPlayerAdded(player: Player)
 	local userId = player.UserId
+	local existingState = self._stateByUserId[userId]
+	if existingState then
+		if existingState.slotId then
+			self._userBySlot[existingState.slotId] = userId
+			self._slotByUserId[userId] = existingState.slotId
+		end
+		self:_spawnWarehouseVisual(userId)
+		self:_syncBarrelVisuals(userId)
+		self:PushState(userId)
+		return
+	end
+
 	local persisted = self:_loadProfile(userId)
 
 	local state = {
@@ -277,7 +289,7 @@ function WarehouseService:_onPlayerAdded(player: Player)
 	end
 
 	-- Assign a slot
-	if state.slotId and self._userBySlot[state.slotId] then
+	if state.slotId and self._userBySlot[state.slotId] and self._userBySlot[state.slotId] ~= userId then
 		state.slotId = nil -- slot taken by someone else
 	end
 	if not state.slotId then
@@ -545,8 +557,21 @@ function WarehouseService:_spawnWarehouseVisual(userId: number)
 		return
 	end
 
+	local existingVisual = self._visualByUserId[userId]
+	if existingVisual and existingVisual.Parent then
+		existingVisual:Destroy()
+	end
+
+	local finishPlot = Workspace.Map:FindFirstChild("FinishPlot")
+	local orphanName = "Warehouse_" .. tostring(userId)
+	for _, child in ipairs((finishPlot or Workspace):GetChildren()) do
+		if child:IsA("Model") and child.Name == orphanName then
+			child:Destroy()
+		end
+	end
+
 	local visual = self._template:Clone()
-	visual.Name = "Warehouse_" .. tostring(userId)
+	visual.Name = orphanName
 	visual:PivotTo(CFrame.new(pos))
 
 	-- Resolve terminal while ProximityPrompts still exist (text match), then parent, place wood sign, strip prompts.
@@ -574,7 +599,6 @@ function WarehouseService:_spawnWarehouseVisual(userId: number)
 	self:_applyFenceSize(visual, state.tier)
 
 	-- Parent to FinishPlot
-	local finishPlot = Workspace.Map:FindFirstChild("FinishPlot")
 	visual.Parent = finishPlot or Workspace
 	self._visualByUserId[userId] = visual
 	self:_ensureWarehouseWoodSign(visual, userId, terminalForWoodSign)
