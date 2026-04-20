@@ -14,12 +14,12 @@ local VeinCrateOpener = {}
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local CARD_WIDTH = 500
-local CARD_HEIGHT = 500
+local CARD_WIDTH = 358
+local CARD_HEIGHT = 358
 local CARD_GAP = 12
-local VISIBLE_CARDS = 3
+local VISIBLE_CARDS = 4
 local STRIP_WIDTH = (CARD_WIDTH + CARD_GAP) * VISIBLE_CARDS
-local SPIN_DURATION = 4
+local SPIN_DURATION = 5.5
 local HOLD_DURATION = 2
 local function preloadSpritesForPool(pool, winnerDef, groundType: string)
 	local uniqueIds = {}
@@ -70,25 +70,32 @@ local function createCard(veinType: VeinCrateConfig.VeinTypeDef, groundType: str
 	corner.CornerRadius = UDim.new(0, 16)
 	corner.Parent = card
 
-	-- The sprite image fills the entire card — it already has the colored
-	-- background, rays, sparkles, and rounded corners baked in
-	local img = Instance.new("ImageLabel")
-	img.Name = "VeinImage"
-	img.Size = UDim2.fromScale(1, 1)
-	img.Position = UDim2.fromScale(0, 0)
-	img.BackgroundTransparency = 1
-	img.ZIndex = 1
-	img.ScaleType = Enum.ScaleType.Stretch
-	img.ImageRectOffset = Vector2.zero
-	img.ImageRectSize = Vector2.zero
-	if displaySprite then
-		img.Image = displaySprite.imageId
-		img.ImageRectOffset = Vector2.new(displaySprite.rectOffsetX, displaySprite.rectOffsetY)
-		img.ImageRectSize = Vector2.new(displaySprite.rectSizeX, displaySprite.rectSizeY)
+	-- Layer 1: Rarity background image (gradient + rays + sparkles baked in)
+	local bgAssetId = VeinCrateConfig.RarityBackgroundAssets[veinType.rarity]
+	if bgAssetId and bgAssetId ~= "" and bgAssetId ~= "rbxassetid://0" then
+		local bgImg = Instance.new("ImageLabel")
+		bgImg.Name = "RarityBG"
+		bgImg.Size = UDim2.fromScale(1, 1)
+		bgImg.Position = UDim2.fromScale(0, 0)
+		bgImg.BackgroundTransparency = 1
+		bgImg.ZIndex = 0
+		bgImg.ScaleType = Enum.ScaleType.Stretch
+		bgImg.Image = bgAssetId
+		bgImg.Parent = card
 	end
-	img.Parent = card
 
-	if not displaySprite then
+	-- Layer 2: Item icon (transparent background)
+	if displaySprite then
+		local img = Instance.new("ImageLabel")
+		img.Name = "VeinImage"
+		img.Size = UDim2.fromScale(1, 1)
+		img.Position = UDim2.fromScale(0, 0)
+		img.BackgroundTransparency = 1
+		img.ZIndex = 1
+		img.ScaleType = Enum.ScaleType.Stretch
+		img.Image = displaySprite.imageId
+		img.Parent = card
+	else
 		local placeholder = Instance.new("TextLabel")
 		placeholder.Name = "IconPlaceholder"
 		placeholder.Size = UDim2.new(0.82, 0, 0.34, 0)
@@ -109,12 +116,12 @@ local function createCard(veinType: VeinCrateConfig.VeinTypeDef, groundType: str
 	-- ── Text: Name at top ──
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.Name = "NameLabel"
-	nameLabel.Size = UDim2.new(0.92, 0, 0, 34)
+	nameLabel.Size = UDim2.new(0.92, 0, 0, 28)
 	nameLabel.AnchorPoint = Vector2.new(0.5, 0)
 	nameLabel.Position = UDim2.new(0.5, 0, 0.02, 0)
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Font = Enum.Font.GothamBold
-	nameLabel.TextSize = 28
+	nameLabel.TextSize = 22
 	nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 	nameLabel.TextStrokeTransparency = 0
 	nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
@@ -124,15 +131,43 @@ local function createCard(veinType: VeinCrateConfig.VeinTypeDef, groundType: str
 	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	nameLabel.Parent = card
 
-	-- ── Text: Production rate below name ──
+	-- ── Oil type summary below name ──
+	-- e.g. "Crude Dribble + Refined Stream"
+	local OIL_DISPLAY = { DirtOil = "Crude", GoodOil = "Refined", GoldOil = "Premium" }
+	local streamParts = {}
+	for _, stream in ipairs(veinType.streams) do
+		local oilName = OIL_DISPLAY[stream.oilType] or stream.oilType
+		local burstName = stream.burstType or "?"
+		table.insert(streamParts, oilName .. " " .. burstName)
+	end
+	local oilSummary = table.concat(streamParts, " + ")
+
+	local oilLabel = Instance.new("TextLabel")
+	oilLabel.Name = "OilLabel"
+	oilLabel.Size = UDim2.new(0.92, 0, 0, 22)
+	oilLabel.AnchorPoint = Vector2.new(0.5, 0)
+	oilLabel.Position = UDim2.new(0.5, 0, 0.10, 0)
+	oilLabel.BackgroundTransparency = 1
+	oilLabel.Font = Enum.Font.GothamMedium
+	oilLabel.TextSize = 16
+	oilLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+	oilLabel.TextStrokeTransparency = 0
+	oilLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	oilLabel.Text = oilSummary
+	oilLabel.ZIndex = 3
+	oilLabel.TextScaled = false
+	oilLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	oilLabel.Parent = card
+
+	-- ── Production rate ──
 	local bpsLabel = Instance.new("TextLabel")
 	bpsLabel.Name = "BpsLabel"
-	bpsLabel.Size = UDim2.new(0.92, 0, 0, 28)
+	bpsLabel.Size = UDim2.new(0.92, 0, 0, 22)
 	bpsLabel.AnchorPoint = Vector2.new(0.5, 0)
-	bpsLabel.Position = UDim2.new(0.5, 0, 0.09, 0)
+	bpsLabel.Position = UDim2.new(0.5, 0, 0.17, 0)
 	bpsLabel.BackgroundTransparency = 1
 	bpsLabel.Font = Enum.Font.GothamBold
-	bpsLabel.TextSize = 24
+	bpsLabel.TextSize = 18
 	bpsLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
 	bpsLabel.TextStrokeTransparency = 0
 	bpsLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
@@ -140,33 +175,15 @@ local function createCard(veinType: VeinCrateConfig.VeinTypeDef, groundType: str
 	bpsLabel.ZIndex = 3
 	bpsLabel.Parent = card
 
-	-- ── Shiny label (if applicable) ──
-	if veinType.shiny then
-		local shinyLabel = Instance.new("TextLabel")
-		shinyLabel.Name = "ShinyLabel"
-		shinyLabel.Size = UDim2.new(0.92, 0, 0, 26)
-		shinyLabel.AnchorPoint = Vector2.new(0.5, 0)
-		shinyLabel.Position = UDim2.new(0.5, 0, 0.16, 0)
-		shinyLabel.BackgroundTransparency = 1
-		shinyLabel.Font = Enum.Font.GothamBold
-		shinyLabel.TextSize = 24
-		shinyLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
-		shinyLabel.TextStrokeTransparency = 0
-		shinyLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-		shinyLabel.Text = "Shiny"
-		shinyLabel.ZIndex = 3
-		shinyLabel.Parent = card
-	end
-
 	-- ── Rarity label at bottom ──
 	local rarityLabel = Instance.new("TextLabel")
 	rarityLabel.Name = "RarityLabel"
-	rarityLabel.Size = UDim2.new(0.92, 0, 0, 40)
+	rarityLabel.Size = UDim2.new(0.92, 0, 0, 32)
 	rarityLabel.AnchorPoint = Vector2.new(0.5, 1)
 	rarityLabel.Position = UDim2.new(0.5, 0, 0.97, 0)
 	rarityLabel.BackgroundTransparency = 1
 	rarityLabel.Font = Enum.Font.GothamBold
-	rarityLabel.TextSize = 34
+	rarityLabel.TextSize = 26
 	rarityLabel.TextColor3 = rarityStyle.text
 	rarityLabel.TextStrokeTransparency = 0
 	rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
@@ -218,12 +235,22 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 	overlay.BorderSizePixel = 0
 	overlay.Parent = gui
 
+	-- ── Center container (slightly above center) ──
+	local CENTER_TOTAL_H = 60 + 10 + 36 + 10 + CARD_HEIGHT + 20 + 50
+	local centerFrame = Instance.new("Frame")
+	centerFrame.Name = "CenterFrame"
+	centerFrame.Size = UDim2.fromOffset(STRIP_WIDTH + 100, CENTER_TOTAL_H)
+	centerFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+	centerFrame.Position = UDim2.new(0.5, 0, 0.45, 0)
+	centerFrame.BackgroundTransparency = 1
+	centerFrame.Parent = overlay
+
 	-- ── Title ──
 	local title = Instance.new("TextLabel")
 	title.Name = "Title"
 	title.Size = UDim2.new(1, 0, 0, 60)
 	title.AnchorPoint = Vector2.new(0.5, 0)
-	title.Position = UDim2.new(0.5, 0, 0.02, 0)
+	title.Position = UDim2.new(0.5, 0, 0, 0)
 	title.BackgroundTransparency = 1
 	title.Font = Enum.Font.GothamBold
 	title.TextSize = 52
@@ -232,17 +259,17 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 	title.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 	title.Text = "Opening Crate"
 	title.ZIndex = 2
-	title.Parent = overlay
+	title.Parent = centerFrame
 
 	-- ── Red pointer triangle ──
 	local pointerContainer = Instance.new("Frame")
 	pointerContainer.Name = "Pointer"
 	pointerContainer.Size = UDim2.fromOffset(50, 40)
 	pointerContainer.AnchorPoint = Vector2.new(0.5, 0)
-	pointerContainer.Position = UDim2.new(0.5, 0, 0.02, 62)
+	pointerContainer.Position = UDim2.new(0.5, 0, 0, 70)
 	pointerContainer.BackgroundTransparency = 1
 	pointerContainer.ZIndex = 5
-	pointerContainer.Parent = overlay
+	pointerContainer.Parent = centerFrame
 
 	local pointerTri = Instance.new("Frame")
 	pointerTri.Size = UDim2.fromOffset(36, 36)
@@ -263,11 +290,11 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 	stripContainer.Name = "StripContainer"
 	stripContainer.Size = UDim2.fromOffset(STRIP_WIDTH, CARD_HEIGHT)
 	stripContainer.AnchorPoint = Vector2.new(0.5, 0)
-	stripContainer.Position = UDim2.new(0.5, 0, 0.02, 110)
+	stripContainer.Position = UDim2.new(0.5, 0, 0, 106)
 	stripContainer.BackgroundTransparency = 1
 	stripContainer.ClipsDescendants = true
 	stripContainer.ZIndex = 2
-	stripContainer.Parent = overlay
+	stripContainer.Parent = centerFrame
 
 	-- Inner scrolling strip
 	local strip = Instance.new("Frame")
@@ -308,12 +335,12 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 	local winnerCardLeft = (WINNER_INDEX - 1) * (CARD_WIDTH + CARD_GAP)
 	local targetX = -(winnerCardLeft - STRIP_WIDTH / 2 + CARD_WIDTH / 2)
 
-	-- ── Skip button ──
+	-- ── Skip button (during spin) ──
 	local skipBtn = Instance.new("TextButton")
 	skipBtn.Name = "SkipButton"
 	skipBtn.Size = UDim2.fromOffset(200, 50)
 	skipBtn.AnchorPoint = Vector2.new(0.5, 0)
-	skipBtn.Position = UDim2.new(0.5, 0, 0.02, 110 + CARD_HEIGHT + 20)
+	skipBtn.Position = UDim2.new(0.5, 0, 0, 106 + CARD_HEIGHT + 16)
 	skipBtn.BackgroundColor3 = Color3.fromRGB(200, 40, 40)
 	skipBtn.BorderSizePixel = 0
 	skipBtn.Font = Enum.Font.GothamBold
@@ -323,7 +350,7 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 	skipBtn.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 	skipBtn.Text = "SKIP"
 	skipBtn.ZIndex = 3
-	skipBtn.Parent = overlay
+	skipBtn.Parent = centerFrame
 
 	local skipCorner = Instance.new("UICorner")
 	skipCorner.CornerRadius = UDim.new(0, 10)
@@ -336,9 +363,14 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 
 	-- Animation state
 	local skipped = false
+	local dismissed = false
 
 	skipBtn.MouseButton1Click:Connect(function()
-		skipped = true
+		if not skipped then
+			skipped = true
+		else
+			dismissed = true
+		end
 	end)
 
 	-- Animate the spin
@@ -358,7 +390,6 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 
 		-- Snap to winner
 		strip.Position = UDim2.fromOffset(math.floor(targetX), 0)
-		skipBtn.Visible = false
 
 		-- Highlight winner card
 		local winnerCard = cards[WINNER_INDEX]
@@ -376,7 +407,15 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 			pulseTween:Play()
 		end
 
-		task.wait(HOLD_DURATION)
+		-- Change button to NEXT — player must click to dismiss
+		skipBtn.Text = "NEXT"
+		skipBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 40)
+		skipStroke.Color = Color3.fromRGB(80, 255, 80)
+
+		-- Wait for player to click NEXT
+		while not dismissed do
+			task.wait()
+		end
 
 		-- Fade out
 		local fadeTween = TweenService:Create(

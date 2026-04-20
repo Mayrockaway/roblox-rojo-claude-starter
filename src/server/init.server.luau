@@ -133,6 +133,7 @@ OilStateService:SetStateReadyForTimersCallback(function(userId: number, drillDon
 		OilStateService:PushState(userId)
 	end
 	DrillingService:ResumePendingDrillDelays(userId)
+	DrillingService:ReplayUnrevealedTiles(userId)
 	ProspectingService:ResumePendingProspects(userId)
 end)
 OilTankService:Init(RemoteService, OilStateService)

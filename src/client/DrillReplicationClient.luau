@@ -57,6 +57,7 @@ function M.connect(deps: Deps)
 				then Vector3.new(tonumber(data.position.x) or 0, tonumber(data.position.y) or 0, tonumber(data.position.z) or 0)
 				else Vector3.new(0, 0, 0)
 			local dcTemplate = ReplicatedStorage:FindFirstChild("Assets") and ReplicatedStorage.Assets:FindFirstChild("DrillComplete")
+			print("[DrillReplay] pos=", pos, "mag=", pos.Magnitude, "template=", dcTemplate ~= nil)
 			if dcTemplate and pos.Magnitude > 0 then
 				task.spawn(function()
 					local dc = dcTemplate:Clone()

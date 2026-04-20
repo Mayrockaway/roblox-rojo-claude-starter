@@ -38,13 +38,18 @@ local function pendingKey(userId: number, drillId: number): string
 end
 
 function DrillingService:_fireDrillCompleted(userId: number, done: any)
+	local p = done.position
+	-- Support both Vector3 (.X uppercase) and plain table (.x lowercase)
+	local px = (typeof(p) == "Vector3" and p.X) or (typeof(p) == "table" and (p.X or p.x)) or 0
+	local py = (typeof(p) == "Vector3" and p.Y) or (typeof(p) == "table" and (p.Y or p.y)) or 0
+	local pz = (typeof(p) == "Vector3" and p.Z) or (typeof(p) == "table" and (p.Z or p.z)) or 0
 	self._progressEvent:FireAllClients({
 		kind = "completed",
 		ownerUserId = userId,
 		drillId = done.drillId,
 		chunkId = done.chunkId,
 		tileKey = done.tileKey,
-		position = { x = done.position.X, y = done.position.Y, z = done.position.Z },
+		position = { x = px, y = py, z = pz },
 		oilType = done.oilType,
 		hasOil = done.hasOil,
 	})
@@ -87,6 +92,29 @@ function DrillingService:ReplayCompletedDrills(userId: number, completions: { an
 			self:_fireDrillCompleted(userId, done)
 		end
 	end
+end
+
+--- Re-fire "completed" for tiles that were drilled but never revealed (player left before clicking shovel).
+function DrillingService:ReplayUnrevealedTiles(userId: number)
+	local unrevealed = self._oilStateService:GetUnrevealedTiles(userId)
+	if #unrevealed == 0 then return end
+	task.spawn(function()
+		local Players = game:GetService("Players")
+		local player = Players:GetPlayerByUserId(userId)
+		if not player then return end
+		if not player.Character then
+			player.CharacterAdded:Wait()
+		end
+		task.wait(3)
+		player = Players:GetPlayerByUserId(userId)
+		if not player then return end
+		print(string.format("[DrillingService] Replaying %d unrevealed tiles for user %d", #unrevealed, userId))
+		for _, done in ipairs(unrevealed) do
+			local p = done.position
+			print(string.format("[DrillingService] Replay tile %s/%s pos=(%s, %s, %s)", tostring(done.chunkId), tostring(done.tileKey), tostring(p and p.x), tostring(p and p.y), tostring(p and p.z)))
+			self:_fireDrillCompleted(userId, done)
+		end
+	end)
 end
 
 --- After profile load, schedule `task.delay` for each active drill still in progress.

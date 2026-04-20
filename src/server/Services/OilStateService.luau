@@ -1491,6 +1491,49 @@ function OilStateService:RehydrateExpiredTimers(userId: number): ({ any }, { any
 	return drillDone, prospectDone
 end
 
+--- Find tiles with revealPending=true (drilled but player never clicked shovel) and return
+--- payloads matching _fireDrillCompleted format so the client can re-spawn DrillComplete models.
+function OilStateService:GetUnrevealedTiles(userId: number): { any }
+	local state = self._statesByUserId[userId]
+	if not state then return {} end
+	local plot = state.plot or self._plotService:GetOwnedPlot(userId)
+	local results = {}
+	for chunkId, chunk in pairs(state.chunksById) do
+		if chunk.tiles then
+			for tileKey, tile in pairs(chunk.tiles) do
+				if tile.drilled and tile.revealPending and typeof(tile.revealedAt) ~= "number" then
+					local px, py, pz = 0, 0, 0
+					-- Always resolve from live plot geometry — saved drillPosition is from
+					-- a previous plot assignment and has wrong absolute world coordinates
+					if plot then
+						local topY = self._plotService:GetChunkTileSurfaceWorldY(plot, chunkId, tileKey)
+						local sectionModel = self._plotService:GetChunkModel(plot, chunkId)
+						if topY and sectionModel then
+							py = topY
+							local tilePart = self._plotService:FindChunkTileBasePart(sectionModel, tileKey)
+							if tilePart then
+								px = tilePart.Position.X
+								pz = tilePart.Position.Z
+							end
+						end
+					end
+					if px ~= 0 or pz ~= 0 then
+						table.insert(results, {
+							drillId = 0,
+							chunkId = chunkId,
+							tileKey = tileKey,
+							position = { x = px, y = py, z = pz },
+							oilType = tile.oilType,
+							hasOil = tile.hasOil,
+						})
+					end
+				end
+			end
+		end
+	end
+	return results
+end
+
 -- Begin a drill operation on a tile. Server-authoritative timer; pump placement is blocked
 -- until CompleteDrill runs (called by DrillingService after DrillTier.drillSeconds).
 function OilStateService:TryStartDrill(userId: number, payload): (boolean, string, string, any)
@@ -1599,6 +1642,7 @@ function OilStateService:CompleteDrill(userId: number, drillId: number): (boolea
 	local tile = chunk.tiles[entry.tileKey]
 	tile.drilled = true
 	tile.revealPending = true -- wait for player to press E on DrillComplete
+	tile.drillPosition = { x = entry.position.X, y = entry.position.Y, z = entry.position.Z }
 
 	local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
 	local groundTypeName = chunk.groundType or chunk.biome or "Bronze"
@@ -2735,12 +2779,17 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		self:_applyPersistedIntoState(state, persisted, plot)
 	end
 
-	-- Clear stale tubeDelayed/revealPending from persisted tiles (should only exist transiently)
+	-- Clear stale tubeDelayed from persisted tiles; preserve revealPending for drilled-but-unrevealed tiles
 	for _, chunk in pairs(state.chunksById) do
 		if chunk.tiles then
 			for _, tile in pairs(chunk.tiles) do
 				tile.tubeDelayed = nil
-				tile.revealPending = nil
+				if tile.drilled and tile.revealPending and typeof(tile.revealedAt) ~= "number" then
+					-- Keep revealPending — player drilled but never clicked the shovel
+					tile.revealPending = true
+				else
+					tile.revealPending = nil
+				end
 				if tile.hasOil ~= false and typeof(tile.revealedAt) == "number" and typeof(tile.visualsStartedAt) ~= "number" then
 					tile.visualsStartedAt = tile.revealedAt
 				end
