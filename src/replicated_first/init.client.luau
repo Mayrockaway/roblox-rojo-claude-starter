@@ -1,44 +1,4 @@
 --!strict
--- LoadingBootstrap (ReplicatedFirst.LoadingBootstrap)
---
--- Roblox replicates `ReplicatedFirst` to the client BEFORE `Workspace` /
--- `StarterGui` / characters / sounds. Anything we want to render on the
--- player's first frame (a cover image to hide pop-in, asset streaming, and
--- the initial HUD bind) MUST live here. A `LocalScript` under
--- `ReplicatedFirst` is the only place where this works reliably.
---
--- Source-of-truth contract:
---   * Visuals (`ScreenGui` named `LoadingScreenGui`, `Canvas`, `Cover`,
---     `BottomBar.ProgressTrack.ProgressFill`, `BottomBar.LoadingLabel`) are
---     AUTHORED IN STUDIO under `ReplicatedFirst` (one-shot via
---     `scripts/mcp_author_loading_screen.luau`).
---     `default.project.json` lists `ReplicatedFirst` with
---     `$ignoreUnknownInstances = true` so the authored ScreenGui survives
---     Rojo sync. Per `ui-architecture.mdc`, behavior lives here in Lua;
---     layout + styling stay in Studio.
---   * If the authored ScreenGui is missing (fresh place / pre-author), this
---     script builds a minimal fallback so loading still covers correctly.
---
--- Scaling contract (matches `ui-scaling-responsive.mdc`):
---   * `Canvas` viewport-root: scale `(1, 1)`, centered.
---   * Cover `ImageLabel`: scale `(1, 1)`, `ScaleType = Crop` so the asset
---     fills any phone / desktop / console aspect with no bars and no stretch.
---   * Progress bar uses scale-based `Size` so it shrinks with phone width;
---     bottom label uses `TextScaled` + `UITextSizeConstraint` (authored).
---
--- Behavior summary:
---   1. Remove default Roblox loading UI and parent the cover ScreenGui.
---   2. Start BGM as soon as the BGM template replicates (idempotent with
---      `BgmPlayer` so the later `BgmBootstrap.client.luau` is a no-op).
---   3. Wait for `game.Loaded`, then `ContentProvider:PreloadAsync` EVERY
---      `Instance` reachable from `ReplicatedStorage`, `Workspace`,
---      `Lighting`, `SoundService`, `MaterialService`, `StarterGui`,
---      `StarterPack`, `StarterPlayer`. The async callback drives a live
---      progress-fill tween + a "Loading… N%" label.
---   4. Wait for the local character to spawn and for `PlayerGui.HUD` to clone
---      from `StarterGui` (the canonical first-painted-gameplay-frame cue).
---   5. Force the bar to 100%, brief grace, then fade `Canvas` + `Cover` +
---      bar + label transparencies to 1 and `:Destroy()`.
 
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -47,15 +7,19 @@ local ContentProvider = game:GetService("ContentProvider")
 local TweenService = game:GetService("TweenService")
 local SoundService = game:GetService("SoundService")
 local RunService = game:GetService("RunService")
-local Lighting = game:GetService("Lighting")
-local MaterialService = game:GetService("MaterialService")
-local StarterGui = game:GetService("StarterGui")
-local StarterPack = game:GetService("StarterPack")
-local StarterPlayer = game:GetService("StarterPlayer")
-local Workspace = game:GetService("Workspace")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local LoadingManifest = require(Shared:WaitForChild("Config"):WaitForChild("LoadingManifest"))
+
+type LoadingGroup = typeof(LoadingManifest.getGroups()[1])
 
 local COVER_ASSET = "rbxassetid://94495457583750"
-local BGM_CLONE_NAME = "OTS_ClientBGM" -- MUST match `BgmPlayer.CLONE_NAME` for de-dupe.
+local BGM_CLONE_NAME = "OTS_ClientBGM"
+local PRELOAD_BATCH_SIZE = 24
+local MIN_SCREEN_TIME_SECONDS = 1.2
+local BAR_SETTLE_TIMEOUT_SECONDS = 0.6
+local FINAL_GRACE_SECONDS = 0.25
+local HUD_WAIT_TIMEOUT_SECONDS = 8
 
 pcall(function()
 	ReplicatedFirst:RemoveDefaultLoadingScreen()
@@ -64,11 +28,6 @@ end)
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
---- Build a minimal loading shell when no authored `LoadingScreenGui` is
---- present in `ReplicatedFirst`. Mirrors the Studio author intent (Canvas
---- viewport-root + full-bleed Cover + ProgressTrack/ProgressFill + label) so
---- visuals are correct on phone / desktop / console even before the asset is
---- authored in Studio.
 local function buildFallbackScreen(): ScreenGui
 	local screen = Instance.new("ScreenGui")
 	screen.Name = "LoadingScreenGui"
@@ -116,9 +75,11 @@ local function buildFallbackScreen(): ScreenGui
 	track.BorderSizePixel = 0
 	track.ClipsDescendants = true
 	track.Parent = bottomBar
+
 	local trackCorner = Instance.new("UICorner")
 	trackCorner.CornerRadius = UDim.new(1, 0)
 	trackCorner.Parent = track
+
 	local trackStroke = Instance.new("UIStroke")
 	trackStroke.Color = Color3.fromRGB(255, 255, 255)
 	trackStroke.Thickness = 1
@@ -133,6 +94,7 @@ local function buildFallbackScreen(): ScreenGui
 	fill.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 	fill.BorderSizePixel = 0
 	fill.Parent = track
+
 	local fillCorner = Instance.new("UICorner")
 	fillCorner.CornerRadius = UDim.new(1, 0)
 	fillCorner.Parent = fill
@@ -149,8 +111,9 @@ local function buildFallbackScreen(): ScreenGui
 	label.TextStrokeTransparency = 0.4
 	label.TextScaled = true
 	label.TextWrapped = true
-	label.Text = "Loading…"
+	label.Text = "Loading..."
 	label.Parent = bottomBar
+
 	local sizeCap = Instance.new("UITextSizeConstraint")
 	sizeCap.MinTextSize = 12
 	sizeCap.MaxTextSize = 28
@@ -159,14 +122,12 @@ local function buildFallbackScreen(): ScreenGui
 	return screen
 end
 
---- Resolve the authored `LoadingScreenGui` under `ReplicatedFirst`. We MOVE
---- (not clone) it to `PlayerGui` so it owns its lifetime cleanly and a
---- second `CharacterAdded` cannot resurrect it from `ReplicatedFirst`.
 local function acquireScreen(): ScreenGui
 	local existing = ReplicatedFirst:FindFirstChild("LoadingScreenGui")
 	if existing and existing:IsA("ScreenGui") then
 		return existing
 	end
+
 	local deadline = os.clock() + 0.5
 	while os.clock() < deadline do
 		existing = ReplicatedFirst:FindFirstChild("LoadingScreenGui")
@@ -175,6 +136,7 @@ local function acquireScreen(): ScreenGui
 		end
 		RunService.Heartbeat:Wait()
 	end
+
 	return buildFallbackScreen()
 end
 
@@ -185,110 +147,111 @@ screen.DisplayOrder = math.max(screen.DisplayOrder, 1_000_000)
 screen.Enabled = true
 screen.Parent = playerGui
 
--- Resolve progress widgets (authored in Studio or built by the fallback).
--- All lookups are tolerant: a missing widget simply means that piece of
--- feedback is skipped, never an error.
-local canvasFrame = screen:FindFirstChild("Canvas")
-local coverImage = canvasFrame and canvasFrame:FindFirstChild("Cover")
+local canvasFrame = screen:FindFirstChild("Canvas", true)
+local coverImage = canvasFrame and canvasFrame:FindFirstChild("Cover", true)
+
 local progressTrack: Frame? = nil
 local progressFill: Frame? = nil
 local loadingLabel: TextLabel? = nil
 do
-	if canvasFrame then
-		local anyTrack = canvasFrame:FindFirstChild("ProgressTrack", true)
-		if anyTrack and anyTrack:IsA("Frame") then
-			progressTrack = anyTrack
-			local anyFill = anyTrack:FindFirstChild("ProgressFill", true)
-			if anyFill and anyFill:IsA("Frame") then
-				progressFill = anyFill
-			end
+	local anyTrack = canvasFrame and canvasFrame:FindFirstChild("ProgressTrack", true)
+	if anyTrack and anyTrack:IsA("Frame") then
+		progressTrack = anyTrack
+		local anyFill = anyTrack:FindFirstChild("ProgressFill", true)
+		if anyFill and anyFill:IsA("Frame") then
+			progressFill = anyFill
 		end
-		local anyLabel = canvasFrame:FindFirstChild("LoadingLabel", true)
-		if anyLabel and anyLabel:IsA("TextLabel") then
-			loadingLabel = anyLabel
-		end
+	end
+
+	local anyLabel = canvasFrame and canvasFrame:FindFirstChild("LoadingLabel", true)
+	if anyLabel and anyLabel:IsA("TextLabel") then
+		loadingLabel = anyLabel
 	end
 end
 
--- Progress state shared between the preload coroutine and the UI tween loop.
--- `targetRatio` is the authoritative source the bar tweens toward; per-frame
--- code lerps `currentRatio` to it. Using a tween-toward-target instead of
--- a single TweenService:Create per callback keeps the bar moving smoothly
--- even when 200 assets resolve in the same frame.
 local targetRatio = 0
 local currentRatio = 0
-local preloadDone = false
-local preloadTotal = 0
+local targetLabel = "Starting..."
+local blockingDone = false
+local screenShownAt = os.clock()
 
-local function setLabelPercent(ratio: number)
-	if not loadingLabel then
-		return
-	end
+local function formatProgressLabel(labelText: string, ratio: number): string
 	local pct = math.clamp(math.floor(ratio * 100 + 0.5), 0, 100)
-	loadingLabel.Text = string.format("Loading… %d%%", pct)
+	return string.format("%s %d%%", labelText, pct)
 end
 
-setLabelPercent(0)
+local function setProgress(labelText: string?, ratio: number?)
+	if typeof(labelText) == "string" and labelText ~= "" then
+		targetLabel = labelText
+	end
+	if typeof(ratio) == "number" then
+		targetRatio = math.max(targetRatio, math.clamp(ratio, 0, 1))
+	end
+end
+
 if progressFill then
 	progressFill.Size = UDim2.fromScale(0, progressFill.Size.Y.Scale)
+end
+if loadingLabel then
+	loadingLabel.Text = formatProgressLabel(targetLabel, 0)
 end
 
 local progressLoopThread = task.spawn(function()
 	while screen.Parent do
-		-- Lerp toward `targetRatio` at a rate that finishes ~0.25s after each
-		-- jump, smooth on phones (Heartbeat dt) and not jittery on desktop.
 		local dt = RunService.Heartbeat:Wait()
-		local lerp = math.clamp(dt / 0.25, 0, 1)
-		currentRatio += (targetRatio - currentRatio) * lerp
+		local lerpAlpha = math.clamp(dt / 0.25, 0, 1)
+		currentRatio += (targetRatio - currentRatio) * lerpAlpha
 		if progressFill then
 			progressFill.Size = UDim2.fromScale(currentRatio, progressFill.Size.Y.Scale)
 		end
-		setLabelPercent(currentRatio)
-		if preloadDone and currentRatio >= 0.999 then
+		if loadingLabel then
+			loadingLabel.Text = formatProgressLabel(targetLabel, currentRatio)
+		end
+		if blockingDone and currentRatio >= 0.999 then
 			break
 		end
 	end
 end)
 
---- Start BGM as early as `ReplicatedStorage.Assets.SFX.BGM` is reachable.
---- Idempotent with `src/client/BgmPlayer.luau` -- both create the same
---- `SoundService.OTS_ClientBGM` clone, and the second one to run sees the
---- existing instance and bails. Runs in a coroutine so a slow CDN does not
---- block the loading bar from showing.
 local function startBgmAsync()
 	task.spawn(function()
 		if SoundService:FindFirstChild(BGM_CLONE_NAME) then
 			return
 		end
+
 		local okAssets, assets = pcall(function()
 			return ReplicatedStorage:WaitForChild("Assets", 60)
 		end)
 		if not okAssets or not assets then
 			return
 		end
+
 		local okSfx, sfx = pcall(function()
 			return assets:WaitForChild("SFX", 60)
 		end)
 		if not okSfx or not sfx then
 			return
 		end
+
 		local okBgm, bgm = pcall(function()
 			return sfx:WaitForChild("BGM", 60)
 		end)
 		if not okBgm or not bgm or not bgm:IsA("Sound") then
 			return
 		end
+
 		if SoundService:FindFirstChild(BGM_CLONE_NAME) then
 			return
 		end
-		-- Pre-warm the BGM file itself so playback starts crisp instead of
-		-- with a half-second silent buffer while the audio CDN responds.
+
 		pcall(function()
 			ContentProvider:PreloadAsync({ bgm })
 		end)
+
 		if SoundService:FindFirstChild(BGM_CLONE_NAME) then
 			return
 		end
+
 		local clone = bgm:Clone()
 		clone.Name = BGM_CLONE_NAME
 		clone.Playing = false
@@ -297,136 +260,316 @@ local function startBgmAsync()
 	end)
 end
 
-startBgmAsync()
-
 local function waitForGameLoaded()
 	if not game:IsLoaded() then
 		game.Loaded:Wait()
 	end
 end
 
---- Collect every `Instance` that could host an asset reference (`Image`,
---- `SoundId`, `MeshId`, `TextureId`, decals, particles, materials, etc.).
---- Pulling whole-service descendants and letting `ContentProvider` figure
---- out which ones have content properties is simpler and more exhaustive
---- than maintaining a hand-curated allow-list -- and per the user's spec we
---- want EVERY asset preloaded before the cover lifts.
-local function gatherEverything(): { Instance }
-	local out: { Instance } = {}
-	local roots: { Instance } = {
-		ReplicatedStorage,
-		Workspace,
-		Lighting,
-		SoundService,
-		MaterialService,
-		StarterGui,
-		StarterPack,
-		StarterPlayer,
-	}
-	for _, root in ipairs(roots) do
-		table.insert(out, root)
-		for _, d in ipairs(root:GetDescendants()) do
-			table.insert(out, d)
-		end
-	end
-	return out
-end
-
-waitForGameLoaded()
-
-local assetList = gatherEverything()
-preloadTotal = #assetList
-
-if preloadTotal == 0 then
-	preloadDone = true
-	targetRatio = 1
-else
-	-- `PreloadAsync(list, callback)` fires the callback once per content id
-	-- as it resolves (success OR failure -- both count as "done" for our
-	-- progress meter). We aggregate progress on a Heartbeat tick so a burst
-	-- of cached assets does not thrash the tween loop with thousands of
-	-- per-callback Size writes per frame.
-	task.spawn(function()
-		local resolved = 0
-		local function onResolved(_contentId: string, _status: Enum.AssetFetchStatus)
-			resolved += 1
-			targetRatio = math.min(1, resolved / preloadTotal)
-		end
-		local ok, err = pcall(function()
-			ContentProvider:PreloadAsync(assetList, onResolved)
-		end)
-		if not ok then
-			warn("[LoadingBootstrap] PreloadAsync failed: " .. tostring(err))
-		end
-		preloadDone = true
-		targetRatio = 1
-	end)
-end
-
 local function waitForCharacter()
-	local char = player.Character
-	if not char then
-		char = player.CharacterAdded:Wait()
+	local character = player.Character
+	if character then
+		return character
 	end
-	return char
+	return player.CharacterAdded:Wait()
 end
 
---- Wait for the HUD `ScreenGui` to clone from `StarterGui` into `PlayerGui`.
---- This is the canonical "first painted gameplay frame" cue for this game
---- (everything else hangs off `HUD.Canvas`). Bounded so a missing HUD never
---- stalls login indefinitely.
 local function waitForHud()
 	local hud = playerGui:FindFirstChild("HUD")
 	if hud then
 		return hud
 	end
-	local done = false
-	local conn
-	conn = playerGui.ChildAdded:Connect(function(child)
+
+	local found = false
+	local conn = playerGui.ChildAdded:Connect(function(child)
 		if child.Name == "HUD" and child:IsA("ScreenGui") then
-			done = true
+			found = true
 		end
 	end)
-	local deadline = os.clock() + 8
-	while not done and os.clock() < deadline do
+
+	local deadline = os.clock() + HUD_WAIT_TIMEOUT_SECONDS
+	while not found and os.clock() < deadline do
 		task.wait(0.05)
 	end
-	if conn then
-		conn:Disconnect()
-	end
+	conn:Disconnect()
+
 	return playerGui:FindFirstChild("HUD")
 end
+
+local function splitBatches<T>(items: { T }, batchSize: number): { { T } }
+	local batches: { { T } } = {}
+	if #items == 0 then
+		return batches
+	end
+
+	local index = 1
+	while index <= #items do
+		local batch: { T } = {}
+		for _ = index, math.min(index + batchSize - 1, #items) do
+			table.insert(batch, items[index])
+			index += 1
+		end
+		table.insert(batches, batch)
+	end
+	return batches
+end
+
+type InstanceDeduper = { [Instance]: boolean }
+type ContentDeduper = { [string]: boolean }
+type PreparedTargets = {
+	targets: { any },
+	cleanup: (() -> ())?,
+	missingRequired: number,
+	missingOptional: number,
+}
+
+local function resolveEntry(entry: any): Instance?
+	local serviceName = entry.service
+	if typeof(serviceName) ~= "string" or serviceName == "" then
+		return nil
+	end
+
+	local okRoot, root = pcall(function()
+		return game:GetService(serviceName)
+	end)
+	if not okRoot or not root then
+		return nil
+	end
+
+	local current: Instance = root
+	for _, segment in ipairs(entry.segments or {}) do
+		local nextInst = current:FindFirstChild(segment)
+		if not nextInst then
+			return nil
+		end
+		current = nextInst
+	end
+
+	return current
+end
+
+local function prepareTargets(group: LoadingGroup, seenInstances: InstanceDeduper, seenContentIds: ContentDeduper): PreparedTargets
+	local targets: { any } = {}
+	local cleanupItems: { Instance } = {}
+	local missingRequired = 0
+	local missingOptional = 0
+
+	if group.entries then
+		for _, entry in ipairs(group.entries) do
+			local resolved = resolveEntry(entry)
+			if not resolved then
+				if entry.optional == true or group.optional == true then
+					missingOptional += 1
+				else
+					missingRequired += 1
+				end
+			else
+				if not seenInstances[resolved] then
+					seenInstances[resolved] = true
+					table.insert(targets, resolved)
+				end
+				if group.kind == "instance_tree" or entry.includeDescendants == true then
+					for _, descendant in ipairs(resolved:GetDescendants()) do
+						if not seenInstances[descendant] then
+							seenInstances[descendant] = true
+							table.insert(targets, descendant)
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if group.uris then
+		for _, uri in ipairs(group.uris) do
+			if typeof(uri) == "string" and uri ~= "" and not seenContentIds[uri] then
+				seenContentIds[uri] = true
+				local img = Instance.new("ImageLabel")
+				img.Name = "LoadingPreloadImage"
+				img.BackgroundTransparency = 1
+				img.Visible = false
+				img.Image = uri
+				table.insert(targets, img)
+				table.insert(cleanupItems, img)
+			end
+		end
+	end
+
+	if group.contentIds then
+		for _, contentId in ipairs(group.contentIds) do
+			if typeof(contentId) == "string" and contentId ~= "" and not seenContentIds[contentId] then
+				seenContentIds[contentId] = true
+				table.insert(targets, contentId)
+			end
+		end
+	end
+
+	local cleanup = nil
+	if #cleanupItems > 0 then
+		cleanup = function()
+			for _, item in ipairs(cleanupItems) do
+				item:Destroy()
+			end
+		end
+	end
+
+	return {
+		targets = targets,
+		cleanup = cleanup,
+		missingRequired = missingRequired,
+		missingOptional = missingOptional,
+	}
+end
+
+local function preloadBatch(targets: { any }): number
+	local failureCount = 0
+	local ok, err = pcall(function()
+		ContentProvider:PreloadAsync(targets, function(_contentId: string, status: Enum.AssetFetchStatus)
+			if status ~= Enum.AssetFetchStatus.Success then
+				failureCount += 1
+			end
+		end)
+	end)
+	if not ok then
+		failureCount += 1
+		warn("[LoadingBootstrap] PreloadAsync batch failed: " .. tostring(err))
+	end
+	return failureCount
+end
+
+local function runGroup(
+	group: LoadingGroup,
+	progressBase: number,
+	blockingWeightTotal: number,
+	seenInstances: InstanceDeduper,
+	seenContentIds: ContentDeduper,
+	updateVisualProgress: boolean
+): (number, number)
+	local startedAt = os.clock()
+	local prepared = prepareTargets(group, seenInstances, seenContentIds)
+	local missingOptional = prepared.missingOptional
+	local labelText = "Loading " .. group.label .. "..."
+
+	if prepared.missingRequired > 0 then
+		warn(string.format("[LoadingBootstrap] %s missing %d required entries.", group.id, prepared.missingRequired))
+	end
+	if missingOptional > 0 then
+		warn(string.format("[LoadingBootstrap] %s missing %d optional entries.", group.id, missingOptional))
+	end
+
+	if updateVisualProgress then
+		setProgress(labelText, progressBase)
+	end
+
+	local failureCount = 0
+	local batches = splitBatches(prepared.targets, PRELOAD_BATCH_SIZE)
+	if #batches == 0 then
+		if updateVisualProgress and blockingWeightTotal > 0 then
+			setProgress(labelText, progressBase + (group.weight / blockingWeightTotal))
+		end
+	else
+		for index, batch in ipairs(batches) do
+			failureCount += preloadBatch(batch)
+			if updateVisualProgress and blockingWeightTotal > 0 then
+				local groupProgress = group.weight * (index / #batches)
+				setProgress(labelText, progressBase + (groupProgress / blockingWeightTotal))
+			end
+		end
+	end
+
+	if prepared.cleanup then
+		prepared.cleanup()
+	end
+
+	local elapsed = os.clock() - startedAt
+	print(string.format(
+		"[LoadingBootstrap] %s finished in %.2fs (%d targets, %d failures, %d optional misses).",
+		group.id,
+		elapsed,
+		#prepared.targets,
+		failureCount,
+		missingOptional
+	))
+
+	return failureCount, missingOptional
+end
+
+startBgmAsync()
+setProgress("Starting...", 0)
+
+local groups = LoadingManifest.getGroups()
+local blockingGroups: { LoadingGroup } = {}
+local deferredGroups: { LoadingGroup } = {}
+local blockingWeightTotal = 0
+
+for _, group in ipairs(groups) do
+	if group.phase == "deferred" then
+		table.insert(deferredGroups, group)
+	else
+		table.insert(blockingGroups, group)
+		blockingWeightTotal += math.max(group.weight, 0)
+	end
+end
+
+local blockingFailures = 0
+local optionalGroupMisses = 0
+task.spawn(function()
+	local seenInstances: InstanceDeduper = {}
+	local seenContentIds: ContentDeduper = {}
+	local progressBase = 0
+	local blockingStartedAt = os.clock()
+
+	for _, group in ipairs(blockingGroups) do
+		if group.id ~= "LoadingShell" then
+			waitForGameLoaded()
+		end
+		local groupFailures, groupOptionalMisses = runGroup(
+			group,
+			progressBase,
+			blockingWeightTotal,
+			seenInstances,
+			seenContentIds,
+			true
+		)
+		blockingFailures += groupFailures
+		optionalGroupMisses += groupOptionalMisses
+		progressBase += group.weight / math.max(blockingWeightTotal, 1)
+	end
+
+	print(string.format(
+		"[LoadingBootstrap] Blocking preload complete in %.2fs (failures=%d, optional misses=%d).",
+		os.clock() - blockingStartedAt,
+		blockingFailures,
+		optionalGroupMisses
+	))
+
+	blockingDone = true
+	setProgress("Finishing up...", 1)
+end)
 
 waitForCharacter()
 waitForHud()
 
--- Block until the preload coroutine has actually finished (every asset
--- resolved). The earlier waits already overlap with preloading, so this
--- usually returns immediately on a warm cache and only stalls on a cold
--- first join.
-while not preloadDone do
+while not blockingDone do
 	task.wait(0.05)
 end
 
--- Force the visual bar to 100% and let the tween loop catch up. Without
--- this, a cold preload that finished while the player was still in the
--- character/HUD waits would leave the bar at e.g. 92% before the fade.
-targetRatio = 1
-local barDeadline = os.clock() + 0.6
+local minTimeRemaining = MIN_SCREEN_TIME_SECONDS - (os.clock() - screenShownAt)
+if minTimeRemaining > 0 then
+	task.wait(minTimeRemaining)
+end
+
+local barDeadline = os.clock() + BAR_SETTLE_TIMEOUT_SECONDS
 while currentRatio < 0.999 and os.clock() < barDeadline do
 	task.wait()
 end
 
--- Small grace so first-frame controllers (CashStrip text, hotbar slots,
--- StraitStatusPanel etc.) stamp in BEFORE we lift the cover.
-task.wait(0.25)
+task.wait(FINAL_GRACE_SECONDS)
 
 if progressLoopThread then
 	pcall(task.cancel, progressLoopThread)
 end
 
---- Fade the cover. Tween BackgroundTransparency, ImageTransparency, bar fill
---- transparency, and label transparencies together so neither plane snaps.
 local function fadeAndDestroy()
 	local fadeInfo = TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
@@ -438,11 +581,11 @@ local function fadeAndDestroy()
 	end
 	if progressTrack then
 		TweenService:Create(progressTrack, fadeInfo, { BackgroundTransparency = 1 }):Play()
-		for _, d in ipairs(progressTrack:GetDescendants()) do
-			if d:IsA("Frame") then
-				TweenService:Create(d, fadeInfo, { BackgroundTransparency = 1 }):Play()
-			elseif d:IsA("UIStroke") then
-				TweenService:Create(d, fadeInfo, { Transparency = 1 }):Play()
+		for _, descendant in ipairs(progressTrack:GetDescendants()) do
+			if descendant:IsA("Frame") then
+				TweenService:Create(descendant, fadeInfo, { BackgroundTransparency = 1 }):Play()
+			elseif descendant:IsA("UIStroke") then
+				TweenService:Create(descendant, fadeInfo, { Transparency = 1 }):Play()
 			end
 		end
 	end
@@ -458,3 +601,31 @@ local function fadeAndDestroy()
 end
 
 fadeAndDestroy()
+
+task.spawn(function()
+	local seenInstances: InstanceDeduper = {}
+	local seenContentIds: ContentDeduper = {}
+	local deferredFailures = 0
+	local deferredOptionalMisses = 0
+	local deferredStartedAt = os.clock()
+
+	for _, group in ipairs(deferredGroups) do
+		local groupFailures, groupOptionalMisses = runGroup(
+			group,
+			0,
+			1,
+			seenInstances,
+			seenContentIds,
+			false
+		)
+		deferredFailures += groupFailures
+		deferredOptionalMisses += groupOptionalMisses
+	end
+
+	print(string.format(
+		"[LoadingBootstrap] Deferred warm complete in %.2fs (failures=%d, optional misses=%d).",
+		os.clock() - deferredStartedAt,
+		deferredFailures,
+		deferredOptionalMisses
+	))
+end)

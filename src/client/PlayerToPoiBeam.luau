@@ -183,26 +183,11 @@ function PlayerToPoiBeam._tryWireBeamChannel(beamId: string, player: Player)
 	beam.Attachment1 = a1
 	applyStyle(beam, style)
 	beam:SetAttribute(ATT_TAG, true)
-	-- **Hide until texture has loaded** to avoid the "thick yellow rectangle" frame the engine
-	-- shows while the asset is still being fetched (texture mask not applied yet).
-	local hasTexture = typeof(beam.Texture) == "string" and beam.Texture ~= ""
-	beam.Enabled = not hasTexture
+	-- LoadingBootstrap pre-warms FTUE beam textures during join, so the beam can
+	-- render immediately here without its own per-attach preload path.
+	beam.Enabled = true
 	beam.Parent = hrp
 	ch.activeBeam = beam
-
-	if hasTexture then
-		local textureId = beam.Texture
-		task.spawn(function()
-			local okPreload = pcall(function()
-				game:GetService("ContentProvider"):PreloadAsync({ textureId })
-			end)
-			if okPreload and beam.Parent and ch.activeBeam == beam then
-				beam.Enabled = true
-			elseif beam.Parent and ch.activeBeam == beam then
-				beam.Enabled = true
-			end
-		end)
-	end
 
 	ch.targetAncestryConn = ch.trackedTarget.AncestryChanged:Connect(function(_, parent)
 		if parent == nil then

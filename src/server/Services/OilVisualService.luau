@@ -1286,24 +1286,38 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				holoPart.CanCollide = false
 				holoPart.CanQuery = false
 				holoPart.CanTouch = false
-				holoPart.Position = Vector3.new(model:GetPivot().Position.X, topY + 2, model:GetPivot().Position.Z)
+				holoPart.Position = Vector3.new(model:GetPivot().Position.X, topY + 3.6, model:GetPivot().Position.Z)
 				holoPart.Parent = model
 				local billboard = Instance.new("BillboardGui")
 				billboard.Name = "HoloGui"
-				billboard.Size = UDim2.fromOffset(80, 24)
-				billboard.StudsOffset = Vector3.new(0, 0, 0)
+				billboard.Size = UDim2.fromOffset(150, 44)
+				billboard.StudsOffsetWorldSpace = Vector3.new(0, 0.2, 0)
 				billboard.AlwaysOnTop = true
 				billboard.LightInfluence = 0
+				billboard.MaxDistance = 180
 				billboard.Parent = holoPart
+				local backdrop = Instance.new("Frame")
+				backdrop.Name = "Backdrop"
+				backdrop.AnchorPoint = Vector2.new(0.5, 0.5)
+				backdrop.Position = UDim2.fromScale(0.5, 0.5)
+				backdrop.Size = UDim2.fromScale(1, 1)
+				backdrop.BackgroundColor3 = Color3.fromRGB(8, 18, 28)
+				backdrop.BackgroundTransparency = 0.28
+				backdrop.BorderSizePixel = 0
+				backdrop.Parent = billboard
+				local backdropCorner = Instance.new("UICorner")
+				backdropCorner.CornerRadius = UDim.new(0, 10)
+				backdropCorner.Parent = backdrop
 				local label = Instance.new("TextLabel")
 				label.Name = "Info"
 				label.Size = UDim2.fromScale(1, 1)
 				label.BackgroundTransparency = 1
 				label.Font = Enum.Font.LuckiestGuy
-				label.TextSize = 26
-				label.TextTransparency = 0.35
-				label.TextStrokeTransparency = 0.5
+				label.TextSize = 34
+				label.TextTransparency = 0.05
+				label.TextStrokeTransparency = 0
 				label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+				label.ZIndex = 2
 				label.Parent = billboard
 			end
 			-- Update hologram text + reposition
@@ -1317,7 +1331,7 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 						if pt > topY2 then topY2 = pt end
 					end
 				end
-				holoPart.Position = Vector3.new(model:GetPivot().Position.X, topY2 + 2, model:GetPivot().Position.Z)
+				holoPart.Position = Vector3.new(model:GetPivot().Position.X, topY2 + 3.6, model:GetPivot().Position.Z)
 
 				local flowRate = getFlowRate(drill)
 				infoLabel.Text = string.format("%.1f/s", flowRate)
@@ -1498,7 +1512,11 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 		local oil = oilByTier[tier] or 0
 		local desired = clamp(math.floor(oil / perBarrel), 0, maxPerTier)
 		local pendingAttr = "PendingEject_" .. tier
+		local scheduledAttr = "ScheduledBarrels_" .. tier
+		local revisionAttr = "BarrelRevision_" .. tier
 		local pendingCount = math.max(0, math.floor(tonumber(barrelsFolder:GetAttribute(pendingAttr)) or 0))
+		local scheduledCount = math.max(0, math.floor(tonumber(barrelsFolder:GetAttribute(scheduledAttr)) or 0))
+		local revision = math.max(0, math.floor(tonumber(barrelsFolder:GetAttribute(revisionAttr)) or 0))
 		-- Count existing piled + conveyor barrels for this tier
 		local piledCount = 0
 		local conveyorCount = 0
@@ -1513,20 +1531,28 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 		end
 		local totalVisual = piledCount + conveyorCount
 		local effectiveVisual = totalVisual + pendingCount
-		if desired > effectiveVisual then
-			local toSpawn = desired - effectiveVisual
+		if desired > scheduledCount then
+			local toSpawn = desired - scheduledCount
+			barrelsFolder:SetAttribute(scheduledAttr, desired)
 			for _ = 1, toSpawn do
 				local previewBarrel = self:_createBarrelForTier(tier, tierTemplates[tier])
 				local queueSpacing = math.max(4, getInstanceFootprint(previewBarrel) + 0.75)
 				previewBarrel:Destroy()
 				local ejectInterval = math.max(BARREL_CONVEYOR_MIN_EJECT_INTERVAL, queueSpacing / math.max(beltSpeed, 0.1))
 				local scheduledEjectAt = math.max(now, nextEjectAt)
+				local capturedRevision = revision
 				nextEjectAt = scheduledEjectAt + ejectInterval
 				pendingCount += 1
 				barrelsFolder:SetAttribute(pendingAttr, pendingCount)
 
 				task.delay(math.max(0, scheduledEjectAt - now), function()
 					if not barrelsFolder.Parent then
+						return
+					end
+					local liveRevision = math.max(0, math.floor(tonumber(barrelsFolder:GetAttribute(revisionAttr)) or 0))
+					if liveRevision ~= capturedRevision then
+						local latestPending = math.max(0, math.floor(tonumber(barrelsFolder:GetAttribute(pendingAttr)) or 0))
+						barrelsFolder:SetAttribute(pendingAttr, math.max(0, latestPending - 1))
 						return
 					end
 					local latestPending = math.max(0, math.floor(tonumber(barrelsFolder:GetAttribute(pendingAttr)) or 0))
@@ -1588,7 +1614,16 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 				end)
 			end
 			barrelsFolder:SetAttribute("NextEjectAt", nextEjectAt)
-		elseif desired < totalVisual then
+		elseif desired < scheduledCount then
+			revision += 1
+			barrelsFolder:SetAttribute(revisionAttr, revision)
+			barrelsFolder:SetAttribute(scheduledAttr, desired)
+			if pendingCount > 0 then
+				barrelsFolder:SetAttribute(pendingAttr, 0)
+				pendingCount = 0
+			end
+		end
+		if desired < effectiveVisual then
 			-- Remove excess barrels: pile first (top down), then conveyor
 			local toRemove = totalVisual - desired
 			-- Collect piled barrels sorted by pile position (highest first)

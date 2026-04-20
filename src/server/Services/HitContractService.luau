@@ -12,6 +12,7 @@ local HitContractConfig = require(Shared:WaitForChild("Config"):WaitForChild("Hi
 local HIT_COST_CASH = HitContractConfig.Cost
 
 local HitContractService = {}
+local PIRATE_HIRE_PROMPT_DISTANCE = 36
 
 local function firstBasePart(inst: Instance): BasePart?
 	if inst:IsA("BasePart") then
@@ -25,13 +26,15 @@ local function firstBasePart(inst: Instance): BasePart?
 	return nil
 end
 
---- Prefer the **`Pirate`** character model under `PirateHire` (not props / flag): prompt sits on the body.
+--- Prefer the **`Pirate`** character model under `PirateHire` (not props / flag).
+--- Use a visible upper body part first so the interaction bubble doesn't feel
+--- buried inside the NPC's invisible root part.
 local function promptHostForPirateHire(npc: Instance): BasePart?
 	local pirate = npc:FindFirstChild("Pirate")
 	if pirate and pirate:IsA("Model") then
-		local hrp = pirate:FindFirstChild("HumanoidRootPart")
-		if hrp and hrp:IsA("BasePart") then
-			return hrp
+		local head = pirate:FindFirstChild("Head")
+		if head and head:IsA("BasePart") then
+			return head
 		end
 		local upper = pirate:FindFirstChild("UpperTorso")
 		if upper and upper:IsA("BasePart") then
@@ -41,9 +44,9 @@ local function promptHostForPirateHire(npc: Instance): BasePart?
 		if torso and torso:IsA("BasePart") then
 			return torso
 		end
-		local head = pirate:FindFirstChild("Head")
-		if head and head:IsA("BasePart") then
-			return head
+		local hrp = pirate:FindFirstChild("HumanoidRootPart")
+		if hrp and hrp:IsA("BasePart") then
+			return hrp
 		end
 		return firstBasePart(pirate)
 	end
@@ -259,6 +262,10 @@ function HitContractService:_ensurePrompt()
 	if not host then
 		return
 	end
+	local staleAttachment = host:FindFirstChild("PirateHirePromptAttachment")
+	if staleAttachment and staleAttachment:IsA("Attachment") then
+		staleAttachment:Destroy()
+	end
 	local prompt = npc:FindFirstChild("PirateHirePrompt", true)
 	if prompt and not prompt:IsA("ProximityPrompt") then
 		prompt:Destroy()
@@ -272,12 +279,20 @@ function HitContractService:_ensurePrompt()
 		p.ActionText = "Talk"
 		p.ObjectText = "Pirate Broker"
 		p.KeyboardKeyCode = Enum.KeyCode.E
-		p.MaxActivationDistance = 20
+		p.MaxActivationDistance = PIRATE_HIRE_PROMPT_DISTANCE
 		p.RequiresLineOfSight = false
 		p.HoldDuration = 0
+		p.ClickablePrompt = true
 		p.Parent = host
 		prompt = p
 	end
+	prompt.ActionText = "Talk"
+	prompt.ObjectText = "Pirate Broker"
+	prompt.KeyboardKeyCode = Enum.KeyCode.E
+	prompt.MaxActivationDistance = PIRATE_HIRE_PROMPT_DISTANCE
+	prompt.RequiresLineOfSight = false
+	prompt.HoldDuration = 0
+	prompt.ClickablePrompt = true
 	if self._prompt == prompt then
 		return
 	end

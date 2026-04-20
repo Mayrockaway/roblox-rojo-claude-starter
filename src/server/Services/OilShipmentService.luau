@@ -301,6 +301,111 @@ local function worldPosOverMapAabbFootprint(
 	return true
 end
 
+local function getDeckBarrelWorldPosition(inst: Instance): Vector3?
+	local function getMotionPart(target: Instance): BasePart?
+		if target:IsA("BasePart") then
+			return target
+		end
+		if target:IsA("Model") then
+			if target.PrimaryPart then
+				return target.PrimaryPart
+			end
+			for _, d in ipairs(target:GetDescendants()) do
+				if d:IsA("BasePart") then
+					return d
+				end
+			end
+		end
+		return nil
+	end
+
+	local motionPart = getMotionPart(inst)
+	if motionPart then
+		return motionPart.Position
+	end
+	if inst:IsA("Model") then
+		return inst:GetPivot().Position
+	end
+	if inst:IsA("BasePart") then
+		return inst.Position
+	end
+	return nil
+end
+
+local function getDeckBarrelWorldCFrame(inst: Instance): CFrame?
+	local function getMotionPart(target: Instance): BasePart?
+		if target:IsA("BasePart") then
+			return target
+		end
+		if target:IsA("Model") then
+			if target.PrimaryPart then
+				return target.PrimaryPart
+			end
+			for _, d in ipairs(target:GetDescendants()) do
+				if d:IsA("BasePart") then
+					return d
+				end
+			end
+		end
+		return nil
+	end
+
+	local motionPart = getMotionPart(inst)
+	if motionPart then
+		return motionPart.CFrame
+	end
+	if inst:IsA("Model") then
+		return inst:GetPivot()
+	end
+	if inst:IsA("BasePart") then
+		return inst.CFrame
+	end
+	return nil
+end
+
+local function serializeVector3(v: Vector3): { [string]: number }
+	return {
+		x = v.X,
+		y = v.Y,
+		z = v.Z,
+	}
+end
+
+local function serializeCFrame(cf: CFrame): { number }
+	return { cf:GetComponents() }
+end
+
+local function collectDeckBarrelRoots(boat: Instance): { Instance }
+	local barrels = {}
+	for _, d in ipairs(boat:GetDescendants()) do
+		if d.Name == "DeckBarrel" and (d:IsA("Model") or d:IsA("BasePart")) and d.Parent then
+			table.insert(barrels, d)
+		end
+	end
+	table.sort(barrels, function(a, b)
+		local ap = getDeckBarrelWorldPosition(a) or Vector3.zero
+		local bp = getDeckBarrelWorldPosition(b) or Vector3.zero
+		return ap.Y > bp.Y
+	end)
+	return barrels
+end
+
+local function snapshotDeckBarrelVisual(inst: Instance): { [string]: any }?
+	local position = getDeckBarrelWorldPosition(inst)
+	local cf = getDeckBarrelWorldCFrame(inst)
+	if not position or not cf then
+		return nil
+	end
+	local tierAttr = inst:GetAttribute("OilTier")
+	local templateAttr = inst:GetAttribute("TemplateName")
+	return {
+		position = serializeVector3(position),
+		cframe = serializeCFrame(cf),
+		tier = if typeof(tierAttr) == "string" then tierAttr else nil,
+		templateName = if typeof(templateAttr) == "string" then templateAttr else nil,
+	}
+end
+
 function OilShipmentService:Init(remoteService, oilStateService, plotService, warehouseService, straitStateService, boatDockService)
 	self._remoteService = remoteService
 	self._oilStateService = oilStateService
@@ -1428,9 +1533,68 @@ function OilShipmentService:_postStraitWarehouseTeleportByMapPosition(worldPos: 
 	return overRegion(self._postStraitMapOcean)
 end
 
+function OilShipmentService:_snapshotLostDeckBarrels(
+	boat: Instance?,
+	removedByTier: { [string]: number }?,
+	maxCount: number?
+): { [number]: { [string]: any } }
+	local out = {}
+	if not boat then
+		return out
+	end
+
+	local wantedByTier: { [string]: number } = {}
+	local wantedTotal = 0
+	if typeof(removedByTier) == "table" then
+		for _, tier in ipairs(BARREL_LOSS_TIER_ORDER) do
+			local count = math.max(0, math.floor(tonumber(removedByTier[tier]) or 0))
+			if count > 0 then
+				wantedByTier[tier] = count
+				wantedTotal += count
+			end
+		end
+	end
+	if maxCount and maxCount > 0 then
+		wantedTotal = math.min(wantedTotal, math.floor(maxCount))
+	end
+	if wantedTotal <= 0 then
+		return out
+	end
+
+	local fallback = {}
+	for _, barrel in ipairs(collectDeckBarrelRoots(boat)) do
+		local snapshot = snapshotDeckBarrelVisual(barrel)
+		if snapshot then
+			local tier = snapshot.tier
+			if typeof(tier) == "string" and (wantedByTier[tier] or 0) > 0 then
+				table.insert(out, snapshot)
+				wantedByTier[tier] -= 1
+			else
+				table.insert(fallback, snapshot)
+			end
+			if #out >= wantedTotal then
+				return out
+			end
+		end
+	end
+
+	for _, snapshot in ipairs(fallback) do
+		table.insert(out, snapshot)
+		if #out >= wantedTotal then
+			break
+		end
+	end
+
+	return out
+end
+
 function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 	local stackRoot = findBarrelStackRoot(boat)
 	if not stackRoot then return end
+	local shipRoot = if boat:IsA("Model") then boat.PrimaryPart else nil
+	if not shipRoot then
+		shipRoot = stackRoot
+	end
 
 	local assetsFolder = ReplicatedStorage:FindFirstChild("Assets")
 	if not assetsFolder then return end
@@ -1493,6 +1657,18 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 			end
 
 			barrel.Name = "DeckBarrel"
+			barrel:SetAttribute("OilTier", tier)
+			if templateName then
+				barrel:SetAttribute("TemplateName", templateName)
+			end
+			if barrel:IsA("Model") and not barrel.PrimaryPart then
+				for _, d in ipairs(barrel:GetDescendants()) do
+					if d:IsA("BasePart") then
+						barrel.PrimaryPart = d
+						break
+					end
+				end
+			end
 
 			local col = barrelIndex % COLUMNS
 			local row = math.floor(barrelIndex / COLUMNS) % COLUMNS
@@ -1524,16 +1700,17 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 
 			barrel.Parent = boat
 
-			-- Unanchor + weld every part to stackRoot (which is already welded to ship root)
+			-- Position from the authored stack root, but weld directly to the ship root so
+			-- barrel models always travel with the moving boat assembly.
 			for _, part in ipairs(barrel:IsA("Model") and barrel:GetDescendants() or {barrel}) do
 				if part:IsA("BasePart") then
 					part.Anchored = false
 					part.Massless = true
 					part.CanCollide = true
 					local wc = Instance.new("WeldConstraint")
-					wc.Part0 = stackRoot
+					wc.Part0 = shipRoot
 					wc.Part1 = part
-					wc.Parent = stackRoot
+					wc.Parent = shipRoot
 				end
 			end
 			barrelIndex += 1
@@ -2335,8 +2512,10 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		-- Apply barrel loss (server-authoritative, same as normal event)
 		local barrelsStolen = 0
 		local stolenByTier: { [string]: number } = {}
+		local stolenDeckBarrels = {}
 		if def.looseBarrelLossFraction and def.looseBarrelLossFraction > 0 then
 			barrelsStolen, stolenByTier = self:_applyLooseBarrelLoss(shipment, def.looseBarrelLossFraction)
+			stolenDeckBarrels = self:_snapshotLostDeckBarrels(boat, stolenByTier, barrelsStolen)
 		end
 		if barrelsStolen > 0 then
 			self:_emitManifestHudSnapshot(shipment, {
@@ -2359,10 +2538,20 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			playtestTitle = playtestTitle,
 			severity = severity,
 			barrelsStolen = barrelsStolen,
+			stolenDeckBarrels = stolenDeckBarrels,
 			approachSide = approachSide,
 			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
 			particleFxScale = particleFxScale,
 		})
+		if RunService:IsStudio() then
+			print(string.format(
+				"[PirateRaidDebug][Server] shipment=%s barrelsStolen=%d snapshotCount=%d approachSide=%d",
+				shipment.shipmentId,
+				barrelsStolen,
+				#stolenDeckBarrels,
+				approachSide
+			))
+		end
 
 		if log then
 			print(string.format("  [StraitShipment DEBUG] PIRATE RAID: %d barrels stolen, side=%d, pausing %ds",
@@ -2397,12 +2586,14 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		local barrelLossFraction = 0
 		local barrelsLost = 0
 		local stormLossByTier: { [string]: number } = {}
+		local lostDeckBarrels = {}
 		if didBarrelLoss then
 			local lossMin = clamp01(tonumber(sc.BarrelLossFractionMin) or 0)
 			local lossMax = math.max(lossMin, clamp01(tonumber(sc.BarrelLossFractionMax) or lossMin))
 			barrelLossFraction = clamp01(rng:NextNumber(lossMin, lossMax))
 			barrelsLost, stormLossByTier = self:_applyLooseBarrelLoss(shipment, barrelLossFraction)
 			didBarrelLoss = barrelsLost > 0
+			lostDeckBarrels = self:_snapshotLostDeckBarrels(boat, stormLossByTier, barrelsLost)
 		end
 		if barrelsLost > 0 then
 			self:_emitManifestHudSnapshot(shipment, {
@@ -2427,6 +2618,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			delaySeconds = delaySeconds,
 			didBarrelLoss = didBarrelLoss,
 			barrelsLost = barrelsLost,
+			lostDeckBarrels = lostDeckBarrels,
 			barrelLossFraction = barrelLossFraction,
 			sequenceSeconds = sequenceSeconds,
 			particleFxScale = particleFxScale,
@@ -2471,6 +2663,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		local minFloor = math.max(0, tonumber(tc.MinBarrelsLost) or 0)
 		local barrelsLost, tornadoLossByTier = self:_applyLooseBarrelLoss(shipment, barrelLossFraction, minFloor)
 		local didBarrelLoss = barrelsLost > 0
+		local lostDeckBarrels = self:_snapshotLostDeckBarrels(boat, tornadoLossByTier, barrelsLost)
 		if barrelsLost > 0 then
 			self:_emitManifestHudSnapshot(shipment, {
 				title = ManifestIncidentTitle.fromEventId(def.id),
@@ -2501,6 +2694,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			delaySeconds = delaySeconds,
 			didBarrelLoss = didBarrelLoss,
 			barrelsLost = barrelsLost,
+			lostDeckBarrels = lostDeckBarrels,
 			barrelLossFraction = barrelLossFraction,
 			sequenceSeconds = sequenceSeconds,
 			maxVisualBarrels = tonumber(tc.MaxVisualBarrels) or 10,

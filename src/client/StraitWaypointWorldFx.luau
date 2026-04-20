@@ -94,6 +94,7 @@ local DEFAULT_SHIP_RIG: ShipRigDef = {
 
 local ShipSkinCatalog: any = nil
 local ShipRigUtil: any = nil
+local OilConfig: any = nil
 local sharedFolder = ReplicatedStorage:WaitForChild("Shared", 45)
 local StraitAssetManifest = nil
 if sharedFolder then
@@ -105,6 +106,13 @@ if sharedFolder then
 		end
 	end
 	local configFolder = sharedFolder:FindFirstChild("Config")
+	local oilConfigMod = configFolder and configFolder:FindFirstChild("OilConfig")
+	if oilConfigMod and oilConfigMod:IsA("ModuleScript") then
+		local okOilConfig, loadedOilConfig = pcall(require, oilConfigMod)
+		if okOilConfig and typeof(loadedOilConfig) == "table" then
+			OilConfig = loadedOilConfig
+		end
+	end
 	local skinCatalogMod = configFolder and configFolder:FindFirstChild("ShipSkinCatalog")
 	if skinCatalogMod and skinCatalogMod:IsA("ModuleScript") then
 		local okSkinCatalog, loadedSkinCatalog = pcall(require, skinCatalogMod)
@@ -146,9 +154,52 @@ local function getStraitFxRoot(): Instance?
 	return assets and assets:FindFirstChild(STRAIT_FX_ASSETS_FOLDER)
 end
 
+local function getExpectedEventAssetNames(eventId: string): { string }?
+	if typeof(StraitAssetManifest) ~= "table" or typeof((StraitAssetManifest :: any).Events) ~= "table" then
+		return nil
+	end
+	local events = (StraitAssetManifest :: any).Events
+	local spec = events[eventId]
+	if typeof(spec) ~= "table" or typeof(spec.expectedInstances) ~= "table" then
+		return nil
+	end
+	return spec.expectedInstances
+end
+
+local function scoreEventFxFolder(folder: Instance, expected: { string }?): number
+	if not expected or #expected == 0 then
+		return #folder:GetDescendants()
+	end
+
+	local score = 0
+	for _, expectedName in ipairs(expected) do
+		if typeof(expectedName) == "string" and expectedName ~= "" and folder:FindFirstChild(expectedName, true) then
+			score += 1
+		end
+	end
+	return score
+end
+
 local function getEventFxFolder(eventId: string): Instance?
 	local root = getStraitFxRoot()
-	return if root then root:FindFirstChild(eventId) else nil
+	if not root then
+		return nil
+	end
+
+	local expected = getExpectedEventAssetNames(eventId)
+	local bestFolder: Instance? = nil
+	local bestScore = -1
+	for _, child in ipairs(root:GetChildren()) do
+		if child.Name == eventId then
+			local score = scoreEventFxFolder(child, expected)
+			if score > bestScore then
+				bestFolder = child
+				bestScore = score
+			end
+		end
+	end
+
+	return bestFolder
 end
 
 local function cloneNamedDescendant(folder: Instance?, name: string): Instance?
@@ -182,7 +233,7 @@ local function validateStraitEventAssets()
 			continue
 		end
 		local folderName = if typeof(spec.folderName) == "string" and spec.folderName ~= "" then spec.folderName else eventId
-		local folder = fxRoot:FindFirstChild(folderName)
+		local folder = getEventFxFolder(folderName)
 		if not folder then
 			warn(string.format("[StraitWaypointWorldFx] Missing asset folder for %s: %s", tostring(eventId), folderName))
 			continue
@@ -389,6 +440,103 @@ local function vector3FromWorldPosition(raw: any): Vector3?
 	return Vector3.new(x, y, z)
 end
 
+local createFallbackBarrelVisual: (startPos: Vector3) -> BasePart
+local collectDeckBarrelInstances: (boat: Model) -> { Instance }
+
+local function cframeFromSerialized(raw: any): CFrame?
+	if typeof(raw) ~= "table" then
+		return nil
+	end
+	local values = table.create(12)
+	for i = 1, 12 do
+		local n = raw[i]
+		if typeof(n) ~= "number" or n ~= n then
+			return nil
+		end
+		values[i] = n
+	end
+	return CFrame.new(table.unpack(values))
+end
+
+local function getBarrelSnapshotPosition(snapshot: any): Vector3?
+	if typeof(snapshot) ~= "table" then
+		return nil
+	end
+	local pos = vector3FromWorldPosition(snapshot.position)
+	if pos then
+		return pos
+	end
+	local cf = cframeFromSerialized(snapshot.cframe)
+	return if cf then cf.Position else nil
+end
+
+local function getBarrelSnapshotCFrame(snapshot: any): CFrame?
+	if typeof(snapshot) ~= "table" then
+		return nil
+	end
+	local cf = cframeFromSerialized(snapshot.cframe)
+	if cf then
+		return cf
+	end
+	local pos = vector3FromWorldPosition(snapshot.position)
+	return if pos then CFrame.new(pos) else nil
+end
+
+local animateMove: (any, CFrame, CFrame, number, number?) -> ()
+
+local function getBarrelTemplateNameForTier(tier: string?): string?
+	if typeof(tier) ~= "string" or typeof(OilConfig) ~= "table" then
+		return nil
+	end
+	local barrels = (OilConfig :: any).Barrels
+	local tierTemplates = barrels and barrels.TierTemplates
+	local templateName = tierTemplates and tierTemplates[tier]
+	return if typeof(templateName) == "string" then templateName else nil
+end
+
+local function createBarrelVisualFromSnapshot(snapshot: any, fallbackPos: Vector3): Instance
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	local templateName = if typeof(snapshot) == "table" and typeof(snapshot.templateName) == "string"
+		then snapshot.templateName
+		else getBarrelTemplateNameForTier(if typeof(snapshot) == "table" then snapshot.tier else nil)
+	local template = if assets and templateName then assets:FindFirstChild(templateName) else nil
+
+	local visual: Instance
+	if template and (template:IsA("Model") or template:IsA("BasePart")) then
+		visual = template:Clone()
+	else
+		visual = createFallbackBarrelVisual(fallbackPos)
+	end
+
+	prepareKinematicFx(visual)
+	local cf = getBarrelSnapshotCFrame(snapshot) or CFrame.new(fallbackPos)
+	setInstanceWorldCFrame(visual, cf)
+	return visual
+end
+
+local function buildBarrelAnimationSources(
+	boat: Model?,
+	rawSnapshots: any
+): { [number]: { instance: Instance?, snapshot: any? } }
+	local out = {}
+	if boat then
+		for _, source in ipairs(collectDeckBarrelInstances(boat)) do
+			table.insert(out, { instance = source })
+		end
+	end
+	if #out > 0 then
+		return out
+	end
+	if typeof(rawSnapshots) == "table" then
+		for _, snapshot in ipairs(rawSnapshots) do
+			if typeof(snapshot) == "table" and getBarrelSnapshotPosition(snapshot) then
+				table.insert(out, { snapshot = snapshot })
+			end
+		end
+	end
+	return out
+end
+
 local ROUTINE_PAPERWORK_ID = "RoutinePaperwork"
 local ROUTINE_PAPERWORK_DECK_OFFSET = CFrame.new(0, 8, 0)
 -- After template + ParticleFxScale: bias toss upward, then let gravity/drag pull sheets down.
@@ -576,6 +724,14 @@ end
 
 local function getInstanceWorldCFrame(inst: Instance): CFrame?
 	if inst:IsA("Model") then
+		if inst.PrimaryPart then
+			return inst.PrimaryPart.CFrame
+		end
+		for _, d in ipairs(inst:GetDescendants()) do
+			if d:IsA("BasePart") then
+				return d.CFrame
+			end
+		end
 		return inst:GetPivot()
 	end
 	if inst:IsA("BasePart") then
@@ -1069,7 +1225,7 @@ local function createLightningStrikeVisual(parent: Instance, top: Vector3, botto
 	Debris:AddItem(bolt, totalFlashDuration + 0.22)
 end
 
-local function collectDeckBarrelInstances(boat: Model): { Instance }
+function collectDeckBarrelInstances(boat: Model): { Instance }
 	local barrels = {}
 	for _, d in ipairs(boat:GetDescendants()) do
 		if d.Name == "DeckBarrel" and (d:IsA("Model") or d:IsA("BasePart")) and d.Parent then
@@ -1084,7 +1240,7 @@ local function collectDeckBarrelInstances(boat: Model): { Instance }
 	return barrels
 end
 
-local function createFallbackBarrelVisual(startPos: Vector3): BasePart
+function createFallbackBarrelVisual(startPos: Vector3): BasePart
 	local p = Instance.new("Part")
 	p.Name = "TornadoBarrelFallback"
 	p.Shape = Enum.PartType.Cylinder
@@ -1199,14 +1355,19 @@ local function spawnTornadoBarrelChaos(
 	boat: Model,
 	chaosCenter: Vector3,
 	barrelsLost: number,
-	maxVisualBarrels: number
+	maxVisualBarrels: number,
+	rawSnapshots: any?
 )
 	local rng = Random.new()
-	local deckBarrels = collectDeckBarrelInstances(boat)
-	local toThrow = math.min(barrelsLost, #deckBarrels, maxVisualBarrels)
+	local barrelSources = buildBarrelAnimationSources(boat, rawSnapshots)
+	local toThrow = math.min(barrelsLost, #barrelSources, maxVisualBarrels)
 	for i = 1, toThrow do
-		local source = deckBarrels[i]
-		local sourcePos = getInstanceWorldPosition(source)
+		local sourceData = barrelSources[i]
+		local sourceInst = sourceData.instance
+		local snapshot = sourceData.snapshot
+		local sourcePos = if sourceInst and sourceInst.Parent
+			then getInstanceWorldPosition(sourceInst)
+			else getBarrelSnapshotPosition(snapshot)
 		if not sourcePos then
 			continue
 		end
@@ -1216,12 +1377,12 @@ local function spawnTornadoBarrelChaos(
 			task.wait((i - 1) * 0.07)
 
 			local visual: Instance
-			if source:IsA("Model") or source:IsA("BasePart") then
-				visual = source:Clone()
+			if sourceInst and sourceInst.Parent and (sourceInst:IsA("Model") or sourceInst:IsA("BasePart")) then
+				visual = sourceInst:Clone()
 				prepareKinematicFx(visual)
-				setInstanceWorldCFrame(visual, CFrame.new(sourceStart))
+				setInstanceWorldCFrame(visual, getBarrelSnapshotCFrame(snapshot) or CFrame.new(sourceStart))
 			else
-				visual = createFallbackBarrelVisual(sourceStart)
+				visual = createBarrelVisualFromSnapshot(snapshot, sourceStart)
 			end
 			visual.Parent = container
 
@@ -1933,6 +2094,7 @@ function StraitWaypointWorldFx.OnStormPayload(data: { [string]: any })
 	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
 	local boat = if shipmentId ~= "" then findActiveShipmentBoatByShipmentId(shipmentId) else nil
 	local hull = if boat then getBoatAttachmentPart(boat) else nil
+	local stormDebug = RunService:IsStudio()
 
 	local center = vector3FromWorldPosition(data.worldPosition)
 	if not center and hull then
@@ -1954,29 +2116,69 @@ function StraitWaypointWorldFx.OnStormPayload(data: { [string]: any })
 		container.Name = "StormEventFx"
 		container.Parent = Workspace
 
+		local stormCenterPos = if hull then hull.Position else centerPos
+		local function getLiveStormCenter(): Vector3
+			if boat and boat.Parent then
+				local liveHull = getBoatAttachmentPart(boat)
+				if liveHull then
+					hull = liveHull
+					stormCenterPos = liveHull.Position
+					return stormCenterPos
+				end
+			end
+			return stormCenterPos
+		end
+
+		stormCenterPos = getLiveStormCenter()
 		local cloudRig = cloneStormCloudTemplate()
 		local canopyRadius = 80
 		if cloudRig then
 			prepareKinematicFx(cloudRig)
+			scaleTornadoRoot(cloudRig, 0.5)
 			cloudRig.Parent = container
-			moveRootToWorldPosition(cloudRig, centerPos + Vector3.new(0, STORM_CLOUD_HEIGHT_OFFSET, 0))
-			canopyRadius = math.max(70, getInstanceHorizontalRadius(cloudRig) * 0.9)
+			moveRootToWorldPosition(cloudRig, stormCenterPos + Vector3.new(0, STORM_CLOUD_HEIGHT_OFFSET, 0))
+			canopyRadius = math.max(36, getInstanceHorizontalRadius(cloudRig) * 0.9)
 		else
-			buildFallbackCloudLayer(container, centerPos)
-			canopyRadius = 90
+			buildFallbackCloudLayer(container, stormCenterPos)
+			canopyRadius = 45
 		end
 
-		local rainDropsPart, _ = buildStormRainLayers(container, centerPos, canopyRadius, fxScale)
+		local rainDropsPart, rainSplashesPart = buildStormRainLayers(container, stormCenterPos, canopyRadius, fxScale)
 		local rainHost = rainDropsPart
 		setParticleEmittersOnlyEnabled(container, true)
 		playSoundTemplateOn(rainHost, "Storm", "RainLoopSfx", 0.95)
+		task.spawn(function()
+			local followStart = os.clock()
+			while container.Parent and (os.clock() - followStart) < sequenceSeconds do
+				local liveCenter = getLiveStormCenter()
+				if cloudRig and cloudRig.Parent then
+					moveRootToWorldPosition(cloudRig, liveCenter + Vector3.new(0, STORM_CLOUD_HEIGHT_OFFSET, 0))
+				end
+				if rainDropsPart.Parent then
+					rainDropsPart.CFrame = CFrame.new(liveCenter + Vector3.new(0, STORM_RAIN_HEIGHT_OFFSET, 0))
+				end
+				if rainSplashesPart.Parent then
+					rainSplashesPart.CFrame = CFrame.new(liveCenter + Vector3.new(0, 2, 0))
+				end
+				task.wait(0.1)
+			end
+		end)
 
-		-- Pre-collect barrel source instances (no position snapshot — positions are read live).
-		local barrelSources: { Instance } = {}
+		local barrelSources = {}
 		local barrelSideDir = Vector3.new(1, 0, 0)
-		if didBarrelLoss and boat then
-			local deckBarrels = collectDeckBarrelInstances(boat)
-			local toWash = math.min(barrelsLost, #deckBarrels, 8)
+		if didBarrelLoss then
+			local availableSources = buildBarrelAnimationSources(boat, data.lostDeckBarrels)
+			local toWash = math.min(barrelsLost, #availableSources, 8)
+			if stormDebug then
+				print(string.format(
+					"[StormDebug][Client] shipment=%s barrelsLost=%d snapshotCount=%d availableSources=%d toWash=%d",
+					shipmentId,
+					barrelsLost,
+					if typeof(data.lostDeckBarrels) == "table" then #data.lostDeckBarrels else 0,
+					#availableSources,
+					toWash
+				))
+			end
 			if toWash > 0 then
 				local right = if hull
 					then Vector3.new(hull.CFrame.RightVector.X, 0, hull.CFrame.RightVector.Z)
@@ -1988,55 +2190,54 @@ function StraitWaypointWorldFx.OnStormPayload(data: { [string]: any })
 				end
 				barrelSideDir = right * (if rng:NextNumber() < 0.5 then -1 else 1)
 				for i = 1, toWash do
-					table.insert(barrelSources, deckBarrels[i])
+					table.insert(barrelSources, availableSources[i])
 				end
 			end
 		end
 
-		-- Barrel wash animation: reads the barrel's LIVE position when called,
-		-- so the animation starts exactly where the barrel currently is on the deck.
-		local function runBarrelWashVisual(source: Instance)
-			local startPos = getInstanceWorldPosition(source)
+		local function runBarrelWashVisual(sourceData)
+			local sourceInst = sourceData.instance
+			local snapshot = sourceData.snapshot
+			local startPos = if sourceInst and sourceInst.Parent
+				then getInstanceWorldPosition(sourceInst)
+				else getBarrelSnapshotPosition(snapshot)
 			if not startPos then
 				return
 			end
 			local visual: Instance
-			if source:IsA("Model") or source:IsA("BasePart") then
-				visual = source:Clone()
+			if sourceInst and sourceInst.Parent and (sourceInst:IsA("Model") or sourceInst:IsA("BasePart")) then
+				visual = sourceInst:Clone()
 				prepareKinematicFx(visual)
-				setInstanceWorldCFrame(visual, CFrame.new(startPos))
+				setInstanceWorldCFrame(visual, getBarrelSnapshotCFrame(snapshot) or CFrame.new(startPos))
 			else
-				visual = createFallbackBarrelVisual(startPos)
+				visual = createBarrelVisualFromSnapshot(snapshot, startPos)
 			end
 			visual.Parent = container
-			local edgePos = startPos + barrelSideDir * rng:NextNumber(14, 22) + Vector3.new(rng:NextNumber(-4, 4), -1, rng:NextNumber(-4, 4))
-			local splashPos = edgePos + barrelSideDir * rng:NextNumber(24, 44) + Vector3.new(rng:NextNumber(-8, 8), -7, rng:NextNumber(-8, 8))
-			local slideDur = rng:NextNumber(0.35, 0.55)
-			local t0 = os.clock()
-			while visual.Parent and (os.clock() - t0) < slideDur do
-				local a = math.clamp((os.clock() - t0) / slideDur, 0, 1)
-				local eased = a * a * (3 - 2 * a)
-				local p = startPos:Lerp(edgePos, eased) + Vector3.new(0, math.sin(eased * math.pi) * 3, 0)
-				setInstanceWorldCFrame(visual, CFrame.new(p) * CFrame.Angles(a * 4, a * 7, a * 5))
-				task.wait()
-			end
-			local fallDur = rng:NextNumber(0.45, 0.7)
-			local t1 = os.clock()
-			while visual.Parent and (os.clock() - t1) < fallDur do
-				local a = math.clamp((os.clock() - t1) / fallDur, 0, 1)
-				local eased = a * a * (3 - 2 * a)
-				local p = edgePos:Lerp(splashPos, eased) + Vector3.new(0, math.sin((1 - eased) * math.pi) * 5, 0)
-				setInstanceWorldCFrame(visual, CFrame.new(p) * CFrame.Angles(a * 12, a * 10, a * 9))
-				task.wait()
-			end
+			local launchPos = startPos + Vector3.new(0, rng:NextNumber(6, 10), 0)
+			local edgePos = launchPos + barrelSideDir * rng:NextNumber(24, 38) + Vector3.new(rng:NextNumber(-6, 6), rng:NextNumber(2, 5), rng:NextNumber(-6, 6))
+			local splashPos = edgePos + barrelSideDir * rng:NextNumber(36, 60) + Vector3.new(rng:NextNumber(-10, 10), -12, rng:NextNumber(-10, 10))
+			animateMove(
+				visual,
+				getInstanceWorldCFrame(visual) or CFrame.new(startPos),
+				CFrame.new(edgePos) * CFrame.Angles(rng:NextNumber(3, 6), rng:NextNumber(4, 7), rng:NextNumber(3, 6)),
+				rng:NextNumber(0.28, 0.42),
+				rng:NextNumber(8, 12)
+			)
+			animateMove(
+				visual,
+				getInstanceWorldCFrame(visual) or CFrame.new(edgePos),
+				CFrame.new(splashPos) * CFrame.Angles(rng:NextNumber(9, 14), rng:NextNumber(10, 16), rng:NextNumber(8, 14)),
+				rng:NextNumber(0.45, 0.65),
+				rng:NextNumber(5, 9)
+			)
 			if visual.Parent then
 				visual:Destroy()
 			end
 		end
 
 		-- Last 1–2 strikes aim at barrel positions (read live at fire time); rest are atmospheric.
-		local strikeCount = math.clamp(math.floor(sequenceSeconds * 0.36), 3, 7)
-		local barrelTargetCount = math.min(#barrelSources, math.min(2, strikeCount))
+		local strikeCount = math.max(math.clamp(math.floor(sequenceSeconds * 0.36), 3, 7), math.min(#barrelSources, 8))
+		local barrelTargetCount = math.min(#barrelSources, strikeCount)
 		local atmosphericCount = strikeCount - barrelTargetCount
 		local strikeWindow = math.max(1, sequenceSeconds - 0.2)
 		local timeBudget = strikeWindow
@@ -2051,25 +2252,29 @@ function StraitWaypointWorldFx.OnStormPayload(data: { [string]: any })
 			timeBudget -= waitFor
 
 			local strikeBase: Vector3
+			local targetedBarrel = false
 			local barrelIdx = i - atmosphericCount
 			if barrelIdx >= 1 and barrelIdx <= #barrelSources then
-				-- Read the live position right now — boat may have moved since event fired.
-				local livePos = getInstanceWorldPosition(barrelSources[barrelIdx])
+				local sourceData = barrelSources[barrelIdx]
+				local sourceInst = sourceData.instance
+				local livePos = if sourceInst and sourceInst.Parent
+					then getInstanceWorldPosition(sourceInst)
+					else getBarrelSnapshotPosition(sourceData.snapshot)
 				if livePos then
 					strikeBase = livePos
-					local src = barrelSources[barrelIdx]
-					task.delay(0.25, function()
-						task.spawn(runBarrelWashVisual, src)
+					targetedBarrel = true
+					task.delay(0.05, function()
+						task.spawn(runBarrelWashVisual, sourceData)
 					end)
 				else
-					strikeBase = centerPos + Vector3.new(rng:NextNumber(-85, 85), 0, rng:NextNumber(-85, 85))
+					strikeBase = stormCenterPos + Vector3.new(rng:NextNumber(-85, 85), 0, rng:NextNumber(-85, 85))
 				end
 			else
-				strikeBase = centerPos + Vector3.new(rng:NextNumber(-85, 85), 0, rng:NextNumber(-85, 85))
+				strikeBase = stormCenterPos + Vector3.new(rng:NextNumber(-85, 85), 0, rng:NextNumber(-85, 85))
 			end
 
 			local top = strikeBase + Vector3.new(0, rng:NextNumber(72, 98), 0)
-			local bottom = strikeBase + Vector3.new(0, rng:NextNumber(4, 12), 0)
+			local bottom = strikeBase + Vector3.new(0, if targetedBarrel then 0.5 else rng:NextNumber(4, 12), 0)
 			createLightningStrikeVisual(container, top, bottom)
 			playSoundTemplateOn(rainHost, "Storm", "LightningSfx", 1)
 
@@ -2277,10 +2482,13 @@ function StraitWaypointWorldFx.OnTornadoPayload(data: { [string]: any })
 
 			local inAttackPhase = alpha >= entryFrac and alpha <= attackEndFrac
 			local touchingDeck = inAttackPhase and onDeck and sampledSurfaceY ~= nil and sampledSurfaceY >= (waterY + 0.9)
-			if didBarrelLoss and not chaosTriggered and touchingDeck and boat then
+			local touchingShip = inAttackPhase and (touchingDeck or insideFootprint)
+			if didBarrelLoss and not chaosTriggered and touchingShip and boat then
 				chaosTriggered = true
-				local chaosCenter = Vector3.new(pathPos.X, baseY + 1.8, pathPos.Z)
-				spawnTornadoBarrelChaos(container, boat, chaosCenter, barrelsLost, maxVisualBarrels)
+				local chaosCenter = if touchingDeck
+					then Vector3.new(pathPos.X, baseY + 1.8, pathPos.Z)
+					else Vector3.new(livePivotPos.X, math.max(waterY + 2, livePivotPos.Y), livePivotPos.Z)
+				spawnTornadoBarrelChaos(container, boat, chaosCenter, barrelsLost, maxVisualBarrels, data.lostDeckBarrels)
 				shakeCameraIfNear(pathPos, 260, 1.3, 0.22)
 			end
 			task.wait()
@@ -2589,7 +2797,7 @@ function StraitWaypointWorldFx.OnMineStrikePayload(data: { [string]: any })
 end
 
 -- Helper: smoothly move a Model/Part from A to B over duration, with optional Y arc
-local function animateMove(obj, fromCF: CFrame, toCF: CFrame, duration: number, arcHeight: number?)
+animateMove = function(obj, fromCF: CFrame, toCF: CFrame, duration: number, arcHeight: number?)
 	local arc = arcHeight or 0
 	local startTime = os.clock()
 	while true do
@@ -2614,6 +2822,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
 	local barrelsStolen = math.max(0, tonumber(data.barrelsStolen) or 0)
 	local approachSide = tonumber(data.approachSide) or 1
+	local pirateDebug = RunService:IsStudio()
 
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	if not assets then
@@ -2630,10 +2839,16 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 	task.spawn(function()
 		local playerBoat = findActiveShipmentBoatByShipmentId(shipmentId)
 		if not playerBoat then
+			if pirateDebug then
+				warn(string.format("[PirateRaidDebug][Client] shipment=%s no active boat found", shipmentId))
+			end
 			return
 		end
 		local boatRoot = getBoatAttachmentPart(playerBoat)
 		if not boatRoot then
+			if pirateDebug then
+				warn(string.format("[PirateRaidDebug][Client] shipment=%s no boat root found", shipmentId))
+			end
 			return
 		end
 
@@ -2655,6 +2870,24 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		rootPos = boatRoot.Position  -- rest of handler uses boatRoot.Position for spawn base
 		local sideSign = if approachSide >= 0 then 1 else -1
 		local perp = Vector3.new(-fwd.Z, 0, fwd.X) * sideSign
+		if pirateDebug then
+			print(string.format(
+				"[PirateRaidDebug][Client] shipment=%s barrelsStolen=%d snapshotCount=%d frontMarker=%s rootPos=(%.1f,%.1f,%.1f) fwd=(%.2f,%.2f,%.2f) perp=(%.2f,%.2f,%.2f)",
+				shipmentId,
+				barrelsStolen,
+				if typeof(data.stolenDeckBarrels) == "table" then #data.stolenDeckBarrels else 0,
+				tostring(frontMarker ~= nil),
+				rootPos.X,
+				rootPos.Y,
+				rootPos.Z,
+				fwd.X,
+				fwd.Y,
+				fwd.Z,
+				perp.X,
+				perp.Y,
+				perp.Z
+			))
+		end
 
 		local function uprightLookAt(pos: Vector3, toward: Vector3): CFrame
 			local flatToward = Vector3.new(toward.X, pos.Y, toward.Z)
@@ -2687,7 +2920,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 
 		-- Speed-based walking (CoastGuard pattern): duration derived from distance, with footstep bob
 		local PIRATE_WALK_SPEED = 9
-		local function walkPirate(pirate, targetCF: CFrame, speed: number?, carry: BasePart?)
+		local function walkPirate(pirate, targetCF: CFrame, speed: number?, carry: Instance?)
 			local spd = speed or PIRATE_WALK_SPEED
 			local fromPos = pirate.cf.Position
 			local toPos   = targetCF.Position
@@ -2707,7 +2940,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 				local bob = math.abs(math.sin(os.clock() * math.pi * 2.4)) * 0.32
 				setObjectCF(pirate.npc, CFrame.lookAt(pos + Vector3.new(0, bob, 0), pos + lookD + Vector3.new(0, bob, 0)))
 				if carry and carry.Parent then
-					carry.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+					setObjectCF(carry, CFrame.new(pos + Vector3.new(0, 3, 0)))
 				end
 				if alpha >= 1 then break end
 				task.wait()
@@ -2890,19 +3123,21 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 			applyStraitNpcGhostParts(pirate.npc)
 		end
 
-		-- Find barrels to steal before any pirate moves
-		local deckBarrels = {}
-		for _, d in ipairs(playerBoat:GetDescendants()) do
-			if d.Name == "DeckBarrel" and d.Parent then
-				table.insert(deckBarrels, d)
+		local deckBarrels = buildBarrelAnimationSources(playerBoat, data.stolenDeckBarrels)
+		local toSteal = math.min(barrelsStolen, #deckBarrels, PIRATE_COUNT)
+		if pirateDebug then
+			print(string.format(
+				"[PirateRaidDebug][Client] shipment=%s liveDeckBarrels=%d usableTargets=%d toSteal=%d pirateCount=%d",
+				shipmentId,
+				#collectDeckBarrelInstances(playerBoat),
+				#deckBarrels,
+				toSteal,
+				PIRATE_COUNT
+			))
+			if toSteal <= 0 then
+				warn(string.format("[PirateRaidDebug][Client] shipment=%s no barrel targets resolved", shipmentId))
 			end
 		end
-		table.sort(deckBarrels, function(a, b)
-			local ay = if a:IsA("Model") then a:GetPivot().Position.Y else a.Position.Y
-			local by = if b:IsA("Model") then b:GetPivot().Position.Y else b.Position.Y
-			return ay > by
-		end)
-		local toSteal = math.min(barrelsStolen, #deckBarrels, PIRATE_COUNT)
 
 		-- Unified per-pirate flow: board → steal → return, all in parallel, no phase walls
 		local BOARD_STAGGER = 0.25
@@ -2936,28 +3171,47 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 				pirateData.cf = landCF
 
 				-- === STEAL: walk to barrel, grab, walk to edge, toss ===
-				if myBarrel and myBarrel.Parent then
-					local barrelPos = if myBarrel:IsA("Model") then myBarrel:GetPivot().Position else myBarrel.Position
-					local standPos = Vector3.new(barrelPos.X, deckY, barrelPos.Z) + perp * BARREL_SIDE_OFFSET
-					walkPirate(pirateData, uprightLookAt(standPos, barrelPos))
-					if myBarrel.Parent then
-						myBarrel:Destroy()
+				if myBarrel then
+					local barrelInst = myBarrel.instance
+					local barrelSnapshot = myBarrel.snapshot
+					local barrelPos = if barrelInst and barrelInst.Parent
+						then getInstanceWorldPosition(barrelInst)
+						else getBarrelSnapshotPosition(barrelSnapshot)
+					if barrelPos then
+						if pirateDebug then
+							print(string.format(
+								"[PirateRaidDebug][Client] shipment=%s pirate=%d barrelPos=(%.1f,%.1f,%.1f)",
+								shipmentId,
+								idx,
+								barrelPos.X,
+								barrelPos.Y,
+								barrelPos.Z
+							))
+						end
+						local carrySourceClone: Instance? = nil
+						local carrySourceCF: CFrame? = nil
+						if barrelInst and barrelInst.Parent and (barrelInst:IsA("Model") or barrelInst:IsA("BasePart")) then
+							carrySourceClone = barrelInst:Clone()
+							carrySourceCF = getObjectCF(barrelInst)
+						end
+						local standPos = Vector3.new(barrelPos.X, deckY, barrelPos.Z) + perp * BARREL_SIDE_OFFSET
+						walkPirate(pirateData, uprightLookAt(standPos, barrelPos))
+						if barrelInst and barrelInst.Parent then
+							barrelInst:Destroy()
+						end
 						task.wait(0.2)
 
-						local carry = Instance.new("Part")
+						local carry: Instance
+						if carrySourceClone then
+							carry = carrySourceClone
+							prepareKinematicFx(carry)
+							setInstanceWorldCFrame(carry, carrySourceCF or CFrame.new(barrelPos))
+						else
+							carry = createBarrelVisualFromSnapshot(barrelSnapshot, barrelPos)
+						end
 						carry.Name = "CarriedBarrel"
-						carry.Size = Vector3.new(2, 3, 2)
-						carry.Shape = Enum.PartType.Cylinder
-						carry.Material = Enum.Material.Metal
-						carry.Color = Color3.fromRGB(140, 100, 30)
-						carry.Anchored = true
-						carry.CanCollide = false
-						carry.CanQuery = false
-						carry.CanTouch = false
-						pcall(function()
-							carry.CollisionGroup = STRAIT_FX_NPC_GROUP
-						end)
-						carry.CFrame = CFrame.new(standPos + Vector3.new(0, BARREL_CARRY_UP, 0))
+						prepareKinematicFx(carry)
+						setObjectCF(carry, CFrame.new(standPos + Vector3.new(0, BARREL_CARRY_UP, 0)))
 						carry.Parent = Workspace
 						Debris:AddItem(carry, 20)
 
@@ -2969,8 +3223,37 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 						local tossTarget = pirateBoat:GetPivot().Position
 							+ Vector3.new(0, PIRATE_BOAT_DECK_Y + 1, 0)
 							+ fwd * ((idx - pirateMid) * PIRATE_SPACING)
-						animateMove(carry, carry.CFrame, CFrame.new(tossTarget), 0.9, TOSS_ARC_HEIGHT)
+						if pirateDebug then
+							print(string.format(
+								"[PirateRaidDebug][Client] shipment=%s pirate=%d standPos=(%.1f,%.1f,%.1f) edgePos=(%.1f,%.1f,%.1f) tossTarget=(%.1f,%.1f,%.1f)",
+								shipmentId,
+								idx,
+								standPos.X,
+								standPos.Y,
+								standPos.Z,
+								edgePos.X,
+								edgePos.Y,
+								edgePos.Z,
+								tossTarget.X,
+								tossTarget.Y,
+								tossTarget.Z
+							))
+						end
+						animateMove(carry, getObjectCF(carry), CFrame.new(tossTarget), 0.9, TOSS_ARC_HEIGHT)
+						carry.Parent = pirateBoat
+						setInstanceWorldCFrame(carry, CFrame.new(tossTarget))
+						if pirateDebug then
+							print(string.format(
+								"[PirateRaidDebug][Client] shipment=%s pirate=%d mountedCarry=true",
+								shipmentId,
+								idx
+							))
+						end
+					elseif pirateDebug then
+						warn(string.format("[PirateRaidDebug][Client] shipment=%s pirate=%d barrelPos unresolved", shipmentId, idx))
 					end
+				elseif pirateDebug then
+					print(string.format("[PirateRaidDebug][Client] shipment=%s pirate=%d no assigned barrel", shipmentId, idx))
 				end
 
 				-- === RETURN: walk back to landing, slide up rope, drop on pirate boat ===

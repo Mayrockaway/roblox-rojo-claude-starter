@@ -5,39 +5,12 @@
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ContentProvider = game:GetService("ContentProvider")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
 local FtuePoiBeamConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtuePoiBeamConfig"))
 local PlayerToPoiBeam = require(script.Parent:WaitForChild("PlayerToPoiBeam"))
-
--- **Preload arrow textures** at script start so the first beam shows arrows immediately
--- (avoids the "solid yellow rectangle" frame while the engine is still fetching the asset).
-task.spawn(function()
-	local seen: { [string]: boolean } = {}
-	local toPreload: { string } = {}
-	local function add(t: any)
-		if typeof(t) == "string" and t ~= "" and not seen[t] then
-			seen[t] = true
-			table.insert(toPreload, t)
-		end
-	end
-	add((PlayerToPoiBeam :: any).DEFAULT_TEXTURE_ID)
-	for _, rule in FtuePoiBeamConfig.Rules do
-		for _, t in rule.targets do
-			if t.style and (t.style :: any).texture then
-				add((t.style :: any).texture)
-			end
-		end
-	end
-	if #toPreload > 0 then
-		pcall(function()
-			ContentProvider:PreloadAsync(toPreload)
-		end)
-	end
-end)
 
 local PLOT_ID_ATTRIBUTE = "PlotId"
 

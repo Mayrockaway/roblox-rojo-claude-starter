@@ -143,11 +143,11 @@ local SHIP_PLACEHOLDER_PRICE: { [string]: number } = {
 	WhaleSkin = 299, -- Whale  (RobuxShop Ship3)
 }
 
-local function buildShipItem(skinId: string): MonetizationItem
+local function buildShipItem(skinId: string, productId: number?): MonetizationItem
 	return {
 		id = "ship." .. string.lower(skinId),
 		productKind = "DevProduct",
-		productId = 0,
+		productId = productId or 0,
 		robuxPrice = SHIP_PLACEHOLDER_PRICE[skinId] or 99,
 		displayName = shipDisplayName(skinId),
 		subtitle = "Ship Skin",
@@ -185,7 +185,7 @@ MonetizationCatalog.Items = {
 	{
 		id = "starter_pack",
 		productKind = "DevProduct",
-		productId = 0,
+		productId = 3578811060,
 		robuxPrice = 199,
 		displayName = "Starter Pack",
 		subtitle = "Pirate Ship + $5,000 + 2x Glizzy Grinder",
@@ -204,9 +204,9 @@ MonetizationCatalog.Items = {
 	-- DefaultTanker is intentionally absent: it's the starter ship granted
 	-- to every player by `OilStateService` — no Robux product needed.
 	buildShipItem("Ship3Skin"),
-	buildShipItem("Ship4Skin"),
-	buildShipItem("Ship5Skin"),
-	buildShipItem("WhaleSkin"),
+	buildShipItem("Ship4Skin", 3578818285),
+	buildShipItem("Ship5Skin", 3578818474),
+	buildShipItem("WhaleSkin", 3578818669),
 
 	-- Boosts ---------------------------------------------------------------
 	-- 2x Earnings GamePass. `gamePassEffect = "DoubleEarnings"` is the
@@ -239,7 +239,7 @@ MonetizationCatalog.Items = {
 	{
 		id = "consumable.nuke_x1",
 		productKind = "DevProduct",
-		productId = 0,
+		productId = 3578819046,
 		robuxPrice = 199,
 		displayName = "Nuke Strike",
 		subtitle = "One-time use",
@@ -267,7 +267,7 @@ MonetizationCatalog.Items = {
 	{
 		id = "consumable.strait_open_2min",
 		productKind = "DevProduct",
-		productId = 0,
+		productId = 3578819223,
 		robuxPrice = 99,
 		displayName = "Force Open Strait (2 min)",
 		subtitle = "One-time use",
@@ -277,7 +277,7 @@ MonetizationCatalog.Items = {
 	{
 		id = "consumable.strait_close_2min",
 		productKind = "DevProduct",
-		productId = 0,
+		productId = 3578819374,
 		robuxPrice = 99,
 		displayName = "Force Close Strait (2 min)",
 		subtitle = "One-time use",

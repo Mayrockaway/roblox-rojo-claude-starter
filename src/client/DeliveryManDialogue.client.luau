@@ -30,18 +30,21 @@ local playerScripts = player:WaitForChild("PlayerScripts")
 local clientFolder = playerScripts:WaitForChild("Client", 30)
 local uiFolder = clientFolder and clientFolder:WaitForChild("UI", 10)
 local HudPanelRouter = uiFolder and require(uiFolder:WaitForChild("HudPanelRouter"))
+local MARKER_VISIBLE_DISTANCE = 180
 
 -- Floating "Ship Oil" marker — client-side only, on the player's own plot.
 -- Bobs gently above the DeliveryMan's head so the dispatch point is visible
 -- from across the plot before the player walks into prompt range.
 task.spawn(function()
 	local markerGui: BillboardGui? = nil
+	local markerHead: BasePart? = nil
 
 	local function tryCreateMarker()
 		if markerGui and markerGui.Parent then
 			markerGui:Destroy()
 		end
 		markerGui = nil
+		markerHead = nil
 
 		local plotId = player:GetAttribute("PlotId")
 		if not plotId then
@@ -103,6 +106,7 @@ task.spawn(function()
 				label.Parent = bb
 
 				markerGui = bb
+				markerHead = head
 				break
 			end
 		end
@@ -118,6 +122,13 @@ task.spawn(function()
 		if markerGui and markerGui.Parent then
 			local offset = math.sin(t * 2) * 0.8
 			markerGui.StudsOffset = Vector3.new(0, 10 + offset, 0)
+			local character = player.Character
+			local hrp = character and character:FindFirstChild("HumanoidRootPart")
+			local inRange = false
+			if hrp and hrp:IsA("BasePart") and markerHead and markerHead.Parent then
+				inRange = (hrp.Position - markerHead.Position).Magnitude <= MARKER_VISIBLE_DISTANCE
+			end
+			markerGui.Enabled = inRange
 		end
 	end)
 end)

@@ -1,9 +1,8 @@
 --!strict
 -- Random NPC voice one-shots on ProximityPrompt activation (started from `init.client` after
--- `ClientAudioPreferences.init` so SFX state is correct). Uses preload — `Sound:Play()` on
--- unloaded assets often produces silence.
+-- `ClientAudioPreferences.init` so SFX state is correct). Voice content is now
+-- warmed by the loading pipeline, so prompt activation itself stays lightweight.
 
-local ContentProvider = game:GetService("ContentProvider")
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local SoundService = game:GetService("SoundService")
 local Players = game:GetService("Players")
@@ -52,23 +51,15 @@ local function playRandomVoice()
 	s.RollOffMode = Enum.RollOffMode.Linear
 	s.Parent = SoundService
 
-	task.defer(function()
-		pcall(function()
-			ContentProvider:PreloadAsync({ s })
-		end)
-		if not s.Parent then
-			return
+	s.Ended:Once(function()
+		if s.Parent then
+			s:Destroy()
 		end
-		s.Ended:Once(function()
-			if s.Parent then
-				s:Destroy()
-			end
-		end)
-		pcall(function()
-			s.TimePosition = 0
-		end)
-		s:Play()
 	end)
+	pcall(function()
+		s.TimePosition = 0
+	end)
+	s:Play()
 end
 
 local NpcProximityVoice = {}

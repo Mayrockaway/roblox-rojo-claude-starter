@@ -37,7 +37,7 @@ export type PirateHireRemotes = {
 	pirateHitAlertEvent: RemoteEvent,
 }
 
-local PIRATE_AUTO_CLOSE_DIST = 12
+local PIRATE_AUTO_CLOSE_DIST = 36
 local COLOR_PIRATE_IDLE = Color3.fromRGB(255, 255, 255)
 local COLOR_PIRATE_HOVER = Color3.fromRGB(255, 205, 80)
 local COLOR_PIRATE_DIM = Color3.fromRGB(210, 210, 210)
@@ -64,6 +64,36 @@ local COLOR_VICTIM_RAID_BANNER = Color3.fromRGB(255, 70, 70)
 local PIRATE_HIT_VICTIM_BANNER_HOLD_SECONDS = 5
 
 local PirateHireClient = {}
+
+local function resolvePirateBrokerAnchor(): BasePart?
+	local pirateHireRoot = Workspace:FindFirstChild("PirateHire") or Workspace:FindFirstChild("PirateHire", true)
+	if not pirateHireRoot then
+		return nil
+	end
+	local pirateModel = pirateHireRoot:FindFirstChild("Pirate")
+	if pirateModel and pirateModel:IsA("Model") then
+		local head = pirateModel:FindFirstChild("Head")
+		if head and head:IsA("BasePart") then
+			return head
+		end
+		local upper = pirateModel:FindFirstChild("UpperTorso")
+		if upper and upper:IsA("BasePart") then
+			return upper
+		end
+		local torso = pirateModel:FindFirstChild("Torso")
+		if torso and torso:IsA("BasePart") then
+			return torso
+		end
+		local hrp = pirateModel:FindFirstChild("HumanoidRootPart")
+		if hrp and hrp:IsA("BasePart") then
+			return hrp
+		end
+	end
+	if pirateHireRoot:IsA("Model") then
+		return pirateHireRoot.PrimaryPart or pirateHireRoot:FindFirstChildWhichIsA("BasePart", true)
+	end
+	return nil
+end
 
 function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemotes)
 	local player = deps.player
@@ -151,7 +181,7 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 		screen.Parent = playerGui
 		uiState.screen = screen
 
-		local pirateModel = Workspace:FindFirstChild("PirateHire") or Workspace:FindFirstChild("PirateHire", true)
+		local pirateAnchor = resolvePirateBrokerAnchor()
 		local autoCloseConn
 		autoCloseConn = RunService.Heartbeat:Connect(function()
 			if not screen.Parent then
@@ -160,8 +190,8 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 			end
 			local char = player.Character
 			local hrp = char and char:FindFirstChild("HumanoidRootPart")
-			if hrp and pirateModel then
-				local piratePos = pirateModel:GetPivot().Position
+			if hrp and pirateAnchor and pirateAnchor.Parent then
+				local piratePos = pirateAnchor.Position
 				if ((hrp :: BasePart).Position - piratePos).Magnitude > PIRATE_AUTO_CLOSE_DIST then
 					closeUi()
 					if autoCloseConn then autoCloseConn:Disconnect() end

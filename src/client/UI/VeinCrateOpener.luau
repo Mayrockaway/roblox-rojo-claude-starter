@@ -51,7 +51,7 @@ local VeinCrateOpener = {}
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local _preloadDone = false
+local _preloadDone = true
 
 local CARD_WIDTH = 358
 local CARD_HEIGHT = 358
@@ -98,44 +98,8 @@ local function preloadSpritesForPool(pool, winnerDef, groundType: string)
 	end
 end
 
--- Preload ALL item icons + rarity backgrounds in the background on first require
-task.spawn(function()
-	local allIds = {}
-	for _, def in ipairs(VeinCrateConfig.VeinTypes) do
-		if def.iconAssetId and def.iconAssetId ~= "" and def.iconAssetId ~= "rbxassetid://0" then
-			allIds[def.iconAssetId] = true
-		end
-	end
-	if VeinCrateConfig.RarityBackgroundAssets then
-		for _, bgId in pairs(VeinCrateConfig.RarityBackgroundAssets) do
-			if typeof(bgId) == "string" and bgId ~= "" and bgId ~= "rbxassetid://0" then
-				allIds[bgId] = true
-			end
-		end
-	end
-	local targets = {}
-	for id in pairs(allIds) do
-		local img = Instance.new("ImageLabel")
-		img.Image = id
-		table.insert(targets, img)
-	end
-	--- Preload the crate-open SFX alongside the icons so the first tick / resolve isn't silent.
-	local tickSound = Instance.new("Sound")
-	tickSound.SoundId = TICK_SOUND_ID
-	table.insert(targets, tickSound)
-	local resolveSound = Instance.new("Sound")
-	resolveSound.SoundId = RESOLVE_SOUND_ID
-	table.insert(targets, resolveSound)
-	if #targets > 0 then
-		pcall(function()
-			ContentProvider:PreloadAsync(targets)
-		end)
-		for _, t in ipairs(targets) do
-			t:Destroy()
-		end
-	end
-	_preloadDone = true
-end)
+-- Static crate art and SFX are pre-warmed by LoadingBootstrap. The per-open
+-- helper below remains as a fallback for any future dynamic pool-only media.
 
 -- ═══════════════════════════════════════════════════════════
 -- Build a single card — the sprite IS the card, no extra FX
