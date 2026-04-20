@@ -17,6 +17,7 @@ local PLOT_OWNER_BILLBOARD_NAME = "PlotOwnerBillboard"
 local PLOT_NAME_BILLBOARD_STUDS_OFFSET_Y = 54
 local PLOT_NAME_TEXT_MAX_SIZE = 48
 local PLOT_NAME_TEXT_MIN_SIZE = 18
+local PREFERRED_PLOT_CLAIM_ORDER = { 3, 4, 5, 6, 2, 1, 7, 8 }
 
 local function getPlotId(plot: Instance): number
 	local attr = plot:GetAttribute("PlotId")
@@ -557,19 +558,32 @@ function PlotService:_updatePlotNameBillboard(plot: Model, ownerPlayer: Player?)
 end
 
 function PlotService:_claimRandomOpenPlot(userId: number): Model?
-	local openPlots = {}
+	local openByPlotId = {}
+	local fallbackOpenPlots = {}
 	for _, plot in ipairs(self:_getPlotsSorted()) do
 		local owner = plot:GetAttribute("OwnerUserId")
 		if typeof(owner) ~= "number" or owner == 0 then
-			table.insert(openPlots, plot)
+			local plotId = getPlotId(plot)
+			openByPlotId[plotId] = plot
+			table.insert(fallbackOpenPlots, plot)
 		end
 	end
 
-	if #openPlots == 0 then
+	local selected = nil
+	for _, plotId in ipairs(PREFERRED_PLOT_CLAIM_ORDER) do
+		selected = openByPlotId[plotId]
+		if selected then
+			break
+		end
+	end
+
+	if not selected then
+		selected = fallbackOpenPlots[1]
+	end
+	if not selected then
 		return nil
 	end
 
-	local selected = openPlots[self._rng:NextInteger(1, #openPlots)]
 	selected:SetAttribute("OwnerUserId", userId)
 	self:_refreshPlotVisual(selected)
 	return selected

@@ -59,6 +59,10 @@ local keyboardConn: RBXScriptConnection? = nil
 local MAX_HOTBAR_SLOTS = 10
 local toolBySlot: { Tool? } = {}
 
+local function prefersTouchHotbar(): boolean
+	return UserInputService.TouchEnabled
+end
+
 local function findHudScreen(playerGui: PlayerGui): ScreenGui?
 	local h = playerGui:FindFirstChild("HUD")
 	if h and h:IsA("ScreenGui") then
@@ -138,6 +142,8 @@ local function resolveHotbar(playerGui: PlayerGui): (Frame?, GuiObject?)
 	-- Keep above other Canvas siblings (teleports, stacks) so slots receive input.
 	hotbar.ZIndex = math.max(hotbar.ZIndex, 25)
 	strip.ZIndex = math.max(strip.ZIndex, hotbar.ZIndex)
+	hotbar.ClipsDescendants = false
+	strip.ClipsDescendants = false
 	-- Slots are positioned in Lua (centered row). `UIListLayout` fights manual `Position` on clones.
 	local list = strip:FindFirstChildOfClass("UIListLayout")
 	if list then
@@ -148,14 +154,23 @@ end
 
 local function computeSlotSidePx(strip: Frame): number
 	local h = strip.AbsoluteSize.Y
+	if prefersTouchHotbar() then
+		h = math.max(h, 82)
+	end
 	if h < 6 then
-		return 56
+		return if prefersTouchHotbar() then 72 else 56
 	end
 	local inset = math.max(4, math.floor(h * 0.08))
+	if prefersTouchHotbar() then
+		return math.clamp(h - inset, 64, 132)
+	end
 	return math.clamp(h - inset, 40, 120)
 end
 
 local function gapBetweenSlotsPx(strip: Frame): number
+	if prefersTouchHotbar() then
+		return math.max(8, math.floor(math.max(strip.AbsoluteSize.Y, 82) * 0.12))
+	end
 	return math.max(4, math.floor(strip.AbsoluteSize.Y * 0.08))
 end
 
@@ -548,7 +563,7 @@ local function rebuild(player: Player)
 		end
 
 		if clickTarget then
-			clickTarget.MouseButton1Click:Connect(function()
+			clickTarget.Activated:Connect(function()
 				local t = slotToTool[clone]
 				if not t then
 					return

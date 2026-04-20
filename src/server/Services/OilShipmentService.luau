@@ -26,6 +26,7 @@ local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames
 local ParticleFxScale = require(Shared:WaitForChild("ParticleFxScale"))
 local ShipRig = require(Shared:WaitForChild("Utils"):WaitForChild("ShipRig"))
 local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
+local BarrelStacking = require(script.Parent.Parent.Utils.BarrelStacking)
 local DevLog = require(Shared:WaitForChild("DevLog"))
 
 local OilShipmentService = {}
@@ -202,12 +203,51 @@ local function findBoatSeat(boat: Instance): Seat?
 	return ShipRig.FindSeat(boat, rig.deckSeatName) or ShipRig.FindSeat(boat, "DeckSeat")
 end
 
+local NON_COLLIDABLE_BOAT_HELPER_NAMES = {
+	BarrelStackRoot = true,
+	FRONT_MARKER = true,
+	PlayerFlag = true,
+	WaterlineAnchor = true,
+	ZIPLINE_LAND_ANCHOR = true,
+}
+
+local function isNonCollidableBoatHelperPart(part: BasePart): boolean
+	if NON_COLLIDABLE_BOAT_HELPER_NAMES[part.Name] == true then
+		return true
+	end
+	if part:GetAttribute("AllowInvisibleCollision") == true then
+		return false
+	end
+	return part.Transparency >= 0.95
+end
+
 local function findBarrelStackRoot(boat: Instance): BasePart?
 	if not boat:IsA("Model") then
 		return nil
 	end
 	local rig = resolveRigForBoatInstance(boat)
 	return ShipRig.FindBasePart(boat, rig.barrelStackRootName) or ShipRig.FindBasePart(boat, "BarrelStackRoot")
+end
+
+local function resolveShipBarrelStackBaseCf(boat: Instance, stackRoot: BasePart): CFrame
+	local origin = stackRoot.Position + Vector3.new(0, 12, 0)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	local include = {}
+	if boat:IsA("Model") then
+		for _, d in ipairs(boat:GetDescendants()) do
+			if d:IsA("BasePart") and d ~= stackRoot then
+				table.insert(include, d)
+			end
+		end
+	end
+	params.FilterDescendantsInstances = include
+	params.IgnoreWater = true
+	local result = if #include > 0
+		then Workspace:Raycast(origin, Vector3.new(0, -48, 0), params)
+		else nil
+	local basePos = if result then result.Position else (stackRoot.Position - Vector3.new(0, stackRoot.Size.Y * 0.5, 0))
+	return CFrame.new(basePos) * stackRoot.CFrame.Rotation
 end
 
 local function findPlayerFlagPart(boat: Instance): BasePart?
@@ -948,7 +988,7 @@ function OilShipmentService:_runShipment(shipment)
 	local startRaised = path[1]
 	local initDir = #path >= 2 and (path[2] - path[1]) or Vector3.new(0, 0, -1)
 
-	-- If the owner used Teleport to Ship and is still in `DeckSeat`, clear `SeatWeld` before
+	-- If the owner used Teleport to Ship and is still attached to the boat seat, clear `SeatWeld` before
 	-- `boat:PivotTo` and hull `WeldConstraint`s in `_setupShip`. Otherwise the seat↔HRP weld can
 	-- drag the seat (or fight the new welds) and the ship/seat end up in the wrong place — see
 	-- `CharacterTeleport` module comment.
@@ -1003,7 +1043,7 @@ function OilShipmentService:_runShipment(shipment)
 	-- Stack loaded barrels visually on the ship deck
 	self:_loadBarrelsOnDeck(boat, shipment.manifest)
 
-	-- Auto-teleport owner onto the DeckSeat (Ship Oil click is a one-click dispatch).
+	-- Auto-teleport owner onto the ship deck (Ship Oil click is a one-click dispatch).
 	local ownerPlayer = Players:GetPlayerByUserId(ownerUserId)
 	if ownerPlayer then
 		pcall(function()
@@ -1591,6 +1631,7 @@ end
 function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 	local stackRoot = findBarrelStackRoot(boat)
 	if not stackRoot then return end
+	local stackBaseCf = resolveShipBarrelStackBaseCf(boat, stackRoot)
 	local shipRoot = if boat:IsA("Model") then boat.PrimaryPart else nil
 	if not shipRoot then
 		shipRoot = stackRoot
@@ -1601,25 +1642,13 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 
 	local tierTemplates = (OilConfig.Barrels and OilConfig.Barrels.TierTemplates) or {}
 
-	-- Pre-measure each barrel template's actual height for proper stacking
-	local tierHeights = {}
 	local tierWidths = {}
 	for tier, templateName in pairs(tierTemplates) do
 		local template = assetsFolder:FindFirstChild(templateName)
 		if template then
-			local h, w
-			if template:IsA("Model") then
-				local _, sz = template:GetBoundingBox()
-				h = sz.Y
-				w = math.max(sz.X, sz.Z)
-			else
-				h = template.Size.Y
-				w = math.max(template.Size.X, template.Size.Z)
-			end
-			tierHeights[tier] = h + 0.3 -- small gap
-			tierWidths[tier] = w + 0.5
+			local info = BarrelStacking.ResolveStackInfo(template)
+			tierWidths[tier] = info.footprintDiameter + 0.5
 		else
-			tierHeights[tier] = 4
 			tierWidths[tier] = 3.5
 		end
 	end
@@ -1632,8 +1661,7 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 	local COLUMNS = 3
 	local SPACING = maxWidth
 
-	-- Track cumulative Y per grid column so different-height barrels stack without clipping
-	local columnY = {} -- key = "col_row", value = current Y height
+	local nextContactByColumn = {} -- key = "col_row", value = next BottomContact world cframe
 
 	local barrelIndex = 0
 
@@ -1641,7 +1669,6 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 		local count = manifest[tier] or 0
 		local templateName = tierTemplates[tier]
 		local template = templateName and assetsFolder:FindFirstChild(templateName)
-		local barrelH = tierHeights[tier] or 4
 
 		for _ = 1, math.min(count, 10) do
 			local barrel
@@ -1673,30 +1700,12 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 			local col = barrelIndex % COLUMNS
 			local row = math.floor(barrelIndex / COLUMNS) % COLUMNS
 			local colKey = col .. "_" .. row
-			local currentY = columnY[colKey] or 0
-
-			-- MeshPart barrels place at their center, Models at their WorldPivot (bottom).
-			-- Add half-height offset for MeshParts so they sit on top of the stack, not halfway in.
-			local yOffset = currentY
-			if barrel:IsA("BasePart") then
-				yOffset = currentY + barrel.Size.Y / 2
+			local contactCf = nextContactByColumn[colKey]
+			if not contactCf then
+				contactCf = stackBaseCf
+					* CFrame.new((col - 1) * SPACING, 0, (row - 1) * SPACING)
 			end
-
-			local offset = Vector3.new(
-				(col - 1) * SPACING,
-				yOffset,
-				(row - 1) * SPACING
-			)
-
-			columnY[colKey] = currentY + barrelH
-
-			-- Position relative to stackRoot
-			local targetCf = stackRoot.CFrame * CFrame.new(offset)
-			if barrel:IsA("Model") then
-				barrel:PivotTo(targetCf)
-			elseif barrel:IsA("BasePart") then
-				barrel.CFrame = targetCf
-			end
+			local stackInfo = BarrelStacking.PlaceInstanceOnContact(barrel, contactCf)
 
 			barrel.Parent = boat
 
@@ -1713,6 +1722,9 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 					wc.Parent = shipRoot
 				end
 			end
+			nextContactByColumn[colKey] =
+				BarrelStacking.GetContactCFrame(barrel, "Top")
+				or (contactCf * CFrame.new(0, stackInfo.stackStep, 0))
 			barrelIndex += 1
 		end
 	end
@@ -1785,13 +1797,10 @@ end
 -- Server Output: strait waypoint diagnostics. Studio prints by default (Constants.StraitEventsDebug.VerboseStraitWaypointLogsInStudio).
 function OilShipmentService:_straitDebugLogEnabled(): boolean
 	local d = Constants.StraitEventsDebug
-	if d.LogWaypointTriggers then
-		return true
+	if not RunService:IsStudio() then
+		return false
 	end
-	if RunService:IsStudio() and d.VerboseStraitWaypointLogsInStudio ~= false then
-		return true
-	end
-	return false
+	return d.LogWaypointTriggers or d.VerboseStraitWaypointLogsInStudio ~= false
 end
 
 -- Returns oil units removed (sum) and per-tier oil removed. Loss = max(minFloor, ceil(manifestSum * fraction)),
@@ -2842,6 +2851,13 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 			d.CanCollide = true
 			d.CanTouch = true
 			d.CanQuery = true
+			if isNonCollidableBoatHelperPart(d) then
+				d.CanCollide = false
+				d.CanTouch = false
+				d.CanQuery = false
+				d.Massless = true
+				d:SetAttribute("BoatGameplayHelperDisabled", true)
+			end
 			if d == root then
 				d.Massless = false
 			elseif d:GetAttribute("IsDoor") then

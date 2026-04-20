@@ -4,10 +4,10 @@
 --   * Spawn an IdleBoat_<userId> at a free slot when a player joins (after plot+skin resolve).
 --   * Despawn when player leaves (free slot).
 --   * CheckoutBoat / CheckinBoat handoff for OilShipmentService: idle boat becomes
---     ActiveShipmentBoat for the voyage; at voyage end the boat is destroyed and a
---     10-second cooldown runs before a fresh idle boat respawns at the same slot.
+--     ActiveShipmentBoat for the voyage; successful deliveries respawn immediately
+--     at the dock, while destroyed boats still use the cooldown penalty path.
 --   * 3-second cooldown on skin swap (rejected while sailing).
---   * Owner-only DeckSeat: non-owner occupants are ejected.
+--   * DeckSeat remains as authored rig geometry only; it is neutralized so players are never seated by the boat.
 -- All state is in-memory; nothing persists across server restart.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -24,10 +24,10 @@ local ShipRig = require(Shared:WaitForChild("Utils"):WaitForChild("ShipRig"))
 local BoatDockService = {}
 
 local SLOT_COUNT = 8
-local DESTROY_COOLDOWN_SECONDS = 10
+local DESTROY_COOLDOWN_SECONDS = 1
 local SKIN_SWAP_COOLDOWN_SECONDS = 3
 local IDLE_Y_OFFSET = 0 -- DockAnchor lands exactly on the slot part's red square
-local DEBUG_DOCK_SPAWN = true
+local DEBUG_DOCK_SPAWN = false
 
 --- Pier / spawn geometry under `dOCKS` (excluding `dOCKS.Boats`). `OilShipmentService` voyage hull uses
 --- `ShipmentShip`; those parts do not collide with `MarinaDock`, but still collide with `Default` (character).
@@ -213,6 +213,90 @@ local function findSeatForBoat(boat: Model): Seat?
 	return ShipRig.FindSeat(boat, "DeckSeat")
 end
 
+local function resolveOwnerStandCFrame(boat: Model): CFrame?
+	local rig = rigForBoatModel(boat)
+	local seat = findSeatForBoat(boat)
+	local deckAnchor = ShipRig.FindAttachment(boat, rig.deckAnchorName)
+	local barrelStackRoot = ShipRig.FindBasePart(boat, rig.barrelStackRootName)
+	local frontMarker = ShipRig.FindBasePart(boat, rig.frontMarkerName)
+	local dockAnchor = ShipRig.FindAttachment(boat, rig.dockAnchorName)
+
+	local anchorPos: Vector3?
+	if deckAnchor then
+		anchorPos = deckAnchor.WorldPosition
+	elseif seat then
+		anchorPos = seat.Position
+	elseif barrelStackRoot then
+		anchorPos = barrelStackRoot.Position
+	end
+	if not anchorPos then
+		return nil
+	end
+
+	local waterlineY = anchorPos.Y
+	local deckY = ShipRig.ResolveDeckWorldY(boat, rig, waterlineY)
+
+	local forward = Vector3.new(0, 0, -1)
+	if frontMarker and dockAnchor then
+		local bow = frontMarker.Position - dockAnchor.WorldPosition
+		local flatBow = Vector3.new(bow.X, 0, bow.Z)
+		if flatBow.Magnitude > 0.01 then
+			forward = flatBow.Unit
+		end
+	elseif boat.PrimaryPart then
+		local flatLook = Vector3.new(boat.PrimaryPart.CFrame.LookVector.X, 0, boat.PrimaryPart.CFrame.LookVector.Z)
+		if flatLook.Magnitude > 0.01 then
+			forward = flatLook.Unit
+		end
+	end
+
+	local right = Vector3.new(-forward.Z, 0, forward.X)
+	local standPos = Vector3.new(anchorPos.X, deckY + 4, anchorPos.Z) - forward * 5 + right * 4
+	if seat and (Vector3.new(standPos.X, seat.Position.Y, standPos.Z) - seat.Position).Magnitude < 6 then
+		standPos += right * 4
+	end
+	return CFrame.lookAt(standPos, standPos + forward)
+end
+
+local function teleportCharacterToBoatDeck(character: Model, boat: Model, targetCFrame: CFrame, logLabel: string)
+	local seat = findSeatForBoat(boat)
+	local hum = character:FindFirstChildOfClass("Humanoid")
+	local seatWasDisabled = false
+
+	if seat then
+		local ok, disabled = pcall(function()
+			return seat.Disabled
+		end)
+		if ok and disabled == false then
+			pcall(function()
+				seat.Disabled = true
+			end)
+			seatWasDisabled = true
+		end
+	end
+
+	CharacterTeleport.teleportWithUnseat(character, targetCFrame, logLabel)
+
+	if hum and seat then
+		task.delay(0.15, function()
+			if hum.Parent == character and hum.SeatPart == seat then
+				CharacterTeleport.unseatIfSitting(character)
+				hum.Sit = false
+			end
+		end)
+	end
+
+	if seat and seatWasDisabled then
+		task.delay(1.0, function()
+			if seat.Parent then
+				pcall(function()
+					seat.Disabled = false
+				end)
+			end
+		end)
+	end
+end
+
 local function getDockWaterSurfaceY(): number?
 	local map = Workspace:FindFirstChild("Map")
 	local oceanRoot = map and map:FindFirstChild("Ocean")
@@ -264,22 +348,90 @@ function BoatDockService:_ensureBoatsFolder(): Folder
 	return boats :: Folder
 end
 
--- Keep the owner attached to the seat; eject anyone else.
-function BoatDockService:_enforceOwnerOnlySeat(seat: Seat, ownerUserId: number)
-	seat:SetAttribute("OwnerUserId", ownerUserId)
-	local conn
-	conn = seat:GetPropertyChangedSignal("Occupant"):Connect(function()
-		local occupant = seat.Occupant
-		if not occupant then return end
-		local char = occupant.Parent
-		local player = char and Players:GetPlayerFromCharacter(char) or nil
-		if player and player.UserId == ownerUserId then return end
-		-- Non-owner: eject.
-		pcall(function()
-			occupant.Sit = false
-		end)
-	end)
-	table.insert(self._connections, conn)
+local function neutralizeSeat(seat: Seat)
+	seat.Disabled = true
+	seat.CanTouch = false
+	seat.CanQuery = false
+	seat.CanCollide = false
+	seat.Massless = true
+	seat:SetAttribute("SeatGameplayDisabled", true)
+end
+
+local NON_COLLIDABLE_BOAT_HELPER_NAMES = {
+	BarrelStackRoot = true,
+	FRONT_MARKER = true,
+	PlayerFlag = true,
+	WaterlineAnchor = true,
+	ZIPLINE_LAND_ANCHOR = true,
+}
+
+local function isNonCollidableBoatHelperPart(part: BasePart): boolean
+	if NON_COLLIDABLE_BOAT_HELPER_NAMES[part.Name] == true then
+		return true
+	end
+	if part:GetAttribute("AllowInvisibleCollision") == true then
+		return false
+	end
+	return part.Transparency >= 0.95
+end
+
+local function neutralizeBoatHelperPart(part: BasePart)
+	part.CanCollide = false
+	part.CanTouch = false
+	part.CanQuery = false
+	part.Massless = true
+	part:SetAttribute("BoatGameplayHelperDisabled", true)
+end
+
+local function neutralizeBoatHelpers(root: Instance)
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("BasePart") and isNonCollidableBoatHelperPart(d) then
+			neutralizeBoatHelperPart(d)
+		end
+	end
+end
+
+local function logRemainingInvisibleBoatColliders(root: Instance)
+	if not RunService:IsStudio() then
+		return
+	end
+	local seat = root:FindFirstChild("DeckSeat", true)
+	local centerPart = if seat and seat:IsA("BasePart")
+		then seat
+		else root:FindFirstChild("BarrelStackRoot", true)
+	local center = if centerPart and centerPart:IsA("BasePart")
+		then centerPart.Position
+		else nil
+	if not center then
+		return
+	end
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("BasePart")
+			and d.Transparency >= 0.95
+			and (d.CanCollide or d.CanTouch)
+			and (d.Position - center).Magnitude <= 30
+		then
+			warn(string.format(
+				"[BoatDockService][InvisibleCollider] part=%s dist=%.2f collide=%s touch=%s query=%s size=(%.2f,%.2f,%.2f)",
+				d:GetFullName(),
+				(d.Position - center).Magnitude,
+				tostring(d.CanCollide),
+				tostring(d.CanTouch),
+				tostring(d.CanQuery),
+				d.Size.X,
+				d.Size.Y,
+				d.Size.Z
+			))
+		end
+	end
+end
+
+local function stripBoatBoardPrompt(root: Instance)
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("ProximityPrompt") and d.Name == "BoardPrompt" then
+			d:Destroy()
+		end
+	end
 end
 
 function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinId: string): Model?
@@ -372,6 +524,8 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 		if d:IsA("BasePart") then
 			d.Anchored = true
 			d.CanCollide = true
+			d.CanTouch = true
+			d.CanQuery = true
 		end
 	end
 
@@ -467,8 +621,11 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 
 	local seat = findSeatForBoat(boat)
 	if seat then
-		self:_enforceOwnerOnlySeat(seat, userId)
+		neutralizeSeat(seat)
 	end
+	neutralizeBoatHelpers(boat)
+	logRemainingInvisibleBoatColliders(boat)
+	stripBoatBoardPrompt(boat)
 
 	boat.Parent = self:_ensureBoatsFolder()
 
@@ -547,6 +704,9 @@ function BoatDockService:CheckoutBoat(userId: number, shipmentId: string): (Mode
 	boat:SetAttribute("IsIdleBob", false)   -- stop client bob
 	boat.Name = "ActiveShipmentBoat"
 	boat:SetAttribute("ShipmentId", shipmentId)
+	neutralizeBoatHelpers(boat)
+	logRemainingInvisibleBoatColliders(boat)
+	stripBoatBoardPrompt(boat)
 	self:_pushSnapshot(userId)
 	return boat, nil
 end
@@ -555,6 +715,7 @@ function BoatDockService:CheckinBoat(userId: number, opts: { destroyed: boolean?
 	-- Always destroy the checked-out model. If the player left during the voyage,
 	-- the slot is already freed; this just drops the model and no-ops the respawn.
 	self:_destroyBoat(userId)
+	local wasDestroyed = opts ~= nil and opts.destroyed == true
 
 	local player = Players:GetPlayerByUserId(userId)
 	if not player then
@@ -571,6 +732,18 @@ function BoatDockService:CheckinBoat(userId: number, opts: { destroyed: boolean?
 		-- try a fresh free slot.
 		slotIndex = self:_findFreeSlot()
 		if slotIndex then self._slotByUser[userId] = slotIndex end
+	end
+
+	if not wasDestroyed then
+		self._cooldownEnds[userId] = nil
+		if not slotIndex then
+			self._stateByUser[userId] = nil
+			self:_pushSnapshot(userId)
+			return
+		end
+		self._slotOwner[slotIndex] = userId
+		self:_spawnIdleBoat(userId, slotIndex, self:_getSkinId(userId))
+		return
 	end
 
 	self._stateByUser[userId] = "cooldown"
@@ -653,10 +826,14 @@ function BoatDockService:TeleportSpectatorToBoat(caller: Player, targetUserId: n
 	if not character then
 		return false, "NO_CHARACTER"
 	end
-	-- Drop caller ~3 studs above the deck seat without re-seating them.
-	CharacterTeleport.teleportWithUnseat(
+	local standCFrame = resolveOwnerStandCFrame(boat)
+	if not standCFrame then
+		standCFrame = seat.CFrame + Vector3.new(4, 4, -5)
+	end
+	teleportCharacterToBoatDeck(
 		character,
-		seat.CFrame + Vector3.new(0, 3, 0),
+		boat,
+		standCFrame,
 		string.format("BoatDock:TeleportSpectatorToBoat target=%d", targetUserId)
 	)
 	return true, nil
@@ -671,17 +848,17 @@ function BoatDockService:TeleportOwnerToSeat(player: Player): (boolean, string?)
 	if not boat then
 		return false, "BOAT_MISSING"
 	end
-	local seat = findSeatForBoat(boat)
-	if not seat then
-		return false, "SEAT_MISSING"
-	end
 	local character = player.Character
 	if not character then return false, "NO_CHARACTER" end
-	CharacterTeleport.teleportWithUnseat(character, seat.CFrame + Vector3.new(0, 3, 0), "BoatDock:TeleportOwnerToSeat")
-	local hum = character:FindFirstChildOfClass("Humanoid")
-	if hum then
-		pcall(function() seat:Sit(hum) end)
+	local standCFrame = resolveOwnerStandCFrame(boat)
+	if not standCFrame then
+		local seat = findSeatForBoat(boat)
+		if not seat then
+			return false, "SEAT_MISSING"
+		end
+		standCFrame = seat.CFrame + Vector3.new(4, 4, -5)
 	end
+	teleportCharacterToBoatDeck(character, boat, standCFrame, "BoatDock:TeleportOwnerToBoat")
 	return true, nil
 end
 
@@ -689,7 +866,6 @@ end
 
 function BoatDockService:_onPlayerAdded(player: Player)
 	local userId = player.UserId
-	print(string.format("[BoatDockService] PlayerAdded user=%d name=%s", userId, player.Name))
 	task.spawn(function()
 		local deadline = os.clock() + 20
 		while os.clock() < deadline do
@@ -706,9 +882,7 @@ function BoatDockService:_onPlayerAdded(player: Player)
 		self._slotOwner[slotIndex] = userId
 		self._slotByUser[userId] = slotIndex
 		local skinId = self:_getSkinId(userId)
-		local boat = self:_spawnIdleBoat(userId, slotIndex, skinId)
-		print(string.format("[BoatDockService] spawned user=%d slot=%d skin=%s boat=%s",
-			userId, slotIndex, skinId, tostring(boat ~= nil)))
+		self:_spawnIdleBoat(userId, slotIndex, skinId)
 	end)
 end
 

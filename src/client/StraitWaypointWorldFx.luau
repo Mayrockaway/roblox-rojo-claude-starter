@@ -3112,7 +3112,9 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		local landingBase = Vector3.new(zipToBase.X, deckY, zipToBase.Z) - fwd * LANDING_BACK_OFFSET
 		local landingPositions = {}
 		for i = 1, PIRATE_COUNT do
-			landingPositions[i] = landingBase + perp * ((i - pirateMid) * 1.6)
+			local targetXZ = landingBase + perp * ((i - pirateMid) * 1.6)
+			landingPositions[i] = npcPivotOnDeck(playerBoat, targetXZ, pirateLift)
+				or Vector3.new(targetXZ.X, deckY, targetXZ.Z)
 		end
 
 		for _, pirate in ipairs(pirates) do
@@ -3194,7 +3196,9 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 							carrySourceClone = barrelInst:Clone()
 							carrySourceCF = getObjectCF(barrelInst)
 						end
-						local standPos = Vector3.new(barrelPos.X, deckY, barrelPos.Z) + perp * BARREL_SIDE_OFFSET
+						local standTargetXZ = Vector3.new(barrelPos.X, 0, barrelPos.Z) + perp * BARREL_SIDE_OFFSET
+						local standPos = npcPivotOnDeck(playerBoat, standTargetXZ, pirateLift)
+							or Vector3.new(standTargetXZ.X, deckY, standTargetXZ.Z)
 						walkPirate(pirateData, uprightLookAt(standPos, barrelPos))
 						if barrelInst and barrelInst.Parent then
 							barrelInst:Destroy()
@@ -3217,7 +3221,9 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 
 						local edgeDir = Vector3.new(zipFromBase.X - standPos.X, 0, zipFromBase.Z - standPos.Z)
 						edgeDir = if edgeDir.Magnitude > 0.001 then edgeDir.Unit else fwd
-						local edgePos = Vector3.new(standPos.X + edgeDir.X * 8, deckY, standPos.Z + edgeDir.Z * 8)
+						local edgeTargetXZ = Vector3.new(standPos.X + edgeDir.X * 8, 0, standPos.Z + edgeDir.Z * 8)
+						local edgePos = npcPivotOnDeck(playerBoat, edgeTargetXZ, pirateLift)
+							or Vector3.new(edgeTargetXZ.X, deckY, edgeTargetXZ.Z)
 						walkPirate(pirateData, uprightLookAt(edgePos, zipFromBase), nil, carry)
 
 						local tossTarget = pirateBoat:GetPivot().Position

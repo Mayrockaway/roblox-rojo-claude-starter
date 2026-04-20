@@ -7,6 +7,7 @@ local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
+local BarrelStacking = require(script.Parent.Parent.Utils.BarrelStacking)
 local DataStoreWriteGate = require(script.Parent.Parent.Utils.DataStoreWriteGate)
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local WarehouseConfig = require(Shared:WaitForChild("Config"):WaitForChild("WarehouseConfig"))
@@ -866,7 +867,6 @@ function WarehouseService:_syncBarrelVisuals(userId: number)
 	local tierTemplates = (OilConfig.Barrels and OilConfig.Barrels.TierTemplates) or {}
 
 	local maxVisual = WarehouseConfig.BarrelVisuals.MaxPerTier -- 20 per tier total
-	local barrelHeight = WarehouseConfig.BarrelVisuals.BarrelHeight
 
 	-- Each tier has 4 stack roots (PileRoot_<tier>_1 through _4) spread across Pile_Crude / Pile_Refined / Pile_Premium.
 	-- Distribute barrels round-robin across the 4 stacks.
@@ -898,6 +898,7 @@ function WarehouseService:_syncBarrelVisuals(userId: number)
 		if desired > existing then
 			local templateName = tierTemplates[tier]
 			local template = templateName and assetsFolder:FindFirstChild(templateName)
+			local nextContactByStack = {}
 			for i = existing + 1, desired do
 				local barrel
 				if template then
@@ -915,20 +916,33 @@ function WarehouseService:_syncBarrelVisuals(userId: number)
 				local stackIdx = ((i - 1) % #roots) + 1
 				local stackLevel = math.floor((i - 1) / #roots)
 				local root = roots[stackIdx]
-				local baseY = stackLevel * barrelHeight
+				local rootCf = if root:IsA("Attachment")
+					then root.WorldCFrame
+					elseif root:IsA("BasePart")
+					then root.CFrame
+					else nil
+				if not rootCf then
+					barrel:Destroy()
+					continue
+				end
+				local contactCf = nextContactByStack[stackIdx]
+				if not contactCf then
+					contactCf = rootCf
+				end
+				local stackInfo = BarrelStacking.PlaceInstanceOnContact(barrel, contactCf)
 
-				if barrel:IsA("Model") then
-					-- Model WorldPivot is at bottom — place directly
-					local pos = root.Position + Vector3.new(0, baseY, 0)
-					barrel:PivotTo(CFrame.new(pos))
-				elseif barrel:IsA("BasePart") then
-					-- MeshPart position is at center — offset by half height
-					local pos = root.Position + Vector3.new(0, baseY + barrel.Size.Y / 2, 0)
-					barrel.CFrame = CFrame.new(pos)
-					barrel.Anchored = true
-					barrel.CanCollide = false
+				for _, part in ipairs(barrel:IsA("Model") and barrel:GetDescendants() or { barrel }) do
+					if part:IsA("BasePart") then
+						part.Anchored = true
+						part.CanCollide = false
+						part.CanTouch = false
+						part.Massless = true
+					end
 				end
 				barrel.Parent = visual
+				nextContactByStack[stackIdx] =
+					BarrelStacking.GetContactCFrame(barrel, "Top")
+					or (contactCf * CFrame.new(0, stackInfo.stackStep, 0))
 			end
 		elseif desired < existing then
 			-- Remove from top down
