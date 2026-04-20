@@ -52,6 +52,9 @@ local TOOL_DRILL = "Drill"
 local ghostDrill: Model? = nil
 local ghostHighlight: Highlight? = nil
 local ghostTemplateName: string? = nil
+local ghostTimerAnchor: BasePart? = nil
+local ghostTimerBB: BillboardGui? = nil
+local ghostTimerLabel: TextLabel? = nil
 
 local focusBillboard: BillboardGui? = nil
 local focusLabel: TextLabel? = nil
@@ -175,6 +178,51 @@ local function resolveGhostTemplateName(): string?
 	return nil
 end
 
+local function highestWorldYOfPartOBB(part: BasePart): number
+	local cf, sz = part.CFrame, part.Size
+	local hx, hy, hz = sz.X / 2, sz.Y / 2, sz.Z / 2
+	local highestY = -math.huge
+	for _, o in ipairs({
+		Vector3.new(hx, hy, hz),
+		Vector3.new(-hx, hy, hz),
+		Vector3.new(hx, -hy, hz),
+		Vector3.new(-hx, -hy, hz),
+		Vector3.new(hx, hy, -hz),
+		Vector3.new(-hx, hy, -hz),
+		Vector3.new(hx, -hy, -hz),
+		Vector3.new(-hx, -hy, -hz),
+	}) do
+		local wy = (cf * o).Y
+		if wy > highestY then
+			highestY = wy
+		end
+	end
+	return highestY
+end
+
+local function getGhostTimerAnchorPosition(model: Model, fallbackPosition: Vector3): Vector3
+	local topY = -math.huge
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") then
+			topY = math.max(topY, highestWorldYOfPartOBB(d))
+		end
+	end
+	if topY > -math.huge then
+		local bbCf, _ = model:GetBoundingBox()
+		return Vector3.new(bbCf.Position.X, topY + 0.5, bbCf.Position.Z)
+	end
+	return fallbackPosition
+end
+
+local function clearGhostTimerUi()
+	if ghostTimerAnchor then
+		ghostTimerAnchor:Destroy()
+		ghostTimerAnchor = nil
+	end
+	ghostTimerBB = nil
+	ghostTimerLabel = nil
+end
+
 local function ensureGhost(): Model?
 	local wantName = resolveGhostTemplateName()
 	if not wantName then return nil end
@@ -183,7 +231,12 @@ local function ensureGhost(): Model?
 	if ghostDrill and ghostDrill.Parent and ghostTemplateName == wantName then
 		return ghostDrill
 	end
-	if ghostDrill then ghostDrill:Destroy(); ghostDrill = nil; ghostHighlight = nil end
+	if ghostDrill then
+		ghostDrill:Destroy()
+		ghostDrill = nil
+		ghostHighlight = nil
+	end
+	clearGhostTimerUi()
 
 	local assets = _ReplicatedStorage:FindFirstChild("Assets")
 	local template = assets and assets:FindFirstChild(wantName)
@@ -205,10 +258,47 @@ local function ensureGhost(): Model?
 	hl.OutlineTransparency = 0
 	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 	hl.Parent = clone
+
 	clone.Parent = _Workspace
+
+	local timerAnchor = Instance.new("Part")
+	timerAnchor.Name = "GhostTimerAnchor"
+	timerAnchor.Size = Vector3.new(0.2, 0.2, 0.2)
+	timerAnchor.Transparency = 1
+	timerAnchor.Anchored = true
+	timerAnchor.CanCollide = false
+	timerAnchor.CanQuery = false
+	timerAnchor.CanTouch = false
+	timerAnchor.Parent = _Workspace
+
+	local bb = Instance.new("BillboardGui")
+	bb.Name = "GhostTimerGui"
+	bb.Adornee = timerAnchor
+	bb.Size = UDim2.new(0, 160, 0, 60)
+	bb.StudsOffsetWorldSpace = Vector3.new(0, 8, 0)
+	bb.AlwaysOnTop = true
+	bb.Enabled = false
+	bb.Parent = timerAnchor
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Name = "GhostTimerLabel"
+	lbl.Size = UDim2.fromScale(1, 1)
+	lbl.BackgroundColor3 = Color3.new(0, 0, 0)
+	lbl.BackgroundTransparency = 0.4
+	lbl.TextColor3 = Color3.fromRGB(255, 230, 100)
+	lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+	lbl.TextStrokeTransparency = 0
+	lbl.Font = Enum.Font.GothamBold
+	lbl.TextScaled = true
+	lbl.Text = ""
+	lbl.Parent = bb
+
 	ghostDrill = clone
 	ghostHighlight = hl
 	ghostTemplateName = wantName
+	ghostTimerAnchor = timerAnchor
+	ghostTimerBB = bb
+	ghostTimerLabel = lbl
 	return clone
 end
 
@@ -218,6 +308,7 @@ local function hideGhost()
 		ghostDrill = nil
 		ghostHighlight = nil
 	end
+	clearGhostTimerUi()
 end
 
 local function updateGhost()
@@ -248,6 +339,9 @@ local function updateGhost()
 		pivotToBottom = PlacementAnchor.pivotYMinusBottomWorldY(g)
 	end
 	g:PivotTo(CFrame.new(hitPos.X, surfaceY + pivotToBottom, hitPos.Z))
+	if ghostTimerAnchor then
+		ghostTimerAnchor.Position = getGhostTimerAnchorPosition(g, Vector3.new(hitPos.X, surfaceY + 3, hitPos.Z))
+	end
 	if ghostHighlight then
 		if isPlacementValid(chunkId, hitPos, equipKind) then
 			ghostHighlight.FillColor = Color3.fromRGB(80, 220, 120)
@@ -255,6 +349,46 @@ local function updateGhost()
 		else
 			ghostHighlight.FillColor = Color3.fromRGB(220, 70, 70)
 			ghostHighlight.OutlineColor = Color3.fromRGB(255, 180, 180)
+		end
+	end
+
+	-- Update ghost timer preview
+	if ghostTimerLabel then
+		local chunkStateById = ClientPlotGrid.getChunkStateById()
+		local chunk = chunkStateById[chunkId]
+		local target = mouse.Target
+		local _, eqTier = ClientPlotGrid.getEquippedToolInfo()
+		if chunk and chunk.tiles and target and target:IsA("BasePart") and eqTier then
+			local tileData = chunk.tiles[target.Name]
+			local drillTiers = _OilConfig.DrillTiers
+			local tierCfg = drillTiers and drillTiers[eqTier]
+			if tileData and not tileData.drilled and tierCfg then
+				local depth = tonumber(tileData.drillSeconds) or 30
+				local speed = tierCfg.timeDivisor or 1
+				local secs = math.max(0.5, depth / speed)
+				local timeStr
+				if secs >= 3600 then
+					timeStr = string.format("%.1fh", secs / 3600)
+				elseif secs >= 60 then
+					timeStr = string.format("%dm %02ds", math.floor(secs / 60), math.floor(secs % 60))
+				else
+					timeStr = string.format("%.0fs", secs)
+				end
+				ghostTimerLabel.Text = string.format("0m / %dm\n%s", math.floor(depth), timeStr)
+				if ghostTimerBB then
+					ghostTimerBB.Enabled = true
+				end
+			else
+				ghostTimerLabel.Text = ""
+				if ghostTimerBB then
+					ghostTimerBB.Enabled = false
+				end
+			end
+		else
+			ghostTimerLabel.Text = ""
+			if ghostTimerBB then
+				ghostTimerBB.Enabled = false
+			end
 		end
 	end
 end

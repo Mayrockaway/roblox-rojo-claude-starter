@@ -48,23 +48,89 @@ local function animateActiveDrill(model: Instance)
 
 	local duration = endTime - startTime
 	local alpha = math.clamp((workspace:GetServerTimeNow() - startTime) / duration, 0, 1)
+	local templateName = model:GetAttribute("Template") or ""
 
-	-- Spin: integrate angular speed over time. speed(t) = BASE + PEAK * t^2  (accelerating)
-	-- Integral from 0 to t = BASE*t + PEAK*t^3/3. We express in alpha so: duration * (BASE*alpha + PEAK*alpha^3/3)
-	local BASE_RAD = 3   -- starting angular speed rad/s
-	local PEAK_RAD = 40  -- added peak angular speed at alpha=1
-	local spinAngle = duration * (BASE_RAD * alpha + PEAK_RAD * alpha * alpha * alpha / 3)
+	if templateName == "Drill_T6" then
+		-- T6 FIST DRILL: pound animation — jump up then slam down, repeat
+		local heightY = activeDrillHeights[model] or 5
+		local sinkDepth = heightY * alpha * alpha
+		local elapsed = workspace:GetServerTimeNow() - startTime
+		local poundCycle = 1.2 -- seconds per pound
+		local cycleAlpha = (elapsed % poundCycle) / poundCycle
 
-	-- Sink: smoothly descends to fully submerged at alpha=1
-	local heightY = activeDrillHeights[model] or 5
-	local sinkDepth = heightY * alpha * alpha  -- quadratic ease-in so it accelerates downward
+		-- Rise phase (0-0.4): fist lifts up
+		-- Slam phase (0.4-0.55): fist slams down fast
+		-- Hold phase (0.55-1.0): fist stays at ground level
+		local poundHeight
+		if cycleAlpha < 0.4 then
+			-- Rising: ease out
+			local riseAlpha = cycleAlpha / 0.4
+			poundHeight = riseAlpha * riseAlpha * 8
+		elseif cycleAlpha < 0.55 then
+			-- Slamming down: fast ease in
+			local slamAlpha = (cycleAlpha - 0.4) / 0.15
+			poundHeight = 8 * (1 - slamAlpha * slamAlpha)
+		else
+			-- Hold at ground
+			poundHeight = 0
+		end
 
-	local offset = CFrame.new(0, -sinkDepth, 0) * CFrame.Angles(0, spinAngle, 0)
-	local target = basePivot * offset
-	if model:IsA("Model") then
-		model:PivotTo(target)
+		-- Dust burst at slam moment (cycleAlpha ~0.55)
+		if cycleAlpha >= 0.53 and cycleAlpha < 0.58 then
+			-- Check if we already emitted dust this cycle
+			local lastDust = model:GetAttribute("_lastDustCycle")
+			local currentCycle = math.floor(elapsed / poundCycle)
+			if lastDust ~= currentCycle then
+				model:SetAttribute("_lastDustCycle", currentCycle)
+				-- Spawn dust puff
+				local dustPart = model:FindFirstChildWhichIsA("BasePart")
+				if dustPart then
+					local emitter = Instance.new("ParticleEmitter")
+					emitter.Rate = 0
+					emitter.Speed = NumberRange.new(8, 15)
+					emitter.SpreadAngle = Vector2.new(80, 80)
+					emitter.Lifetime = NumberRange.new(0.4, 0.8)
+					emitter.Color = ColorSequence.new(Color3.fromRGB(180, 160, 130))
+					emitter.Size = NumberSequence.new({
+						NumberSequenceKeypoint.new(0, 1.5),
+						NumberSequenceKeypoint.new(1, 4),
+					})
+					emitter.Transparency = NumberSequence.new({
+						NumberSequenceKeypoint.new(0, 0.3),
+						NumberSequenceKeypoint.new(1, 1),
+					})
+					emitter.Parent = dustPart
+					emitter:Emit(12)
+					task.delay(1, function()
+						if emitter.Parent then emitter:Destroy() end
+					end)
+				end
+			end
+		end
+
+		local offset = CFrame.new(0, -sinkDepth + poundHeight, 0)
+		local target = basePivot * offset
+		if model:IsA("Model") then
+			model:PivotTo(target)
+		else
+			(model :: BasePart).CFrame = target
+		end
 	else
-		(model :: BasePart).CFrame = target
+		-- T1-T5: normal spin + sink animation
+		local BASE_RAD = 3
+		local PEAK_RAD = 40
+		local spinAngle = duration * (BASE_RAD * alpha + PEAK_RAD * alpha * alpha * alpha / 3)
+
+		local heightY = activeDrillHeights[model] or 5
+		local sinkDepth = heightY * alpha * alpha
+
+		local offset = CFrame.new(0, -sinkDepth, 0) * CFrame.Angles(0, spinAngle, 0)
+		local target = basePivot * offset
+		if model:IsA("Model") then
+			model:PivotTo(target)
+		else
+			(model :: BasePart).CFrame = target
+		end
 	end
 end
 
@@ -90,12 +156,19 @@ local function updateDrillTimers()
 					local bb = anchor:FindFirstChild("TimerGui")
 					local lbl = bb and bb:FindFirstChild("TimerLabel")
 					if lbl and lbl:IsA("TextLabel") then
+						local startT = tonumber(anchor:GetAttribute("StartTime")) or 0
 						local endT = tonumber(anchor:GetAttribute("EndTime")) or 0
+						local depthMeters = tonumber(anchor:GetAttribute("DepthMeters")) or 0
+						local mps = tonumber(anchor:GetAttribute("MetersPerSecond")) or 1
+						local elapsed = math.max(0, now - startT)
 						local remaining = math.max(0, endT - now)
-						if remaining >= 60 then
-							lbl.Text = string.format("%dm %02ds", math.floor(remaining / 60), math.floor(remaining % 60))
+						local remainSecs = math.ceil(remaining)
+						local timeStr = string.format("%ds", remainSecs)
+						if depthMeters > 0 then
+							local currentDepth = math.min(depthMeters, math.floor(elapsed * mps))
+							lbl.Text = string.format("%dm / %dm\n%s", currentDepth, depthMeters, timeStr)
 						else
-							lbl.Text = string.format("%.1fs", remaining)
+							lbl.Text = timeStr
 						end
 					end
 				end

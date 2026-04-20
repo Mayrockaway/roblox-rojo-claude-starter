@@ -899,6 +899,23 @@ function OilStateService:GetStateForClient(userId: number)
 				if px and py and pz then
 					local st = tonumber(e.startTime) or nowT
 					local et = tonumber(e.endTime) or (st + 1)
+					local tierName = if typeof(e.tier) == "string" and e.tier ~= "" then e.tier else "T1"
+					local tierCfg = OilConfig.DrillTiers[tierName] or OilConfig.DrillTiers.T1
+					local depthMeters = e.depthMeters
+					if typeof(depthMeters) ~= "number" and typeof(e.chunkId) == "string" and typeof(e.tileKey) == "string" then
+						local chunk = state.chunksById[e.chunkId]
+						local tile = chunk and chunk.tiles and chunk.tiles[e.tileKey]
+						if typeof(tile) == "table" then
+							depthMeters = tonumber(tile.drillSeconds)
+						end
+					end
+					if typeof(depthMeters) ~= "number" then
+						depthMeters = tierCfg and tierCfg.fallbackSeconds or nil
+					end
+					local metersPerSecond = tonumber(e.metersPerSecond)
+					if typeof(metersPerSecond) ~= "number" then
+						metersPerSecond = (tierCfg and tierCfg.timeDivisor) or 1
+					end
 					table.insert(activeDrills, {
 						drillId = drillId,
 						chunkId = e.chunkId,
@@ -914,6 +931,8 @@ function OilStateService:GetStateForClient(userId: number)
 						remaining = math.max(0, et - nowT),
 						oilType = e.oilType,
 						ftueFreeNoSellback = e.ftueFreeNoSellback == true,
+						depthMeters = depthMeters,
+						metersPerSecond = metersPerSecond,
 					})
 				else
 					-- Do not mutate `state.activeDrills` here: a transient missing/stale `state.plot` would
@@ -1498,6 +1517,9 @@ function OilStateService:TryStartDrill(userId: number, payload): (boolean, strin
 		effectiveSeconds = math.max(0.5, tonumber(FtueConfig.FtueTutorialDrillSeconds) or 5)
 	end
 
+	local depthMeters = baseSeconds -- 1 second = 1 meter
+	local metersPerSecond = tierCfg.timeDivisor or 1
+
 	local now = workspace:GetServerTimeNow()
 	local entry = {
 		drillId = drillId,
@@ -1513,6 +1535,8 @@ function OilStateService:TryStartDrill(userId: number, payload): (boolean, strin
 		oilType = (tile and tile.oilType) or nil,
 		template = tierCfg.templateName,
 		ftueFreeNoSellback = ftueFreeNoSellback,
+		depthMeters = depthMeters,
+		metersPerSecond = metersPerSecond,
 	}
 	state.activeDrills[drillId] = entry
 	self:_markDirty(userId)
@@ -1525,6 +1549,8 @@ function OilStateService:TryStartDrill(userId: number, payload): (boolean, strin
 		tier = tier,
 		template = tierCfg.templateName,
 		oilType = entry.oilType,
+		depthMeters = depthMeters,
+		metersPerSecond = metersPerSecond,
 	}
 end
 
@@ -2216,13 +2242,16 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		self:_applyPersistedIntoState(state, persisted, plot)
 	end
 
-	-- Clear stale tubeDelayed from persisted tiles; preserve revealPending for drilled-but-unrevealed tiles
+	-- Fix tile state on load:
+	-- 1. Clear stale tubeDelayed
+	-- 2. Tiles that are drilled but never revealed (no revealedAt) get revealPending restored
+	--    so the shovel prompt respawns and puddles don't show
 	for _, chunk in pairs(state.chunksById) do
 		if chunk.tiles then
 			for _, tile in pairs(chunk.tiles) do
 				tile.tubeDelayed = nil
-				if tile.drilled and tile.revealPending and typeof(tile.revealedAt) ~= "number" then
-					-- Keep revealPending — player drilled but never clicked the shovel
+				if tile.drilled and typeof(tile.revealedAt) ~= "number" and not tile.hasCenterPump then
+					-- Drilled but never revealed — restore revealPending so shovel spawns
 					tile.revealPending = true
 				else
 					tile.revealPending = nil
@@ -2558,12 +2587,14 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 								tier = "T1"
 								tierCfg = OilConfig.DrillTiers["T1"] :: any
 							end
+							local baseSec = (tile and tonumber(tile.drillSeconds)) or tierCfg.fallbackSeconds or 10
+							local depthMeters = tonumber(r.depthMeters) or baseSec
+							local metersPerSecond = tonumber(r.metersPerSecond) or ((tierCfg :: any).timeDivisor or 1)
 							local tmpl = if typeof(r.template) == "string" and r.template ~= "" then r.template :: string else tierCfg.templateName
 							local nowWall = workspace:GetServerTimeNow()
 							local st = tonumber(r.startTime) or nowWall
 							local et = tonumber(r.endTime) or (st + 10)
 							if et <= st then
-								local baseSec = (tile and tonumber(tile.drillSeconds)) or tierCfg.fallbackSeconds or 10
 								local eff = math.max(0.5, baseSec / ((tierCfg :: any).timeDivisor or 1))
 								et = st + eff
 							end
@@ -2594,6 +2625,8 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 									oilType = r.oilType,
 									template = tmpl,
 									ftueFreeNoSellback = r.ftueFreeNoSellback == true,
+									depthMeters = depthMeters,
+									metersPerSecond = metersPerSecond,
 								}
 							end
 						end
@@ -3005,6 +3038,8 @@ function OilStateService:_serializeState(state)
 				oilType = ad.oilType,
 				template = ad.template,
 				ftueFreeNoSellback = ad.ftueFreeNoSellback == true,
+				depthMeters = ad.depthMeters,
+				metersPerSecond = ad.metersPerSecond,
 			})
 		end
 	end

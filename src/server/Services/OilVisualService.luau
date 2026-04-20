@@ -408,7 +408,88 @@ function OilVisualService:_syncUserVisuals(userId: number, snapshot)
 	run("Visual.syncOilSprays", function() self:_syncOilSprays(plot, spraysFolder, snapshot) end)
 	run("Visual.syncBarrels", function() self:_syncBarrels(plot, barrelsFolder, snapshot) end)
 	run("Visual.syncOilTanks", function() self:_syncOilTanks(plot, snapshot) end)
+	self:_ensureDepthBanners(plot)
 end
+function OilVisualService:_ensureDepthBanners(plot: Model)
+	local bannersFolder = plot:FindFirstChild("DepthBanners")
+	if bannersFolder then return end -- already created
+	bannersFolder = Instance.new("Folder")
+	bannersFolder.Name = "DepthBanners"
+	bannersFolder.Parent = plot
+
+	local VeinConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
+	local ground = plot:FindFirstChild("PlotGround")
+	if not ground then return end
+
+	-- Row layout: S01_01-S01_03 (row 1), S02_01-S02_03 (row 2), etc.
+	for row = 1, 4 do
+		local groundDef = VeinConfig.GroundByRow[row]
+		if not groundDef then continue end
+
+		-- Find the 3 sections in this row and compute bounding box
+		local minX, maxX, minZ, maxZ, avgY = math.huge, -math.huge, math.huge, -math.huge, 0
+		local sectionCount = 0
+		for col = 1, 3 do
+			local sectionId = string.format("S%02d_%02d", row, col)
+			local section = ground:FindFirstChild(sectionId)
+			if section and section:IsA("Model") then
+				local cf, size = section:GetBoundingBox()
+				local pos = cf.Position
+				minX = math.min(minX, pos.X - size.X / 2)
+				maxX = math.max(maxX, pos.X + size.X / 2)
+				minZ = math.min(minZ, pos.Z - size.Z / 2)
+				maxZ = math.max(maxZ, pos.Z + size.Z / 2)
+				avgY = avgY + pos.Y
+				sectionCount += 1
+			end
+		end
+		if sectionCount == 0 then continue end
+		avgY = avgY / sectionCount
+
+		local bannerWidth = maxX - minX
+		local bannerHeight = 8
+		local centerX = (minX + maxX) / 2
+		local centerZ = (minZ + maxZ) / 2
+
+		local banner = Instance.new("Part")
+		banner.Name = "DepthBanner_Row" .. row
+		banner.Size = Vector3.new(bannerWidth, bannerHeight, 0.2)
+		banner.Position = Vector3.new(centerX, avgY + 45, centerZ)
+		banner.Anchored = true
+		banner.CanCollide = false
+		banner.CanQuery = false
+		banner.CanTouch = false
+		banner.Transparency = 0.65
+		banner.Material = Enum.Material.Neon
+		banner.Color = groundDef.color
+		banner.Parent = bannersFolder
+
+		local surfaceGui = Instance.new("SurfaceGui")
+		surfaceGui.Name = "BannerGui"
+		surfaceGui.Face = Enum.NormalId.Front
+		surfaceGui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+		surfaceGui.PixelsPerStud = 20
+		surfaceGui.Parent = banner
+
+		local label = Instance.new("TextLabel")
+		label.Name = "DepthLabel"
+		label.Size = UDim2.fromScale(1, 1)
+		label.BackgroundTransparency = 1
+		label.Font = Enum.Font.GothamBold
+		label.TextScaled = true
+		label.TextColor3 = Color3.fromRGB(255, 255, 255)
+		label.TextStrokeTransparency = 0
+		label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		label.Text = string.format("OIL AT %s meters", tostring(groundDef.depthMeters or groundDef.drillSeconds))
+		label.Parent = surfaceGui
+
+		-- Back face too so it's readable from both sides
+		local backGui = surfaceGui:Clone()
+		backGui.Face = Enum.NormalId.Back
+		backGui.Parent = banner
+	end
+end
+
 function OilVisualService:_ensureVisualRoot(plot: Model): Folder
 	local existing = plot:FindFirstChild("OilVisuals")
 	if existing and existing:IsA("Folder") then
@@ -454,6 +535,48 @@ local function activeDrillPositionXYZ(entry: any): (number?, number?, number?)
 	end
 	return nil, nil, nil
 end
+
+local function highestWorldYOfPartOBB(part: BasePart): number
+	local cf, sz = part.CFrame, part.Size
+	local hx, hy, hz = sz.X / 2, sz.Y / 2, sz.Z / 2
+	local highestY = -math.huge
+	for _, o in ipairs({
+		Vector3.new(hx, hy, hz),
+		Vector3.new(-hx, hy, hz),
+		Vector3.new(hx, -hy, hz),
+		Vector3.new(-hx, -hy, hz),
+		Vector3.new(hx, hy, -hz),
+		Vector3.new(-hx, hy, -hz),
+		Vector3.new(hx, -hy, -hz),
+		Vector3.new(-hx, -hy, -hz),
+	}) do
+		local wy = (cf * o).Y
+		if wy > highestY then
+			highestY = wy
+		end
+	end
+	return highestY
+end
+
+local function getActiveDrillTimerAnchorPosition(model: Instance, fallbackPosition: Vector3): Vector3
+	if model:IsA("Model") then
+		local topY = -math.huge
+		for _, d in ipairs(model:GetDescendants()) do
+			if d:IsA("BasePart") then
+				topY = math.max(topY, highestWorldYOfPartOBB(d))
+			end
+		end
+		if topY > -math.huge then
+			local bbCf, _ = model:GetBoundingBox()
+			return Vector3.new(bbCf.Position.X, topY + 0.5, bbCf.Position.Z)
+		end
+	elseif model:IsA("BasePart") then
+		local topY = highestWorldYOfPartOBB(model)
+		return Vector3.new(model.Position.X, topY + 0.5, model.Position.Z)
+	end
+	return fallbackPosition
+end
+
 function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, activeDrills, ownerUserId: number)
 	local wanted = {}
 	for _, entry in pairs(activeDrills) do
@@ -486,6 +609,8 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			model:SetAttribute("Duration", math.max(0.01, (tonumber(entry.endTime) or 0) - (tonumber(entry.startTime) or 0)))
 			model:SetAttribute("OilType", entry.oilType)
 			model:SetAttribute("DrillId", drillId)
+			model:SetAttribute("DepthMeters", tonumber(entry.depthMeters) or 0)
+			model:SetAttribute("MetersPerSecond", tonumber(entry.metersPerSecond) or 1)
 			model.Parent = folder
 			justCreated = true
 			-- Static timer anchor Part with BillboardGui. Does NOT sink/spin with the drill.
@@ -501,7 +626,7 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			local bb = Instance.new("BillboardGui")
 			bb.Name = "TimerGui"
 			bb.Adornee = anchor
-			bb.Size = UDim2.new(0, 140, 0, 40)
+			bb.Size = UDim2.new(0, 160, 0, 60)
 			bb.StudsOffsetWorldSpace = Vector3.new(0, 8, 0)
 			bb.AlwaysOnTop = true
 			bb.Parent = anchor
@@ -519,12 +644,16 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			lbl.Parent = bb
 			anchor:SetAttribute("StartTime", tonumber(entry.startTime) or 0)
 			anchor:SetAttribute("EndTime", tonumber(entry.endTime) or 0)
+			anchor:SetAttribute("DepthMeters", tonumber(entry.depthMeters) or 0)
+			anchor:SetAttribute("MetersPerSecond", tonumber(entry.metersPerSecond) or 1)
 		end
-		-- Keep the static anchor parked at (px, py + 3) above the drill tip
-		local anchor = folder:FindFirstChild(timerName)
-		if anchor and anchor:IsA("BasePart") then
-			anchor.Position = Vector3.new(px, py + 3, pz)
-		end
+		model:SetAttribute("StartTime", tonumber(entry.startTime) or 0)
+		model:SetAttribute("EndTime", tonumber(entry.endTime) or 0)
+		model:SetAttribute("Duration", math.max(0.01, (tonumber(entry.endTime) or 0) - (tonumber(entry.startTime) or 0)))
+		model:SetAttribute("OilType", entry.oilType)
+		model:SetAttribute("DrillId", drillId)
+		model:SetAttribute("DepthMeters", tonumber(entry.depthMeters) or 0)
+		model:SetAttribute("MetersPerSecond", tonumber(entry.metersPerSecond) or 1)
 		-- Only set CFrame on creation; the client's animation loop owns the CFrame after that,
 		-- otherwise snapshot pushes would stomp the sink/spin every tick.
 		if justCreated then
@@ -542,6 +671,14 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 				model.CFrame = cframe
 			end
 			anchorAllBaseParts(model)
+		end
+		local anchor = folder:FindFirstChild(timerName)
+		if anchor and anchor:IsA("BasePart") then
+			anchor:SetAttribute("StartTime", tonumber(entry.startTime) or 0)
+			anchor:SetAttribute("EndTime", tonumber(entry.endTime) or 0)
+			anchor:SetAttribute("DepthMeters", tonumber(entry.depthMeters) or 0)
+			anchor:SetAttribute("MetersPerSecond", tonumber(entry.metersPerSecond) or 1)
+			anchor.Position = getActiveDrillTimerAnchorPosition(model, Vector3.new(px, py + 3, pz))
 		end
 		if model then
 			ensureSellBackPromptOnHost(self, model, {
@@ -984,10 +1121,69 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 			end
 			local extraLift = pumpTierVisualGroundLiftStuds(drill.tier, scale)
 			local targetCf = CFrame.new(px, py + DRILL_HEIGHT_OFFSET + pivotToBottom + extraLift, pz)
-			if model:IsA("Model") then
-				model:PivotTo(targetCf)
-			elseif model:IsA("BasePart") then
-				model.CFrame = targetCf
+
+			-- Float-down animation for newly placed center pumps
+			if justCreated and drill.isCenterPump then
+				local startCf = CFrame.new(px, py + 60 + pivotToBottom + extraLift, pz)
+				if model:IsA("Model") then
+					model:PivotTo(startCf)
+				elseif model:IsA("BasePart") then
+					model.CFrame = startCf
+				end
+				anchorAllBaseParts(model)
+				-- Sparkle particles during descent
+				local emitter = Instance.new("ParticleEmitter")
+				emitter.Name = "PumpDropFx"
+				emitter.Rate = 40
+				emitter.Lifetime = NumberRange.new(0.5, 1.2)
+				emitter.Speed = NumberRange.new(2, 6)
+				emitter.SpreadAngle = Vector2.new(30, 30)
+				emitter.Color = ColorSequence.new(Color3.fromRGB(255, 230, 100))
+				emitter.Size = NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 0.8),
+					NumberSequenceKeypoint.new(1, 0),
+				})
+				emitter.Transparency = NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 0),
+					NumberSequenceKeypoint.new(1, 1),
+				})
+				emitter.LightEmission = 1
+				local emitterPart = model:FindFirstChildWhichIsA("BasePart")
+				if emitterPart then emitter.Parent = emitterPart end
+				-- Tween down over 1.5 seconds
+				task.spawn(function()
+					local FLOAT_TIME = 1.5
+					local t0 = os.clock()
+					while os.clock() - t0 < FLOAT_TIME do
+						local alpha = math.min(1, (os.clock() - t0) / FLOAT_TIME)
+						local eased = 1 - (1 - alpha) ^ 2
+						local currentCf = startCf:Lerp(targetCf, eased)
+						if model:IsA("Model") then
+							model:PivotTo(currentCf)
+						elseif model:IsA("BasePart") then
+							model.CFrame = currentCf
+						end
+						task.wait()
+					end
+					if model:IsA("Model") then
+						model:PivotTo(targetCf)
+					elseif model:IsA("BasePart") then
+						model.CFrame = targetCf
+					end
+					-- Clean up particles after landing
+					task.wait(1.5)
+					if emitter and emitter.Parent then
+						emitter.Enabled = false
+						task.wait(1.5)
+						emitter:Destroy()
+					end
+				end)
+			else
+				if model:IsA("Model") then
+					model:PivotTo(targetCf)
+				elseif model:IsA("BasePart") then
+					model.CFrame = targetCf
+				end
 			end
 			anchorAllBaseParts(model)
 			-- Write Connected attribute so the OilBurstSpawner script can pause emission
