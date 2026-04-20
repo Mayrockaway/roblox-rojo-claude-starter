@@ -96,8 +96,6 @@ end
 
 --- Re-fire "completed" for tiles that were drilled but never revealed (player left before clicking shovel).
 function DrillingService:ReplayUnrevealedTiles(userId: number)
-	local unrevealed = self._oilStateService:GetUnrevealedTiles(userId)
-	if #unrevealed == 0 then return end
 	task.spawn(function()
 		local Players = game:GetService("Players")
 		local player = Players:GetPlayerByUserId(userId)
@@ -105,9 +103,12 @@ function DrillingService:ReplayUnrevealedTiles(userId: number)
 		if not player.Character then
 			player.CharacterAdded:Wait()
 		end
-		task.wait(3)
+		task.wait(4)
 		player = Players:GetPlayerByUserId(userId)
 		if not player then return end
+		-- Query AFTER the wait so plot geometry is fully loaded
+		local unrevealed = self._oilStateService:GetUnrevealedTiles(userId)
+		if #unrevealed == 0 then return end
 		print(string.format("[DrillingService] Replaying %d unrevealed tiles for user %d", #unrevealed, userId))
 		for _, done in ipairs(unrevealed) do
 			local p = done.position
