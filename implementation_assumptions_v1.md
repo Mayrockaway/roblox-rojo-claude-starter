@@ -33,10 +33,9 @@ Rows marked `ProposedDefault` in `design_clarifications_template.csv` map to the
 ## Quality Barrels
 
 - Quality tiers enabled in MVP:
-  - Heavy Crude
-  - Standard Crude
-  - Light Sweet
-  - Premium Refined
+  - Crude
+  - Refined
+  - Premium
 - Mining sources use probability distributions to output quality tiers.
 - A single pump can produce multiple tiers over time.
 - Storage tracked separately per tier, with shared global capacity.
@@ -55,6 +54,15 @@ Rows marked `ProposedDefault` in `design_clarifications_template.csv` map to the
 - State multiplier clamp: `[0.25, 10.0]`
 - Quality multiplier clamp: `[0.5, 5.0]`
 - Total payout multiplier hard cap: `20.0x`
+
+## Equipment shop & placed equipment (drills-only)
+
+- The **only** purchasable, player-placeable equipment is the **drill** (`Drill_T1` / `T2` / `T3` shipped; `T4` / `T5` / `T6` are placeholder "Coming soon" rows, see `EquipmentCatalog.luau`).
+- Drills are **consumable, one-shot** tools: equip → click an unlocked chunk tile → server starts a drill timer → tile enters "reveal pending" when the timer ends → player presses **E** on the spawned `DrillComplete` model to reveal the vein.
+- **Pumps** are not purchasable and not player-placeable. A single **static center pump** is auto-spawned by the server at each unlocked chunk (see `OilStateService` + `OilVisualService:_syncDrills`) and pulls oil from any drilled tiles in that chunk. Pump **tier** + visual upgrades come from in-world proximity prompts, not the equipment shop.
+- **Pipes**, **drums**, and **prospectors** were removed entirely (configs, remotes, Studio assets, Tool templates, FTUE legs, persisted state). `PipeNetworkService` and `ProspectingService` no longer exist; `RS.Assets.Pipe / Drum / Prospector` Models were deleted from Studio. Do not reintroduce them as Tools — design decisions live here, not in the codebase.
+- **Barrel** assets remain — they visualize oil moving from drilled tiles → center pump → refinery storage and are **not** equipment.
+- Per-stat upgrade caps elsewhere in this doc (e.g. `Pump <= 200`) refer to the **ship `PumpLevel` ladder**, not the deleted Pump tool.
 
 ## Notes
 

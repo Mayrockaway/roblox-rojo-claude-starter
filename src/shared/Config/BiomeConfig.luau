@@ -8,224 +8,224 @@ BiomeConfig.Biomes = {
 		displayName = "DustyDesert",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Sand", oilTypes = { { oilType = "HeavyCrude", weight = 100 } }, weight = 92, drillSeconds = 30, material = Enum.Material.Sand, color = Color3.fromRGB(254, 224, 180) },
-			{ name = "Smooth Sand", oilTypes = { { oilType = "HeavyCrude", weight = 75 }, { oilType = "LightSweet", weight = 25 } }, weight = 8, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
+			{ name = "Sand", oilTypes = { { oilType = "Crude", weight = 100 } }, weight = 92, drillSeconds = 30, material = Enum.Material.Sand, color = Color3.fromRGB(254, 224, 180) },
+			{ name = "Smooth Sand", oilTypes = { { oilType = "Crude", weight = 75 }, { oilType = "Refined", weight = 25 } }, weight = 8, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
 		},
 	},
 	AncientDesert = {
 		displayName = "Ancient Desert",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Sand", oilTypes = { { oilType = "HeavyCrude", weight = 100 } }, weight = 56, drillSeconds = 30, material = Enum.Material.Sand, color = Color3.fromRGB(254, 224, 180) },
-			{ name = "Sandstone", oilTypes = { { oilType = "LightSweet", weight = 50 }, { oilType = "HeavyCrude", weight = 50 } }, weight = 28, drillSeconds = 3500, material = Enum.Material.Sand, color = Color3.fromRGB(217, 164, 84) },
-			{ name = "SUPER TILE", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 }, { oilType = "PremiumRefined", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
-			{ name = "Smooth Sand", oilTypes = { { oilType = "HeavyCrude", weight = 75 }, { oilType = "LightSweet", weight = 25 } }, weight = 12, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
+			{ name = "Sand", oilTypes = { { oilType = "Crude", weight = 100 } }, weight = 56, drillSeconds = 30, material = Enum.Material.Sand, color = Color3.fromRGB(254, 224, 180) },
+			{ name = "Sandstone", oilTypes = { { oilType = "Refined", weight = 50 }, { oilType = "Crude", weight = 50 } }, weight = 28, drillSeconds = 3500, material = Enum.Material.Sand, color = Color3.fromRGB(217, 164, 84) },
+			{ name = "SUPER TILE", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 }, { oilType = "Premium", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
+			{ name = "Smooth Sand", oilTypes = { { oilType = "Crude", weight = 75 }, { oilType = "Refined", weight = 25 } }, weight = 12, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
 		},
 	},
 	EgyptianDesert = {
 		displayName = "Egyptian Desert",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Sand", oilTypes = { { oilType = "HeavyCrude", weight = 100 } }, weight = 52, drillSeconds = 30, material = Enum.Material.Sand, color = Color3.fromRGB(254, 224, 180) },
-			{ name = "Sandstone", oilTypes = { { oilType = "LightSweet", weight = 50 }, { oilType = "HeavyCrude", weight = 50 } }, weight = 32, drillSeconds = 3500, material = Enum.Material.Sand, color = Color3.fromRGB(217, 164, 84) },
-			{ name = "Smooth Sand", oilTypes = { { oilType = "HeavyCrude", weight = 75 }, { oilType = "LightSweet", weight = 25 } }, weight = 16, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
+			{ name = "Sand", oilTypes = { { oilType = "Crude", weight = 100 } }, weight = 52, drillSeconds = 30, material = Enum.Material.Sand, color = Color3.fromRGB(254, 224, 180) },
+			{ name = "Sandstone", oilTypes = { { oilType = "Refined", weight = 50 }, { oilType = "Crude", weight = 50 } }, weight = 32, drillSeconds = 3500, material = Enum.Material.Sand, color = Color3.fromRGB(217, 164, 84) },
+			{ name = "Smooth Sand", oilTypes = { { oilType = "Crude", weight = 75 }, { oilType = "Refined", weight = 25 } }, weight = 16, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
 		},
 	},
 	ArabianDesert = {
 		displayName = "Arabian Desert",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Sand", oilTypes = { { oilType = "HeavyCrude", weight = 100 } }, weight = 48, drillSeconds = 30, material = Enum.Material.Sand, color = Color3.fromRGB(254, 224, 180) },
-			{ name = "Sandstone", oilTypes = { { oilType = "LightSweet", weight = 50 }, { oilType = "HeavyCrude", weight = 50 } }, weight = 16, drillSeconds = 3500, material = Enum.Material.Sand, color = Color3.fromRGB(217, 164, 84) },
-			{ name = "SUPER TILE", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 }, { oilType = "PremiumRefined", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
-			{ name = "Smooth Sand", oilTypes = { { oilType = "HeavyCrude", weight = 75 }, { oilType = "LightSweet", weight = 25 } }, weight = 32, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
+			{ name = "Sand", oilTypes = { { oilType = "Crude", weight = 100 } }, weight = 48, drillSeconds = 30, material = Enum.Material.Sand, color = Color3.fromRGB(254, 224, 180) },
+			{ name = "Sandstone", oilTypes = { { oilType = "Refined", weight = 50 }, { oilType = "Crude", weight = 50 } }, weight = 16, drillSeconds = 3500, material = Enum.Material.Sand, color = Color3.fromRGB(217, 164, 84) },
+			{ name = "SUPER TILE", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 }, { oilType = "Premium", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
+			{ name = "Smooth Sand", oilTypes = { { oilType = "Crude", weight = 75 }, { oilType = "Refined", weight = 25 } }, weight = 32, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
 		},
 	},
 	SmoothDesert = {
 		displayName = "Smooth Desert",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Sand", oilTypes = { { oilType = "HeavyCrude", weight = 100 } }, weight = 20, drillSeconds = 30, material = Enum.Material.Sand, color = Color3.fromRGB(254, 224, 180) },
-			{ name = "Smooth Sand", oilTypes = { { oilType = "HeavyCrude", weight = 75 }, { oilType = "LightSweet", weight = 25 } }, weight = 80, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
+			{ name = "Sand", oilTypes = { { oilType = "Crude", weight = 100 } }, weight = 20, drillSeconds = 30, material = Enum.Material.Sand, color = Color3.fromRGB(254, 224, 180) },
+			{ name = "Smooth Sand", oilTypes = { { oilType = "Crude", weight = 75 }, { oilType = "Refined", weight = 25 } }, weight = 80, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
 		},
 	},
 	HotDesert = {
 		displayName = "Hot Desert",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Sand", oilTypes = { { oilType = "HeavyCrude", weight = 100 } }, weight = 32, drillSeconds = 30, material = Enum.Material.Sand, color = Color3.fromRGB(254, 224, 180) },
-			{ name = "Sandstone", oilTypes = { { oilType = "LightSweet", weight = 50 }, { oilType = "HeavyCrude", weight = 50 } }, weight = 48, drillSeconds = 3500, material = Enum.Material.Sand, color = Color3.fromRGB(217, 164, 84) },
-			{ name = "SUPER TILE", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 }, { oilType = "PremiumRefined", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
-			{ name = "Smooth Sand", oilTypes = { { oilType = "HeavyCrude", weight = 75 }, { oilType = "LightSweet", weight = 25 } }, weight = 16, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
+			{ name = "Sand", oilTypes = { { oilType = "Crude", weight = 100 } }, weight = 32, drillSeconds = 30, material = Enum.Material.Sand, color = Color3.fromRGB(254, 224, 180) },
+			{ name = "Sandstone", oilTypes = { { oilType = "Refined", weight = 50 }, { oilType = "Crude", weight = 50 } }, weight = 48, drillSeconds = 3500, material = Enum.Material.Sand, color = Color3.fromRGB(217, 164, 84) },
+			{ name = "SUPER TILE", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 }, { oilType = "Premium", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
+			{ name = "Smooth Sand", oilTypes = { { oilType = "Crude", weight = 75 }, { oilType = "Refined", weight = 25 } }, weight = 16, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
 		},
 	},
 	GrassyForrest = {
 		displayName = "GrassyForrest",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "SUPER TILE", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 }, { oilType = "PremiumRefined", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
-			{ name = "Grass", oilTypes = { { oilType = "HeavyCrude", weight = 60 }, { oilType = "LightSweet", weight = 40 } }, weight = 16, drillSeconds = 400, material = Enum.Material.Grass, color = Color3.fromRGB(62, 179, 0) },
-			{ name = "Wet Grass", oilTypes = { { oilType = "LightSweet", weight = 75 }, { oilType = "HeavyCrude", weight = 25 } }, weight = 60, drillSeconds = 1000, material = Enum.Material.Mud, color = Color3.fromRGB(43, 122, 0) },
-			{ name = "Flower Patch Grass", oilTypes = { { oilType = "LightSweet", weight = 100 } }, weight = 4, drillSeconds = 900, material = Enum.Material.LeafyGrass, color = Color3.fromRGB(117, 234, 184) },
-			{ name = "Tall Grass", oilTypes = { { oilType = "HeavyCrude", weight = 80 }, { oilType = "LightSweet", weight = 20 } }, weight = 16, drillSeconds = 600, material = Enum.Material.Grass, color = Color3.fromRGB(3, 179, 0) },
+			{ name = "SUPER TILE", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 }, { oilType = "Premium", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
+			{ name = "Grass", oilTypes = { { oilType = "Crude", weight = 60 }, { oilType = "Refined", weight = 40 } }, weight = 16, drillSeconds = 400, material = Enum.Material.Grass, color = Color3.fromRGB(62, 179, 0) },
+			{ name = "Wet Grass", oilTypes = { { oilType = "Refined", weight = 75 }, { oilType = "Crude", weight = 25 } }, weight = 60, drillSeconds = 1000, material = Enum.Material.Mud, color = Color3.fromRGB(43, 122, 0) },
+			{ name = "Flower Patch Grass", oilTypes = { { oilType = "Refined", weight = 100 } }, weight = 4, drillSeconds = 900, material = Enum.Material.LeafyGrass, color = Color3.fromRGB(117, 234, 184) },
+			{ name = "Tall Grass", oilTypes = { { oilType = "Crude", weight = 80 }, { oilType = "Refined", weight = 20 } }, weight = 16, drillSeconds = 600, material = Enum.Material.Grass, color = Color3.fromRGB(3, 179, 0) },
 		},
 	},
 	WetForrest = {
 		displayName = "Wet Forrest",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Grass", oilTypes = { { oilType = "HeavyCrude", weight = 60 }, { oilType = "LightSweet", weight = 40 } }, weight = 16, drillSeconds = 400, material = Enum.Material.Grass, color = Color3.fromRGB(62, 179, 0) },
-			{ name = "Wet Grass", oilTypes = { { oilType = "LightSweet", weight = 75 }, { oilType = "HeavyCrude", weight = 25 } }, weight = 36, drillSeconds = 1000, material = Enum.Material.Mud, color = Color3.fromRGB(43, 122, 0) },
-			{ name = "Forrest Lake", oilTypes = { { oilType = "LightSweet", weight = 100 } }, weight = 24, drillSeconds = 2000, material = Enum.Material.Glacier, color = Color3.fromRGB(0, 213, 255) },
-			{ name = "Tall Grass", oilTypes = { { oilType = "HeavyCrude", weight = 80 }, { oilType = "LightSweet", weight = 20 } }, weight = 8, drillSeconds = 600, material = Enum.Material.Grass, color = Color3.fromRGB(3, 179, 0) },
-			{ name = "Swamp Grounds", oilTypes = { { oilType = "HeavyCrude", weight = 10 }, { oilType = "LightSweet", weight = 90 } }, weight = 16, drillSeconds = 3000, material = Enum.Material.Mud, color = Color3.fromRGB(75, 65, 17) },
+			{ name = "Grass", oilTypes = { { oilType = "Crude", weight = 60 }, { oilType = "Refined", weight = 40 } }, weight = 16, drillSeconds = 400, material = Enum.Material.Grass, color = Color3.fromRGB(62, 179, 0) },
+			{ name = "Wet Grass", oilTypes = { { oilType = "Refined", weight = 75 }, { oilType = "Crude", weight = 25 } }, weight = 36, drillSeconds = 1000, material = Enum.Material.Mud, color = Color3.fromRGB(43, 122, 0) },
+			{ name = "Forrest Lake", oilTypes = { { oilType = "Refined", weight = 100 } }, weight = 24, drillSeconds = 2000, material = Enum.Material.Glacier, color = Color3.fromRGB(0, 213, 255) },
+			{ name = "Tall Grass", oilTypes = { { oilType = "Crude", weight = 80 }, { oilType = "Refined", weight = 20 } }, weight = 8, drillSeconds = 600, material = Enum.Material.Grass, color = Color3.fromRGB(3, 179, 0) },
+			{ name = "Swamp Grounds", oilTypes = { { oilType = "Crude", weight = 10 }, { oilType = "Refined", weight = 90 } }, weight = 16, drillSeconds = 3000, material = Enum.Material.Mud, color = Color3.fromRGB(75, 65, 17) },
 		},
 	},
 	GrassyFields = {
 		displayName = "Grassy Fields",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Grass", oilTypes = { { oilType = "HeavyCrude", weight = 60 }, { oilType = "LightSweet", weight = 40 } }, weight = 80, drillSeconds = 400, material = Enum.Material.Grass, color = Color3.fromRGB(62, 179, 0) },
-			{ name = "Flower Patch Grass", oilTypes = { { oilType = "LightSweet", weight = 100 } }, weight = 20, drillSeconds = 900, material = Enum.Material.LeafyGrass, color = Color3.fromRGB(117, 234, 184) },
+			{ name = "Grass", oilTypes = { { oilType = "Crude", weight = 60 }, { oilType = "Refined", weight = 40 } }, weight = 80, drillSeconds = 400, material = Enum.Material.Grass, color = Color3.fromRGB(62, 179, 0) },
+			{ name = "Flower Patch Grass", oilTypes = { { oilType = "Refined", weight = 100 } }, weight = 20, drillSeconds = 900, material = Enum.Material.LeafyGrass, color = Color3.fromRGB(117, 234, 184) },
 		},
 	},
 	Grasslands = {
 		displayName = "Grasslands",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "SUPER TILE", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 }, { oilType = "PremiumRefined", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
-			{ name = "Grass", oilTypes = { { oilType = "HeavyCrude", weight = 60 }, { oilType = "LightSweet", weight = 40 } }, weight = 28, drillSeconds = 400, material = Enum.Material.Grass, color = Color3.fromRGB(62, 179, 0) },
-			{ name = "Tall Grass", oilTypes = { { oilType = "HeavyCrude", weight = 80 }, { oilType = "LightSweet", weight = 20 } }, weight = 68, drillSeconds = 600, material = Enum.Material.Grass, color = Color3.fromRGB(3, 179, 0) },
+			{ name = "SUPER TILE", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 }, { oilType = "Premium", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
+			{ name = "Grass", oilTypes = { { oilType = "Crude", weight = 60 }, { oilType = "Refined", weight = 40 } }, weight = 28, drillSeconds = 400, material = Enum.Material.Grass, color = Color3.fromRGB(62, 179, 0) },
+			{ name = "Tall Grass", oilTypes = { { oilType = "Crude", weight = 80 }, { oilType = "Refined", weight = 20 } }, weight = 68, drillSeconds = 600, material = Enum.Material.Grass, color = Color3.fromRGB(3, 179, 0) },
 		},
 	},
 	LakeOil = {
 		displayName = "Lake Oil",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "SUPER TILE", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 }, { oilType = "PremiumRefined", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
-			{ name = "Wet Grass", oilTypes = { { oilType = "LightSweet", weight = 75 }, { oilType = "HeavyCrude", weight = 25 } }, weight = 16, drillSeconds = 1000, material = Enum.Material.Mud, color = Color3.fromRGB(43, 122, 0) },
-			{ name = "Forrest Lake", oilTypes = { { oilType = "LightSweet", weight = 100 } }, weight = 36, drillSeconds = 2000, material = Enum.Material.Glacier, color = Color3.fromRGB(0, 213, 255) },
-			{ name = "Swamp Grounds", oilTypes = { { oilType = "HeavyCrude", weight = 10 }, { oilType = "LightSweet", weight = 90 } }, weight = 44, drillSeconds = 3000, material = Enum.Material.Mud, color = Color3.fromRGB(75, 65, 17) },
+			{ name = "SUPER TILE", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 }, { oilType = "Premium", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
+			{ name = "Wet Grass", oilTypes = { { oilType = "Refined", weight = 75 }, { oilType = "Crude", weight = 25 } }, weight = 16, drillSeconds = 1000, material = Enum.Material.Mud, color = Color3.fromRGB(43, 122, 0) },
+			{ name = "Forrest Lake", oilTypes = { { oilType = "Refined", weight = 100 } }, weight = 36, drillSeconds = 2000, material = Enum.Material.Glacier, color = Color3.fromRGB(0, 213, 255) },
+			{ name = "Swamp Grounds", oilTypes = { { oilType = "Crude", weight = 10 }, { oilType = "Refined", weight = 90 } }, weight = 44, drillSeconds = 3000, material = Enum.Material.Mud, color = Color3.fromRGB(75, 65, 17) },
 		},
 	},
 	Wetlands = {
 		displayName = "Wetlands",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Wet Grass", oilTypes = { { oilType = "LightSweet", weight = 75 }, { oilType = "HeavyCrude", weight = 25 } }, weight = 16, drillSeconds = 1000, material = Enum.Material.Mud, color = Color3.fromRGB(43, 122, 0) },
-			{ name = "Forrest Lake", oilTypes = { { oilType = "LightSweet", weight = 100 } }, weight = 16, drillSeconds = 2000, material = Enum.Material.Glacier, color = Color3.fromRGB(0, 213, 255) },
-			{ name = "Swamp Grounds", oilTypes = { { oilType = "HeavyCrude", weight = 10 }, { oilType = "LightSweet", weight = 90 } }, weight = 68, drillSeconds = 3000, material = Enum.Material.Mud, color = Color3.fromRGB(75, 65, 17) },
+			{ name = "Wet Grass", oilTypes = { { oilType = "Refined", weight = 75 }, { oilType = "Crude", weight = 25 } }, weight = 16, drillSeconds = 1000, material = Enum.Material.Mud, color = Color3.fromRGB(43, 122, 0) },
+			{ name = "Forrest Lake", oilTypes = { { oilType = "Refined", weight = 100 } }, weight = 16, drillSeconds = 2000, material = Enum.Material.Glacier, color = Color3.fromRGB(0, 213, 255) },
+			{ name = "Swamp Grounds", oilTypes = { { oilType = "Crude", weight = 10 }, { oilType = "Refined", weight = 90 } }, weight = 68, drillSeconds = 3000, material = Enum.Material.Mud, color = Color3.fromRGB(75, 65, 17) },
 		},
 	},
 	RockyMountains = {
 		displayName = "Rocky Mountains",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Stone", oilTypes = { { oilType = "LightSweet", weight = 80 }, { oilType = "HeavyCrude", weight = 20 } }, weight = 100, drillSeconds = 2500, material = Enum.Material.Rock, color = Color3.fromRGB(77, 77, 77) },
+			{ name = "Stone", oilTypes = { { oilType = "Refined", weight = 80 }, { oilType = "Crude", weight = 20 } }, weight = 100, drillSeconds = 2500, material = Enum.Material.Rock, color = Color3.fromRGB(77, 77, 77) },
 		},
 	},
 	LeakyMountain = {
 		displayName = "Leaky Mountain",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Forrest Lake", oilTypes = { { oilType = "LightSweet", weight = 100 } }, weight = 20, drillSeconds = 2000, material = Enum.Material.Glacier, color = Color3.fromRGB(0, 213, 255) },
-			{ name = "Swamp Grounds", oilTypes = { { oilType = "HeavyCrude", weight = 10 }, { oilType = "LightSweet", weight = 90 } }, weight = 16, drillSeconds = 3000, material = Enum.Material.Mud, color = Color3.fromRGB(75, 65, 17) },
-			{ name = "Stone", oilTypes = { { oilType = "LightSweet", weight = 80 }, { oilType = "HeavyCrude", weight = 20 } }, weight = 56, drillSeconds = 2500, material = Enum.Material.Rock, color = Color3.fromRGB(77, 77, 77) },
-			{ name = "Wet Stone", oilTypes = { { oilType = "LightSweet", weight = 70 }, { oilType = "PremiumRefined", weight = 10 }, { oilType = "HeavyCrude", weight = 20 } }, weight = 8, drillSeconds = 5000, material = Enum.Material.Rock, color = Color3.fromRGB(39, 38, 38) },
+			{ name = "Forrest Lake", oilTypes = { { oilType = "Refined", weight = 100 } }, weight = 20, drillSeconds = 2000, material = Enum.Material.Glacier, color = Color3.fromRGB(0, 213, 255) },
+			{ name = "Swamp Grounds", oilTypes = { { oilType = "Crude", weight = 10 }, { oilType = "Refined", weight = 90 } }, weight = 16, drillSeconds = 3000, material = Enum.Material.Mud, color = Color3.fromRGB(75, 65, 17) },
+			{ name = "Stone", oilTypes = { { oilType = "Refined", weight = 80 }, { oilType = "Crude", weight = 20 } }, weight = 56, drillSeconds = 2500, material = Enum.Material.Rock, color = Color3.fromRGB(77, 77, 77) },
+			{ name = "Wet Stone", oilTypes = { { oilType = "Refined", weight = 70 }, { oilType = "Premium", weight = 10 }, { oilType = "Crude", weight = 20 } }, weight = 8, drillSeconds = 5000, material = Enum.Material.Rock, color = Color3.fromRGB(39, 38, 38) },
 		},
 	},
 	MountainSprings = {
 		displayName = "Mountain Springs",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Wet Stone", oilTypes = { { oilType = "LightSweet", weight = 70 }, { oilType = "PremiumRefined", weight = 10 }, { oilType = "HeavyCrude", weight = 20 } }, weight = 64, drillSeconds = 5000, material = Enum.Material.Rock, color = Color3.fromRGB(39, 38, 38) },
-			{ name = "Mountain Lake", oilTypes = { { oilType = "PremiumRefined", weight = 10 }, { oilType = "LightSweet", weight = 80 }, { oilType = "HeavyCrude", weight = 10 } }, weight = 36, drillSeconds = 8000, material = Enum.Material.Mud, color = Color3.fromRGB(0, 120, 122) },
+			{ name = "Wet Stone", oilTypes = { { oilType = "Refined", weight = 70 }, { oilType = "Premium", weight = 10 }, { oilType = "Crude", weight = 20 } }, weight = 64, drillSeconds = 5000, material = Enum.Material.Rock, color = Color3.fromRGB(39, 38, 38) },
+			{ name = "Mountain Lake", oilTypes = { { oilType = "Premium", weight = 10 }, { oilType = "Refined", weight = 80 }, { oilType = "Crude", weight = 10 } }, weight = 36, drillSeconds = 8000, material = Enum.Material.Mud, color = Color3.fromRGB(0, 120, 122) },
 		},
 	},
 	AncientTemple = {
 		displayName = "Ancient Temple",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Sandstone", oilTypes = { { oilType = "LightSweet", weight = 50 }, { oilType = "HeavyCrude", weight = 50 } }, weight = 32, drillSeconds = 3500, material = Enum.Material.Sand, color = Color3.fromRGB(217, 164, 84) },
-			{ name = "SUPER TILE", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 }, { oilType = "PremiumRefined", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
-			{ name = "Stone", oilTypes = { { oilType = "LightSweet", weight = 80 }, { oilType = "HeavyCrude", weight = 20 } }, weight = 32, drillSeconds = 2500, material = Enum.Material.Rock, color = Color3.fromRGB(77, 77, 77) },
-			{ name = "Cracked Stone", oilTypes = { { oilType = "LightSweet", weight = 65 }, { oilType = "LightSweet", weight = 25 }, { oilType = "HeavyCrude", weight = 15 } }, weight = 32, drillSeconds = 10000, material = Enum.Material.Rock, color = Color3.fromRGB(38, 38, 38) },
+			{ name = "Sandstone", oilTypes = { { oilType = "Refined", weight = 50 }, { oilType = "Crude", weight = 50 } }, weight = 32, drillSeconds = 3500, material = Enum.Material.Sand, color = Color3.fromRGB(217, 164, 84) },
+			{ name = "SUPER TILE", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 }, { oilType = "Premium", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
+			{ name = "Stone", oilTypes = { { oilType = "Refined", weight = 80 }, { oilType = "Crude", weight = 20 } }, weight = 32, drillSeconds = 2500, material = Enum.Material.Rock, color = Color3.fromRGB(77, 77, 77) },
+			{ name = "Cracked Stone", oilTypes = { { oilType = "Refined", weight = 65 }, { oilType = "Refined", weight = 25 }, { oilType = "Crude", weight = 15 } }, weight = 32, drillSeconds = 10000, material = Enum.Material.Rock, color = Color3.fromRGB(38, 38, 38) },
 		},
 	},
 	RockyBoneyard = {
 		displayName = "Rocky Boneyard",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Smooth Sand", oilTypes = { { oilType = "HeavyCrude", weight = 75 }, { oilType = "LightSweet", weight = 25 } }, weight = 32, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
-			{ name = "Stone", oilTypes = { { oilType = "LightSweet", weight = 80 }, { oilType = "HeavyCrude", weight = 20 } }, weight = 32, drillSeconds = 2500, material = Enum.Material.Rock, color = Color3.fromRGB(77, 77, 77) },
-			{ name = "Cracked Stone", oilTypes = { { oilType = "LightSweet", weight = 65 }, { oilType = "LightSweet", weight = 25 }, { oilType = "HeavyCrude", weight = 15 } }, weight = 36, drillSeconds = 10000, material = Enum.Material.Rock, color = Color3.fromRGB(38, 38, 38) },
+			{ name = "Smooth Sand", oilTypes = { { oilType = "Crude", weight = 75 }, { oilType = "Refined", weight = 25 } }, weight = 32, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
+			{ name = "Stone", oilTypes = { { oilType = "Refined", weight = 80 }, { oilType = "Crude", weight = 20 } }, weight = 32, drillSeconds = 2500, material = Enum.Material.Rock, color = Color3.fromRGB(77, 77, 77) },
+			{ name = "Cracked Stone", oilTypes = { { oilType = "Refined", weight = 65 }, { oilType = "Refined", weight = 25 }, { oilType = "Crude", weight = 15 } }, weight = 36, drillSeconds = 10000, material = Enum.Material.Rock, color = Color3.fromRGB(38, 38, 38) },
 		},
 	},
 	RockyMeadow = {
 		displayName = "Rocky Meadow",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Grass", oilTypes = { { oilType = "HeavyCrude", weight = 60 }, { oilType = "LightSweet", weight = 40 } }, weight = 24, drillSeconds = 400, material = Enum.Material.Grass, color = Color3.fromRGB(62, 179, 0) },
-			{ name = "Forrest Lake", oilTypes = { { oilType = "LightSweet", weight = 100 } }, weight = 28, drillSeconds = 2000, material = Enum.Material.Glacier, color = Color3.fromRGB(0, 213, 255) },
-			{ name = "Tall Grass", oilTypes = { { oilType = "HeavyCrude", weight = 80 }, { oilType = "LightSweet", weight = 20 } }, weight = 8, drillSeconds = 600, material = Enum.Material.Grass, color = Color3.fromRGB(3, 179, 0) },
-			{ name = "Stone", oilTypes = { { oilType = "LightSweet", weight = 80 }, { oilType = "HeavyCrude", weight = 20 } }, weight = 20, drillSeconds = 2500, material = Enum.Material.Rock, color = Color3.fromRGB(77, 77, 77) },
-			{ name = "Wet Stone", oilTypes = { { oilType = "LightSweet", weight = 70 }, { oilType = "PremiumRefined", weight = 10 }, { oilType = "HeavyCrude", weight = 20 } }, weight = 16, drillSeconds = 5000, material = Enum.Material.Rock, color = Color3.fromRGB(39, 38, 38) },
-			{ name = "Cracked Stone", oilTypes = { { oilType = "LightSweet", weight = 65 }, { oilType = "LightSweet", weight = 25 }, { oilType = "HeavyCrude", weight = 15 } }, weight = 4, drillSeconds = 10000, material = Enum.Material.Rock, color = Color3.fromRGB(38, 38, 38) },
+			{ name = "Grass", oilTypes = { { oilType = "Crude", weight = 60 }, { oilType = "Refined", weight = 40 } }, weight = 24, drillSeconds = 400, material = Enum.Material.Grass, color = Color3.fromRGB(62, 179, 0) },
+			{ name = "Forrest Lake", oilTypes = { { oilType = "Refined", weight = 100 } }, weight = 28, drillSeconds = 2000, material = Enum.Material.Glacier, color = Color3.fromRGB(0, 213, 255) },
+			{ name = "Tall Grass", oilTypes = { { oilType = "Crude", weight = 80 }, { oilType = "Refined", weight = 20 } }, weight = 8, drillSeconds = 600, material = Enum.Material.Grass, color = Color3.fromRGB(3, 179, 0) },
+			{ name = "Stone", oilTypes = { { oilType = "Refined", weight = 80 }, { oilType = "Crude", weight = 20 } }, weight = 20, drillSeconds = 2500, material = Enum.Material.Rock, color = Color3.fromRGB(77, 77, 77) },
+			{ name = "Wet Stone", oilTypes = { { oilType = "Refined", weight = 70 }, { oilType = "Premium", weight = 10 }, { oilType = "Crude", weight = 20 } }, weight = 16, drillSeconds = 5000, material = Enum.Material.Rock, color = Color3.fromRGB(39, 38, 38) },
+			{ name = "Cracked Stone", oilTypes = { { oilType = "Refined", weight = 65 }, { oilType = "Refined", weight = 25 }, { oilType = "Crude", weight = 15 } }, weight = 4, drillSeconds = 10000, material = Enum.Material.Rock, color = Color3.fromRGB(38, 38, 38) },
 		},
 	},
 	Volcano = {
 		displayName = "Volcano",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "SUPER TILE", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 }, { oilType = "PremiumRefined", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
-			{ name = "Cracked Stone", oilTypes = { { oilType = "LightSweet", weight = 65 }, { oilType = "LightSweet", weight = 25 }, { oilType = "HeavyCrude", weight = 15 } }, weight = 60, drillSeconds = 10000, material = Enum.Material.Rock, color = Color3.fromRGB(38, 38, 38) },
-			{ name = "Magma", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 } }, weight = 20, drillSeconds = 50000, material = Enum.Material.Mud, color = Color3.fromRGB(255, 80, 36) },
-			{ name = "Obsidian", oilTypes = { { oilType = "PremiumRefined", weight = 100 } }, weight = 16, drillSeconds = 100000, material = Enum.Material.Rock, color = Color3.fromRGB(0, 0, 0) },
+			{ name = "SUPER TILE", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 }, { oilType = "Premium", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
+			{ name = "Cracked Stone", oilTypes = { { oilType = "Refined", weight = 65 }, { oilType = "Refined", weight = 25 }, { oilType = "Crude", weight = 15 } }, weight = 60, drillSeconds = 10000, material = Enum.Material.Rock, color = Color3.fromRGB(38, 38, 38) },
+			{ name = "Magma", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 } }, weight = 20, drillSeconds = 50000, material = Enum.Material.Mud, color = Color3.fromRGB(255, 80, 36) },
+			{ name = "Obsidian", oilTypes = { { oilType = "Premium", weight = 100 } }, weight = 16, drillSeconds = 100000, material = Enum.Material.Rock, color = Color3.fromRGB(0, 0, 0) },
 		},
 	},
 	MagmaField = {
 		displayName = "MagmaField",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Magma", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 } }, weight = 68, drillSeconds = 50000, material = Enum.Material.Mud, color = Color3.fromRGB(255, 80, 36) },
-			{ name = "Obsidian", oilTypes = { { oilType = "PremiumRefined", weight = 100 } }, weight = 32, drillSeconds = 100000, material = Enum.Material.Rock, color = Color3.fromRGB(0, 0, 0) },
+			{ name = "Magma", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 } }, weight = 68, drillSeconds = 50000, material = Enum.Material.Mud, color = Color3.fromRGB(255, 80, 36) },
+			{ name = "Obsidian", oilTypes = { { oilType = "Premium", weight = 100 } }, weight = 32, drillSeconds = 100000, material = Enum.Material.Rock, color = Color3.fromRGB(0, 0, 0) },
 		},
 	},
 	MagmaPit = {
 		displayName = "Magma Pit",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "SUPER TILE", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 }, { oilType = "PremiumRefined", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
-			{ name = "Magma", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 } }, weight = 32, drillSeconds = 50000, material = Enum.Material.Mud, color = Color3.fromRGB(255, 80, 36) },
-			{ name = "Obsidian", oilTypes = { { oilType = "PremiumRefined", weight = 100 } }, weight = 64, drillSeconds = 100000, material = Enum.Material.Rock, color = Color3.fromRGB(0, 0, 0) },
+			{ name = "SUPER TILE", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 }, { oilType = "Premium", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
+			{ name = "Magma", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 } }, weight = 32, drillSeconds = 50000, material = Enum.Material.Mud, color = Color3.fromRGB(255, 80, 36) },
+			{ name = "Obsidian", oilTypes = { { oilType = "Premium", weight = 100 } }, weight = 64, drillSeconds = 100000, material = Enum.Material.Rock, color = Color3.fromRGB(0, 0, 0) },
 		},
 	},
 	SteamyFields = {
 		displayName = "Steamy Fields",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "SUPER TILE", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 }, { oilType = "PremiumRefined", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
-			{ name = "Grass", oilTypes = { { oilType = "HeavyCrude", weight = 60 }, { oilType = "LightSweet", weight = 40 } }, weight = 56, drillSeconds = 400, material = Enum.Material.Grass, color = Color3.fromRGB(62, 179, 0) },
-			{ name = "Magma", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 } }, weight = 40, drillSeconds = 50000, material = Enum.Material.Mud, color = Color3.fromRGB(255, 80, 36) },
+			{ name = "SUPER TILE", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 }, { oilType = "Premium", weight = 50 } }, weight = 4, drillSeconds = 15, material = Enum.Material.Sand, color = Color3.fromRGB(255, 221, 0) },
+			{ name = "Grass", oilTypes = { { oilType = "Crude", weight = 60 }, { oilType = "Refined", weight = 40 } }, weight = 56, drillSeconds = 400, material = Enum.Material.Grass, color = Color3.fromRGB(62, 179, 0) },
+			{ name = "Magma", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 } }, weight = 40, drillSeconds = 50000, material = Enum.Material.Mud, color = Color3.fromRGB(255, 80, 36) },
 		},
 	},
 	HotSandyFields = {
 		displayName = "Hot Sandy Fields",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Sandstone", oilTypes = { { oilType = "LightSweet", weight = 50 }, { oilType = "HeavyCrude", weight = 50 } }, weight = 16, drillSeconds = 3500, material = Enum.Material.Sand, color = Color3.fromRGB(217, 164, 84) },
-			{ name = "Smooth Sand", oilTypes = { { oilType = "HeavyCrude", weight = 75 }, { oilType = "LightSweet", weight = 25 } }, weight = 48, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
-			{ name = "Magma", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 } }, weight = 32, drillSeconds = 50000, material = Enum.Material.Mud, color = Color3.fromRGB(255, 80, 36) },
-			{ name = "Obsidian", oilTypes = { { oilType = "PremiumRefined", weight = 100 } }, weight = 4, drillSeconds = 100000, material = Enum.Material.Rock, color = Color3.fromRGB(0, 0, 0) },
+			{ name = "Sandstone", oilTypes = { { oilType = "Refined", weight = 50 }, { oilType = "Crude", weight = 50 } }, weight = 16, drillSeconds = 3500, material = Enum.Material.Sand, color = Color3.fromRGB(217, 164, 84) },
+			{ name = "Smooth Sand", oilTypes = { { oilType = "Crude", weight = 75 }, { oilType = "Refined", weight = 25 } }, weight = 48, drillSeconds = 1000, material = Enum.Material.Sand, color = Color3.fromRGB(255, 222, 173) },
+			{ name = "Magma", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 } }, weight = 32, drillSeconds = 50000, material = Enum.Material.Mud, color = Color3.fromRGB(255, 80, 36) },
+			{ name = "Obsidian", oilTypes = { { oilType = "Premium", weight = 100 } }, weight = 4, drillSeconds = 100000, material = Enum.Material.Rock, color = Color3.fromRGB(0, 0, 0) },
 		},
 	},
 	HotRocks = {
 		displayName = "Hot Rocks",
 		emoji = "🌍",
 		tileTypes = {
-			{ name = "Cracked Stone", oilTypes = { { oilType = "LightSweet", weight = 65 }, { oilType = "LightSweet", weight = 25 }, { oilType = "HeavyCrude", weight = 15 } }, weight = 52, drillSeconds = 10000, material = Enum.Material.Rock, color = Color3.fromRGB(38, 38, 38) },
-			{ name = "Magma", oilTypes = { { oilType = "PremiumRefined", weight = 50 }, { oilType = "LightSweet", weight = 50 } }, weight = 32, drillSeconds = 50000, material = Enum.Material.Mud, color = Color3.fromRGB(255, 80, 36) },
-			{ name = "Obsidian", oilTypes = { { oilType = "PremiumRefined", weight = 100 } }, weight = 16, drillSeconds = 100000, material = Enum.Material.Rock, color = Color3.fromRGB(0, 0, 0) },
+			{ name = "Cracked Stone", oilTypes = { { oilType = "Refined", weight = 65 }, { oilType = "Refined", weight = 25 }, { oilType = "Crude", weight = 15 } }, weight = 52, drillSeconds = 10000, material = Enum.Material.Rock, color = Color3.fromRGB(38, 38, 38) },
+			{ name = "Magma", oilTypes = { { oilType = "Premium", weight = 50 }, { oilType = "Refined", weight = 50 } }, weight = 32, drillSeconds = 50000, material = Enum.Material.Mud, color = Color3.fromRGB(255, 80, 36) },
+			{ name = "Obsidian", oilTypes = { { oilType = "Premium", weight = 100 } }, weight = 16, drillSeconds = 100000, material = Enum.Material.Rock, color = Color3.fromRGB(0, 0, 0) },
 		},
 	},
 }
@@ -307,7 +307,7 @@ end
 function BiomeConfig.RollTileType(biomeName: string, rng: Random?)
 	local biome = BiomeConfig.Biomes[biomeName]
 	if not biome or not biome.tileTypes or #biome.tileTypes == 0 then
-		return { name = "Sand", oilTypes = { { oilType = "HeavyCrude", weight = 100 } }, weight = 100, drillSeconds = 30, material = Enum.Material.Sand, color = Color3.fromRGB(254, 224, 180) }
+		return { name = "Sand", oilTypes = { { oilType = "Crude", weight = 100 } }, weight = 100, drillSeconds = 30, material = Enum.Material.Sand, color = Color3.fromRGB(254, 224, 180) }
 	end
 	local totalWeight = 0
 	for _, tt in ipairs(biome.tileTypes) do totalWeight += tt.weight end
@@ -324,21 +324,21 @@ end
 -- (or fall back to legacy `oilType` field). Called at chunk generation time so each
 -- tile instance gets exactly one oil type baked in.
 function BiomeConfig.PickOilType(tileType: any, rng: Random?): string
-	if not tileType then return "HeavyCrude" end
+	if not tileType then return "Crude" end
 	local oilTypes = tileType.oilTypes
 	if typeof(oilTypes) == "table" and #oilTypes > 0 then
 		local total = 0
 		for _, ot in ipairs(oilTypes) do total += (ot.weight or 1) end
-		if total <= 0 then return oilTypes[1].oilType or "HeavyCrude" end
+		if total <= 0 then return oilTypes[1].oilType or "Crude" end
 		local r = rng and rng:NextInteger(1, total) or math.random(1, total)
 		local cursor = 0
 		for _, ot in ipairs(oilTypes) do
 			cursor += (ot.weight or 1)
-			if r <= cursor then return ot.oilType or "HeavyCrude" end
+			if r <= cursor then return ot.oilType or "Crude" end
 		end
-		return oilTypes[1].oilType or "HeavyCrude"
+		return oilTypes[1].oilType or "Crude"
 	end
-	return tileType.oilType or "HeavyCrude"
+	return tileType.oilType or "Crude"
 end
 
 function BiomeConfig.RollTileOilType(biomeName: string, rng: Random?): string

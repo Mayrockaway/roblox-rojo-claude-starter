@@ -2,7 +2,7 @@
 --[[
 	DrillAnimationClient — extracted from init.client.luau
 
-	Handles per-frame drill/prospector spin+sink animation, drill timer
+	Handles per-frame drill spin+sink animation, drill timer
 	billboard updates, and SUPER TILE rainbow pulse.
 
 	Usage:
@@ -21,7 +21,6 @@ local activeDrillHeights: { [Instance]: number } = {}
 -- PERF: per-frame lookups used to call workspace:GetDescendants() (14k-instance walk).
 -- Cached sets, maintained via DescendantAdded/Removing — O(1) instead of O(workspace).
 local _activeDrillsFolders: { [Folder]: true } = {}
-local _activeProspectorsFolders: { [Folder]: true } = {}
 local _superTileSet: { [BasePart]: true } = {}
 
 -- ===================== internal helpers =====================
@@ -105,16 +104,6 @@ local function updateDrillTimers()
 	end
 end
 
-local function forEachActiveProspector(fn: (Instance) -> ())
-	for folder in pairs(_activeProspectorsFolders) do
-		if folder.Parent then
-			for _, m in ipairs(folder:GetChildren()) do
-				fn(m)
-			end
-		end
-	end
-end
-
 -- ===================== public API =====================
 
 --- Wire up DescendantAdded/Removing listeners on workspace to maintain
@@ -122,9 +111,7 @@ end
 function M.start()
 	local function consider(d: Instance)
 		if d:IsA("Folder") then
-			if d.Name == "ActiveDrills" then _activeDrillsFolders[d] = true
-			elseif d.Name == "ActiveProspectors" then _activeProspectorsFolders[d] = true
-			end
+			if d.Name == "ActiveDrills" then _activeDrillsFolders[d] = true end
 		elseif d:IsA("BasePart") and d:GetAttribute("TileName") == "SUPER TILE" then
 			_superTileSet[d] = true
 		end
@@ -133,7 +120,6 @@ function M.start()
 	workspace.DescendantAdded:Connect(consider)
 	workspace.DescendantRemoving:Connect(function(d)
 		_activeDrillsFolders[d] = nil
-		_activeProspectorsFolders[d] = nil
 		_superTileSet[d] = nil
 	end)
 
@@ -145,14 +131,10 @@ function M.start()
 	end)
 end
 
---- Per-frame tick: animate drills, prospectors, update timers, pulse super tiles.
+--- Per-frame tick: animate drills, update timers, pulse super tiles.
 --- Call from the host's RenderStepped handler.
 function M.tick()
-	-- Animate every active drill regardless of how the plot is nested
 	forEachActiveDrill(animateActiveDrill)
-	-- Prospectors use the same sink animation helper
-	forEachActiveProspector(animateActiveDrill)
-	-- Countdown timers on each drill's static anchor billboard
 	updateDrillTimers()
 
 	-- SUPER TILE: pulse HSV rainbow on every tile tagged with TileName = "SUPER TILE".

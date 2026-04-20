@@ -97,20 +97,16 @@ local function playDispatchShipmentButtonFailTween()
 	UiSfx.playUiDenied()
 end
 
--- Studio row `Frame` names → manifest tier keys. Prefer **`ShipCargoRowHeavyCrude`**, **`ShipCargoRowLightSweet`**, **`ShipCargoRowPremiumRefined`**; legacy aliases keep old places working.
--- Renamed rows: set attribute **`ShipOilTier`** = `HeavyCrude` | `LightSweet` | `PremiumRefined`, or keep **`CrudeTitle` / `TypeName` / `NameColumn`** copy matching **`QualityConfig.Tiers`** display / hud short names.
+-- Studio row `Frame` names → manifest tier keys. Canonical names only after the
+-- holistic Crude/Refined/Premium rename. Renamed rows can still be resolved via
+-- the `ShipOilTier` attribute or the row's title label (see `resolveRowTierKey`).
 local ROW_NAME_TO_TIER: { [string]: string } = {
-	ShipCargoRowHeavyCrude = "HeavyCrude",
-	ShipCargoRowHeavy = "HeavyCrude",
-	ShipCargoRowCrude = "HeavyCrude",
-	ShipCargoRowLightSweet = "LightSweet",
-	ShipCargoRowLight = "LightSweet",
-	ShipCargoRowPremiumRefined = "PremiumRefined",
-	ShipCargoRowStandard = "PremiumRefined",
-	ShipCargoRowPremium = "PremiumRefined",
+	ShipCargoRowCrude = "Crude",
+	ShipCargoRowRefined = "Refined",
+	ShipCargoRowPremium = "Premium",
 }
 
-local TIER_KEYS = { "HeavyCrude", "LightSweet", "PremiumRefined" }
+local TIER_KEYS = { "Crude", "Refined", "Premium" }
 
 local function inferTierKeyFromLabelText(text: string): string?
 	local norm = string.lower((string.match(text, "^%s*(.-)%s*$") or text))
@@ -123,21 +119,20 @@ local function inferTierKeyFromLabelText(text: string): string?
 end
 
 --- Text used in Studio for the oil type (before script may overwrite with full `displayName`).
+--- Prefer the row's **`NameColumn`** first text label (works regardless of tier-specific
+--- title names like **`CrudeTitle`** / **`RefinedTitle`** / **`PremiumTitle`**); fall back
+--- to legacy `TypeName`.
 local function cargoTierLabelText(row: GuiObject): string?
-	local crude = row:FindFirstChild("CrudeTitle", true)
-	if crude and crude:IsA("TextLabel") then
-		return crude.Text
-	end
-	local typeName = row:FindFirstChild("TypeName", true)
-	if typeName and typeName:IsA("TextLabel") then
-		return typeName.Text
-	end
 	local nameCol = row:FindFirstChild("NameColumn", true)
 	if nameCol then
 		local tl = nameCol:FindFirstChildWhichIsA("TextLabel", true)
 		if tl and tl:IsA("TextLabel") then
 			return tl.Text
 		end
+	end
+	local typeName = row:FindFirstChild("TypeName", true)
+	if typeName and typeName:IsA("TextLabel") then
+		return typeName.Text
 	end
 	return nil
 end
@@ -180,9 +175,9 @@ local rowBindings: { [string]: {
 
 -- Raw oil units at home refinery (same keys / semantics as `OilStateService` server state).
 local refineryOilByTier: { [string]: number } = {
-	HeavyCrude = 0,
-	LightSweet = 0,
-	PremiumRefined = 0,
+	Crude = 0,
+	Refined = 0,
+	Premium = 0,
 }
 
 local latestResolved: {
@@ -195,9 +190,9 @@ local function perBarrelOilUnits(): number
 	return math.max(1, math.floor(n))
 end
 local selected: { [string]: number } = {
-	HeavyCrude = 0,
-	LightSweet = 0,
-	PremiumRefined = 0,
+	Crude = 0,
+	Refined = 0,
+	Premium = 0,
 }
 local latestCash = 0
 local shipmentCostLabel: TextLabel? = nil
@@ -249,17 +244,17 @@ type InstantSellRowBinding = {
 local instantSellRows: { [string]: InstantSellRowBinding } = {}
 -- Selected sell qty per tier (driven by steppers; clamped to current holdings).
 local instantSellSel: { [string]: number } = {
-	HeavyCrude = 0,
-	LightSweet = 0,
-	PremiumRefined = 0,
+	Crude = 0,
+	Refined = 0,
+	Premium = 0,
 }
 -- Market $/bbl from `MarketPriceUpdate` / `RequestMarketSnapshot`. Used only
 -- for the "Market value" + "You lose" subtitles; the sell PRICE itself is
 -- always `InstantSellConfig.pricePerBarrel(tier)`.
 local marketPricesByTier: { [string]: number } = {
-	HeavyCrude = 0,
-	LightSweet = 0,
-	PremiumRefined = 0,
+	Crude = 0,
+	Refined = 0,
+	Premium = 0,
 }
 -- TextBox lookup so Enter-to-commit (UserInputService) can route the input
 -- back to the right tier when the InstantSell amount field is focused.
@@ -337,7 +332,7 @@ local function clampSelectionsToInventory()
 	end
 end
 
---- If ship capacity shrinks or tiers change, trim selections (Premium → Light → Heavy) until load fits.
+--- If ship capacity shrinks or tiers change, trim selections (Premium → Refined → Crude) until load fits.
 local function clampSelectionsToShipCapacity()
 	local cap = maxShipCapacityOilUnits()
 	local per = perBarrelOilUnits()
@@ -345,7 +340,7 @@ local function clampSelectionsToShipCapacity()
 	while sumSelectedOilUnits() > cap and guard < 10000 do
 		guard += 1
 		local reduced = false
-		for _, k in ipairs({ "PremiumRefined", "LightSweet", "HeavyCrude" }) do
+		for _, k in ipairs({ "Premium", "Refined", "Crude" }) do
 			if sumSelectedOilUnits() <= cap then
 				break
 			end
@@ -475,11 +470,6 @@ end
 local function applyCargoRowTitles(row: Instance, tier: string)
 	local tierDef = QualityConfig.Tiers[tier :: any]
 	local title = (tierDef and tierDef.displayName) or tier
-	local crude = row:FindFirstChild("CrudeTitle", true)
-	if crude and crude:IsA("TextLabel") then
-		crude.Text = title
-		return
-	end
 	local nameCol = row:FindFirstChild("NameColumn", true)
 	if nameCol then
 		local tl = nameCol:FindFirstChildWhichIsA("TextLabel", true)
@@ -1060,6 +1050,7 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 
 	if dispatchButton then
 		table.insert(connections, dispatchButton.Activated:Connect(tryDispatch))
+		attachColorFadeHover(dispatchButton, connections)
 	end
 
 	table.insert(connections, ClientRemotes.warehouseStateUpdate.OnClientEvent:Connect(function(data: any)
@@ -1275,12 +1266,12 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 			instantSellMarketLossLabel = marketLoss
 		end
 
-		-- Per-tier rows (HeavyCrudeRow / LightSweetRow / PremiumRefinedRow).
+		-- Per-tier rows (CrudeRow / RefinedRow / PremiumRow).
 		local oilRows = body and body:FindFirstChild("OilRows", true)
 		local ROW_NAME_FOR_TIER: { [string]: string } = {
-			HeavyCrude = "HeavyCrudeRow",
-			LightSweet = "LightSweetRow",
-			PremiumRefined = "PremiumRefinedRow",
+			Crude = "CrudeRow",
+			Refined = "RefinedRow",
+			Premium = "PremiumRow",
 		}
 		if oilRows then
 			for _, tier in ipairs(TIER_KEYS) do

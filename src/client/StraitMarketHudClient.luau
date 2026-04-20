@@ -17,7 +17,7 @@ export type StraitMarketRemotes = {
 	requestMarketSnapshot: RemoteFunction,
 }
 
-local MARKET_TYPE_MULS = { HeavyCrude = 0.8, LightSweet = 1.4, PremiumRefined = 2.0 }
+local MARKET_TYPE_MULS = { Crude = 0.8, Refined = 1.4, Premium = 2.0 }
 
 local warehouseState: any = nil
 

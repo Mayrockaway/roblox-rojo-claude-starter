@@ -18,15 +18,15 @@ export type MarketSnapshot = {
 }
 
 local TIER_ROWS: { { row: string, tier: string } } = {
-	{ row = "CrudeRow", tier = "HeavyCrude" },
-	{ row = "LightSweetRow", tier = "LightSweet" },
-	{ row = "PremiumRow", tier = "PremiumRefined" },
+	{ row = "CrudeRow", tier = "Crude" },
+	{ row = "RefinedRow", tier = "Refined" },
+	{ row = "PremiumRow", tier = "Premium" },
 }
 
 local DEFAULT_TYPE_MULS: { [string]: number } = {
-	HeavyCrude = 0.8,
-	LightSweet = 1.4,
-	PremiumRefined = 2.0,
+	Crude = 0.8,
+	Refined = 1.4,
+	Premium = 2.0,
 }
 
 local COL_GOOD = Color3.fromRGB(72, 175, 98)

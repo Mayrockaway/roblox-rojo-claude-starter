@@ -1,6 +1,24 @@
 --!strict
 
 local EquipmentCatalog = require(script.Parent:WaitForChild("EquipmentCatalog"))
+local VeinConfig = require(script.Parent:WaitForChild("VeinConfig"))
+
+--- `PumpTiers` for `OilStateService` center-pump templating. Derived from
+--- `VeinConfig.PumpUpgrades` so the prox-prompt upgrade flow and the auto-place
+--- spawn share one source of truth (no `EquipmentCatalog` row needed because
+--- pumps are no longer purchasable).
+local function buildPumpTiers()
+	local out: { [string]: { templateName: string, displayName: string, flowMultiplier: number, cost: number } } = {}
+	for tier, def in pairs(VeinConfig.PumpUpgrades) do
+		out[tier] = {
+			templateName = def.templateName,
+			displayName = def.displayName,
+			flowMultiplier = def.flowMult,
+			cost = 0, -- center pumps don't have a placement cost; upgrades use VeinConfig.PumpUpgradeCostsByGround
+		}
+	end
+	return out
+end
 
 local OilConfig = {
 	-- Plot section grid: 3 cols x 4 rows of 40-stud sections (5x5 sub-tiles of 8 studs each).
@@ -16,7 +34,7 @@ local OilConfig = {
 	ChunkUnlockBaseCost = 500,
 	ChunkUnlockDistanceMultiplier = 1.0,
 
-	-- Legacy drill economy (kept for now; pumps now inherit these values)
+	-- Drill economy (one consumable drill per tile reveal).
 	DrillBaseFlow = 0.2,
 	DrillMinSpacing = 6,
 	BaseMaxActiveDrills = 9999,
@@ -25,11 +43,14 @@ local OilConfig = {
 	DrillScaleMin = 0.5,
 	DrillScaleMax = 1.2,
 
-	-- Drill / pump / pipe / prospector economy: single source `EquipmentCatalog`.
+	-- Drill economy: single source `EquipmentCatalog`.
 	DrillTiers = EquipmentCatalog.getDrillTiersMap(),
 	DrillPlacementCost = EquipmentCatalog.getDrillPlacementCostHint(),
 
-	PumpTiers = EquipmentCatalog.getPumpTiersMap(),
+	-- Pump templating for the auto-placed center pump (one per unlocked chunk).
+	-- Pumps are NOT purchasable / NOT player-placed; only upgraded via prox prompt.
+	-- See `OilStateService:_autoPlaceCenterPump` and `OilStateService:TryUpgradeCenterPump`.
+	PumpTiers = buildPumpTiers(),
 	-- Each placed pump gets a random visual scale.
 	PumpScaleMin = 0.36,
 	PumpScaleMax = 0.57,
@@ -40,20 +61,14 @@ local OilConfig = {
 	RainbowPumpChance = 0.02,
 	RainbowPumpHighlightColor = Color3.fromRGB(180, 140, 255),
 
-	Prospecting = EquipmentCatalog.getProspecting(),
-
-	-- Colors for the oil spray VFX between drill completion and pump placement
+	-- Colors for the oil spray VFX over drilled tiles (now used between drill
+	-- completion and the center pump's pickup tick).
 	OilSprayColors = {
-		HeavyCrude     = Color3.fromRGB(30, 30, 30),
-		LightSweet     = Color3.fromRGB(240, 200, 70),
-		PremiumRefined = Color3.fromRGB(180, 80, 255),
+		Crude     = Color3.fromRGB(30, 30, 30),
+		Refined     = Color3.fromRGB(240, 200, 70),
+		Premium = Color3.fromRGB(180, 80, 255),
 	},
 
-	Pipes = EquipmentCatalog.getPipes(),
-	Drums = {
-		Cost = 0,
-		IntakeStubLength = 4,
-	},
 	DrillBufferCapacity = 20, -- per tier, per drill
 
 	-- Player economy
@@ -75,9 +90,9 @@ local OilConfig = {
 		ConveyorTweenSeconds = 4,
 		MaxOnConveyor = 5,
 		TierTemplates = {
-			PremiumRefined = "Barrel_PremiumRefined",
-			LightSweet = "Barrel_LightSweet",
-			HeavyCrude = "Barrel_HeavyCrude",
+			Premium = "Barrel_Premium",
+			Refined = "Barrel_Refined",
+			Crude = "Barrel_Crude",
 		},
 	},
 
@@ -87,33 +102,33 @@ local OilConfig = {
 		Desert = {
 			flowMul = 1.0,
 			tierMix = {
-				HeavyCrude = 70,
-				LightSweet = 25,
-				PremiumRefined = 5,
+				Crude = 70,
+				Refined = 25,
+				Premium = 5,
 			},
 		},
 		Rocky = {
 			flowMul = 0.9,
 			tierMix = {
-				HeavyCrude = 85,
-				LightSweet = 13,
-				PremiumRefined = 2,
+				Crude = 85,
+				Refined = 13,
+				Premium = 2,
 			},
 		},
 		Wetland = {
 			flowMul = 1.1,
 			tierMix = {
-				HeavyCrude = 75,
-				LightSweet = 20,
-				PremiumRefined = 5,
+				Crude = 75,
+				Refined = 20,
+				Premium = 5,
 			},
 		},
 		Forest = {
 			flowMul = 1.05,
 			tierMix = {
-				HeavyCrude = 55,
-				LightSweet = 35,
-				PremiumRefined = 10,
+				Crude = 55,
+				Refined = 35,
+				Premium = 10,
 			},
 		},
 	},

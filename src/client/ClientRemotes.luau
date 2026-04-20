@@ -1,7 +1,7 @@
 --!strict
 -- Centralizes `Shared.Remotes` waits so `init.client` stays under Luau's per-chunk local register limit.
 -- **Canonical load:** `require(PlayerScripts.Client.ClientRemotes)` — prefer `GetClientRemotes` from nested modules.
--- Use `Remotes.requestPlaceDrill`, etc.
+-- Use `Remotes.requestStartDrill`, etc. Drills-only refactor: pump / pipe / drum / prospector remotes are gone.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -27,18 +27,11 @@ end
 
 export type ClientRemotes = {
 	requestOilSnapshot: RemoteFunction,
-	requestPlaceDrill: RemoteEvent,
 	requestStartDrill: RemoteEvent,
-	requestPlacePump: RemoteEvent,
 	drillProgressUpdate: RemoteEvent,
-	requestProspect: RemoteEvent,
-	prospectProgressUpdate: RemoteEvent,
 	requestHammerDestroy: RemoteEvent,
 	requestRemoveDrill: RemoteEvent,
 	requestBuyChunk: RemoteEvent,
-	requestPlacePipe: RemoteEvent,
-	pipePlacedFx: RemoteEvent,
-	requestRemovePipe: RemoteEvent,
 	requestPickupBarrel: RemoteEvent,
 	requestTeleportToShip: RemoteEvent,
 	requestTeleportHome: RemoteEvent,
@@ -91,18 +84,11 @@ export type ClientRemotes = {
 local Remotes: ClientRemotes = {
 	--- `OilSnapshotClient` + HUD panels (`SelectShipPanel`, `ShipManagementPanel`, …) — must stay `RemoteNames.RequestOilSnapshot`.
 	requestOilSnapshot = waitRemote(RemoteNames.RequestOilSnapshot) :: RemoteFunction,
-	requestPlaceDrill = waitRemote(RemoteNames.RequestPlaceDrill) :: RemoteEvent,
 	requestStartDrill = waitRemote(RemoteNames.RequestStartDrill) :: RemoteEvent,
-	requestPlacePump = waitRemote(RemoteNames.RequestPlacePump) :: RemoteEvent,
 	drillProgressUpdate = waitRemote(RemoteNames.DrillProgressUpdate) :: RemoteEvent,
-	requestProspect = waitRemote(RemoteNames.RequestProspect) :: RemoteEvent,
-	prospectProgressUpdate = waitRemote(RemoteNames.ProspectProgressUpdate) :: RemoteEvent,
 	requestHammerDestroy = waitRemote(RemoteNames.RequestHammerDestroy) :: RemoteEvent,
 	requestRemoveDrill = waitRemote(RemoteNames.RequestRemoveDrill) :: RemoteEvent,
 	requestBuyChunk = waitRemote(RemoteNames.RequestBuyChunk) :: RemoteEvent,
-	requestPlacePipe = waitRemote(RemoteNames.RequestPlacePipe) :: RemoteEvent,
-	pipePlacedFx = waitRemote(RemoteNames.PipePlacedFx) :: RemoteEvent,
-	requestRemovePipe = waitRemote(RemoteNames.RequestRemovePipe) :: RemoteEvent,
 	requestPickupBarrel = waitRemote(RemoteNames.RequestPickupBarrel) :: RemoteEvent,
 	requestTeleportToShip = waitRemote(RemoteNames.RequestTeleportToShip) :: RemoteEvent,
 	requestTeleportHome = waitRemote(RemoteNames.RequestTeleportHome) :: RemoteEvent,

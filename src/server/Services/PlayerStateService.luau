@@ -13,9 +13,9 @@ local PlayerStateService = {}
 
 local function makeEmptyOilByTier()
 	return {
-		HeavyCrude = 0,
-		LightSweet = 0,
-		PremiumRefined = 0,
+		Crude = 0,
+		Refined = 0,
+		Premium = 0,
 	}
 end
 
@@ -430,9 +430,9 @@ function PlayerStateService:_rollQualityTier(state): string
 	local biasScalar = qualityBiasLevel * biasDef.effectPerLevel
 
 	local rank = {
-		HeavyCrude = -2,
-		LightSweet = 1,
-		PremiumRefined = 2,
+		Crude = -2,
+		Refined = 1,
+		Premium = 2,
 	}
 
 	local totalWeight = 0
@@ -454,7 +454,7 @@ function PlayerStateService:_rollQualityTier(state): string
 			return tier
 		end
 	end
-	return "HeavyCrude"
+	return "Crude"
 end
 
 function PlayerStateService:_dirtyState(userId: number)

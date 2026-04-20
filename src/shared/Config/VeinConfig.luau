@@ -130,9 +130,9 @@ export type OilTypeDef = {
 }
 
 VeinConfig.OilTypes = {
-	DirtOil = { name = "DirtOil", displayName = "Crude", internalName = "HeavyCrude", color = Color3.fromRGB(200, 200, 200), valueMult = 1 },
-	GoodOil = { name = "GoodOil", displayName = "Refined", internalName = "LightSweet", color = Color3.fromRGB(240, 200, 70), valueMult = 2 },
-	GoldOil = { name = "GoldOil", displayName = "Premium", internalName = "PremiumRefined", color = Color3.fromRGB(255, 150, 200), valueMult = 4 },
+	DirtOil = { name = "DirtOil", displayName = "Crude", internalName = "Crude", color = Color3.fromRGB(200, 200, 200), valueMult = 1 },
+	GoodOil = { name = "GoodOil", displayName = "Refined", internalName = "Refined", color = Color3.fromRGB(240, 200, 70), valueMult = 2 },
+	GoldOil = { name = "GoldOil", displayName = "Premium", internalName = "Premium", color = Color3.fromRGB(255, 150, 200), valueMult = 4 },
 } :: { [string]: OilTypeDef }
 
 VeinConfig.OilOrder = { "DirtOil", "GoodOil", "GoldOil" }
@@ -219,7 +219,7 @@ end
 
 function VeinConfig.GetInternalOilName(oilType: string): string
 	local def = VeinConfig.OilTypes[oilType]
-	return def and def.internalName or "HeavyCrude"
+	return def and def.internalName or "Crude"
 end
 
 function VeinConfig.GetTotalProductionMult(result: VeinRollResult): number

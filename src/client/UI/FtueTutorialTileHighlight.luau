@@ -1,6 +1,6 @@
 --!strict
 -- World-space raised border on the FTUE tutorial tile (**`WaitDrillOil_WIP`** drill/pipe/pump legs): reads
--- `FtueRestrictDrillCellKey` / `FtueRestrictPipeCellKey` / `FtueRestrictPumpCellKey` on the player.
+-- `FtueRestrictDrillCellKey` on the player (drills are the only FTUE-restricted action).
 
 local Workspace = game:GetService("Workspace")
 
@@ -104,16 +104,8 @@ end
 
 local function currentFtueCellKey(player: Player): string?
 	local d = player:GetAttribute(Constants.FtueRestrictDrillCellKeyAttribute)
-	local pipe = player:GetAttribute(Constants.FtueRestrictPipeCellKeyAttribute)
-	local p = player:GetAttribute(Constants.FtueRestrictPumpCellKeyAttribute)
 	if typeof(d) == "string" and d ~= "" then
 		return (d :: string):gsub("^%s+", ""):gsub("%s+$", "") :: any
-	end
-	if typeof(pipe) == "string" and pipe ~= "" then
-		return (pipe :: string):gsub("^%s+", ""):gsub("%s+$", "") :: any
-	end
-	if typeof(p) == "string" and p ~= "" then
-		return (p :: string):gsub("^%s+", ""):gsub("%s+$", "") :: any
 	end
 	return nil
 end
@@ -199,8 +191,6 @@ function FtueTutorialTileHighlight.start(player: Player)
 		table.clear(attrConn)
 		table.insert(attrConn, player:GetAttributeChangedSignal("PlotId"):Connect(refresh))
 		table.insert(attrConn, player:GetAttributeChangedSignal(Constants.FtueRestrictDrillCellKeyAttribute):Connect(refresh))
-		table.insert(attrConn, player:GetAttributeChangedSignal(Constants.FtueRestrictPumpCellKeyAttribute):Connect(refresh))
-		table.insert(attrConn, player:GetAttributeChangedSignal(Constants.FtueRestrictPipeCellKeyAttribute):Connect(refresh))
 		table.insert(attrConn, player:GetAttributeChangedSignal(Constants.FtueStepAttribute):Connect(function()
 			local st = player:GetAttribute(Constants.FtueStepAttribute)
 			if typeof(st) ~= "string" then

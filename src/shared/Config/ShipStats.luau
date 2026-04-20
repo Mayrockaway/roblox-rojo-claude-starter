@@ -13,11 +13,11 @@ local ShipUpgradeConfig = require(script.Parent:WaitForChild("ShipUpgradeConfig"
 
 local ShipStats = {}
 
--- USD per whole barrel shipped (manifest tier keys = `HeavyCrude` / `LightSweet` / `PremiumRefined`).
+-- USD per whole barrel shipped (manifest tier keys = `Crude` / `Refined` / `Premium`).
 local DISPATCH_FEE_USD_PER_BARREL: { [string]: number } = {
-	HeavyCrude = 1,
-	LightSweet = 2,
-	PremiumRefined = 3,
+	Crude = 1,
+	Refined = 2,
+	Premium = 3,
 }
 
 --- `manifest` values are **oil units** (barrels × `perBarrelOilUnits`, same as server `ConsumeManifest`).

@@ -17,7 +17,7 @@ export type StraitEventDef = {
 	-- Multiplies shipment.priceMultiplier (e.g. 0.94 = 6% effective payout hit at resolution).
 	priceMultiplierFactor: number?,
 	totalLoss: boolean?,
-	-- Whole barrels lost: ceil(manifestTotal * fraction), removed HeavyCrude → LightSweet → PremiumRefined.
+	-- Whole barrels lost: ceil(manifestTotal * fraction), removed Crude → Refined → Premium.
 	looseBarrelLossFraction: number?,
 	-- If true, server handles missile flight with hit/smallHit/miss outcomes instead of instant totalLoss.
 	missileEvent: boolean?,

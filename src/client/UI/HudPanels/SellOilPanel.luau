@@ -2,7 +2,7 @@
 -- Sell oil / warehouse modal (`StarterGui.SellOilPanelGui` → `PlayerGui`).
 -- Stored counts = warehouse barrels; prices from `MarketPriceUpdate` / `RequestMarketSnapshot`.
 -- `WarehouseHeader.WarehouseTitle` = strait **`WarehouseService`** used/total capacity (`WarehouseStateUpdate`).
--- Heavy crude row = `HeavyCrude` only (all sub–light-sweet product).
+-- Crude (Tier 1) row = `Crude` only (no blending of refined / premium product).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
@@ -27,25 +27,23 @@ local SCREEN_NAME = "SellOilPanelGui"
 
 type RowUiConfig = { kind: "crude" } | { kind: "tier", tier: string }
 
--- Row `Frame` names: prefer **`OilSellRowHeavyCrude`**, **`OilSellRowLightSweet`**, **`OilSellRowPremiumRefined`** in Studio; legacy names remain wired.
+-- Studio row `Frame` names → tier mapping. Canonical names only after the
+-- holistic Crude/Refined/Premium rename. Renamed rows can still resolve via
+-- the `SellOilTier` attribute or `TypeName` text (see `resolveRowUiConfig`).
 local ROW_UI: { [string]: RowUiConfig } = {
-	OilSellRowHeavyCrude = { kind = "crude" },
 	OilSellRowCrude = { kind = "crude" },
-	OilSellRowHeavy = { kind = "crude" },
-	OilSellRowLightSweet = { kind = "tier", tier = "LightSweet" },
-	OilSellRowLight = { kind = "tier", tier = "LightSweet" },
-	OilSellRowPremiumRefined = { kind = "tier", tier = "PremiumRefined" },
-	OilSellRowStandard = { kind = "tier", tier = "PremiumRefined" },
+	OilSellRowRefined = { kind = "tier", tier = "Refined" },
+	OilSellRowPremium = { kind = "tier", tier = "Premium" },
 }
 
---- TotalsPanel subtotal row `Frame` names by **warehouse tier** (not by oil row frame name — rows may be reordered/renamed in Studio).
+--- TotalsPanel subtotal row `Frame` names by **warehouse tier** (rows are looked up by tier, not oil-row frame name).
 local SUBTOTAL_NAMES_BY_TIER: { [string]: { string } } = {
-	HeavyCrude = { "SubtotalHeavyCrude", "SubtotalCrude", "SubtotalHeavy" },
-	LightSweet = { "SubtotalLightSweet", "SubtotalLight" },
-	PremiumRefined = { "SubtotalPremiumRefined", "SubtotalPremium", "SubtotalStandard" },
+	Crude = { "SubtotalCrude" },
+	Refined = { "SubtotalRefined" },
+	Premium = { "SubtotalPremium" },
 }
 
-local TIER_KEYS = { "HeavyCrude", "LightSweet", "PremiumRefined" }
+local TIER_KEYS = { "Crude", "Refined", "Premium" }
 
 local SellOilPanel = {}
 
@@ -122,7 +120,7 @@ type RowBinding = {
 local function rowDisplayTitle(bind: RowBinding): string?
 	local tierKey: string?
 	if bind.kind == "crude" then
-		tierKey = "HeavyCrude"
+		tierKey = "Crude"
 	elseif bind.kind == "tier" and bind.tier then
 		tierKey = bind.tier
 	end
@@ -147,12 +145,12 @@ end
 
 --- `SellOilTier` on the row wins over `Name` so tier data matches visual order if frame names drift.
 local function rowConfigFromSellOilTierAttr(a: string): RowUiConfig?
-	if a == "HeavyCrude" then
+	if a == "Crude" then
 		return { kind = "crude" }
-	elseif a == "LightSweet" then
-		return { kind = "tier", tier = "LightSweet" }
-	elseif a == "PremiumRefined" then
-		return { kind = "tier", tier = "PremiumRefined" }
+	elseif a == "Refined" then
+		return { kind = "tier", tier = "Refined" }
+	elseif a == "Premium" then
+		return { kind = "tier", tier = "Premium" }
 	end
 	return nil
 end
@@ -174,12 +172,12 @@ local function resolveRowUiConfig(row: GuiObject): RowUiConfig?
 	local typeName = infoCol and infoCol:FindFirstChild("TypeName", true)
 	if typeName and typeName:IsA("TextLabel") then
 		local tierKey = inferTierKeyFromTypeNameText(typeName.Text)
-		if tierKey == "HeavyCrude" then
+		if tierKey == "Crude" then
 			return { kind = "crude" }
-		elseif tierKey == "LightSweet" then
-			return { kind = "tier", tier = "LightSweet" }
-		elseif tierKey == "PremiumRefined" then
-			return { kind = "tier", tier = "PremiumRefined" }
+		elseif tierKey == "Refined" then
+			return { kind = "tier", tier = "Refined" }
+		elseif tierKey == "Premium" then
+			return { kind = "tier", tier = "Premium" }
 		end
 	end
 	return nil
@@ -187,7 +185,7 @@ end
 
 local function dataTierForRowConfig(cfg: RowUiConfig): string
 	if cfg.kind == "crude" then
-		return "HeavyCrude"
+		return "Crude"
 	end
 	return cfg.tier
 end
@@ -195,21 +193,21 @@ end
 local rowBindings: { RowBinding } = {}
 
 local warehouseBarrelsByTier: { [string]: number } = {
-	HeavyCrude = 0,
-	LightSweet = 0,
-	PremiumRefined = 0,
+	Crude = 0,
+	Refined = 0,
+	Premium = 0,
 }
 
 local pricesByTier: { [string]: number } = {
-	HeavyCrude = 0,
-	LightSweet = 0,
-	PremiumRefined = 0,
+	Crude = 0,
+	Refined = 0,
+	Premium = 0,
 }
 
 local selected: { [string]: number } = {
-	HeavyCrude = 0,
-	LightSweet = 0,
-	PremiumRefined = 0,
+	Crude = 0,
+	Refined = 0,
+	Premium = 0,
 }
 
 local totalProfitLabel: TextLabel? = nil
@@ -274,15 +272,15 @@ local function maxBarrelsInWarehouseForTier(tier: string): number
 end
 
 local function maxCrudeWarehouseBarrels(): number
-	return maxBarrelsInWarehouseForTier("HeavyCrude")
+	return maxBarrelsInWarehouseForTier("Crude")
 end
 
 local function crudeBlendSelected(): number
-	return selected.HeavyCrude or 0
+	return selected.Crude or 0
 end
 
 local function sumSelectedSellBarrels(): number
-	return crudeBlendSelected() + (selected.LightSweet or 0) + (selected.PremiumRefined or 0)
+	return crudeBlendSelected() + (selected.Refined or 0) + (selected.Premium or 0)
 end
 
 --- For `FtueUiPointers` during the **Sell** FTUE step.
@@ -308,13 +306,13 @@ local function maybeFireFtueSellPointerRefresh()
 end
 
 local function clampCrudeSelectionToWarehouse()
-	local wH = maxBarrelsInWarehouseForTier("HeavyCrude")
-	local h = math.min(selected.HeavyCrude or 0, wH)
-	selected.HeavyCrude = h
+	local wH = maxBarrelsInWarehouseForTier("Crude")
+	local h = math.min(selected.Crude or 0, wH)
+	selected.Crude = h
 end
 
 local function clampSelectionsToInventory()
-	for _, k in ipairs({ "LightSweet", "PremiumRefined" }) do
+	for _, k in ipairs({ "Refined", "Premium" }) do
 		local inv = maxBarrelsInWarehouseForTier(k)
 		if (selected[k] or 0) > inv then
 			selected[k] = inv
@@ -324,7 +322,7 @@ local function clampSelectionsToInventory()
 end
 
 local function crudeDisplayPriceText(): string
-	local pH = pricesByTier.HeavyCrude or 0
+	local pH = pricesByTier.Crude or 0
 	if pH <= 0 then
 		return "$—/bbl"
 	end
@@ -346,7 +344,7 @@ end
 
 local function subtotalDollarsForRow(bind: RowBinding): number
 	if bind.kind == "crude" then
-		return (selected.HeavyCrude or 0) * (pricesByTier.HeavyCrude or 0)
+		return (selected.Crude or 0) * (pricesByTier.Crude or 0)
 	elseif bind.kind == "tier" and bind.tier then
 		local t = bind.tier
 		return (selected[t] or 0) * (pricesByTier[t] or 0)
@@ -380,7 +378,7 @@ local function setAmountFieldText(field: AmountField, value: number)
 	end
 end
 
---- Wired AmountLabel TextBoxes → manifest tier key (HeavyCrude for crude row).
+--- Wired AmountLabel TextBoxes → manifest tier key (Crude for crude row).
 local sellAmountTextBoxTier: { [TextBox]: string } = {}
 
 local function findSubtotalRight(totalsPanel: Instance?, dataTier: string): TextLabel?
@@ -501,12 +499,12 @@ local function bumpTier(tier: string, delta: number)
 end
 
 local function bumpCrudeBlend(delta: number)
-	bumpTier("HeavyCrude", delta)
+	bumpTier("Crude", delta)
 end
 
 local function trySell()
-	local h = selected.HeavyCrude or 0
-	local ls, pr = selected.LightSweet or 0, selected.PremiumRefined or 0
+	local h = selected.Crude or 0
+	local ls, pr = selected.Refined or 0, selected.Premium or 0
 	if h + ls + pr <= 0 then
 		UiSfx.playUiDenied()
 		showErrorNotification("Select at least one barrel to sell.", 4)
@@ -519,9 +517,9 @@ local function trySell()
 	lastSellFire = now
 	UiSfx.playKaching()
 	ClientRemotes.requestSellWarehouseBarrels:FireServer({
-		HeavyCrude = h,
-		LightSweet = ls,
-		PremiumRefined = pr,
+		Crude = h,
+		Refined = ls,
+		Premium = pr,
 	})
 end
 
@@ -646,7 +644,7 @@ local function wireSellOil(screen: ScreenGui, closePanel: (() -> ())?)
 			local amountField = amt :: AmountField
 			local tierForAmount: string
 			if cfg.kind == "crude" then
-				tierForAmount = "HeavyCrude"
+				tierForAmount = "Crude"
 			else
 				tierForAmount = cfg.tier :: string
 			end
@@ -677,7 +675,7 @@ local function wireSellOil(screen: ScreenGui, closePanel: (() -> ())?)
 				end, connections)
 				if amt:IsA("TextBox") then
 					table.insert(connections, amt.FocusLost:Connect(function()
-						applyTypedSellTier("HeavyCrude", amt.Text)
+						applyTypedSellTier("Crude", amt.Text)
 					end))
 				end
 			elseif cfg.kind == "tier" then

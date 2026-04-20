@@ -95,14 +95,14 @@ local function pivotSignModelAboveTerminal(signModel: Model, terminal: Instance)
 	end
 end
 
-local TIER_ORDER = { "HeavyCrude", "LightSweet", "PremiumRefined" }
+local TIER_ORDER = { "Crude", "Refined", "Premium" }
 local SAVE_INTERVAL = 25
 local AUTOSAVE_START_OFFSET_SECONDS = 12
 local MIN_DATASTORE_SET_INTERVAL_SECONDS = 7
 local FLUSH_MULTI_USER_SPACING_SECONDS = 0.2
 
 local function emptyBarrelMap()
-	return { HeavyCrude = 0, LightSweet = 0, PremiumRefined = 0 }
+	return { Crude = 0, Refined = 0, Premium = 0 }
 end
 
 local function copyBarrelMap(src)
@@ -261,12 +261,8 @@ function WarehouseService:_onPlayerAdded(player: Player)
 		state.tier = math.clamp(persisted.tier or 1, 1, #WarehouseConfig.Tiers)
 		if typeof(persisted.barrels) == "table" then
 			local pb = persisted.barrels :: { [string]: any }
-			local legacyStandard = math.max(0, math.floor(tonumber(pb.StandardCrude) or 0))
 			for _, tier in ipairs(TIER_ORDER) do
 				state.barrels[tier] = math.max(0, math.floor(tonumber(pb[tier]) or 0))
-			end
-			if legacyStandard > 0 then
-				state.barrels.HeavyCrude = (state.barrels.HeavyCrude or 0) + legacyStandard
 			end
 		end
 		if typeof((persisted :: any).hitOverflowBarrels) == "table" then
@@ -749,9 +745,9 @@ function WarehouseService:GetAllBarrels(userId: number)
 	local state = self._stateByUserId[userId]
 	if not state then return emptyBarrelMap() end
 	return {
-		HeavyCrude = (state.barrels.HeavyCrude or 0) + (state.hitOverflowBarrels.HeavyCrude or 0),
-		LightSweet = (state.barrels.LightSweet or 0) + (state.hitOverflowBarrels.LightSweet or 0),
-		PremiumRefined = (state.barrels.PremiumRefined or 0) + (state.hitOverflowBarrels.PremiumRefined or 0),
+		Crude = (state.barrels.Crude or 0) + (state.hitOverflowBarrels.Crude or 0),
+		Refined = (state.barrels.Refined or 0) + (state.hitOverflowBarrels.Refined or 0),
+		Premium = (state.barrels.Premium or 0) + (state.hitOverflowBarrels.Premium or 0),
 	}
 end
 
@@ -835,9 +831,9 @@ function WarehouseService:GetWarehouseForClient(userId: number)
 		tier = state.tier,
 		maxTier = MAX_WAREHOUSE_TIER,
 		barrels = {
-			HeavyCrude = (state.barrels.HeavyCrude or 0) + (state.hitOverflowBarrels.HeavyCrude or 0),
-			LightSweet = (state.barrels.LightSweet or 0) + (state.hitOverflowBarrels.LightSweet or 0),
-			PremiumRefined = (state.barrels.PremiumRefined or 0) + (state.hitOverflowBarrels.PremiumRefined or 0),
+			Crude = (state.barrels.Crude or 0) + (state.hitOverflowBarrels.Crude or 0),
+			Refined = (state.barrels.Refined or 0) + (state.hitOverflowBarrels.Refined or 0),
+			Premium = (state.barrels.Premium or 0) + (state.hitOverflowBarrels.Premium or 0),
 		},
 		hitOverflowBarrels = copyBarrelMap(state.hitOverflowBarrels),
 		capacity = WarehouseConfig.GetCapacity(state.tier),
@@ -867,15 +863,15 @@ function WarehouseService:_syncBarrelVisuals(userId: number)
 	if not assetsFolder then return end
 
 	local tierTemplates = {
-		HeavyCrude = "Barrel_HeavyCrude",
-		LightSweet = "Barrel_LightSweet",
-		PremiumRefined = "Barrel_PremiumRefined",
+		Crude = "Barrel_Crude",
+		Refined = "Barrel_Refined",
+		Premium = "Barrel_Premium",
 	}
 
 	local maxVisual = WarehouseConfig.BarrelVisuals.MaxPerTier -- 20 per tier total
 	local barrelHeight = WarehouseConfig.BarrelVisuals.BarrelHeight
 
-	-- Each tier has 4 stack roots (PileRoot_<tier>_1 through _4) spread across Pile1-Pile4.
+	-- Each tier has 4 stack roots (PileRoot_<tier>_1 through _4) spread across Pile_Crude / Pile_Refined / Pile_Premium.
 	-- Distribute barrels round-robin across the 4 stacks.
 	local STACKS_PER_TIER = 4
 

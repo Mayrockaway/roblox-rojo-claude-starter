@@ -10,21 +10,21 @@ local OilmanConfig = {
 	BaseBarrelPrice = 5,
 
 	--- Per-tier price scalar. Final $/barrel = floor(BaseBarrelPrice * multiplier).
-	--- Heavy Crude $4, Light Sweet $7, Premium Refined $10.
+	--- Crude $4, Refined $7, Premium $10.
 	TierMultiplier = {
-		HeavyCrude = 0.8,
-		LightSweet = 1.4,
-		PremiumRefined = 2.0,
+		Crude = 0.8,
+		Refined = 1.4,
+		Premium = 2.0,
 	} :: { [string]: number },
 
 	--- Tiers rendered on the sell panel, in vertical order.
-	TierOrder = { "HeavyCrude", "LightSweet", "PremiumRefined" },
+	TierOrder = { "Crude", "Refined", "Premium" },
 
 	--- Display names for UI rows (keyed by internal tier id).
 	TierDisplayName = {
-		HeavyCrude = "Heavy Crude",
-		LightSweet = "Light Sweet",
-		PremiumRefined = "Premium Refined",
+		Crude = "Crude",
+		Refined = "Refined",
+		Premium = "Premium",
 	} :: { [string]: string },
 
 	--- Cycled one-at-a-time on each "Ask a question" click (client-side only).

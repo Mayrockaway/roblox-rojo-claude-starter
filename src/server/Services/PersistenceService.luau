@@ -31,9 +31,9 @@ local function defaultProfile()
 		cash = 0,
 		capacity = Constants.DefaultStorageCapacity,
 		oilByTier = {
-			HeavyCrude = 0,
-			LightSweet = 0,
-			PremiumRefined = 0,
+			Crude = 0,
+			Refined = 0,
+			Premium = 0,
 		},
 		upgrades = deepCopy(UpgradeConfig.DefaultLevels),
 		activeShipments = {},

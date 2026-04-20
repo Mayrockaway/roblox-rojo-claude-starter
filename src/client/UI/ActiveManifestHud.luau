@@ -1,6 +1,6 @@
 --!strict
--- Binds `HUD.Canvas.ActiveManifestPanel` loaded cargo rows: tier labels use **`QualityConfig.hudShortName`** (Crude / Light / Premium).
--- Studio row names **`LoadedRow_Heavy` → HeavyCrude**, **`LoadedRow_Standard` → LightSweet**, **`LoadedRow_Light` → PremiumRefined** (top → bottom).
+-- Binds `HUD.Canvas.ActiveManifestPanel` loaded cargo rows: tier labels use **`QualityConfig.hudShortName`**.
+-- Studio row names: **`LoadedRow_Crude`**, **`LoadedRow_Refined`**, **`LoadedRow_Premium`** (top → bottom).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -9,13 +9,9 @@ local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("Qualit
 
 --- `ActiveManifestPanel` `LoadedSection.SectionBody` child `Frame` name → server manifest / oil tier key.
 local LOADED_ROW_TO_TIER: { [string]: string } = {
-	LoadedRow_Heavy = "HeavyCrude",
-	LoadedRow_HeavyCrude = "HeavyCrude",
-	LoadedRow_Standard = "LightSweet",
-	LoadedRow_LightSweet = "LightSweet",
-	LoadedRow_Light = "PremiumRefined",
-	LoadedRow_PremiumRefined = "PremiumRefined",
-	LoadedRow_Premium = "PremiumRefined",
+	LoadedRow_Crude = "Crude",
+	LoadedRow_Refined = "Refined",
+	LoadedRow_Premium = "Premium",
 }
 
 local ATTR = "OilHudShortLabelsApplied"

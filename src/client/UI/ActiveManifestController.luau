@@ -13,18 +13,18 @@ local ActiveManifestHud = require(script.Parent.ActiveManifestHud)
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local ManifestIncidentTitle = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("ManifestIncidentTitle"))
 
-local TIER_ORDER = { "HeavyCrude", "LightSweet", "PremiumRefined" }
+local TIER_ORDER = { "Crude", "Refined", "Premium" }
 
 local ROW_FOR_TIER: { [string]: string } = {
-	HeavyCrude = "LoadedRow_Heavy",
-	LightSweet = "LoadedRow_Standard",
-	PremiumRefined = "LoadedRow_Light",
+	Crude = "LoadedRow_Crude",
+	Refined = "LoadedRow_Refined",
+	Premium = "LoadedRow_Premium",
 }
 
 local TIER_CHIP_COLOR: { [string]: Color3 } = {
-	HeavyCrude = Color3.fromRGB(30, 25, 20),
-	LightSweet = Color3.fromRGB(220, 180, 60),
-	PremiumRefined = Color3.fromRGB(200, 200, 210),
+	Crude = Color3.fromRGB(30, 25, 20),
+	Refined = Color3.fromRGB(220, 180, 60),
+	Premium = Color3.fromRGB(200, 200, 210),
 }
 
 local TITLE_ACTIVE = "ACTIVE MANIFEST"

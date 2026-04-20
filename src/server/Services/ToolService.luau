@@ -6,11 +6,18 @@ local Players = game:GetService("Players")
 
 local ToolService = {}
 
--- Do not list shop template names (Drill_T1, Pump_T1, …) — those may be legitimate purchases.
+-- Drills-only refactor: Pump_T1..T3, Pipe, Prospector, and (pre-refactor) drum tools were removed
+-- from the shop. Purge any persisted instances on join / respawn so old profiles don't leak them.
 local LEGACY_TOOL_NAMES = {
 	"LandSurveyor",
 	"Drill", -- pre–tiered single drill
 	"Hammer", -- removed until a new teardown flow ships
+	"Pump_T1",
+	"Pump_T2",
+	"Pump_T3",
+	"Pipe",
+	"Prospector",
+	"Drum",
 }
 
 local function purgeLegacyByName(container: Instance)

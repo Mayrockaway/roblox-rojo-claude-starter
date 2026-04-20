@@ -1,15 +1,16 @@
 --!strict
 --[[
 	PlacementClient — extracted from init.client.luau
-	Singleton module handling placement ghosts, pipe placement previews,
-	focus billboard UI, and hammer hover billboard.
 
-	Usage:
-		local PlacementClient = require(resolveClientModule(script, "PlacementClient"))
-		PlacementClient.init({ ... })
+	Drills-only refactor: drill is the only player-placeable equipment. This module
+	now handles only:
+		- The drill ghost preview that follows the mouse cursor on owned chunks
+		- The hover focus billboard that shows chunk biome / cost / tile info
+		- The hammer hover billboard for sell-back targeting
+
+	All pump / pipe / prospector ghost + placement code was removed. Pumps are
+	static center-pump rigs spawned by the server when a chunk is unlocked.
 ]]
-
-local RunService = game:GetService("RunService")
 
 -- ===================== types =====================
 export type InitParams = {
@@ -20,7 +21,6 @@ export type InitParams = {
 	ReplicatedStorage: ReplicatedStorage,
 	OilConfig: any,
 	Constants: any,
-	requestPlacePipe: RemoteEvent,
 	PlacementAnchor: any,
 	PlotCellTileResolve: any,
 	ClientPlotGrid: any,
@@ -32,14 +32,13 @@ export type InitParams = {
 local M = {}
 
 -- ===================== upvalues (set by init) =====================
-local player: Player
+local _player: Player
 local playerGui: PlayerGui
 local mouse: Mouse
 local _Workspace: Workspace
 local _ReplicatedStorage: ReplicatedStorage
-local OilConfig: any
+local _OilConfig: any
 local Constants: any
-local requestPlacePipe: RemoteEvent
 local PlacementAnchor: any
 local PlotCellTileResolve: any
 local ClientPlotGrid: any
@@ -48,35 +47,17 @@ local estimateRefundForTarget: (target: any) -> (number, Instance?)
 
 -- ===================== constants =====================
 local TOOL_DRILL = "Drill"
-local TOOL_PIPE = "Pipe"
 
 -- ===================== internal state =====================
 local ghostDrill: Model? = nil
 local ghostHighlight: Highlight? = nil
 local ghostTemplateName: string? = nil
 
-local pipeGhost: Model? = nil
-local lastPipeDebugAt = 0
-
 local focusBillboard: BillboardGui? = nil
 local focusLabel: TextLabel? = nil
 
 local hammerHoverBB: BillboardGui? = nil
 local hammerHoverLbl: TextLabel? = nil
-
--- ===================== internal helpers =====================
-
-local function pipeDebugLog(msg: string)
-	if not RunService:IsStudio() then
-		return
-	end
-	local now = os.clock()
-	if now - lastPipeDebugAt < 0.12 then
-		return
-	end
-	lastPipeDebugAt = now
-	print("[PipeDebug] " .. msg)
-end
 
 -- ===================== exported functions =====================
 
@@ -136,17 +117,6 @@ local function surfaceYFromRayTarget(): number?
 	return nil
 end
 
-local function pumpGhostVisualGroundLiftStuds(tier: string?): number
-	if typeof(tier) ~= "string" then
-		return 0
-	end
-	local pt = (OilConfig.PumpTiers :: { [string]: any })[tier]
-	if pt and typeof(pt.visualGroundOffsetStuds) == "number" then
-		return pt.visualGroundOffsetStuds :: number
-	end
-	return 0
-end
-
 local function distanceXZ(a: Vector3, b: Vector3): number
 	local dx = a.X - b.X
 	local dz = a.Z - b.Z
@@ -183,22 +153,6 @@ local function isPlacementValid(chunkId: string, hitPos: Vector3, equipKind: str
 				return false
 			end
 		end
-	elseif kind == "Pump" then
-		local want = readLocalFtueCellKey(Constants.FtueRestrictPumpCellKeyAttribute)
-		if want and ownedPlot then
-			local ch = chunkStateById[chunkId]
-			local ck = PlotCellTileResolve.globalCellKeyFromChunkHit(
-				ownedPlot,
-				chunkId,
-				hitPos.X,
-				hitPos.Z,
-				ch and ch.row,
-				ch and ch.col
-			)
-			if ck ~= want then
-				return false
-			end
-		end
 	end
 	local config = ClientPlotGrid.getConfig()
 	local drillStateById = ClientPlotGrid.getDrillStateById()
@@ -211,13 +165,12 @@ local function isPlacementValid(chunkId: string, hitPos: Vector3, equipKind: str
 	return true
 end
 
--- Maps equipped tool (kind + tier) → RS.Assets template name to preview
+-- Maps equipped tool (kind + tier) → RS.Assets template name to preview.
+-- Drills-only refactor: only Drill_<tier> templates are valid; everything else
+-- returns nil so the ghost stays hidden.
 local function resolveGhostTemplateName(): string?
 	local kind, tier = ClientPlotGrid.getEquippedToolInfo()
 	if kind == "Drill" and tier then return "Drill_" .. tier end
-	if kind == "Pump" and tier then return "Pump_" .. tier end
-	if kind == "Prospector" then return "Prospector" end
-	-- Legacy fallback
 	if ClientPlotGrid.getEquippedToolName() == TOOL_DRILL then return "Drill_T1" end
 	return nil
 end
@@ -270,7 +223,7 @@ end
 local function updateGhost()
 	local kind = select(1, ClientPlotGrid.getEquippedToolInfo())
 	local equipped = ClientPlotGrid.getEquippedToolName()
-	if kind ~= "Drill" and kind ~= "Pump" and kind ~= "Prospector" and equipped ~= TOOL_DRILL then
+	if kind ~= "Drill" and equipped ~= TOOL_DRILL then
 		hideGhost()
 		return
 	end
@@ -280,7 +233,6 @@ local function updateGhost()
 		return
 	end
 	local equipKind = select(1, ClientPlotGrid.getEquippedToolInfo())
-	local equipTier = select(2, ClientPlotGrid.getEquippedToolInfo())
 	if equipKind == nil and equipped == TOOL_DRILL then
 		equipKind = "Drill"
 	end
@@ -295,8 +247,7 @@ local function updateGhost()
 	if g:IsA("Model") then
 		pivotToBottom = PlacementAnchor.pivotYMinusBottomWorldY(g)
 	end
-	local catalogLift = (equipKind == "Pump") and pumpGhostVisualGroundLiftStuds(equipTier) or 0
-	g:PivotTo(CFrame.new(hitPos.X, surfaceY + pivotToBottom + catalogLift, hitPos.Z))
+	g:PivotTo(CFrame.new(hitPos.X, surfaceY + pivotToBottom, hitPos.Z))
 	if ghostHighlight then
 		if isPlacementValid(chunkId, hitPos, equipKind) then
 			ghostHighlight.FillColor = Color3.fromRGB(80, 220, 120)
@@ -306,105 +257,6 @@ local function updateGhost()
 			ghostHighlight.OutlineColor = Color3.fromRGB(255, 180, 180)
 		end
 	end
-end
-
--- =================== CELL-GRID PIPE PLACEMENT ===================
-
-local function getPipeHit(): (Vector3?, string?)
-	local _chunkInst, hitPos, chunkId = getTargetedChunkHit()
-	if not hitPos or not chunkId then
-		pipeDebugLog("no valid chunk hit")
-		return nil, nil
-	end
-	if not isChunkUnlocked(chunkId) then
-		pipeDebugLog("chunk locked: " .. tostring(chunkId))
-		return nil, nil
-	end
-	return hitPos, chunkId
-end
-
-local function ensurePipeGhost(): Model
-	if pipeGhost and pipeGhost.Parent then
-		return pipeGhost
-	end
-	local m = Instance.new("Model")
-	m.Name = "PipePreview"
-	local p = Instance.new("Part")
-	p.Name = "Body"
-	p.Shape = Enum.PartType.Ball
-	p.Size = Vector3.new(6, 1.5, 6)
-	p.Material = Enum.Material.Neon
-	p.Color = Color3.fromRGB(80, 220, 120)
-	p.Transparency = 0.45
-	p.Anchored = true
-	p.CanCollide = false
-	p.CanQuery = false
-	p.CanTouch = false
-	p.Parent = m
-	m.PrimaryPart = p
-	m.Parent = _Workspace
-	pipeGhost = m
-	return m
-end
-
-local function hidePipeGhost()
-	if pipeGhost then
-		pipeGhost:Destroy()
-		pipeGhost = nil
-	end
-end
-
-local function pipeHitValid(chunkId: string?): (boolean, string?)
-	if not chunkId or chunkId == "" then
-		return false, "No chunk"
-	end
-	local section = ClientPlotGrid.getChunkStateById()[chunkId]
-	if not section or section.unlocked ~= true then
-		return false, "Locked section"
-	end
-	return true, nil
-end
-
-local function updatePipeGhost()
-	local equipped = ClientPlotGrid.getEquippedToolName()
-	if equipped ~= TOOL_PIPE then
-		hidePipeGhost()
-		return
-	end
-	local worldPos, chunkId = getPipeHit()
-	if not worldPos then
-		pipeDebugLog("ghost hidden: no valid pipe cell")
-		hidePipeGhost()
-		return
-	end
-	local valid = pipeHitValid(chunkId)
-	local g = ensurePipeGhost()
-	local body = g:FindFirstChild("Body")
-	if body and body:IsA("BasePart") then
-		local y = (chunkId and (surfaceYFromRayTarget() or getChunkSurfaceY(chunkId) or worldPos.Y)) or worldPos.Y
-		body.Position = Vector3.new(worldPos.X, y + 0.75, worldPos.Z)
-		body.Color = valid and Color3.fromRGB(80, 220, 120) or Color3.fromRGB(220, 70, 70)
-	end
-end
-
-local function tryPipeAction()
-	if ClientPlotGrid.getEquippedToolName() ~= TOOL_PIPE then
-		return
-	end
-	local worldPos, chunkId = getPipeHit()
-	if not worldPos then
-		pipeDebugLog("place failed: no valid owned tile under cursor")
-		ClientPlotGrid.setStatus("Click on an owned chunk.", false)
-		return
-	end
-	local valid, reason = pipeHitValid(chunkId)
-	if not valid then
-		pipeDebugLog(string.format("place blocked chunk=%s reason=%s", tostring(chunkId), tostring(reason)))
-		ClientPlotGrid.setStatus(reason or "Cannot place pipe here.", false)
-		return
-	end
-	requestPlacePipe:FireServer({ x = worldPos.X, z = worldPos.Z, chunkId = chunkId })
-	pipeDebugLog(string.format("place request chunk=%s x=%.2f z=%.2f", tostring(chunkId), worldPos.X, worldPos.Z))
 end
 
 -- =================== FOCUS BILLBOARD ===================
@@ -463,7 +315,6 @@ local function updateFocusUi()
 	end
 	focusBillboard.Adornee = adornee
 	if chunk.unlocked and chunk.revealed then
-		-- Show biome + tile name. Oil status line only appears once the chunk has been prospected.
 		focusLabel.RichText = true
 		local tileInfoText = ""
 		if chunk.tiles and mouse.Target and mouse.Target:IsA("BasePart") then
@@ -472,12 +323,10 @@ local function updateFocusUi()
 			if tileData then
 				local tileName = tileData.tileName or "?"
 				tileInfoText = string.format(" | %s", tileName)
-				if chunk.prospected then
-					if tileData.hasOil == false then
-						tileInfoText = tileInfoText .. " <font color='rgb(240,70,70)'>— NO OIL</font>"
-					else
-						tileInfoText = tileInfoText .. " <font color='rgb(80,230,120)'>— HAS OIL</font>"
-					end
+				if tileData.revealed and tileData.hasOil == false then
+					tileInfoText = tileInfoText .. " <font color='rgb(240,70,70)'>— NO OIL</font>"
+				elseif tileData.revealed and tileData.hasOil == true then
+					tileInfoText = tileInfoText .. " <font color='rgb(80,230,120)'>— HAS OIL</font>"
 				end
 			end
 		end
@@ -540,7 +389,6 @@ local function updateHammerHover()
 		hideHammerHover()
 		return
 	end
-	-- Find a BasePart on the target to adorn
 	local adorn: BasePart? = nil
 	local ancestor = mouse.Target
 	while ancestor and ancestor.Parent do
@@ -558,14 +406,13 @@ end
 -- ===================== init =====================
 
 function M.init(params: InitParams)
-	player = params.player
+	_player = params.player
 	playerGui = params.playerGui
 	mouse = params.mouse
 	_Workspace = params.Workspace
 	_ReplicatedStorage = params.ReplicatedStorage
-	OilConfig = params.OilConfig
+	_OilConfig = params.OilConfig
 	Constants = params.Constants
-	requestPlacePipe = params.requestPlacePipe
 	PlacementAnchor = params.PlacementAnchor
 	PlotCellTileResolve = params.PlotCellTileResolve
 	ClientPlotGrid = params.ClientPlotGrid
@@ -579,18 +426,12 @@ M.getTargetedChunkHit = getTargetedChunkHit
 M.isChunkUnlocked = isChunkUnlocked
 M.getChunkSurfaceY = getChunkSurfaceY
 M.surfaceYFromRayTarget = surfaceYFromRayTarget
-M.pumpGhostVisualGroundLiftStuds = pumpGhostVisualGroundLiftStuds
 M.distanceXZ = distanceXZ
 M.isPlacementValid = isPlacementValid
 M.updateGhost = updateGhost
-M.updatePipeGhost = updatePipeGhost
-M.tryPipeAction = tryPipeAction
 M.updateFocusUi = updateFocusUi
 M.updateHammerHover = updateHammerHover
 M.hideGhost = hideGhost
-M.hidePipeGhost = hidePipeGhost
 M.hideHammerHover = hideHammerHover
-M.getPipeHit = getPipeHit
-M.pipeDebugLog = pipeDebugLog
 
 return M

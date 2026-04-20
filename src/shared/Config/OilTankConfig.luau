@@ -21,25 +21,25 @@ local OilTankConfig = {
 	ShellHeightMax = 60,
 
 	TubeToOilType = {
-		Tier1Tube = "HeavyCrude",
-		Tier2Tube = "LightSweet",
-		Tier3Tube = "PremiumRefined",
+		CrudeTube = "Crude",
+		RefinedTube = "Refined",
+		PremiumTube = "Premium",
 	},
 
 	OilTypeToTube = {
-		HeavyCrude = "Tier1Tube",
-		LightSweet = "Tier2Tube",
-		PremiumRefined = "Tier3Tube",
+		Crude = "CrudeTube",
+		Refined = "RefinedTube",
+		Premium = "PremiumTube",
 	},
 
 	OilColors = {
-		HeavyCrude = Color3.fromRGB(30, 30, 30),
-		LightSweet = Color3.fromRGB(240, 200, 70),
-		PremiumRefined = Color3.fromRGB(180, 80, 255),
+		Crude = Color3.fromRGB(30, 30, 30),
+		Refined = Color3.fromRGB(240, 200, 70),
+		Premium = Color3.fromRGB(180, 80, 255),
 	},
 }
 
-local TIER_ORDER = { "HeavyCrude", "LightSweet", "PremiumRefined" }
+local TIER_ORDER = { "Crude", "Refined", "Premium" }
 
 function OilTankConfig.GetTier(tier: number)
 	for _, def in ipairs(OilTankConfig.Tiers) do

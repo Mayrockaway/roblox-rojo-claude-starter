@@ -137,14 +137,9 @@ end
 
 function DrillingService:Start()
 	local startEvent = self._remoteService:GetEvent(RemoteNames.RequestStartDrill)
-	local placePumpEvent = self._remoteService:GetEvent(RemoteNames.RequestPlacePump)
 
 	table.insert(self._connections, startEvent.OnServerEvent:Connect(function(player, payload)
 		self:_handleStartDrill(player, payload)
-	end))
-
-	table.insert(self._connections, placePumpEvent.OnServerEvent:Connect(function(player, payload)
-		self:_handlePlacePump(player, payload)
 	end))
 
 	-- Vein reveal: player pressed E on DrillComplete model
@@ -256,36 +251,6 @@ function DrillingService:_handleStartDrill(player: Player, payload: any)
 	self._oilStateService:PushState(userId)
 
 	self:_scheduleDrillCompletion(userId, data.drillId, duration)
-end
-
-function DrillingService:_handlePlacePump(player: Player, payload: any)
-	local userId = player.UserId
-	local ok, code, message, data = self._oilStateService:TryPlacePump(userId, payload)
-	self._remoteService:GetEvent(RemoteNames.OilActionResult):FireClient(player, {
-		action = "PlacePump", ok = ok, code = code, message = message, data = data,
-	})
-	if ok then
-		local tier = "T1"
-		if typeof(payload) == "table" and typeof(payload.tier) == "string" and payload.tier ~= "" then
-			tier = payload.tier
-		end
-		local consumed, itemId = ConsumeShopEquipmentTool.consumeMatching(player, "Pump", tier)
-		if consumed and itemId then
-			NotifyShopToolConsumedSafe.tryCall(self._oilStateService, userId, itemId, "DrillingService:PlacePump")
-		end
-	end
-	if ok and self._progressEvent then
-		-- Pump model exists after PushState; broadcast before second push so spatial SFX can attach.
-		self._oilStateService:PushState(userId)
-		self._progressEvent:FireAllClients({
-			kind = "pumpPlaced",
-			ownerUserId = userId,
-			pumpId = data.drillId,
-			tileKey = data.tileKey,
-			tier = data.tier,
-		})
-		self._oilStateService:PushState(userId)
-	end
 end
 
 return DrillingService

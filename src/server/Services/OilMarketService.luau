@@ -9,7 +9,7 @@ local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("Qualit
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
 
-local OIL_TYPES = { "HeavyCrude", "LightSweet", "PremiumRefined" }
+local OIL_TYPES = { "Crude", "Refined", "Premium" }
 
 local OilMarketService = {}
 
@@ -224,7 +224,6 @@ function OilMarketService:HandleSellWarehouseBarrels(userId: number, payload: an
 	if not player then return end
 
 	local p = payload :: { [string]: any }
-	local legacyStandard = math.max(0, math.floor(tonumber(p.StandardCrude) or 0))
 
 	local removals: { [string]: number } = {}
 	local totalSell = 0
@@ -232,10 +231,6 @@ function OilMarketService:HandleSellWarehouseBarrels(userId: number, payload: an
 		local n = math.max(0, math.floor(tonumber(p[oilType]) or 0))
 		removals[oilType] = n
 		totalSell += n
-	end
-	if legacyStandard > 0 then
-		removals.HeavyCrude = (removals.HeavyCrude or 0) + legacyStandard
-		totalSell += legacyStandard
 	end
 
 	if totalSell <= 0 then

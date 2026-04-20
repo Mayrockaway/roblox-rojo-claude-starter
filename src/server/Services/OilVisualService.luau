@@ -12,7 +12,7 @@ local OIL_REVEAL_SPRAY_SECONDS = 2.0
 local OIL_TUBE_REVEAL_DURATION = 1.5
 local OIL_TUBE_VISIBLE_TRANSPARENCY = 0.5
 local OIL_TUBE_ENDPOINT_EPSILON = 0.05
-local TIER_ORDER = { "HeavyCrude", "LightSweet", "PremiumRefined" }
+local TIER_ORDER = { "Crude", "Refined", "Premium" }
 local function floorPositive(value: number): number
 	return math.max(0, math.floor(value))
 end
@@ -88,9 +88,9 @@ local function ensureFolder(parent: Instance, name: string): Folder
 end
 local function stripOilVisualSuffix(sig: string): string
 	local coreSig = sig:gsub("_end$", "")
-	coreSig = coreSig:gsub("_HeavyCrude$", "")
-	coreSig = coreSig:gsub("_LightSweet$", "")
-	coreSig = coreSig:gsub("_PremiumRefined$", "")
+	coreSig = coreSig:gsub("_Crude$", "")
+	coreSig = coreSig:gsub("_Refined$", "")
+	coreSig = coreSig:gsub("_Premium$", "")
 	return coreSig
 end
 local function getHighestBasePartTopPosition(instance: Instance?): Vector3?
@@ -154,8 +154,6 @@ type SellPromptSpec = {
 	hammerKind: string,
 	drillId: number?,
 	cellKey: string?,
-	drumId: number?,
-	prospectId: number?,
 	--- FTUE tutorial placements: no sell-back prompt (and server rejects hammer salvage).
 	noSellback: boolean?,
 }
@@ -194,29 +192,12 @@ local function fireOilActionResult(player: Player, ok: boolean, code: string, me
 	end
 end
 local function payloadFromSellSpec(spec: SellPromptSpec): any?
-	if spec.hammerKind == "pump" or spec.hammerKind == "drill" then
+	if spec.hammerKind == "drill" then
 		local id = spec.drillId
 		if typeof(id) ~= "number" then
 			return nil
 		end
-		return { targetKind = spec.hammerKind, targetId = id }
-	elseif spec.hammerKind == "pipe" then
-		if typeof(spec.cellKey) ~= "string" or spec.cellKey == "" then
-			return nil
-		end
-		return { targetKind = "pipe", cellKey = spec.cellKey }
-	elseif spec.hammerKind == "drum" then
-		local id = spec.drumId
-		if typeof(id) ~= "number" then
-			return nil
-		end
-		return { targetKind = "drum", targetId = id }
-	elseif spec.hammerKind == "prospector" then
-		local id = spec.prospectId
-		if typeof(id) ~= "number" then
-			return nil
-		end
-		return { targetKind = "prospector", targetId = id }
+		return { targetKind = "drill", targetId = id }
 	end
 	return nil
 end
@@ -284,19 +265,7 @@ local function basePartForSellPrompt(root: Instance): BasePart?
 end
 local function configureSellBackPrompt(prompt: ProximityPrompt, spec: SellPromptSpec)
 	prompt.ActionText = "Sell back (10%)"
-	local objectText = "Equipment"
-	if spec.hammerKind == "pump" then
-		objectText = "Oil pump"
-	elseif spec.hammerKind == "pipe" then
-		objectText = "Pipe"
-	elseif spec.hammerKind == "drill" then
-		objectText = "Drill"
-	elseif spec.hammerKind == "drum" then
-		objectText = "Drum"
-	elseif spec.hammerKind == "prospector" then
-		objectText = "Prospector"
-	end
-	prompt.ObjectText = objectText
+	prompt.ObjectText = if spec.hammerKind == "drill" then "Drill" else "Equipment"
 	prompt.HoldDuration = 0.45
 	prompt.MaxActivationDistance = 12
 	prompt.RequiresLineOfSight = false
@@ -312,16 +281,6 @@ local function configureSellBackPrompt(prompt: ProximityPrompt, spec: SellPrompt
 		prompt:SetAttribute("CellKey", spec.cellKey)
 	else
 		prompt:SetAttribute("CellKey", nil)
-	end
-	if spec.drumId then
-		prompt:SetAttribute("TargetDrumId", spec.drumId)
-	else
-		prompt:SetAttribute("TargetDrumId", nil)
-	end
-	if spec.prospectId then
-		prompt:SetAttribute("TargetProspectId", spec.prospectId)
-	else
-		prompt:SetAttribute("TargetProspectId", nil)
 	end
 end
 local function removeSellBackPromptFromHost(host: Instance)
@@ -422,11 +381,18 @@ function OilVisualService:_syncUserVisuals(userId: number, snapshot)
 	local visualRoot = self:_ensureVisualRoot(plot)
 	local drillsFolder = ensureFolder(visualRoot, "Drills")
 	local activeDrillsFolder = ensureFolder(visualRoot, "ActiveDrills")
-	local activeProspectorsFolder = ensureFolder(visualRoot, "ActiveProspectors")
 	local spraysFolder = ensureFolder(visualRoot, "OilSprays")
 	local barrelsFolder = ensureFolder(visualRoot, "Barrels")
-	local pipesFolder = ensureFolder(visualRoot, "Pipes")
-	local drumsFolder = ensureFolder(visualRoot, "Drums")
+
+	-- Drills-only refactor: nuke any leftover ActiveProspectors / Pipes / Drums folders so
+	-- existing places shed legacy visuals on next snapshot.
+	for _, leftover in ipairs({ "ActiveProspectors", "Pipes", "Drums" }) do
+		local f = visualRoot:FindFirstChild(leftover)
+		if f then
+			f:Destroy()
+		end
+	end
+
 	local perf = _G.Perf
 	local function run(label, fn)
 		if perf then
@@ -439,10 +405,7 @@ function OilVisualService:_syncUserVisuals(userId: number, snapshot)
 	end
 	run("Visual.syncDrills", function() self:_syncDrills(plot, drillsFolder, snapshot.drills or {}, userId, snapshot) end)
 	run("Visual.syncActiveDrills", function() self:_syncActiveDrills(plot, activeDrillsFolder, snapshot.activeDrills or {}, userId) end)
-	run("Visual.syncActiveProspectors", function() self:_syncActiveProspectors(plot, activeProspectorsFolder, snapshot.activeProspectors or {}, userId) end)
 	run("Visual.syncOilSprays", function() self:_syncOilSprays(plot, spraysFolder, snapshot) end)
-	run("Visual.syncPipes", function() self:_syncPipes(plot, pipesFolder, snapshot.pipes or {}, snapshot.drills or {}, snapshot.drums or {}, userId) end)
-	run("Visual.syncDrums", function() self:_syncDrums(plot, drumsFolder, snapshot.drums or {}, userId) end)
 	run("Visual.syncBarrels", function() self:_syncBarrels(plot, barrelsFolder, snapshot) end)
 	run("Visual.syncOilTanks", function() self:_syncOilTanks(plot, snapshot) end)
 end
@@ -470,57 +433,7 @@ end
 -- (i.e. CompleteDrill cleared it).
 -- In-progress prospector placements. Same pattern as active drills but uses the Prospector
 -- template and tags with prospectId so the client animates it separately.
-function OilVisualService:_syncActiveProspectors(_plot: Model, folder: Folder, activeProspectors, ownerUserId: number)
-	local wanted = {}
-	for _, entry in pairs(activeProspectors) do
-		local pid = entry.prospectId
-		if typeof(pid) ~= "number" or typeof(entry.position) ~= "table" then continue end
-		local name = "ActiveProspector_" .. tostring(pid)
-		wanted[name] = true
-		local model = folder:FindFirstChild(name)
-		local justCreated = false
-		if not model then
-			local template = self._assetsFolder and self._assetsFolder:FindFirstChild(entry.template or "Prospector")
-			if template then
-				model = template:Clone()
-			else
-				model = Instance.new("Model")
-			end
-			model.Name = name
-			model:SetAttribute("StartTime", tonumber(entry.startTime) or 0)
-			model:SetAttribute("EndTime", tonumber(entry.endTime) or 0)
-			model:SetAttribute("Duration", math.max(0.01, (tonumber(entry.endTime) or 0) - (tonumber(entry.startTime) or 0)))
-			model:SetAttribute("ProspectId", pid)
-			model.Parent = folder
-			justCreated = true
-		end
-		if justCreated then
-			local px = tonumber(entry.position.x) or 0
-			local py = tonumber(entry.position.y) or 0
-			local pz = tonumber(entry.position.z) or 0
-			local halfH = 0
-			if model:IsA("Model") then
-				local _, bbSize = model:GetBoundingBox()
-				halfH = bbSize.Y / 2
-			elseif model:IsA("BasePart") then
-				halfH = (model :: BasePart).Size.Y / 2
-			end
-			local cframe = CFrame.new(px, py + halfH, pz)
-			if model:IsA("Model") then
-				model:PivotTo(cframe)
-			elseif model:IsA("BasePart") then
-				model.CFrame = cframe
-			end
-			anchorAllBaseParts(model)
-		end
-		if model then
-			ensureSellBackPromptOnHost(self, model, { ownerUserId = ownerUserId, hammerKind = "prospector", prospectId = pid })
-		end
-	end
-	for _, child in ipairs(folder:GetChildren()) do
-		if not wanted[child.Name] then child:Destroy() end
-	end
-end
+-- (drills-only refactor) Removed: _syncActiveProspectors. Prospecting was deleted.
 local function activeDrillPositionXYZ(entry: any): (number?, number?, number?)
 	if typeof(entry) ~= "table" then
 		return nil, nil, nil
@@ -710,7 +623,7 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 	local function spawnPuddleForTile(sig: string, info: any)
 		local childName = "Puddle_" .. sig
 		local part = folder:FindFirstChild(childName)
-		local oilType = info.tile.oilType or "HeavyCrude"
+		local oilType = info.tile.oilType or "Crude"
 		local color = (OilConfig.OilSprayColors and OilConfig.OilSprayColors[oilType])
 			or Color3.fromRGB(30, 30, 30)
 		if part and not part:IsA("BasePart") then
@@ -762,9 +675,9 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 			return
 		end
 		if info.tile.tileName == "SUPER TILE" then
-			callback("HeavyCrude", Vector3.new(-1.5, 0, -1.5), "Stream")
-			callback("LightSweet", Vector3.new(1.5, 0, -1.5), "Burst")
-			callback("PremiumRefined", Vector3.new(0, 0, 1.8), "Geyser")
+			callback("Crude", Vector3.new(-1.5, 0, -1.5), "Stream")
+			callback("Refined", Vector3.new(1.5, 0, -1.5), "Burst")
+			callback("Premium", Vector3.new(0, 0, 1.8), "Geyser")
 			return
 		end
 		callback(nil, nil, nil)
@@ -779,7 +692,7 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 			part = nil
 		end
 		if not part then
-			local oilType = oilTypeOverride or info.tile.oilType or "HeavyCrude"
+			local oilType = oilTypeOverride or info.tile.oilType or "Crude"
 			local templateName = "OilSpray_" .. tostring(oilType)
 			local template = self._assetsFolder and self._assetsFolder:FindFirstChild(templateName)
 			if template and template:IsA("BasePart") then
@@ -835,12 +748,12 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 		local tileTopY = tilePart.Position.Y + tilePart.Size.Y / 2
 		local startPos = Vector3.new(tilePart.Position.X, tileTopY, tilePart.Position.Z) + baseOffset
 		local endPos = getCenterPumpEndpoint(_plot, sectionModel, centerTile, snapshot.drills or {}, info.chunk.chunkId)
-		local oilType = oilTypeOverride or info.tile.oilType or "HeavyCrude"
+		local oilType = oilTypeOverride or info.tile.oilType or "Crude"
 		local tubeColor = Color3.fromRGB(60, 50, 35)
 		local isRainbow = false
-		if oilType == "LightSweet" or oilType == "GoodOil" then
+		if oilType == "Refined" or oilType == "GoodOil" then
 			tubeColor = Color3.fromRGB(255, 200, 50)
-		elseif oilType == "PremiumRefined" or oilType == "GoldOil" then
+		elseif oilType == "Premium" or oilType == "GoldOil" then
 			isRainbow = true
 			tubeColor = Color3.fromRGB(255, 100, 100)
 		end
@@ -1082,14 +995,14 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 			-- Glass fill: when connected, slowly fill with oil; when not connected, empty glass.
 			-- Tag fill parts on first encounter so we can find them again after transparency changes.
 			local isConnected = drill.connected == true
-			local oilType = drill.tileOilType or "HeavyCrude"
+			local oilType = drill.tileOilType or "Crude"
 			if justCreated or isConnected then
 				print("[PumpFill] drillId=" .. tostring(drill.drillId) .. " tileOilType=" .. tostring(drill.tileOilType) .. " resolved=" .. oilType .. " connected=" .. tostring(isConnected))
 			end
 			local fillColor
-			if oilType == "LightSweet" then
+			if oilType == "Refined" then
 				fillColor = Color3.fromRGB(240, 200, 70)
-			elseif oilType == "PremiumRefined" then
+			elseif oilType == "Premium" then
 				fillColor = Color3.fromRGB(180, 80, 255)
 			else
 				fillColor = Color3.fromRGB(30, 30, 30)
@@ -1259,343 +1172,6 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 	end
 	for _, child in ipairs(drillsFolder:GetChildren()) do
 		local key = string.gsub(child.Name, "^Drill_", "")
-		if not wanted[key] then
-			child:Destroy()
-		end
-	end
-end
-function OilVisualService:_syncPipes(_plot: Model, pipesFolder: Folder, pipes, drills, drums, ownerUserId: number)
-	-- Build a typed occupancy map: cellKey -> "pipe" | "drill" | "drum"
-	-- Drills and drums should make pipe arms extend further so they visually meet the body.
-	local occupancy = {}
-	for _, pipe in ipairs(pipes) do
-		if pipe.cellKey then occupancy[pipe.cellKey] = "pipe" end
-	end
-	for _, drill in ipairs(drills or {}) do
-		if drill.cellKey then occupancy[drill.cellKey] = "drill" end
-	end
-	for _, drum in ipairs(drums or {}) do
-		if drum.cellKey then occupancy[drum.cellKey] = "drum" end
-	end
-	local function neighborKey(row, col, dRow, dCol)
-		return string.format("R%dC%d", row + dRow, col + dCol)
-	end
-	local subTilesPerSide = math.max(1, math.floor((tonumber(((OilConfig.Chunks or {}).Size)) or 40) / 8))
-	local function rowColToChunkId(row: number, col: number): string
-		local chunkRow = math.floor((row - 1) / subTilesPerSide) + 1
-		local chunkCol = math.floor((col - 1) / subTilesPerSide) + 1
-		return string.format("S%02d_%02d", chunkRow, chunkCol)
-	end
-	local function rowColToTileKey(row: number, col: number): string
-		local tileRow = ((row - 1) % subTilesPerSide) + 1
-		local tileCol = ((col - 1) % subTilesPerSide) + 1
-		return string.format("T%d%d", tileRow, tileCol)
-	end
-	local wanted = {}
-	for _, pipe in ipairs(pipes) do
-		if pipe.cellKey and pipe.row and pipe.col then
-			local key = pipe.cellKey
-			wanted[key] = true
-			local pipeName = "Pipe_" .. key
-			local model = pipesFolder:FindFirstChild(pipeName)
-			-- Compute neighbor type (nil | "pipe" | "drill" | "drum")
-			local nType = occupancy[neighborKey(pipe.row, pipe.col, -1, 0)]
-			local sType = occupancy[neighborKey(pipe.row, pipe.col,  1, 0)]
-			local eType = occupancy[neighborKey(pipe.row, pipe.col,  0, 1)]
-			local wType = occupancy[neighborKey(pipe.row, pipe.col,  0,-1)]
-			local hasN, hasS, hasE, hasW = nType ~= nil, sType ~= nil, eType ~= nil, wType ~= nil
-			if not model then
-				model = Instance.new("Model")
-				model.Name = pipeName
-				-- Thin tile-wide metallic base plate (flat color, no texture)
-				local body = Instance.new("Part")
-				body.Name = "Body"
-				body.Shape = Enum.PartType.Block
-				body.Size = Vector3.new(7.6, 0.3, 7.6)
-				body.Material = Enum.Material.SmoothPlastic
-				body.Color = Color3.fromRGB(90, 95, 105)
-				body.Anchored = true
-				body.CanCollide = false
-				body.CanQuery = true
-				body.Reflectance = 0.15
-				body:SetAttribute("PipeTile", true)
-				body.Parent = model
-				-- Central hub: smooth block (not a ball) for clean intersections
-				local hub = Instance.new("Part")
-				hub.Name = "Hub"
-				hub.Shape = Enum.PartType.Block
-				hub.Size = Vector3.new(1.4, 1.4, 1.4)
-				hub.Material = Enum.Material.Metal
-				hub.Color = Color3.fromRGB(120, 120, 130)
-				hub.Anchored = true
-				hub.CanCollide = false
-				hub.CanQuery = true
-				hub.Reflectance = 0.1
-				hub.Parent = model
-				-- 4 directional arm cylinders (N, E, S, W)
-				local function makeArm(armName)
-					local arm = Instance.new("Part")
-					arm.Name = armName
-					arm.Shape = Enum.PartType.Cylinder
-					arm.Size = Vector3.new(4, 1.4, 1.4)
-					arm.Material = Enum.Material.Metal
-					arm.Color = Color3.fromRGB(120, 120, 130)
-					arm.Anchored = true
-					arm.CanCollide = false
-					arm.CanQuery = true
-					arm.Reflectance = 0.1
-					arm.Parent = model
-					return arm
-				end
-				makeArm("ArmN")
-				makeArm("ArmS")
-				makeArm("ArmE")
-				makeArm("ArmW")
-				model.PrimaryPart = hub
-				model.Parent = pipesFolder
-			end
-			local px = tonumber(pipe.position.x) or 0
-			local py = tonumber(pipe.position.y) or 6
-			local pz = tonumber(pipe.position.z) or 0
-			local snappedToTile = false
-			if typeof(pipe.row) == "number" and typeof(pipe.col) == "number" then
-				local chunkId = if typeof(pipe.sectionId) == "string" and #pipe.sectionId > 0
-					then pipe.sectionId
-					else rowColToChunkId(pipe.row, pipe.col)
-				local tileKey = rowColToTileKey(pipe.row, pipe.col)
-				local sectionModel = self._plotService:GetChunkModel(_plot, chunkId)
-				if sectionModel then
-					local tilePart = self._plotService:FindChunkTileBasePart(sectionModel, tileKey)
-					if tilePart then
-						px = tilePart.Position.X
-						pz = tilePart.Position.Z
-						py = tilePart.Position.Y + tilePart.Size.Y / 2
-						snappedToTile = true
-					end
-				end
-			end
-			-- Fallback: nearest tile search for old/bad records with missing cell metadata.
-			if not snappedToTile then
-				local ground = _plot:FindFirstChild("PlotGround")
-				if ground then
-					local nearestTile, nearestDist = nil, math.huge
-					for _, t in ipairs(ground:GetDescendants()) do
-						if t:IsA("BasePart") and t.Name:match("^T%d%d$") then
-							local dx = t.Position.X - px
-							local dz = t.Position.Z - pz
-							local d2 = dx*dx + dz*dz
-							if d2 < nearestDist then
-								nearestDist = d2
-								nearestTile = t
-							end
-						end
-					end
-					if nearestTile then
-						px = nearestTile.Position.X
-						pz = nearestTile.Position.Z
-						py = nearestTile.Position.Y + nearestTile.Size.Y / 2
-					end
-				end
-			end
-			-- Position the base plate flush with the tile top: plate center = py + (plate.Size.Y / 2)
-			local body = model:FindFirstChild("Body")
-			if body and body:IsA("BasePart") then
-				body.Position = Vector3.new(px, py + body.Size.Y / 2, pz)
-			end
-			-- Position the hub just above the plate
-			local hub = model:FindFirstChild("Hub")
-			if hub and hub:IsA("BasePart") then
-				hub.Position = Vector3.new(px, py + body.Size.Y + hub.Size.Y / 2, pz)
-			end
-			-- Position arms relative to hub center; cylinder axis is local X = stud-length axis
-			local armN = model:FindFirstChild("ArmN")
-			local armS = model:FindFirstChild("ArmS")
-			local armE = model:FindFirstChild("ArmE")
-			local armW = model:FindFirstChild("ArmW")
-			local function armLengthFor(neighborType)
-				if neighborType == "drill" or neighborType == "drum" then
-					return 8
-				end
-				return 4
-			end
-			local armY = py + 0.7 -- level with hub center
-			local function setArm(arm, neighborType, dirVec)
-				if not (arm and arm:IsA("BasePart")) then return end
-				if not neighborType then
-					arm.Transparency = 1
-					arm.CanQuery = false
-					return
-				end
-				arm.Transparency = 0
-				arm.CanQuery = true
-				local len = armLengthFor(neighborType)
-				arm.Size = Vector3.new(len, 1.2, 1.2)
-				local hubCenter = Vector3.new(px, armY, pz)
-				local center = hubCenter + dirVec * (len / 2)
-				if dirVec.X ~= 0 then
-					arm.CFrame = CFrame.new(center)
-				else
-					arm.CFrame = CFrame.new(center) * CFrame.Angles(0, math.rad(90), 0)
-				end
-			end
-			setArm(armN, nType, Vector3.new(0, 0, -1))
-			setArm(armS, sType, Vector3.new(0, 0,  1))
-			setArm(armE, eType, Vector3.new(1, 0,  0))
-			setArm(armW, wType, Vector3.new(-1, 0, 0))
-			if pipe.isCorePipe == true then
-				local prompt = model:FindFirstChild(SELL_BACK_PROMPT, true)
-				if prompt and prompt:IsA("ProximityPrompt") then
-					disconnectSellBackPrompt(prompt)
-					prompt:Destroy()
-				end
-			else
-				ensureSellBackPromptOnHost(self, model, {
-					ownerUserId = ownerUserId,
-					hammerKind = "pipe",
-					cellKey = pipe.cellKey,
-					noSellback = pipe.ftueFreeNoSellback == true,
-				})
-			end
-		end
-	end
-	for _, child in ipairs(pipesFolder:GetChildren()) do
-		local key = string.gsub(child.Name, "^Pipe_", "")
-		if not wanted[key] then
-			child:Destroy()
-		end
-	end
-	-- Oil swell animation: pipe-colored balls slide through visible arms when oil is flowing.
-	local anyProducing = false
-	for _, drill in ipairs(drills or {}) do
-		if drill.connected then
-			anyProducing = true
-			break
-		end
-	end
-	for _, child in ipairs(pipesFolder:GetChildren()) do
-		-- For each visible arm, place a moving ball that slides along the arm
-		for _, armName in ipairs({"ArmN", "ArmS", "ArmE", "ArmW"}) do
-			local arm = child:FindFirstChild(armName)
-			if arm and arm:IsA("BasePart") and arm.Transparency < 0.5 then
-				local pulseName = "Pulse_" .. armName
-				local pulse = child:FindFirstChild(pulseName)
-				if not pulse then
-					pulse = Instance.new("Part")
-					pulse.Name = pulseName
-					pulse.Shape = Enum.PartType.Ball
-					pulse.Size = Vector3.new(1.6, 1.6, 1.6)
-					pulse.Material = Enum.Material.Metal
-					pulse.Color = Color3.fromRGB(130, 130, 140) -- slightly lighter than pipe
-					pulse.Reflectance = 0.15
-					pulse.Anchored = true
-					pulse.CanCollide = false
-					pulse.CanQuery = false
-					pulse.CanTouch = false
-					pulse.Parent = child
-				end
-				if anyProducing then
-					pulse.Transparency = 0
-					-- Slide the ball along the arm's length. Each arm's CFrame defines its center.
-					-- The ball oscillates from one end to the other based on time.
-					local armLen = arm.Size.X  -- cylinder length axis
-					local speed = 3
-					local t = (tick() * speed + arm.Position.Magnitude * 0.3) % 2
-					local travel = t < 1 and t or (2 - t) -- 0â†’1â†’0 bounce
-					local offset = (travel - 0.5) * armLen * 0.8 -- Â±40% of arm length from center
-					-- Compute world offset along the arm's direction
-					-- Arm CFrame's LookVector points along the arm (cylinder axis = local X after rotation)
-					local armDir = arm.CFrame.RightVector -- cylinder local X = RightVector after CFrame construction
-					pulse.Position = arm.Position + armDir * offset
-				else
-					pulse.Transparency = 1
-				end
-			else
-				-- Arm is hidden, hide its pulse too
-				local pulseName = "Pulse_" .. armName
-				local pulse = child:FindFirstChild(pulseName)
-				if pulse then
-					pulse.Transparency = 1
-				end
-			end
-		end
-	end
-end
-function OilVisualService:_syncDrums(_plot: Model, drumsFolder: Folder, drums, ownerUserId: number)
-	-- Plot art already contains the authored lab machine; avoid spawning duplicate drum rigs on top.
-	if _plot:FindFirstChild("Lab Machine") then
-		for _, child in ipairs(drumsFolder:GetChildren()) do
-			child:Destroy()
-		end
-		return
-	end
-	local wanted = {}
-	local drumTemplate = self._assetsFolder and self._assetsFolder:FindFirstChild("Drum")
-	local subTilesPerSide = math.max(1, math.floor((tonumber(((OilConfig.Chunks or {}).Size)) or 40) / 8))
-	local function rowColToChunkId(row: number, col: number): string
-		local chunkRow = math.floor((row - 1) / subTilesPerSide) + 1
-		local chunkCol = math.floor((col - 1) / subTilesPerSide) + 1
-		return string.format("S%02d_%02d", chunkRow, chunkCol)
-	end
-	local function rowColToTileKey(row: number, col: number): string
-		local tileRow = ((row - 1) % subTilesPerSide) + 1
-		local tileCol = ((col - 1) % subTilesPerSide) + 1
-		return string.format("T%d%d", tileRow, tileCol)
-	end
-	for _, drum in ipairs(drums) do
-		local drumId = drum.drumId
-		if typeof(drumId) == "number" and typeof(drum.position) == "table" then
-			local key = tostring(drumId)
-			wanted[key] = true
-			local drumName = "Drum_" .. key
-			local model = drumsFolder:FindFirstChild(drumName)
-			if not model then
-				if drumTemplate then
-					model = drumTemplate:Clone()
-				else
-					model = Instance.new("Model")
-					local p = Instance.new("Part")
-					p.Name = "DrumBody"
-					p.Size = Vector3.new(6, 8, 6)
-					p.Material = Enum.Material.Metal
-					p.Color = Color3.fromRGB(60, 60, 70)
-					p.Parent = model
-					model.PrimaryPart = p
-				end
-				model.Name = drumName
-				model.Parent = drumsFolder
-			end
-			local px = tonumber(drum.position.x) or 0
-			local py = tonumber(drum.position.y) or 0
-			local pz = tonumber(drum.position.z) or 0
-			local targetRotation: CFrame? = nil
-			if typeof(drum.row) == "number" and typeof(drum.col) == "number" then
-				local chunkId = rowColToChunkId(drum.row, drum.col)
-				local tileKey = rowColToTileKey(drum.row, drum.col)
-				local sectionModel = self._plotService:GetChunkModel(_plot, chunkId)
-				if sectionModel then
-					local tilePart = self._plotService:FindChunkTileBasePart(sectionModel, tileKey)
-					if tilePart then
-						px = tilePart.Position.X
-						pz = tilePart.Position.Z
-						targetRotation = tilePart.CFrame - tilePart.Position
-					end
-				end
-			end
-			local targetCf = CFrame.new(px, py, pz)
-			if targetRotation then
-				targetCf = targetCf * targetRotation
-			end
-			if model:IsA("Model") then
-				model:PivotTo(targetCf)
-			elseif model:IsA("BasePart") then
-				model.CFrame = targetCf
-			end
-			anchorAllBaseParts(model)
-			ensureSellBackPromptOnHost(self, model, { ownerUserId = ownerUserId, hammerKind = "drum", drumId = drumId })
-		end
-	end
-	for _, child in ipairs(drumsFolder:GetChildren()) do
-		local key = string.gsub(child.Name, "^Drum_", "")
 		if not wanted[key] then
 			child:Destroy()
 		end
@@ -1812,9 +1388,9 @@ function OilVisualService:_createBarrelForTier(tier: string, templateName: strin
 	end
 	-- Fallback: colored cylinder
 	local colors = {
-		HeavyCrude = Color3.fromRGB(30, 25, 20),
-		LightSweet = Color3.fromRGB(220, 180, 60),
-		PremiumRefined = Color3.fromRGB(200, 200, 210),
+		Crude = Color3.fromRGB(30, 25, 20),
+		Refined = Color3.fromRGB(220, 180, 60),
+		Premium = Color3.fromRGB(200, 200, 210),
 	}
 	local part = Instance.new("Part")
 	part.Name = "Barrel_" .. tier

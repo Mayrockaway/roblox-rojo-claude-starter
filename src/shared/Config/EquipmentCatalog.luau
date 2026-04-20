@@ -1,10 +1,12 @@
 --!strict
--- Single source of truth for sellable + placable equipment: identity, costs, and gameplay knobs.
--- `OilConfig` drill/pump/prospect/pipe tables are derived here so shop + placement never drift.
+-- Single source of truth for sellable equipment: identity, costs, and gameplay knobs.
+-- `OilConfig.DrillTiers` is derived from here so the shop and `OilStateService:TryStartDrill`
+-- never drift. Pumps are now plot-static (one auto-placed `isCenterPump = true` per unlocked
+-- chunk) and upgraded via prox prompt (see `VeinConfig.PumpUpgrades`); they are NOT sold here.
+-- Pipes / prospectors / drums have been removed entirely \u2014 drilling auto-reveals the drilled tile.
 --
 -- Fields:
---   `cashCost` — used for gameplay spends (drill start, pump place, pipe place, prospect when > 0).
---   `shopPrice` — if set, the equipment shop charges this instead of `cashCost` (UI + purchase).
+--   `cashCost` \u2014 server-side spend for `TryStartDrill` (drill purchase price = `shopPrice or cashCost`).
 
 export type EquipmentRow = {
 	id: string,
@@ -12,7 +14,7 @@ export type EquipmentRow = {
 	toolKind: string,
 	tierKey: string?,
 	displayName: string,
-	--- Spend for placement / drill / pump / pipe / prospect (server `TrySpendCash`).
+	--- Spend for drill placement (`OilStateService:TryStartDrill`).
 	cashCost: number,
 	--- Optional shop-only price; when nil, shop uses `cashCost`.
 	shopPrice: number?,
@@ -21,25 +23,16 @@ export type EquipmentRow = {
 	--- Drill (`TryStartDrill`): effective seconds = tile.drillSeconds / timeDivisor.
 	drillTimeDivisor: number?,
 	drillFallbackSeconds: number?,
-	--- Pump (`TryPlacePump`): multiplies base flow with biome.
-	pumpFlowMultiplier: number?,
-	--- Pipe segment placement (`TryPlacePipe` uses `OilConfig.Pipes` built from pipe row).
-	pipeMinLength: number?,
-	pipeMaxLength: number?,
-	pipeSnapRadius: number?,
-	--- Prospector (`TryStartProspect`).
-	prospectDurationSeconds: number?,
 	--- Second line on shop cards (e.g. one-use vs persistent).
 	shopSubtitle: string?,
 	--- Display rarity bucket for shop UI (`ShopPanelTemplates.Rarities`).
 	--- Server treats this as cosmetic only; it never gates purchases or affects price.
 	rarity: string?,
-	--- Placed model / ghost: extra world +Y after anchor/bbox alignment (fine trim). Prefer naming
-	--- a `BasePart` `Bottom` or `bottom` on the asset; see `Shared.Utils.PlacementAnchor`.
-	visualGroundOffsetStuds: number?,
 }
 
---- Edit this list only. Keep `tierKey` as "T1"|"T2"|"T3" for drills and pumps.
+--- Edit this list only. Keep `tierKey` as "T1"|"T2"|"T3" for active drills; T4-T6 are
+--- "Coming soon" placeholder tiles in the shop with `tierKey = nil` so they can't
+--- be placed/used until real Tool templates and gameplay tuning ship.
 local ITEMS: { EquipmentRow } = {
 	{
 		id = "drill_t1",
@@ -53,11 +46,6 @@ local ITEMS: { EquipmentRow } = {
 		sortOrder = 2,
 		drillTimeDivisor = 1,
 		drillFallbackSeconds = 10,
-		pumpFlowMultiplier = nil,
-		pipeMinLength = nil,
-		pipeMaxLength = nil,
-		pipeSnapRadius = nil,
-		prospectDurationSeconds = nil,
 		shopSubtitle = "One-use reveal",
 		rarity = "COMMON",
 	},
@@ -73,11 +61,6 @@ local ITEMS: { EquipmentRow } = {
 		sortOrder = 3,
 		drillTimeDivisor = 10,
 		drillFallbackSeconds = 10,
-		pumpFlowMultiplier = nil,
-		pipeMinLength = nil,
-		pipeMaxLength = nil,
-		pipeSnapRadius = nil,
-		prospectDurationSeconds = nil,
 		shopSubtitle = "One-use reveal",
 		rarity = "UNCOMMON",
 	},
@@ -93,11 +76,6 @@ local ITEMS: { EquipmentRow } = {
 		sortOrder = 4,
 		drillTimeDivisor = 30,
 		drillFallbackSeconds = 10,
-		pumpFlowMultiplier = nil,
-		pipeMinLength = nil,
-		pipeMaxLength = nil,
-		pipeSnapRadius = nil,
-		prospectDurationSeconds = nil,
 		shopSubtitle = "One-use reveal",
 		rarity = "RARE",
 	},
@@ -119,11 +97,6 @@ local ITEMS: { EquipmentRow } = {
 		sortOrder = 4.1,
 		drillTimeDivisor = nil,
 		drillFallbackSeconds = nil,
-		pumpFlowMultiplier = nil,
-		pipeMinLength = nil,
-		pipeMaxLength = nil,
-		pipeSnapRadius = nil,
-		prospectDurationSeconds = nil,
 		shopSubtitle = "Coming soon",
 		rarity = "EPIC",
 	},
@@ -139,11 +112,6 @@ local ITEMS: { EquipmentRow } = {
 		sortOrder = 4.2,
 		drillTimeDivisor = nil,
 		drillFallbackSeconds = nil,
-		pumpFlowMultiplier = nil,
-		pipeMinLength = nil,
-		pipeMaxLength = nil,
-		pipeSnapRadius = nil,
-		prospectDurationSeconds = nil,
 		shopSubtitle = "Coming soon",
 		rarity = "LEGENDARY",
 	},
@@ -159,108 +127,8 @@ local ITEMS: { EquipmentRow } = {
 		sortOrder = 4.3,
 		drillTimeDivisor = nil,
 		drillFallbackSeconds = nil,
-		pumpFlowMultiplier = nil,
-		pipeMinLength = nil,
-		pipeMaxLength = nil,
-		pipeSnapRadius = nil,
-		prospectDurationSeconds = nil,
 		shopSubtitle = "Coming soon",
 		rarity = "MYTHIC",
-	},
-	{
-		id = "pump_t1",
-		toolName = "Pump_T1",
-		toolKind = "Pump",
-		tierKey = "T1",
-		displayName = "Basic Pump",
-		cashCost = 250,
-		shopPrice = nil,
-		purchasable = true,
-		sortOrder = 5,
-		drillTimeDivisor = nil,
-		drillFallbackSeconds = nil,
-		pumpFlowMultiplier = 1.0,
-		pipeMinLength = nil,
-		pipeMaxLength = nil,
-		pipeSnapRadius = nil,
-		prospectDurationSeconds = nil,
-		shopSubtitle = "Persistent",
-	},
-	{
-		id = "pump_t2",
-		toolName = "Pump_T2",
-		toolKind = "Pump",
-		tierKey = "T2",
-		displayName = "Standard Pump",
-		cashCost = 550,
-		shopPrice = nil,
-		purchasable = true,
-		sortOrder = 6,
-		drillTimeDivisor = nil,
-		drillFallbackSeconds = nil,
-		pumpFlowMultiplier = 2.5,
-		pipeMinLength = nil,
-		pipeMaxLength = nil,
-		pipeSnapRadius = nil,
-		prospectDurationSeconds = nil,
-		shopSubtitle = "Persistent",
-	},
-	{
-		id = "pump_t3",
-		toolName = "Pump_T3",
-		toolKind = "Pump",
-		tierKey = "T3",
-		displayName = "Advanced Pump",
-		cashCost = 1200,
-		shopPrice = nil,
-		purchasable = true,
-		sortOrder = 7,
-		drillTimeDivisor = nil,
-		drillFallbackSeconds = nil,
-		pumpFlowMultiplier = 6.0,
-		pipeMinLength = nil,
-		pipeMaxLength = nil,
-		pipeSnapRadius = nil,
-		prospectDurationSeconds = nil,
-		shopSubtitle = "Persistent",
-	},
-	{
-		id = "prospector",
-		toolName = "Prospector",
-		toolKind = "Prospector",
-		tierKey = nil,
-		displayName = "Prospector",
-		cashCost = 0,
-		shopPrice = 500,
-		purchasable = true,
-		sortOrder = 8,
-		drillTimeDivisor = nil,
-		drillFallbackSeconds = nil,
-		pumpFlowMultiplier = nil,
-		pipeMinLength = nil,
-		pipeMaxLength = nil,
-		pipeSnapRadius = nil,
-		prospectDurationSeconds = 5,
-		shopSubtitle = "One-use chunk survey",
-	},
-	{
-		id = "pipe",
-		toolName = "Pipe",
-		toolKind = "Pipe",
-		tierKey = nil,
-		displayName = "Pipe",
-		cashCost = 50,
-		shopPrice = nil,
-		purchasable = true,
-		sortOrder = 9,
-		drillTimeDivisor = nil,
-		drillFallbackSeconds = nil,
-		pumpFlowMultiplier = nil,
-		pipeMinLength = 4,
-		pipeMaxLength = 60,
-		pipeSnapRadius = 3,
-		prospectDurationSeconds = nil,
-		shopSubtitle = "Per segment",
 	},
 }
 
@@ -282,26 +150,19 @@ export type ShopStockBand = { min: number, max: number }
 ---   `stock[id] = max(CoreFloor[id] or 0, rng:NextInteger(band.min, band.max))`
 --- Items NOT in `Bands` are non-rotating / always available (fall through to
 --- current infinite behavior). Core items are guaranteed a minimum every
---- refresh so players never get stranded with no pipes / no T1 drill.
+--- refresh so players never get stranded with no T1 drill.
 local ShopRotation = {
 	RefreshIntervalSeconds = 180, -- 3 min
 	Bands = {
-		pipe       = { min = 8,  max = 20 } :: ShopStockBand,
 		drill_t1   = { min = 2,  max = 4  } :: ShopStockBand,
 		drill_t2   = { min = 0,  max = 2  } :: ShopStockBand,
 		drill_t3   = { min = 0,  max = 1  } :: ShopStockBand,
 		drill_t4   = { min = 0,  max = 1  } :: ShopStockBand,
 		drill_t5   = { min = 0,  max = 1  } :: ShopStockBand,
 		drill_t6   = { min = 0,  max = 1  } :: ShopStockBand,
-		pump_t1    = { min = 1,  max = 3  } :: ShopStockBand,
-		pump_t2    = { min = 0,  max = 2  } :: ShopStockBand,
-		pump_t3    = { min = 0,  max = 1  } :: ShopStockBand,
-		prospector = { min = 0,  max = 1  } :: ShopStockBand,
 	} :: { [string]: ShopStockBand },
 	CoreFloor = {
-		pipe     = 5,
 		drill_t1 = 1,
-		pump_t1  = 1,
 	} :: { [string]: number },
 }
 
@@ -320,7 +181,7 @@ EquipmentCatalog.ShopRotation = ShopRotation
 --- Roll fresh per-refresh stock counts. Items present in `ShopRotation.Bands`
 --- get a uniform int in `[min, max]`, then floored to `CoreFloor` if set.
 --- Items NOT listed (e.g. hypothetical non-rotating extras) are omitted from
---- the result — callers should treat "missing key" as "unlimited / always in stock".
+--- the result \u2014 callers should treat "missing key" as "unlimited / always in stock".
 function EquipmentCatalog.rollShopStock(rng: Random): { [string]: number }
 	local out: { [string]: number } = {}
 	for id, band in pairs(ShopRotation.Bands) do
@@ -391,60 +252,6 @@ function EquipmentCatalog.getDrillTiersMap(): {
 		end
 	end
 	return m
-end
-
---- Shape expected by `OilConfig.PumpTiers` / `OilStateService:TryPlacePump`.
-function EquipmentCatalog.getPumpTiersMap(): {
-	[string]: {
-		cost: number,
-		flowMultiplier: number,
-		templateName: string,
-		displayName: string,
-		visualGroundOffsetStuds: number?,
-	},
-}
-	local m: any = {}
-	for _, r in ipairs(ITEMS) do
-		if r.toolKind == "Pump" and r.tierKey then
-			m[r.tierKey] = {
-				cost = r.cashCost,
-				flowMultiplier = r.pumpFlowMultiplier or 1,
-				templateName = r.toolName,
-				displayName = r.displayName,
-				visualGroundOffsetStuds = r.visualGroundOffsetStuds,
-			}
-		end
-	end
-	return m
-end
-
---- Shape expected by `OilConfig.Prospecting` / `OilStateService:TryStartProspect`.
-function EquipmentCatalog.getProspecting(): { durationSeconds: number, cost: number, templateName: string }
-	for _, r in ipairs(ITEMS) do
-		if r.toolKind == "Prospector" then
-			return {
-				durationSeconds = r.prospectDurationSeconds or 5,
-				cost = r.cashCost,
-				templateName = r.toolName,
-			}
-		end
-	end
-	return { durationSeconds = 5, cost = 0, templateName = "Prospector" }
-end
-
---- Shape expected by `OilConfig.Pipes` / pipe placement in `OilStateService`.
-function EquipmentCatalog.getPipes(): { Cost: number, MinLength: number, MaxLength: number, EndpointSnapRadius: number }
-	for _, r in ipairs(ITEMS) do
-		if r.toolKind == "Pipe" then
-			return {
-				Cost = r.cashCost,
-				MinLength = r.pipeMinLength or 4,
-				MaxLength = r.pipeMaxLength or 60,
-				EndpointSnapRadius = r.pipeSnapRadius or 3,
-			}
-		end
-	end
-	return { Cost = 50, MinLength = 4, MaxLength = 60, EndpointSnapRadius = 3 }
 end
 
 --- Hint for client config (`PlotResourceService`); T1 drill placement economy.

@@ -13,20 +13,20 @@ local InstantSellConfig = {
 	--- Flat $/barrel per tier. NOT scaled by market — price is fixed regardless
 	--- of strait state, by design.
 	PricePerBarrel = {
-		HeavyCrude = 2,
-		LightSweet = 4,
-		PremiumRefined = 8,
+		Crude = 2,
+		Refined = 4,
+		Premium = 8,
 	} :: { [string]: number },
 
 	--- Tier render order in the InstantSell modal (matches ShipOilPanel cargo).
-	TierOrder = { "HeavyCrude", "LightSweet", "PremiumRefined" },
+	TierOrder = { "Crude", "Refined", "Premium" },
 
 	--- Display names (matches `OilmanConfig`/`QualityConfig` strings so labels
 	--- read consistently across panels).
 	TierDisplayName = {
-		HeavyCrude = "Heavy Crude",
-		LightSweet = "Light Sweet",
-		PremiumRefined = "Premium Refined",
+		Crude = "Crude",
+		Refined = "Refined",
+		Premium = "Premium",
 	} :: { [string]: string },
 }
 

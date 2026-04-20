@@ -1,23 +1,23 @@
 --!strict
 
-export type QualityTier = "HeavyCrude" | "LightSweet" | "PremiumRefined"
+export type QualityTier = "Crude" | "Refined" | "Premium"
 
 local Tiers = {
-	HeavyCrude = {
-		displayName = "Heavy Crude",
+	Crude = {
+		displayName = "Crude",
 		--- Compact HUD copy (manifest strip, cargo rows).
 		hudShortName = "Crude",
 		basePricePerBarrel = 16,
 		productionWeight = 80,
 	},
-	LightSweet = {
-		displayName = "Light Sweet",
-		hudShortName = "Light",
+	Refined = {
+		displayName = "Refined",
+		hudShortName = "Refined",
 		basePricePerBarrel = 28,
 		productionWeight = 15,
 	},
-	PremiumRefined = {
-		displayName = "Premium Refined",
+	Premium = {
+		displayName = "Premium",
 		hudShortName = "Premium",
 		basePricePerBarrel = 40,
 		productionWeight = 5,
@@ -32,7 +32,7 @@ local Tiers = {
 }
 
 local QualityConfig = {
-	TierOrder = { "PremiumRefined", "LightSweet", "HeavyCrude" } :: { QualityTier },
+	TierOrder = { "Premium", "Refined", "Crude" } :: { QualityTier },
 	Tiers = Tiers,
 }
 

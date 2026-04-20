@@ -32,7 +32,7 @@ This document describes **fantasy**, **player feel**, and **how each row maps to
 | `skipWaypointPause` | If true: no wait at waypoint (rare); else `pauseSeconds` or **`DefaultWaypointPauseSeconds` (~5s)** |
 | `pauseSeconds` | Override pause when the generic strait waypoint path waits |
 | `totalLoss` | Marks shipment for failure when combined with server branches (e.g. slap, mine hit, missile hit) |
-| `looseBarrelLossFraction` | e.g. `0.25` → **`ceil(onShipBarrels × fraction)`** whole barrels removed (HeavyCrude → LightSweet → PremiumRefined) |
+| `looseBarrelLossFraction` | e.g. `0.25` → **`ceil(onShipBarrels × fraction)`** whole barrels removed (Crude → Refined → Premium) |
 | `missileEvent` / `mineEvent` / `pirateEvent` / `stormEvent` / `tornadoEvent` / `coastGuardEvent` / `usShipSlapEvent` | Select dedicated server + client cinematic pipelines (`MissileStrikeEvent`, `StormEvent`, …) |
 
 *Known gap:* deck **visual** barrel count is set at load; mid-voyage loss updates **manifest / payout** until deck sync exists.

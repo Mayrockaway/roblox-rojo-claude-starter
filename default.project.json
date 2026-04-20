@@ -164,7 +164,7 @@
             }
           }
         },
-        "Pump_T1": {
+        "Drill_T4": {
           "$className": "Tool",
           "$properties": {
             "CanBeDropped": true,
@@ -179,7 +179,7 @@
             }
           }
         },
-        "Pump_T2": {
+        "Drill_T5": {
           "$className": "Tool",
           "$properties": {
             "CanBeDropped": true,
@@ -194,37 +194,7 @@
             }
           }
         },
-        "Pump_T3": {
-          "$className": "Tool",
-          "$properties": {
-            "CanBeDropped": true,
-            "RequiresHandle": true
-          },
-          "Handle": {
-            "$className": "Part",
-            "$properties": {
-              "Size": [0.25, 0.25, 1],
-              "Transparency": 0.4,
-              "Material": "SmoothPlastic"
-            }
-          }
-        },
-        "Prospector": {
-          "$className": "Tool",
-          "$properties": {
-            "CanBeDropped": true,
-            "RequiresHandle": true
-          },
-          "Handle": {
-            "$className": "Part",
-            "$properties": {
-              "Size": [0.25, 0.25, 1],
-              "Transparency": 0.4,
-              "Material": "SmoothPlastic"
-            }
-          }
-        },
-        "Pipe": {
+        "Drill_T6": {
           "$className": "Tool",
           "$properties": {
             "CanBeDropped": true,

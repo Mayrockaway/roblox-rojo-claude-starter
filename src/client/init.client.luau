@@ -121,17 +121,11 @@ local getClientRemotes = require(resolveClientModule(script, "GetClientRemotes")
 local Remotes = getClientRemotes()
 
 local requestOilSnapshot = Remotes.requestOilSnapshot :: RemoteFunction
-local requestPlaceDrill = Remotes.requestPlaceDrill :: RemoteEvent
 local requestStartDrill = Remotes.requestStartDrill :: RemoteEvent
-local requestPlacePump = Remotes.requestPlacePump :: RemoteEvent
 local drillProgressUpdate = Remotes.drillProgressUpdate :: RemoteEvent
-local requestProspect = Remotes.requestProspect :: RemoteEvent
-local prospectProgressUpdate = Remotes.prospectProgressUpdate :: RemoteEvent
 local requestHammerDestroy = Remotes.requestHammerDestroy :: RemoteEvent
 local requestRemoveDrill = Remotes.requestRemoveDrill :: RemoteEvent
 local requestBuyChunk = Remotes.requestBuyChunk :: RemoteEvent
-local requestPlacePipe = Remotes.requestPlacePipe :: RemoteEvent
-local requestRemovePipe = Remotes.requestRemovePipe :: RemoteEvent
 local requestPickupBarrel = Remotes.requestPickupBarrel :: RemoteEvent
 local requestTeleportToShip = Remotes.requestTeleportToShip :: RemoteEvent
 local requestTeleportHome = Remotes.requestTeleportHome :: RemoteEvent
@@ -319,7 +313,6 @@ end
 local requestSellWarehouseType = Remotes.requestSellWarehouseType :: RemoteEvent
 
 local TOOL_DRILL = "Drill"
-local TOOL_PIPE = "Pipe"
 
 -- State variables kept local for backward compatibility; synced to ClientPlotGrid module.
 -- Functions extracted to ClientPlotGrid are aliased below after their old definitions are removed.
@@ -331,10 +324,6 @@ local config = {
 	drillMinSpacing = 6,
 	removeDrillHoldSeconds = 2,
 	removeDrillRangeStuds = 18,
-	pipeCost = 50,
-	pipeMinLength = 4,
-	pipeMaxLength = 60,
-	pipeSnapRadius = 3,
 	chunks = { size = 8, rows = 10, cols = 10, startingCenterSize = 4 },
 	shipSkinCatalog = {},
 }
@@ -343,8 +332,6 @@ local ownedPlot: Model? = nil
 local chunkPartById = {}
 local chunkStateById = {}
 local drillStateById = {}
-local pipeStateByCellKey = {}
-local drumStateByCellKey = {}
 
 local removeHoldStart = 0
 local removeHoldDrillId: number? = nil
@@ -365,11 +352,8 @@ local getEquippedToolInfo = ClientPlotGrid.getEquippedToolInfo
 local getOwnedPlotByAttribute = ClientPlotGrid.getOwnedPlotByAttribute
 local rebuildStateMaps = function()
 	ClientPlotGrid.rebuildStateMaps()
-	-- Sync module state back to local vars
 	chunkStateById = ClientPlotGrid.getChunkStateById()
 	drillStateById = ClientPlotGrid.getDrillStateById()
-	pipeStateByCellKey = ClientPlotGrid.getPipeStateByCellKey()
-	drumStateByCellKey = ClientPlotGrid.getDrumStateByCellKey()
 end
 local disconnectPromptConnections = ClientPlotGrid.disconnectPromptConnections
 local bindPromptsForOwnedPlot = ClientPlotGrid.bindPromptsForOwnedPlot
@@ -385,19 +369,13 @@ local getTargetedChunkHit = PlacementClient.getTargetedChunkHit
 local isChunkUnlocked = PlacementClient.isChunkUnlocked
 local getChunkSurfaceY = PlacementClient.getChunkSurfaceY
 local surfaceYFromRayTarget = PlacementClient.surfaceYFromRayTarget
-local pumpGhostVisualGroundLiftStuds = PlacementClient.pumpGhostVisualGroundLiftStuds
 local distanceXZ = PlacementClient.distanceXZ
 local isPlacementValid = PlacementClient.isPlacementValid
 local updateGhost = PlacementClient.updateGhost
-local updatePipeGhost = PlacementClient.updatePipeGhost
-local tryPipeAction = PlacementClient.tryPipeAction
 local updateFocusUi = PlacementClient.updateFocusUi
 local hideGhost = PlacementClient.hideGhost
-local hidePipeGhost = PlacementClient.hidePipeGhost
 local updateHammerHover = PlacementClient.updateHammerHover
 local hideHammerHover = PlacementClient.hideHammerHover
-local getPipeHit = PlacementClient.getPipeHit
-local pipeDebugLog = PlacementClient.pipeDebugLog
 
 
 local function formatCashWithCommas(amount: number): string
@@ -587,66 +565,29 @@ local function distanceFromCharacter(pos: Vector3): number
 	return (hrp.Position - pos).Magnitude
 end
 
--- Hammer target detection: walks up from whatever the mouse is on to find something placed
+-- Hammer target detection: walks up from whatever the mouse is on to find an
+-- ActiveDrill_* model. Drills-only refactor: pumps / pipes / drums / prospectors
+-- are no longer player-placed, so the only sell-back-with-hammer target is an
+-- in-progress drill rig.
 local function resolveHammerTarget()
 	local t = mouse.Target
 	while t and t.Parent do
 		local n = t.Name
-		if n:match("^Drill_%d+$") then
-			local id = tonumber(n:match("^Drill_(%d+)$"))
-			return { targetKind = "pump", targetId = id }
-		elseif n:match("^Pipe_") then
-			local cellKey = n:match("^Pipe_(.+)$")
-			return { targetKind = "pipe", cellKey = cellKey }
-		elseif n:match("^Drum_%d+$") then
-			local id = tonumber(n:match("^Drum_(%d+)$"))
-			return { targetKind = "drum", targetId = id }
-		elseif n:match("^ActiveDrill_%d+$") then
+		if n:match("^ActiveDrill_%d+$") then
 			local id = tonumber(n:match("^ActiveDrill_(%d+)$"))
 			return { targetKind = "drill", targetId = id }
-		elseif n:match("^ActiveProspector_%d+$") then
-			local id = tonumber(n:match("^ActiveProspector_(%d+)$"))
-			return { targetKind = "prospector", targetId = id }
 		end
 		t = t.Parent
 	end
 	return nil
 end
 
--- Client-side placement cost lookup for refund preview (mirrors OilConfig tier costs)
+-- Client-side placement cost lookup for refund preview (mirrors OilConfig tier costs).
+-- Drills-only refactor: only `targetKind == "drill"` is meaningful.
 local function estimateRefundForTarget(target): (number, Instance?)
 	if not target then return 0, nil end
-	if target.targetKind == "pump" then
-		local drill = drillStateById[target.targetId]
-		if drill then
-			-- Walk the DrillTiers to get the pump tier cost. Use OilConfig from shared.
-			local okCfg, OilConfig = pcall(function()
-				return require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
-			end)
-			if okCfg and OilConfig.PumpTiers and drill.tier and OilConfig.PumpTiers[drill.tier] then
-				local scale = drill.scale or 1
-				local cost = OilConfig.PumpTiers[drill.tier].cost or 0
-				return math.floor(cost * 0.10 * 1), nil -- scale doesn't affect cost
-			end
-		end
-		return 0, nil
-	elseif target.targetKind == "pipe" then
-		local okCfg, OilConfig = pcall(function()
-			return require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
-		end)
-		local cost = (okCfg and OilConfig.Pipes and OilConfig.Pipes.Cost) or 50
-		return math.floor(cost * 0.10), nil
-	elseif target.targetKind == "drum" then
-		local okCfg, OilConfig = pcall(function()
-			return require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
-		end)
-		local cost = (okCfg and OilConfig.Drums and OilConfig.Drums.Cost) or 0
-		return math.floor(cost * 0.10), nil
-	elseif target.targetKind == "drill" then
-		local okCfg, OilConfig = pcall(function()
-			return require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
-		end)
-		if okCfg and OilConfig.DrillTiers then
+	if target.targetKind == "drill" then
+		if OilConfig and OilConfig.DrillTiers then
 			for _, tier in pairs(OilConfig.DrillTiers) do
 				return math.floor((tier.cost or 0) * 0.10), nil
 			end
@@ -656,7 +597,6 @@ local function estimateRefundForTarget(target): (number, Instance?)
 	return 0, nil
 end
 
--- Initialize PlacementClient now that resolveHammerTarget + estimateRefundForTarget are defined
 PlacementClient.init({
 	player = player,
 	playerGui = playerGui,
@@ -665,7 +605,6 @@ PlacementClient.init({
 	ReplicatedStorage = ReplicatedStorage,
 	OilConfig = OilConfig,
 	Constants = Constants,
-	requestPlacePipe = requestPlacePipe,
 	PlacementAnchor = PlacementAnchor,
 	PlotCellTileResolve = PlotCellTileResolve,
 	ClientPlotGrid = ClientPlotGrid,
@@ -690,7 +629,7 @@ local function tryPrimaryAction()
 		return
 	end
 
-	if kind ~= "Drill" and kind ~= "Pump" and kind ~= "Prospector" then return end
+	if kind ~= "Drill" then return end
 
 	local _, hitPos, chunkId = getTargetedChunkHit()
 	if not (hitPos and chunkId) then return end
@@ -706,45 +645,23 @@ local function tryPrimaryAction()
 		z = hitPos.Z,
 		tier = tier or "T1",
 	}
-	if kind == "Drill" then
-		local wantDrill = readLocalFtueCellKey(Constants.FtueRestrictDrillCellKeyAttribute)
-		if wantDrill and ownedPlot then
-			local ch = chunkStateById[chunkId]
-			local ck = PlotCellTileResolve.globalCellKeyFromChunkHit(
-				ownedPlot,
-				chunkId,
-				hitPos.X,
-				hitPos.Z,
-				ch and ch.row,
-				ch and ch.col
-			)
-			if ck ~= wantDrill then
-				setStatus(FtueConfig.ClientHintPlaceDrillOnTile, false)
-				return
-			end
+	local wantDrill = readLocalFtueCellKey(Constants.FtueRestrictDrillCellKeyAttribute)
+	if wantDrill and ownedPlot then
+		local ch = chunkStateById[chunkId]
+		local ck = PlotCellTileResolve.globalCellKeyFromChunkHit(
+			ownedPlot,
+			chunkId,
+			hitPos.X,
+			hitPos.Z,
+			ch and ch.row,
+			ch and ch.col
+		)
+		if ck ~= wantDrill then
+			setStatus(FtueConfig.ClientHintPlaceDrillOnTile, false)
+			return
 		end
-		requestStartDrill:FireServer(payload)
-	elseif kind == "Pump" then
-		local wantPump = readLocalFtueCellKey(Constants.FtueRestrictPumpCellKeyAttribute)
-		if wantPump and ownedPlot then
-			local ch = chunkStateById[chunkId]
-			local ck = PlotCellTileResolve.globalCellKeyFromChunkHit(
-				ownedPlot,
-				chunkId,
-				hitPos.X,
-				hitPos.Z,
-				ch and ch.row,
-				ch and ch.col
-			)
-			if ck ~= wantPump then
-				setStatus(FtueConfig.ClientHintPlacePumpOnTile, false)
-				return
-			end
-		end
-		requestPlacePump:FireServer(payload)
-	elseif kind == "Prospector" then
-		requestProspect:FireServer(payload)
 	end
+	requestStartDrill:FireServer(payload)
 end
 
 local function clearRemoveHold()
@@ -806,12 +723,7 @@ player.CharacterAdded:Connect(function()
 end)
 
 mouse.Button1Down:Connect(function()
-	local equipped = getEquippedToolName()
-	if equipped == TOOL_PIPE then
-		tryPipeAction()
-	else
-		tryPrimaryAction()
-	end
+	tryPrimaryAction()
 end)
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -842,19 +754,6 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		return
 	end
 
-	-- Otherwise try pipe removal by targeted chunk tile
-	local pos, chunkId = getPipeHit()
-	if pos then
-		requestRemovePipe:FireServer({
-			x = pos.X,
-			z = pos.Z,
-			chunkId = chunkId,
-		})
-		setStatus("Removed pipe.", true)
-		pipeDebugLog(string.format("remove request chunk=%s x=%.2f z=%.2f", tostring(chunkId), pos.X, pos.Z))
-		return
-	end
-	pipeDebugLog("remove: no valid owned chunk hit")
 end)
 
 UserInputService.InputEnded:Connect(function(input)
@@ -996,13 +895,12 @@ PirateHireClient.connect({
 -- ShipmentVisualEvent strait FX + HUD status + delivery SFX live in `ShipmentVisualClient`
 -- (wired above with `StraitWaypointWorldFx` + `setStatus` + `playEventSFX`).
 
--- Drill/prospector animation + super tile pulse live in DrillAnimationClient
+-- Drill animation + super tile pulse live in DrillAnimationClient
 DrillAnimationClient.start()
 
 RunService.RenderStepped:Connect(function()
 	updateFocusUi()
 	updateGhost()
-	updatePipeGhost()
 	updateHammerHover()
 
 	if removeHoldDrillId ~= nil and removeHoldStart > 0 then
@@ -1030,7 +928,6 @@ DrillReplicationClient.connect({
 	player = player,
 	playerGui = playerGui,
 	setStatus = setStatus,
-	prospectProgressUpdate = prospectProgressUpdate,
 	drillProgressUpdate = drillProgressUpdate,
 	requestRevealTile = requestRevealTile,
 	VeinCrateOpener = VeinCrateOpener,

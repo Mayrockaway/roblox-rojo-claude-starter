@@ -47,10 +47,6 @@ local config = {
 	drillMinSpacing = 6,
 	removeDrillHoldSeconds = 2,
 	removeDrillRangeStuds = 18,
-	pipeCost = 50,
-	pipeMinLength = 4,
-	pipeMaxLength = 60,
-	pipeSnapRadius = 3,
 	chunks = { size = 8, rows = 10, cols = 10, startingCenterSize = 4 },
 	shipSkinCatalog = {},
 }
@@ -59,8 +55,6 @@ local ownedPlot: Model? = nil
 local chunkPartById = {}
 local chunkStateById = {}
 local drillStateById = {}
-local pipeStateByCellKey = {}
-local drumStateByCellKey = {}
 
 local promptConnections = {}
 local _wiredPromptSet: { [ProximityPrompt]: true } = {}
@@ -208,7 +202,7 @@ local function getEquippedToolName(): string?
 end
 
 -- Returns (kind, tier) for the currently equipped tool based on its attributes.
--- kind ∈ {"Drill", "Pump", "Pipe", nil}
+-- kind ∈ {"Drill", nil} after the drills-only refactor.
 local function getEquippedToolInfo(): (string?, string?)
 	local character = player.Character
 	if not character then return nil, nil end
@@ -246,8 +240,6 @@ end
 local function rebuildStateMaps()
 	chunkStateById = {}
 	drillStateById = {}
-	pipeStateByCellKey = {}
-	drumStateByCellKey = {}
 	if not state then
 		return
 	end
@@ -256,16 +248,6 @@ local function rebuildStateMaps()
 	end
 	for _, drill in ipairs(state.drills or {}) do
 		drillStateById[drill.drillId] = drill
-	end
-	for _, pipe in ipairs(state.pipes or {}) do
-		if pipe.cellKey then
-			pipeStateByCellKey[pipe.cellKey] = pipe
-		end
-	end
-	for _, drum in ipairs(state.drums or {}) do
-		if drum.cellKey then
-			drumStateByCellKey[drum.cellKey] = drum
-		end
 	end
 end
 
@@ -400,14 +382,6 @@ end
 
 function M.getDrillStateById(): { [string]: any }
 	return drillStateById
-end
-
-function M.getPipeStateByCellKey(): { [string]: any }
-	return pipeStateByCellKey
-end
-
-function M.getDrumStateByCellKey(): { [string]: any }
-	return drumStateByCellKey
 end
 
 -- ===================== setters =====================

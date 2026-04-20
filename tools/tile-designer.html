@@ -55,9 +55,9 @@ input[type="color"] { height: 28px; padding: 2px; cursor: pointer; }
 .stats-box { background: #0f3460; border-radius: 6px; padding: 8px; margin-top: 10px; font-size: 11px; }
 .stats-box div { margin: 2px 0; }
 .oil-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
-.oil-dot.HeavyCrude { background: #888; }
-.oil-dot.LightSweet { background: #3498db; }
-.oil-dot.PremiumRefined { background: #f1c40f; }
+.oil-dot.Crude { background: #888; }
+.oil-dot.Refined { background: #3498db; }
+.oil-dot.Premium { background: #f1c40f; }
 .no-edit-msg { text-align: center; color: #556; margin-top: 40px; font-size: 14px; }
 </style>
 </head>
@@ -92,9 +92,9 @@ const USED_MATERIALS = ["Sand","Sandstone","Ground","Pebble","Basalt","Mud","Ice
 // Each tile can have multiple potential oil types (oilTypes). When a chunk is generated,
 // the runtime samples ONE oil type for that specific tile instance based on these weights.
 let tiles = [
-    {id:1, name:"Sand",       oilTypes:[{oil:"HeavyCrude",     weight:100}], color:"#fee0b4", mat:"Sand", drillSeconds:30},
-    {id:2, name:"Sandstone",  oilTypes:[{oil:"LightSweet",     weight:100}], color:"#d9a454", mat:"Sand", drillSeconds:3500},
-    {id:3, name:"SUPER TILE", oilTypes:[{oil:"PremiumRefined", weight:100}], color:"#ffdd00", mat:"Sand", drillSeconds:3500},
+    {id:1, name:"Sand",       oilTypes:[{oil:"Crude",     weight:100}], color:"#fee0b4", mat:"Sand", drillSeconds:30},
+    {id:2, name:"Sandstone",  oilTypes:[{oil:"Refined",     weight:100}], color:"#d9a454", mat:"Sand", drillSeconds:3500},
+    {id:3, name:"SUPER TILE", oilTypes:[{oil:"Premium", weight:100}], color:"#ffdd00", mat:"Sand", drillSeconds:3500},
 ];
 let nextTileId = 4;
 
@@ -192,13 +192,13 @@ function renderEditTilePanel() {
     if (!editingTile) { el.innerHTML = ''; return; }
     const t = tiles.find(x => x.id === editingTile);
     if (!t) { editingTile = null; el.innerHTML = ''; return; }
-    if (!t.oilTypes) t.oilTypes = [{oil:'HeavyCrude', weight:100}];
+    if (!t.oilTypes) t.oilTypes = [{oil:'Crude', weight:100}];
 
     const matOpts = USED_MATERIALS.map(m =>
         `<option value="${m}"${m === t.mat ? ' selected' : ''}>${m}</option>`).join('');
 
     const oilRows = t.oilTypes.map((ot, idx) => {
-        const optHtml = ['HeavyCrude', 'LightSweet', 'PremiumRefined'].map(o =>
+        const optHtml = ['Crude', 'Refined', 'Premium'].map(o =>
             `<option value="${o}"${o === ot.oil ? ' selected' : ''}>${o}</option>`).join('');
         return `<div style="display:flex;gap:4px;align-items:center;margin-top:4px">
             <span class="oil-dot ${ot.oil}"></span>
@@ -242,9 +242,9 @@ function addOilRow(tileId) {
     const t = tiles.find(x => x.id === tileId);
     if (!t) return;
     if (!t.oilTypes) t.oilTypes = [];
-    // Default to an oil type not already present, else fall back to HeavyCrude
+    // Default to an oil type not already present, else fall back to Crude
     const used = new Set(t.oilTypes.map(o => o.oil));
-    const next = ['HeavyCrude', 'LightSweet', 'PremiumRefined'].find(o => !used.has(o)) || 'HeavyCrude';
+    const next = ['Crude', 'Refined', 'Premium'].find(o => !used.has(o)) || 'Crude';
     t.oilTypes.push({oil: next, weight: 50});
     renderAll();
 }
@@ -333,7 +333,7 @@ function addTile() {
     tiles.push({
         id: nextTileId++,
         name: n,
-        oilTypes: [{oil:'HeavyCrude', weight:100}], // edit with ✎ to add more/change
+        oilTypes: [{oil:'Crude', weight:100}], // edit with ✎ to add more/change
         color: document.getElementById('new-tile-color').value,
         mat: document.getElementById('new-tile-mat').value,
         drillSeconds: parseFloat(document.getElementById('new-tile-drill').value) || 6,
@@ -396,7 +396,7 @@ function generateAll() {
             const w = Math.round(cnt / Math.max(tot, 1) * 100);
             const {r, g, b: bl} = hexToRgb(t.color);
             // Emit oilTypes = {{oilType=X, weight=N}, ...}. Runtime samples one at chunk reveal.
-            const oilList = (t.oilTypes || [{oil:'HeavyCrude', weight:100}])
+            const oilList = (t.oilTypes || [{oil:'Crude', weight:100}])
                 .map(o => `{ oilType = "${o.oil}", weight = ${o.weight} }`).join(', ');
             lua += `\t\t\t{ name = "${t.name}", oilTypes = { ${oilList} }, weight = ${w}, drillSeconds = ${t.drillSeconds}, material = Enum.Material.${t.mat}, color = Color3.fromRGB(${r}, ${g}, ${bl}) },\n`;
         }

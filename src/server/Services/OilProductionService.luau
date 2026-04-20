@@ -10,22 +10,21 @@ local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("Vein
 local OilProductionService = {}
 
 local TIERS = {
-	"HeavyCrude",
-	"LightSweet",
-	"PremiumRefined",
+	"Crude",
+	"Refined",
+	"Premium",
 }
 
 local function emptyTierFloats()
 	return {
-		HeavyCrude = 0,
-		LightSweet = 0,
-		PremiumRefined = 0,
+		Crude = 0,
+		Refined = 0,
+		Premium = 0,
 	}
 end
 
-function OilProductionService:Init(oilStateService, pipeNetworkService)
+function OilProductionService:Init(oilStateService)
 	self._oilStateService = oilStateService
-	self._pipeNetworkService = pipeNetworkService
 	self._running = false
 end
 
@@ -90,60 +89,17 @@ function OilProductionService:_runTick(deltaSeconds: number)
 			continue
 		end
 
-		if self._pipeNetworkService then
-			local connectHandle = perf and perf:OpenSpan("Production.connectivity")
-			self._pipeNetworkService:MarkConnectivityForTick(state)
-			if connectHandle then
-				perf:CloseSpan("Production.connectivity", connectHandle)
-			end
-		end
-
 		local connectedAdditions = emptyTierFloats()
-		local pushNeeded = false
 		local drillHandle = perf and perf:OpenSpan("Production.drillLoop")
 		local drills = self._oilStateService:GetActiveDrills(userId)
-		local centerPumpsByChunk = {}
 
-		for _, drill in ipairs(drills) do
-			if drill.isCenterPump == true then
-				centerPumpsByChunk[drill.chunkId] = drill
-				continue
+		-- Drills-only refactor: `drillsById` now contains center pumps exclusively. Each
+		-- center pump pulls oil from drilled tiles in its chunk (no per-drill flowBase or
+		-- pipe connectivity remains).
+		for _, centerPump in ipairs(drills) do
+			if centerPump.isCenterPump == true then
+				self:_accumulateCenterPumpChunk(userId, state, centerPump, deltaSeconds, connectedAdditions)
 			end
-
-			local flow = drill.flowBase * deltaSeconds
-			local perDrillAdditions = emptyTierFloats()
-			local tileOilType = drill.tileOilType
-			if tileOilType and perDrillAdditions[tileOilType] ~= nil then
-				perDrillAdditions[tileOilType] = flow
-			else
-				for _, tier in ipairs(TIERS) do
-					local weightPercent = drill.tierMix[tier] or 0
-					perDrillAdditions[tier] = flow * (weightPercent / 100)
-				end
-			end
-
-			for _, tier in ipairs(TIERS) do
-				if self._oilStateService:TankIsFull(userId, tier) then
-					perDrillAdditions[tier] = 0
-				end
-			end
-
-			if drill.connected then
-				local drained = self._oilStateService:DrainDrillBuffer(userId, drill.drillId)
-				if drained > 0 then
-					pushNeeded = true
-				end
-				for _, tier in ipairs(TIERS) do
-					connectedAdditions[tier] += perDrillAdditions[tier]
-				end
-			else
-				self._oilStateService:AddToDrillBuffer(userId, drill.drillId, perDrillAdditions)
-				pushNeeded = true
-			end
-		end
-
-		for _, centerPump in pairs(centerPumpsByChunk) do
-			self:_accumulateCenterPumpChunk(userId, state, centerPump, deltaSeconds, connectedAdditions)
 		end
 
 		if drillHandle then
@@ -155,7 +111,7 @@ function OilProductionService:_runTick(deltaSeconds: number)
 		if applyHandle then
 			perf:CloseSpan("Production.apply", applyHandle)
 		end
-		if added > 0 or pushNeeded then
+		if added > 0 then
 			local pushHandle = perf and perf:OpenSpan("Production.push")
 			self._oilStateService:PushState(userId)
 			if pushHandle then

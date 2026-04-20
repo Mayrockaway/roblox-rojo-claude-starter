@@ -33,15 +33,13 @@ local FtueConfig = {
 	FtueTutorialShipmentTravelTimeScale = 0.5,
 
 	DrillItemId = "drill_t1",
-	PumpItemId = "pump_t1",
-	PipeItemId = "pipe",
 
 	--- Drill duration (seconds) on the FTUE highlighted tile during the drill leg of **`WaitDrillOil_WIP`**. Overrides biome `drillSeconds` / tier divisor.
 	FtueTutorialDrillSeconds = 5,
 
-	--- When the player hits **Continue** on `WaitDrillOil_WIP` (skips drill/pipe/pump leg), grant this many **HeavyCrude**
+	--- When the player hits **Continue** on `WaitDrillOil_WIP` (skips the drill leg), grant this many **Crude**
 	--- refinery barrels (capped by tank space) then advance to `WaitPlotShipment`. Set to **0** to disable the skip grant.
-	FtueTestGrantRefineryHeavyCrudeBarrels = 10,
+	FtueTestGrantRefineryCrudeBarrels = 10,
 
 	--- Canonical step ids (also used for `Player` attribute `FtueStep`).
 	Step = {
@@ -84,7 +82,7 @@ local FtueConfig = {
 		},
 		WaitDrillOil_WIP = {
 			title = "FIRST STRIKE",
-			body = "On your plot: use the **free drill** on the **highlighted tile**, lay the **pipe** along the guided path, then place the **collector** on that same tile. When oil is moving, we'll get you ready to ship.\n\nNeed to move faster? **Continue** skips ahead with starter crude in your refinery.",
+			body = "On your plot: use the **free drill** on the **highlighted tile**. The **pump** at the chunk center will start collecting oil automatically. When the first barrels show up, we'll get you ready to ship.\n\nNeed to move faster? **Continue** skips ahead with starter crude in your refinery.",
 		},
 		WaitPlotShipment = {
 			title = "SHIP YOUR CARGO",
@@ -121,13 +119,9 @@ local FtueConfig = {
 	} :: { [string]: { title: string, body: string } },
 
 	WrongTileDrill = "Drill only the highlighted tile.",
-	WrongTilePipe = "Place the pipe on the highlighted tile.",
-	WrongTilePump = "Place the collector on the highlighted tile.",
 
 	--- Shipment HUD `Hint` line when placement is blocked to wrong cell (see `init.client` setStatus).
 	ClientHintPlaceDrillOnTile = "Place the drill on the marked tile.",
-	ClientHintPlacePumpOnTile = "Place the collector on the marked tile.",
-	ClientHintPlacePipeOnTile = "Place the pipe on the marked tile.",
 	--- `FtueDialogueController`: label on Continue when step is Done.
 	DoneContinueButtonText = "Complete!",
 

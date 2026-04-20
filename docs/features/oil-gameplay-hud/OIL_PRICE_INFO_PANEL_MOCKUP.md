@@ -2,9 +2,9 @@
 
 **Purpose:** Read-only **infographic** with **three barrel tiers** only:
 
-1. **Heavy crude**
-2. **Light sweet**
-3. **Premium refined**
+1. **Crude** (Tier 1, lowest quality — formerly *Heavy crude*)
+2. **Refined** (Tier 2, mid quality — formerly *Light sweet*)
+3. **Premium** (Tier 3, highest quality — formerly *Premium refined*)
 
 Opens when the player **clicks `HUD.Canvas.TopRow.OilPricePanel.Row.OilPriceButton`**. **No scrolling** for v1.
 
@@ -39,14 +39,14 @@ Example **`ColorSequence`** (tune in Studio):
 
 1. **`HeaderRow`** — **`Oil prices`**, subtitle **`Per barrel · live market`**.
 2. **`StraitContextStrip`** (optional) — strait state + one short line.
-3. **`CrudeRow`** — label **Crude** (or match your catalog name for the single crude tier, e.g. **Standard crude** if that is the only crude product in UI). **`PriceTrack`** + **`Marker`** + **`PriceValue`** (`$/bbl`).
-4. **`LightSweetRow`** — same structure.
+3. **`CrudeRow`** — label **Crude** (canonical Tier 1 oil product name). **`PriceTrack`** + **`Marker`** + **`PriceValue`** (`$/bbl`).
+4. **`RefinedRow`** — same structure.
 5. **`PremiumRow`** — same structure.
 6. **`FooterDisclaimer`** — one line on multipliers / base if needed.
 
 ## Data (`PricingConfig.luau`)
 
-- Map **Heavy crude** row to **`HeavyCrude`** (`TypeMultipliers.HeavyCrude`). **Light sweet** → **`LightSweet`**, **Premium refined** → **`PremiumRefined`**.
+- Tier keys: **Crude**, **Refined**, **Premium** (`PricingConfig.TypeMultipliers.{Crude,Refined,Premium}`).
 - Marker **X** = normalize current type price into **`[GlobalBaseMin * mult, GlobalBaseMax * mult]`** or a single global dollar band — **pick one rule** and keep it consistent across the three rows.
 
 ## Wiring (checklist)

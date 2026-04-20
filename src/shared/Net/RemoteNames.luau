@@ -9,24 +9,15 @@ local RemoteNames = {
 	ShipmentVisualEvent = "ShipmentVisualEvent",
 	ActionResult = "ActionResult",
 
-	-- oil system v2 (chunked plots, free-placed drills)
+	-- oil system v2 (chunked plots; consumable drills + auto-place center pump)
 	RequestOilSnapshot = "RequestOilSnapshot",
-	RequestPlaceDrill = "RequestPlaceDrill",      -- legacy; now routes to pump-place
-	RequestStartDrill = "RequestStartDrill",      -- new: begin drilling a tile (consumable drill)
-	RequestPlacePump = "RequestPlacePump",        -- new: place a pump on a drilled tile
+	RequestStartDrill = "RequestStartDrill",      -- player -> server: begin drilling a tile (consumable drill)
 	DrillProgressUpdate = "DrillProgressUpdate",  -- server -> client: drill started / completed
-	RequestProspect = "RequestProspect",          -- new: place prospector on a tile (reveals whole 5x5 chunk)
-	ProspectProgressUpdate = "ProspectProgressUpdate", -- server -> client: prospect started / completed
-	RequestHammerDestroy = "RequestHammerDestroy", -- new: hammer destroys any placed object, 10% refund
+	RequestHammerDestroy = "RequestHammerDestroy", -- hammer destroys placed object, 10% refund (rarely used now)
 	RequestRemoveDrill = "RequestRemoveDrill",
 	RequestBuyChunk = "RequestBuyChunk",
 	RequestClearObstacle = "RequestClearObstacle",
 	BiomeRevealEvent = "BiomeRevealEvent",
-	RequestPlacePipe = "RequestPlacePipe",
-	RequestRemovePipe = "RequestRemovePipe",
-	PipePlacedFx = "PipePlacedFx", -- server -> all clients: one-shot spatial pipe place SFX
-	RequestPlaceDrum = "RequestPlaceDrum",
-	RequestRemoveDrum = "RequestRemoveDrum",
 	RequestPickupBarrel = "RequestPickupBarrel",
 	RequestTeleportToShip = "RequestTeleportToShip",
 	RequestTeleportHome = "RequestTeleportHome",
@@ -90,7 +81,7 @@ local RemoteNames = {
 	-- Drill vein reveal (player presses E on DrillComplete model)
 	RequestRevealTile = "RequestRevealTile",
 
-	-- Per-plot oil tanks: three tubes (HeavyCrude/LightSweet/PremiumRefined) upgradable 1..10.
+	-- Per-plot oil tanks: three tubes (Crude/Refined/Premium) upgradable 1..10.
 	RequestUpgradeOilTank = "RequestUpgradeOilTank",
 
 	-- Dev-only: server-side diagnostic line shipped to all client consoles.

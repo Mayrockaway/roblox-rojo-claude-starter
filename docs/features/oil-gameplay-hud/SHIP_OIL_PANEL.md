@@ -20,8 +20,8 @@ ShipOilPanelGui [ScreenGui]
             ├─ CargoSection
             │  ├─ CargoHeader  ("Cargo")
             │  ├─ CargoRows  (vertical list, scale Padding)
-            │  │  └─ **Preferred:** `ShipCargoRowHeavyCrude` | `ShipCargoRowLightSweet` | `ShipCargoRowPremiumRefined` — tiers **Heavy Crude**, **Light Sweet**, **Premium Refined** (`ShipOilPanel.luau` → `HeavyCrude` / `LightSweet` / `PremiumRefined`). **Legacy row names still bind:** `ShipCargoRowHeavy`, `ShipCargoRowLight`, `ShipCargoRowStandard`, `ShipCargoRowCrude`, `ShipCargoRowPremium`.
-            │  │        OilIcon, NameColumn / CrudeTitle, RowSpacer+UIFlexItem.Fill,
+            │  │  └─ **Canonical:** `ShipCargoRowCrude` | `ShipCargoRowRefined` | `ShipCargoRowPremium` — tiers **Crude**, **Refined**, **Premium** (`ShipOilPanel.luau` → `Crude` / `Refined` / `Premium`). Renamed rows can still resolve via the `ShipOilTier` attribute or the row's title text.
+            │  │        OilIcon, NameColumn / `<Tier>Title` (e.g. `CrudeTitle` / `RefinedTitle` / `PremiumTitle`), RowSpacer+UIFlexItem.Fill,
             │  │        InventoryCount, Stepper
             │  └─ CargoSubtotalBand  — horizontal row (scale height matches former subtotal row)
             │        ├─ WarehouseCapacityLabel  — gold **`TextLabel`**, placeholder **`— / —`** (stored / capacity); **`TextScaled`** + **`UITextSizeConstraint`** (8–16) + thin **`UIStroke`** — wire later

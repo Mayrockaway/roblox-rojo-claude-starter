@@ -45,7 +45,7 @@ SellOilPanelGui [ScreenGui] DisplayOrder 40, Enabled false by default
             │  ├─ UIListLayout (Vertical) — **scale** `Padding` (same order of magnitude as **`Body`** list), not **pixel-only**
             │  ├─ OilRows [Frame] — **full width** (`Size` `UDim2.new(1, 0, 0.64, 0)`); each `OilSellRow*` **full width** (`UDim2.new(1, 0, 0.3, 0)`)
             │  │  └─ UIListLayout (Vertical) — **scale** `Padding` (matches **`Inventory`** nested lists using **scale** gaps, not tall **offset** stacks)
-            │  │     ├─ **Preferred row `Frame` names:** `OilSellRowHeavyCrude` | `OilSellRowLightSweet` | `OilSellRowPremiumRefined` — same row chrome (`OilSellRow*` horizontal layout). **Legacy aliases (still bind):** `OilSellRowCrude` / `OilSellRowHeavy` (heavy crude), `OilSellRowLight` (light sweet), `OilSellRowStandard` (premium refined). **`SellOilPanel.luau`**: warehouse **stored** counts; heavy row = **`HeavyCrude`** only; prices from **`MarketPriceUpdate`**.
+            │  │     ├─ **Canonical row `Frame` names:** `OilSellRowCrude` | `OilSellRowRefined` | `OilSellRowPremium` — same row chrome (`OilSellRow*` horizontal layout). Renamed rows still resolve via the **`SellOilTier`** attribute (`Crude` / `Refined` / `Premium`) or the row's `TypeName` text. **`SellOilPanel.luau`**: warehouse **stored** counts; Crude row sells the `Crude` tier only (no blending); prices from **`MarketPriceUpdate`**.
             │  └─ SummaryStrip [Frame] — bottom band (`Size` `UDim2.new(1, 0, 0.34, 0)`)
             │     └─ TotalsPanel [Frame] — **compact bottom-right card** on `SummaryStrip` (same *idea* as **`StarterGui.Inventory` → `Canvas.Container.Main.SidePanel`**)  
             │        ├─ **Inventory reference:** `SidePanel` has **no root `UIListLayout`** — it is a **scale-sized** `Frame` (`Size` in **scale** vs parent `Main`) with **children as fixed vertical “slots”** (each child also **scale**-sized). **`UIListLayout` only appears inside sub-panels** (e.g. `Stats`), not as the root driver for the whole card.  
@@ -57,7 +57,7 @@ SellOilPanelGui [ScreenGui] DisplayOrder 40, Enabled false by default
             │        ├─ **`SubtotalDivider`** — `UDim2.new(1, 0, 0, 1)`  
             │        └─ **`TotalSaleRow`** — **`UITextSizeConstraint` 12–40**  
             │        **`ClipsDescendants = false`**  
-            │        *Runtime:* set **`RightText`** on subtotal rows — **preferred `Frame` names:** **`SubtotalHeavyCrude`**, **`SubtotalLightSweet`**, **`SubtotalPremiumRefined`** (optional **`SubtotalPremium`**). **Fallbacks** still found: **`SubtotalCrude`** / **`SubtotalHeavy`** (heavy), **`SubtotalLight`** (light sweet), **`SubtotalStandard`** (premium). **`TotalSaleRow.RightText`** total. Remote **`RequestSellWarehouseBarrels`**.  
+            │        *Runtime:* set **`RightText`** on subtotal rows — **canonical `Frame` names:** **`SubtotalCrude`**, **`SubtotalRefined`**, **`SubtotalPremium`** (one per tier). **`TotalSaleRow.RightText`** total. Remote **`RequestSellWarehouseBarrels`**.  
             └─ Footer [Frame]
                ├─ SellBtnDropShadow [Frame] — sibling **behind** the CTA (**`ZIndex`** one lower); rounded, **~3px** lower, slightly larger, soft black for lift-off the footer  
                └─ SellConfirmButton [ImageButton] — **`SellOil_ShellGrad`** (vertical warm gold), strong **`UIStroke`**, **`HudStyleInnerRing`**, **`HudStyleGloss`**, **`SellBtnTopSheen`**, **`UIAspectRatioConstraint`**; child **`Text`**. **`MouseButton1Click`** on **`ImageButton`**.
@@ -75,7 +75,7 @@ Horizontal **`UIListLayout`** (`SortOrder = LayoutOrder`, **`ItemLineAlignment =
 | `PriceLabel` | Current $/bbl (placeholder copy until wired) |
 | `Stepper` | `MinusButton`, `AmountLabel`, `PlusButton` |
 
-**Tier mapping (code):** **Heavy crude** row ↔ warehouse **`HeavyCrude`** only (one stepper). **`LightSweet`** / **`PremiumRefined`** on their rows. Server: **`OilMarketService:HandleSellWarehouseBarrels`** + **`WarehouseService:TryRemoveBarrelsByCounts`**. Legacy payloads may still send **`StandardCrude`**; server folds that count into **`HeavyCrude`**.
+**Tier mapping (code):** **Crude** row ↔ warehouse **`Crude`** only (one stepper). **`Refined`** / **`Premium`** on their rows. Server: **`OilMarketService:HandleSellWarehouseBarrels`** + **`WarehouseService:TryRemoveBarrelsByCounts`**.
 
 ## Theme (approximate RGB)
 

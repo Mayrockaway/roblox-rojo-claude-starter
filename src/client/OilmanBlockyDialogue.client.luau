@@ -13,7 +13,7 @@ local oilmanSellRemote = ClientRemotes.requestOilmanSell
 local oilStateUpdate = ClientRemotes.oilStateUpdate
 
 -- Oilman buys at a FIXED discount price, not market price
-local OILMAN_PRICES = { HeavyCrude = 5, LightSweet = 8, PremiumRefined = 12 }
+local OILMAN_PRICES = { Crude = 5, Refined = 8, Premium = 12 }
 
 local COLOR_IDLE = Color3.fromRGB(255, 255, 255)
 local COLOR_HOVER = Color3.fromRGB(255, 205, 80)
@@ -170,12 +170,12 @@ local function openOilmanGui()
 		for _, c in ipairs(root:GetChildren()) do if c.Name:find("Sell_") then c:Destroy() end end
 
 		local OIL_COLORS = {
-			HeavyCrude = Color3.fromRGB(200, 200, 200),
-			LightSweet = Color3.fromRGB(240, 200, 70),
-			PremiumRefined = Color3.fromRGB(255, 150, 200),
+			Crude = Color3.fromRGB(200, 200, 200),
+			Refined = Color3.fromRGB(240, 200, 70),
+			Premium = Color3.fromRGB(255, 150, 200),
 		}
 		local COLOR_MONEY = Color3.fromRGB(80, 220, 80)
-		local tiers = {{key="HeavyCrude",label="Heavy Crude"},{key="LightSweet",label="Light Sweet"},{key="PremiumRefined",label="Premium"}}
+		local tiers = {{key="Crude",label="Crude"},{key="Refined",label="Refined"},{key="Premium",label="Premium"}}
 		local order = 5
 		for _, tier in ipairs(tiers) do
 			local amt = math.floor(currentOilByTier[tier.key] or 0)

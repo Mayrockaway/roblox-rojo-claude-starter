@@ -31,23 +31,23 @@ local OilShipmentService = {}
 local FORCED_CONTRACT_PIRATE_LOSS_FRACTION = 0.50
 
 local TIER_ORDER = {
-	"PremiumRefined",
-	"LightSweet",
-	"HeavyCrude",
+	"Premium",
+	"Refined",
+	"Crude",
 }
 
 -- Barrels lost to spillage: take from cheaper tiers first.
 local BARREL_LOSS_TIER_ORDER = {
-	"HeavyCrude",
-	"LightSweet",
-	"PremiumRefined",
+	"Crude",
+	"Refined",
+	"Premium",
 }
 
 --- HUD / manifest snapshot tier key order (matches `ActiveManifestPanel` loaded rows).
 local MANIFEST_HUD_TIER_ORDER = {
-	"HeavyCrude",
-	"LightSweet",
-	"PremiumRefined",
+	"Crude",
+	"Refined",
+	"Premium",
 }
 
 local function floorPositive(value: number): number
@@ -662,14 +662,6 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 	if typeof(manifest) ~= "table" then
 		self:_sendActionResult(player, false, "ERR_BAD_PAYLOAD", "Missing manifest.")
 		return
-	end
-	do
-		local m = manifest :: { [string]: any }
-		local legacyStd = floorPositive(tonumber(m.StandardCrude) or 0)
-		if legacyStd > 0 then
-			m.HeavyCrude = floorPositive(tonumber(m.HeavyCrude) or 0) + legacyStd
-			m.StandardCrude = nil
-		end
 	end
 
 	local state = self._oilStateService:GetState(player.UserId)
@@ -1416,9 +1408,9 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 	if not assetsFolder then return end
 
 	local tierTemplates = {
-		PremiumRefined = "Barrel_PremiumRefined",
-		LightSweet = "Barrel_LightSweet",
-		HeavyCrude = "Barrel_HeavyCrude",
+		Premium = "Barrel_Premium",
+		Refined = "Barrel_Refined",
+		Crude = "Barrel_Crude",
 	}
 
 	-- Pre-measure each barrel template's actual height for proper stacking
@@ -2808,7 +2800,7 @@ function OilShipmentService:DebugDispatchMissile(player: Player)
 	dbg.ForceOccurrenceAtWaypoint = true
 	dbg.ForceMissileStrike = true
 
-	local manifest = { HeavyCrude = 30, LightSweet = 0, PremiumRefined = 0 }
+	local manifest = { Crude = 30, Refined = 0, Premium = 0 }
 	local st = self._oilStateService:GetState(userId)
 	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
 	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
@@ -2857,7 +2849,7 @@ function OilShipmentService:DebugDispatchMine(player: Player)
 	dbg.ForceOccurrenceAtWaypoint = true
 	dbg.ForceMineStrike = true
 
-	local manifest = { HeavyCrude = 30, LightSweet = 0, PremiumRefined = 0 }
+	local manifest = { Crude = 30, Refined = 0, Premium = 0 }
 	local st = self._oilStateService:GetState(userId)
 	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
 	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
@@ -2904,7 +2896,7 @@ function OilShipmentService:DebugDispatchPirate(player: Player)
 	dbg.ForceOccurrenceAtWaypoint = true
 	dbg.ForcePirateRaid = true
 
-	local manifest = { HeavyCrude = 25, LightSweet = 5, PremiumRefined = 0 }
+	local manifest = { Crude = 25, Refined = 5, Premium = 0 }
 	local st = self._oilStateService:GetState(userId)
 	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
 	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
@@ -2974,7 +2966,7 @@ function OilShipmentService:DebugDispatchStorm(player: Player)
 		shipSkinId = skinId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
-		manifest = { HeavyCrude = 28, LightSweet = 6, PremiumRefined = 2 },
+		manifest = { Crude = 28, Refined = 6, Premium = 2 },
 		totalLoaded = 36,
 		dispatchFee = 0,
 		travelSeconds = stats.travelSeconds,
@@ -3030,7 +3022,7 @@ function OilShipmentService:DebugDispatchTornado(player: Player)
 		shipSkinId = skinId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
-		manifest = { HeavyCrude = 32, LightSweet = 8, PremiumRefined = 4 },
+		manifest = { Crude = 32, Refined = 8, Premium = 4 },
 		totalLoaded = 44,
 		dispatchFee = 0,
 		travelSeconds = stats.travelSeconds,
@@ -3086,7 +3078,7 @@ function OilShipmentService:DebugDispatchCoastGuard(player: Player)
 		shipSkinId = skinId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
-		manifest = { HeavyCrude = 25, LightSweet = 5, PremiumRefined = 0 },
+		manifest = { Crude = 25, Refined = 5, Premium = 0 },
 		totalLoaded = 30,
 		dispatchFee = 0,
 		travelSeconds = stats.travelSeconds,
@@ -3142,7 +3134,7 @@ function OilShipmentService:DebugDispatchUSShipSlap(player: Player)
 		shipSkinId = skinId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
-		manifest = { HeavyCrude = 25, LightSweet = 5, PremiumRefined = 0 },
+		manifest = { Crude = 25, Refined = 5, Premium = 0 },
 		totalLoaded = 30,
 		dispatchFee = 0,
 		travelSeconds = stats.travelSeconds,

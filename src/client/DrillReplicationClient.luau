@@ -1,7 +1,8 @@
 --!strict
 --[[
 	DrillReplicationClient
-	Handles prospectProgressUpdate and drillProgressUpdate OnClientEvent handlers.
+	Handles drillProgressUpdate OnClientEvent: spawns the DrillComplete model with
+	the E-press reveal prompt, then runs the vein reveal spinner / oil burst FX.
 	Extracted from init.client.luau.
 ]]
 
@@ -17,7 +18,6 @@ export type Deps = {
 	player: Player,
 	playerGui: PlayerGui,
 	setStatus: (msg: string, isError: boolean) -> (),
-	prospectProgressUpdate: RemoteEvent,
 	drillProgressUpdate: RemoteEvent,
 	requestRevealTile: RemoteEvent,
 	VeinCrateOpener: any?, -- module with .Open(veinTypeId, groundType, callback)
@@ -29,23 +29,10 @@ function M.connect(deps: Deps)
 	local player = deps.player
 	local playerGui = deps.playerGui
 	local setStatus = deps.setStatus
-	local prospectProgressUpdate = deps.prospectProgressUpdate
 	local drillProgressUpdate = deps.drillProgressUpdate
 	local requestRevealTile = deps.requestRevealTile
 	local VeinCrateOpener = deps.VeinCrateOpener
 
-	-- Prospector status messages
-	prospectProgressUpdate.OnClientEvent:Connect(function(data)
-		if typeof(data) ~= "table" then return end
-		if data.ownerUserId ~= player.UserId then return end
-		if data.kind == "started" then
-			setStatus(string.format("Prospecting chunk %s â€” %.1fs", tostring(data.chunkId or "?"), tonumber(data.duration) or 0), false)
-		elseif data.kind == "completed" then
-			setStatus("Prospect complete! Oil tiles glowing green, dry tiles darkened.", false)
-		end
-	end)
-
-	-- Status message when the server confirms drill start/completion/pump placement
 	drillProgressUpdate.OnClientEvent:Connect(function(data)
 		if typeof(data) ~= "table" then return end
 		if data.kind == "started" and data.ownerUserId == player.UserId then
@@ -305,8 +292,6 @@ function M.connect(deps: Deps)
 				if toast and toast.Parent then toast:Destroy() end
 			end)
 
-		elseif data.kind == "pumpPlaced" and data.ownerUserId == player.UserId then
-			setStatus("Pump online â€” producing oil.", false)
 		end
 	end)
 end

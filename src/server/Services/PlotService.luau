@@ -253,12 +253,25 @@ function PlotService:_initializePlots()
 end
 
 --- Per-plot world decor cloned from `ReplicatedStorage.Assets.<name>` templates
---- (`PlotDispatch`, `OilmanPlot`). The templates were authored against `Plot_01`,
+--- (currently `PlotDispatch` only). Templates are authored against `Plot_01`,
 --- so each clone is shifted by `(plotPivot - plot01Pivot)` to land in the
 --- equivalent position on every plot. Idempotent: skips templates that already
 --- exist as direct children of `plot`.
+---
+--- `OilmanPlot` was previously cloned per plot but has been removed — the only
+--- live Oilman NPC is the town one at `Workspace.Oilman.RodgerDodger` (owned by
+--- `OilmanService`). Any pre-existing `OilmanPlot` clones inside a plot are
+--- destroyed defensively so legacy / authored copies do not linger.
 function PlotService:_ensurePerPlotDecor(plot: Model)
-	local PER_PLOT_TEMPLATES = { "PlotDispatch", "OilmanPlot" }
+	local PER_PLOT_TEMPLATES = { "PlotDispatch" }
+	local LEGACY_REMOVED_TEMPLATES = { "OilmanPlot" }
+
+	for _, name in ipairs(LEGACY_REMOVED_TEMPLATES) do
+		local existing = plot:FindFirstChild(name)
+		if existing then
+			existing:Destroy()
+		end
+	end
 
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	if not assets then

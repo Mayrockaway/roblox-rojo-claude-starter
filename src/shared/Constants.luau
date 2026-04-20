@@ -50,10 +50,8 @@ local Constants = {
 	EquipmentStackCountAttribute = "EquipmentStackCount",
 
 	-- FTUE: set on `Player` while onboarding. Global plot cell key, same format as server (`R{row}C{col}`).
-	-- Empty / unset = no restriction. Server + client enforce drill / pump placement to that cell only.
+	-- Empty / unset = no restriction. Server + client enforce drill placement to that cell only.
 	FtueRestrictDrillCellKeyAttribute = "FtueRestrictDrillCellKey",
-	FtueRestrictPipeCellKeyAttribute = "FtueRestrictPipeCellKey",
-	FtueRestrictPumpCellKeyAttribute = "FtueRestrictPumpCellKey",
 	--- Replicated FTUE step id for `FtueDialogueController` (e.g. Intro, WaitDrill). Cleared when done.
 	FtueStepAttribute = "FtueStep",
 	--- Docks upgrade leg (`WaitDocksUpgradeShip`): `"Dockman"` → talk opens ship UI → `"CargoBuy"` → upgrade → `"CloseModal"`.

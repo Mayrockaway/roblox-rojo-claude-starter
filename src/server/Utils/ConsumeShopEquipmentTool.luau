@@ -1,5 +1,6 @@
 --!strict
--- Removes one **shop** tool use (`EquipmentShopConsumable`) after a successful placement / drill / prospect.
+-- Removes one **shop** tool use (`EquipmentShopConsumable`) after a successful drill start.
+-- (Drills-only refactor: pumps / pipes / drums / prospectors no longer use the shop pipeline.)
 -- Prefers the equipped tool on `Character`, then `Backpack`.
 -- Decrements **`EquipmentStackCount`** when present; destroys the `Tool` when count reaches **0** (legacy tools without the attribute behave as a single use).
 

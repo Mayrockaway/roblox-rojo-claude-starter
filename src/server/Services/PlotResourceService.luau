@@ -6,8 +6,6 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local ShipProfileMigration = require(Shared:WaitForChild("Config"):WaitForChild("ShipProfileMigration"))
-local ConsumeShopEquipmentTool = require(script.Parent.Parent.Utils.ConsumeShopEquipmentTool)
-local NotifyShopToolConsumedSafe = require(script.Parent.Parent.Utils.NotifyShopToolConsumedSafe)
 
 local PlotResourceService = {}
 
@@ -23,16 +21,9 @@ function PlotResourceService:Init(remoteService, oilStateService, plotService, o
 end
 
 function PlotResourceService:Start()
-	local placeEvent = self._remoteService:GetEvent(RemoteNames.RequestPlaceDrill)
 	local removeEvent = self._remoteService:GetEvent(RemoteNames.RequestRemoveDrill)
 	local buyChunkEvent = self._remoteService:GetEvent(RemoteNames.RequestBuyChunk)
-	local placePipeEvent = self._remoteService:GetEvent(RemoteNames.RequestPlacePipe)
-	local removePipeEvent = self._remoteService:GetEvent(RemoteNames.RequestRemovePipe)
 	local snapshotFn = self._remoteService:GetFunction(RemoteNames.RequestOilSnapshot)
-
-	table.insert(self._connections, placeEvent.OnServerEvent:Connect(function(player, payload)
-		self:_handlePlaceDrillRequest(player, payload)
-	end))
 
 	table.insert(self._connections, removeEvent.OnServerEvent:Connect(function(player, payload)
 		self:_handleRemoveDrillRequest(player, payload)
@@ -40,14 +31,6 @@ function PlotResourceService:Start()
 
 	table.insert(self._connections, buyChunkEvent.OnServerEvent:Connect(function(player, payload)
 		self:_handleBuyChunkRequest(player, payload)
-	end))
-
-	table.insert(self._connections, placePipeEvent.OnServerEvent:Connect(function(player, payload)
-		self:_handlePlacePipeRequest(player, payload)
-	end))
-
-	table.insert(self._connections, removePipeEvent.OnServerEvent:Connect(function(player, payload)
-		self:_handleRemovePipeRequest(player, payload)
 	end))
 
 	-- RequestClearObstacle removed (obstacle system eliminated)
@@ -143,10 +126,6 @@ function PlotResourceService:Start()
 				removeDrillRangeStuds = OilConfig.RemoveDrillRangeStuds,
 				chunkUnlockBaseCost = OilConfig.ChunkUnlockBaseCost,
 				chunkUnlockDistanceMultiplier = OilConfig.ChunkUnlockDistanceMultiplier,
-				pipeCost = OilConfig.Pipes.Cost,
-				pipeMinLength = OilConfig.Pipes.MinLength,
-				pipeMaxLength = OilConfig.Pipes.MaxLength,
-				pipeSnapRadius = OilConfig.Pipes.EndpointSnapRadius,
 				chunks = {
 					size = OilConfig.Chunks.Size,
 					rows = OilConfig.Chunks.GridRows,
@@ -188,32 +167,6 @@ function PlotResourceService:_handleBuyChunkRequest(player: Player, payload)
 	end
 end
 
-function PlotResourceService:_handlePlaceDrillRequest(player: Player, payload)
-	if not self:_allow(player.UserId, "placeDrill", 30, 10) then
-		self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many drill placement requests.")
-		return
-	end
-
-	if typeof(payload) ~= "table" then
-		self:_sendResult(player, false, "ERR_BAD_PAYLOAD", "Missing payload.")
-		return
-	end
-
-	local ok, code, message, data = self._oilStateService:TryPlaceDrill(player.UserId, payload)
-	self:_sendResult(player, ok, code, message, data or { chunkId = payload.chunkId })
-	if ok then
-		local tier = "T1"
-		if typeof(payload.tier) == "string" and payload.tier ~= "" then
-			tier = payload.tier
-		end
-		local consumed, itemId = ConsumeShopEquipmentTool.consumeMatching(player, "Pump", tier)
-		if consumed and itemId then
-			NotifyShopToolConsumedSafe.tryCall(self._oilStateService, player.UserId, itemId, "PlotResourceService:PlaceDrill")
-		end
-		self._oilStateService:PushState(player.UserId)
-	end
-end
-
 function PlotResourceService:_handleRemoveDrillRequest(player: Player, payload)
 	if not self:_allow(player.UserId, "removeDrill", 20, 10) then
 		self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many drill remove requests.")
@@ -237,59 +190,6 @@ function PlotResourceService:_handleRemoveDrillRequest(player: Player, payload)
 
 	local ok, code, message = self._oilStateService:TryRemoveDrill(player.UserId, payload.drillId)
 	self:_sendResult(player, ok, code, message, { drillId = payload.drillId })
-	if ok then
-		self._oilStateService:PushState(player.UserId)
-	end
-end
-
-function PlotResourceService:_handlePlacePipeRequest(player: Player, payload)
-	if not self:_allow(player.UserId, "placePipe", 60, 10) then
-		self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many pipe placement requests.")
-		return
-	end
-
-	if typeof(payload) ~= "table" then
-		self:_sendResult(player, false, "ERR_BAD_PAYLOAD", "Missing payload.")
-		return
-	end
-
-	local ok, code, message, data = self._oilStateService:TryPlacePipe(player.UserId, payload)
-	if ok and typeof(data) == "table" and typeof(data.cellKey) == "string" then
-		-- Pipe model exists after PushState; broadcast before OilActionResult so clients can attach spatial SFX.
-		self._oilStateService:PushState(player.UserId)
-		self._remoteService:GetEvent(RemoteNames.PipePlacedFx):FireAllClients({
-			ownerUserId = player.UserId,
-			cellKey = data.cellKey,
-		})
-	end
-	self:_sendResult(player, ok, code, message, data)
-	if ok then
-		local consumed, itemId = ConsumeShopEquipmentTool.consumeMatching(player, "Pipe", nil)
-		if consumed and itemId then
-			NotifyShopToolConsumedSafe.tryCall(self._oilStateService, player.UserId, itemId, "PlotResourceService:PlacePipe")
-		end
-		self._oilStateService:PushState(player.UserId)
-	end
-end
-
-function PlotResourceService:_handleRemovePipeRequest(player: Player, payload)
-	if not self:_allow(player.UserId, "removePipe", 30, 10) then
-		self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many pipe remove requests.")
-		return
-	end
-
-	if typeof(payload) ~= "table" then
-		self:_sendResult(player, false, "ERR_BAD_PAYLOAD", "Missing payload.")
-		return
-	end
-
-	if not self:_playerHasEmptyHands(player) then
-		self:_sendResult(player, false, "ERR_HAND_NOT_EMPTY", "Hands must be empty to remove a pipe.")
-		return
-	end
-
-	local ok, code, message = self._oilStateService:TryRemovePipe(player.UserId, payload)
-	self:_sendResult(player, ok, code, message, payload)
 	if ok then
 		self._oilStateService:PushState(player.UserId)
 	end

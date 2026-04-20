@@ -98,7 +98,9 @@ local function grantTutorialCompleteCashIfNeeded(self: any, player: Player)
 	oil:PushState(player.UserId)
 end
 
---- Sets drill / pipe / pump restriction attributes from plot + oil state for the current step.
+--- Sets the drill restriction attribute from plot + oil state for the current step.
+--- The pipe / pump legs are gone — the auto-place center pump collects from drilled tiles
+--- so the drill-only highlight is the only restriction needed.
 local function reapplyFtueRestrictionAttributes(self: any, player: Player)
 	self:_clearRestrictionAttributes(player)
 	local plot = self._plotService:GetOwnedPlot(player.UserId)
@@ -109,22 +111,9 @@ local function reapplyFtueRestrictionAttributes(self: any, player: Player)
 	local step = (st :: any).ftueStep
 	if step == FtueConfig.Step.WaitDrillOil_WIP then
 		local drillCk = self._oilState:GetFtueDrillTargetCellKeyForPlot(plot, st, player.UserId)
-		local pipeCk = self._oilState:GetFtuePipeTutorialCellKeyForPlot(plot, st)
 		if typeof(drillCk) == "string" and drillCk ~= "" then
 			if not self._oilState:IsFtueDrillTutorialCellDrilled(st, drillCk) then
 				player:SetAttribute(Constants.FtueRestrictDrillCellKeyAttribute, drillCk)
-				return
-			end
-		end
-		if typeof(pipeCk) == "string" and pipeCk ~= "" then
-			if not self._oilState:HasFtueTutorialPipeAt(st, pipeCk) then
-				player:SetAttribute(Constants.FtueRestrictPipeCellKeyAttribute, pipeCk)
-				return
-			end
-		end
-		if typeof(drillCk) == "string" and drillCk ~= "" then
-			if not self._oilState:HasFtueTutorialPumpAt(st, drillCk) then
-				player:SetAttribute(Constants.FtueRestrictPumpCellKeyAttribute, drillCk)
 			end
 		end
 	end
@@ -170,8 +159,6 @@ end
 
 function FtueService:_clearRestrictionAttributes(player: Player)
 	player:SetAttribute(Constants.FtueRestrictDrillCellKeyAttribute, nil)
-	player:SetAttribute(Constants.FtueRestrictPumpCellKeyAttribute, nil)
-	player:SetAttribute(Constants.FtueRestrictPipeCellKeyAttribute, nil)
 end
 
 --- Public hook for other services (drill complete, dispatch, warehouse sell, …).
@@ -361,12 +348,12 @@ local function onAcknowledge(self: any, player: Player)
 		applyWaitDrillEntry(self, player)
 		self:_setStep(player, FtueConfig.Step.WaitDrillOil_WIP)
 	elseif step == FtueConfig.Step.WaitDrillOil_WIP then
-		--- Testing shortcut: skip drill/pipe/pump leg; fill refinery HeavyCrude and continue FTUE.
+		--- Testing shortcut: skip drill/pipe/pump leg; fill refinery Crude and continue FTUE.
 		self:_clearRestrictionAttributes(player)
 		local oil = self._oilState
 		if oil and typeof((oil :: any).FtueTestGrantRefineryBarrels) == "function" then
-			local n = floorPositive(tonumber(FtueConfig.FtueTestGrantRefineryHeavyCrudeBarrels) or 10);
-			(oil :: any):FtueTestGrantRefineryBarrels(player.UserId, "HeavyCrude", n)
+			local n = floorPositive(tonumber(FtueConfig.FtueTestGrantRefineryCrudeBarrels) or 10);
+			(oil :: any):FtueTestGrantRefineryBarrels(player.UserId, "Crude", n)
 		end
 		self:_setStep(player, FtueConfig.Step.WaitPlotShipment)
 	elseif step == FtueConfig.Step.WaitSell then
@@ -426,7 +413,9 @@ function FtueService:Init(
 	self._market = _market
 end
 
---- After the FTUE drill completes on the tutorial tile: clear drill lock, remove starter **front** core pipe so the player can lay the tutorial segment, grant a pipe; stays on **`WaitDrillOil_WIP`**.
+--- After the FTUE drill completes on the tutorial tile: clear drill lock and advance to
+--- **`WaitPlotShipment`**. The auto-place center pump on that chunk picks up production
+--- automatically — no separate pipe / pump placement leg needed in the new flow.
 function FtueService:OnFtueTutorialDrillFinished(userId: number, done: any?)
 	if FtueConfig.Enabled ~= true then
 		return
@@ -451,78 +440,7 @@ function FtueService:OnFtueTutorialDrillFinished(userId: number, done: any?)
 			return
 		end
 	end
-	local plot = self._plotService:GetOwnedPlot(userId)
-	if not plot or not st then
-		return
-	end
 	player:SetAttribute(Constants.FtueRestrictDrillCellKeyAttribute, nil)
-	local pipeCk = self._oilState:GetFtuePipeTutorialCellKeyForPlot(plot, st)
-	if pipeCk then
-		local existing = st.pipesByCellKey and st.pipesByCellKey[pipeCk]
-		if existing and existing.isCorePipe == true then
-			st.pipesByCellKey[pipeCk] = nil
-		end
-		player:SetAttribute(Constants.FtueRestrictPipeCellKeyAttribute, pipeCk)
-	end
-	self._equipmentShop:GrantFreeOwnedEquipment(player, FtueConfig.PipeItemId, 1)
-	self:SetStep(player, FtueConfig.Step.WaitDrillOil_WIP)
-end
-
---- After the tutorial pipe segment is placed on the locked cell: grant pump, stay on **`WaitDrillOil_WIP`**.
-function FtueService:OnFtueTutorialPipePlaced(userId: number, placedCellKey: string)
-	if FtueConfig.Enabled ~= true then
-		return
-	end
-	local player = Players:GetPlayerByUserId(userId)
-	if not player then
-		return
-	end
-	local st = self._oilState:GetState(userId)
-	if not st then
-		return
-	end
-	local step = (st :: any).ftueStep
-	if step ~= FtueConfig.Step.WaitDrillOil_WIP then
-		return
-	end
-	local want = player:GetAttribute(Constants.FtueRestrictPipeCellKeyAttribute)
-	if typeof(want) ~= "string" or want == "" or want ~= placedCellKey then
-		return
-	end
-	local plot = self._plotService:GetOwnedPlot(userId)
-	if not plot then
-		return
-	end
-	player:SetAttribute(Constants.FtueRestrictPipeCellKeyAttribute, nil)
-	local pumpCk = self._oilState:GetFtueDrillTargetCellKeyForPlot(plot, st, userId)
-	if pumpCk then
-		player:SetAttribute(Constants.FtueRestrictPumpCellKeyAttribute, pumpCk)
-	end
-	self._equipmentShop:GrantFreeOwnedEquipment(player, FtueConfig.PumpItemId, 1)
-	self:SetStep(player, FtueConfig.Step.WaitDrillOil_WIP)
-end
-
---- After the tutorial pump is placed on the drilled tile: first oil collection leg done → **`WaitPlotShipment`** (cash grant inside `_setStep`).
-function FtueService:OnFtueTutorialPumpPlaced(userId: number, placedCellKey: string)
-	if FtueConfig.Enabled ~= true then
-		return
-	end
-	local player = Players:GetPlayerByUserId(userId)
-	if not player then
-		return
-	end
-	local st = self._oilState:GetState(userId)
-	if not st then
-		return
-	end
-	if (st :: any).ftueStep ~= FtueConfig.Step.WaitDrillOil_WIP then
-		return
-	end
-	local want = player:GetAttribute(Constants.FtueRestrictPumpCellKeyAttribute)
-	if typeof(want) ~= "string" or want == "" or want ~= placedCellKey then
-		return
-	end
-	player:SetAttribute(Constants.FtueRestrictPumpCellKeyAttribute, nil)
 	self:SetStep(player, FtueConfig.Step.WaitPlotShipment)
 end
 

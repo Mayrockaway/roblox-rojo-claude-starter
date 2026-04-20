@@ -31,9 +31,9 @@ local FLUSH_MULTI_USER_SPACING_SECONDS = 0.2
 local DATASTORE_NAME = "OilMiningProfiles_v3"
 
 local TIER_ORDER = {
-	"HeavyCrude",
-	"LightSweet",
-	"PremiumRefined",
+	"Crude",
+	"Refined",
+	"Premium",
 }
 
 local function migrateLegacyStandardTileOil(tiles: any)
@@ -43,9 +43,6 @@ local function migrateLegacyStandardTileOil(tiles: any)
 	for _, tile in pairs(tiles) do
 		if typeof(tile) == "table" then
 			local t = tile :: any
-			if t.oilType == "StandardCrude" then
-				t.oilType = "HeavyCrude"
-			end
 			-- Obstacle system removed: drop legacy fields from loaded saves.
 			t.hasObstacle = nil
 			t.obstacleType = nil
@@ -144,9 +141,9 @@ end
 
 local function copyTierMap(source)
 	return {
-		HeavyCrude = source.HeavyCrude or 0,
-		LightSweet = source.LightSweet or 0,
-		PremiumRefined = source.PremiumRefined or 0,
+		Crude = source.Crude or 0,
+		Refined = source.Refined or 0,
+		Premium = source.Premium or 0,
 	}
 end
 
@@ -168,23 +165,16 @@ local function buildDefaultPersisted()
 		ftueFreeCargoCapacityUpgradeUsed = false,
 		storageCapacity = OilConfig.StartingStorageCapacity,
 		oilByTier = {
-			HeavyCrude = 0,
-			LightSweet = 0,
-			PremiumRefined = 0,
+			Crude = 0,
+			Refined = 0,
+			Premium = 0,
 		},
 		unlockedChunkIds = {},
-		chunkProspected = {},
 		drills = {},
-		pipes = {},
-		drums = {},
 		equipmentOwned = {},
 		nextDrillId = 1,
-		nextProspectId = 1,
-		nextPipeId = 1,
-		nextDrumId = 1,
 		nextAttachmentId = 1,
 		activeDrills = {},
-		activeProspectors = {},
 		shipSpeedLevel = 1,
 		shipCapacityLevel = 1,
 		shipSkinId = "DefaultTanker",
@@ -196,17 +186,17 @@ end
 
 local function emptyTierMap()
 	return {
-		HeavyCrude = 0,
-		LightSweet = 0,
-		PremiumRefined = 0,
+		Crude = 0,
+		Refined = 0,
+		Premium = 0,
 	}
 end
 
 local function defaultTankTiers()
 	return {
-		HeavyCrude = 1,
-		LightSweet = 1,
-		PremiumRefined = 1,
+		Crude = 1,
+		Refined = 1,
+		Premium = 1,
 	}
 end
 
@@ -525,8 +515,7 @@ function OilStateService:Init(remoteService, plotService)
 	self._lastOilDataStoreSaveClock = {} :: { [number]: number }
 	self._boatDockService = nil :: any
 	self._skinChangedHandler = nil :: ((number, string) -> ())?
-	self._stateReadyForTimersCallback = nil :: ((number, { any }, { any }) -> ())?
-	self._pipeNetworkService = nil :: any
+	self._stateReadyForTimersCallback = nil :: ((number, { any }) -> ())?
 	self._dataStore = nil
 	self._devSkipSaveOnNextDrop = {} :: { [number]: boolean }
 	local okStore, storeOrErr = pcall(function()
@@ -544,22 +533,12 @@ function OilStateService:SetFtueService(ftueService: any)
 	_ftueService = ftueService
 end
 
-function OilStateService:SetPipeNetworkService(pipeNetworkService: any)
-	self._pipeNetworkService = pipeNetworkService
-end
-
 --- Clears tutorial-only placement flags so hammer sellback / removal works after FTUE (and old saves cannot keep protection).
 function OilStateService:_clearFtuePlacementNoSellback(state: any): boolean
 	local changed = false
 	for _, pump in pairs(state.drillsById or {}) do
 		if pump.ftueFreeNoSellback == true then
 			pump.ftueFreeNoSellback = false
-			changed = true
-		end
-	end
-	for _, pipe in pairs(state.pipesByCellKey or {}) do
-		if pipe.ftueFreeNoSellback == true then
-			pipe.ftueFreeNoSellback = false
 			changed = true
 		end
 	end
@@ -615,22 +594,22 @@ function OilStateService:SetFtueDoneScreenAcknowledged(userId: number, acknowled
 	self:_markDirty(userId)
 end
 
---- Fired after a plot profile is loaded into memory: `(userId, drillCompletions, prospectCompletions)`.
+--- Fired after a plot profile is loaded into memory: `(userId, drillCompletions)`.
 --- Used to replay completed timers that finished while offline and to schedule remaining delays.
-function OilStateService:SetStateReadyForTimersCallback(cb: (number, { any }, { any }) -> ())
+function OilStateService:SetStateReadyForTimersCallback(cb: (number, { any }) -> ())
 	self._stateReadyForTimersCallback = cb
 end
 
 -- Rehydrate runs synchronously so the first `PushState` after assign does not show stale in-progress ops.
--- Client VFX replay + `task.delay` wiring is deferred until `DrillingService` / `ProspectingService` have started.
+-- Client VFX replay + `task.delay` wiring is deferred until `DrillingService` has started.
 function OilStateService:_invokeStateTimersReady(userId: number)
-	local drillDone, prospectDone = self:RehydrateExpiredTimers(userId)
+	local drillDone = self:RehydrateExpiredTimers(userId)
 	task.defer(function()
 		local cb = self._stateReadyForTimersCallback
 		if not cb then
 			return
 		end
-		cb(userId, drillDone, prospectDone)
+		cb(userId, drillDone)
 	end)
 end
 
@@ -900,25 +879,6 @@ function OilStateService:GetStateForClient(userId: number)
 		})
 	end
 
-	local activeProspectors = {}
-	for _, entry in pairs(state.activeProspectors or {}) do
-		if typeof(entry) == "table" then
-			local e = entry :: { [string]: any }
-			local px, py, pz = worldXYZFromPersistedPosition(e.position)
-			if px and py and pz then
-				table.insert(activeProspectors, {
-					prospectId = e.prospectId,
-					chunkId = e.chunkId,
-					tileKey = e.tileKey,
-					template = e.template,
-					position = { x = px, y = py, z = pz },
-					startTime = e.startTime,
-					endTime = e.endTime,
-				})
-			end
-		end
-	end
-
 	local activeDrills = {}
 	local nowT = workspace:GetServerTimeNow()
 	for key, entry in pairs(state.activeDrills or {}) do
@@ -969,46 +929,20 @@ function OilStateService:GetStateForClient(userId: number)
 		end
 	end
 
-	local pipes = {}
-	for _, pipe in pairs(state.pipesByCellKey) do
-		table.insert(pipes, {
-			pipeId = pipe.pipeId,
-			cellKey = pipe.cellKey,
-			row = pipe.row,
-			col = pipe.col,
-			sectionId = pipe.sectionId,
-			position = { x = pipe.position.X, y = pipe.position.Y, z = pipe.position.Z },
-			isCorePipe = pipe.isCorePipe == true,
-			ftueFreeNoSellback = pipe.ftueFreeNoSellback == true,
-		})
-	end
-
-	local drums = {}
-	for _, drum in pairs(state.drumsById) do
-		table.insert(drums, {
-			drumId = drum.drumId,
-			position = { x = drum.position.X, y = drum.position.Y, z = drum.position.Z },
-			cellKey = drum.cellKey,
-			row = drum.row,
-			col = drum.col,
-			isCoreDrum = drum.isCoreDrum == true,
-		})
-	end
-
 	local tankTiers = {
-		HeavyCrude = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.HeavyCrude or 1),
-		LightSweet = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.LightSweet or 1),
-		PremiumRefined = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.PremiumRefined or 1),
+		Crude = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.Crude or 1),
+		Refined = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.Refined or 1),
+		Premium = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.Premium or 1),
 	}
 	local tankCapacities = {
-		HeavyCrude = OilTankConfig.GetCapacity(tankTiers.HeavyCrude),
-		LightSweet = OilTankConfig.GetCapacity(tankTiers.LightSweet),
-		PremiumRefined = OilTankConfig.GetCapacity(tankTiers.PremiumRefined),
+		Crude = OilTankConfig.GetCapacity(tankTiers.Crude),
+		Refined = OilTankConfig.GetCapacity(tankTiers.Refined),
+		Premium = OilTankConfig.GetCapacity(tankTiers.Premium),
 	}
 	local tankUpgradeCosts = {
-		HeavyCrude = OilTankConfig.GetUpgradeCost(tankTiers.HeavyCrude),
-		LightSweet = OilTankConfig.GetUpgradeCost(tankTiers.LightSweet),
-		PremiumRefined = OilTankConfig.GetUpgradeCost(tankTiers.PremiumRefined),
+		Crude = OilTankConfig.GetUpgradeCost(tankTiers.Crude),
+		Refined = OilTankConfig.GetUpgradeCost(tankTiers.Refined),
+		Premium = OilTankConfig.GetUpgradeCost(tankTiers.Premium),
 	}
 
 	return {
@@ -1063,20 +997,11 @@ function OilStateService:GetStateForClient(userId: number)
 		chunks = chunks,
 		drills = drills,
 		activeDrills = activeDrills,
-		activeProspectors = activeProspectors,
-		pipes = pipes,
-		drums = drums,
 		chunkConfig = {
 			size = OilConfig.Chunks.Size,
 			rows = OilConfig.Chunks.GridRows,
 			cols = OilConfig.Chunks.GridCols,
 			startingCenterSize = OilConfig.Chunks.StartingCenterSize,
-		},
-		pipeConfig = {
-			cost = OilConfig.Pipes.Cost,
-			minLength = OilConfig.Pipes.MinLength,
-			maxLength = OilConfig.Pipes.MaxLength,
-			snapRadius = OilConfig.Pipes.EndpointSnapRadius,
 		},
 	}
 end
@@ -1166,7 +1091,7 @@ function OilStateService:_autoPlaceCenterPump(userId: number, state: any, chunk:
 	local tierCfg = OilConfig.PumpTiers and OilConfig.PumpTiers["T1"]
 	if not tierCfg then return end
 
-	local biomeConfig = OilConfig.Biomes[chunk.biome] or OilConfig.Biomes.Desert or { flowMul = 1, tierMix = { HeavyCrude = 100 } }
+	local biomeConfig = OilConfig.Biomes[chunk.biome] or OilConfig.Biomes.Desert or { flowMul = 1, tierMix = { Crude = 100 } }
 	local pumpId = state.nextDrillId
 	state.nextDrillId += 1
 
@@ -1181,7 +1106,7 @@ function OilStateService:_autoPlaceCenterPump(userId: number, state: any, chunk:
 		variant = nil,
 		position = Vector3.new(sx, topY, sz),
 		flowBase = OilConfig.DrillBaseFlow * (biomeConfig.flowMul or 1) * (tierCfg.flowMultiplier or 1),
-		tierMix = copyTierMap(biomeConfig.tierMix or { HeavyCrude = 100 }),
+		tierMix = copyTierMap(biomeConfig.tierMix or { Crude = 100 }),
 		tileOilType = tile.oilType,
 		cellKey = ck,
 		cellRow = cellR,
@@ -1406,14 +1331,6 @@ function OilStateService:_validateTilePlacement(userId: number, payload)
 		cellR, cellC = worldToCell(plot, x, z)
 	end
 	local ck = cellKey(cellR, cellC)
-	if state.pipesByCellKey and state.pipesByCellKey[ck] then
-		return false, "ERR_PIPE_HERE", "Remove the pipe first."
-	end
-	for _, drum in pairs(state.drumsById) do
-		if drum.cellKey == ck then
-			return false, "ERR_CELL_BLOCKED", "This cell is occupied by the refinery."
-		end
-	end
 	if state._blockedCells and state._blockedCells[ck] then
 		return false, "ERR_CELL_BLOCKED", "This cell is occupied by refinery infrastructure."
 	end
@@ -1451,12 +1368,12 @@ function OilStateService:_validateTilePlacement(userId: number, payload)
 	return true, "OK", "", chunk, tileKey, snappedX, y, snappedZ, cellR, cellC
 end
 
--- Complete any in-progress drills/prospects whose `endTime` is already past (e.g. while offline).
--- Returns payloads matching `CompleteDrill` / `CompleteProspect` for replaying client VFX.
-function OilStateService:RehydrateExpiredTimers(userId: number): ({ any }, { any })
+-- Complete any in-progress drills whose `endTime` is already past (e.g. while offline).
+-- Returns payloads matching `CompleteDrill` for replaying client VFX.
+function OilStateService:RehydrateExpiredTimers(userId: number): { any }
 	local state = self._statesByUserId[userId]
 	if not state then
-		return {}, {}
+		return {}
 	end
 	local now = workspace:GetServerTimeNow()
 	local drillIds: { number } = {}
@@ -1472,23 +1389,10 @@ function OilStateService:RehydrateExpiredTimers(userId: number): ({ any }, { any
 			table.insert(drillDone, data)
 		end
 	end
-	local prospectIds: { number } = {}
-	for prospectId, entry in pairs(state.activeProspectors or {}) do
-		if typeof((entry :: any).endTime) == "number" and (entry :: any).endTime <= now then
-			table.insert(prospectIds, prospectId)
-		end
-	end
-	local prospectDone: { any } = {}
-	for _, prospectId in ipairs(prospectIds) do
-		local ok, data = self:CompleteProspect(userId, prospectId)
-		if ok and data then
-			table.insert(prospectDone, data)
-		end
-	end
-	if #drillIds + #prospectIds > 0 then
+	if #drillIds > 0 then
 		self:_markDirty(userId)
 	end
-	return drillDone, prospectDone
+	return drillDone
 end
 
 --- Find tiles with revealPending=true (drilled but player never clicked shovel) and return
@@ -1777,197 +1681,10 @@ function OilStateService:TryUpgradeCenterPump(userId: number, chunkId: string): 
 	return true, "OK", string.format("Pump upgraded to %s!", upgDef.displayName)
 end
 
--- Begin a prospect op on a single tile. Affects the whole 5x5 chunk that tile belongs to.
-function OilStateService:TryStartProspect(userId: number, payload: any): (boolean, string, string, any)
-	local state = self._statesByUserId[userId]
-	if not state then return false, "ERR_NO_STATE", "State unavailable.", nil end
-
-	local cfg = OilConfig.Prospecting or { durationSeconds = 5, cost = 0, templateName = "Prospector" }
-
-	local ok, code, msg, chunk, tileKey, sx, sy, sz = self:_validateTilePlacement(userId, payload)
-	if not ok then return false, code, msg, nil end
-
-	if chunk.prospected then
-		return false, "ERR_ALREADY_PROSPECTED", "This chunk has already been prospected.", nil
-	end
-
-	-- Block if another prospect is already running on this chunk
-	for _, active in pairs(state.activeProspectors) do
-		if active.chunkId == chunk.chunkId then
-			return false, "ERR_PROSPECT_IN_PROGRESS", "Already prospecting this chunk.", nil
-		end
-	end
-
-	-- Placement does NOT charge cash. Cash was spent at the shop.
-
-	local prospectId = state.nextProspectId or 1
-	state.nextProspectId = prospectId + 1
-	local now = workspace:GetServerTimeNow()
-	local entry = {
-		prospectId = prospectId,
-		chunkId = chunk.chunkId,
-		tileKey = tileKey,
-		position = Vector3.new(sx, sy, sz),
-		startTime = now,
-		endTime = now + cfg.durationSeconds,
-		template = cfg.templateName,
-	}
-	state.activeProspectors[prospectId] = entry
-	self:_markDirty(userId)
-
-	return true, "OK", "Prospecting...", {
-		prospectId = prospectId,
-		chunkId = chunk.chunkId,
-		tileKey = tileKey,
-		position = { x = sx, y = sy, z = sz },
-		duration = cfg.durationSeconds,
-		template = cfg.templateName,
-	}
-end
-
--- Called by ProspectingService when the timer expires. Marks chunk.prospected = true so clients
--- render tile highlights (oil) / darkens (dry) permanently.
-function OilStateService:CompleteProspect(userId: number, prospectId: number): (boolean, any)
-	local state = self._statesByUserId[userId]
-	if not state then return false, nil end
-	local entry = state.activeProspectors[prospectId]
-	if not entry then return false, nil end
-	state.activeProspectors[prospectId] = nil
-
-	local chunk = state.chunksById[entry.chunkId]
-	if chunk then
-		chunk.prospected = true
-	end
-	self:_markDirty(userId)
-	return true, {
-		prospectId = prospectId,
-		chunkId = entry.chunkId,
-		position = entry.position,
-	}
-end
-
--- Place a pump on a tile that has already been drilled.
-function OilStateService:TryPlacePump(userId: number, payload): (boolean, string, string, any)
-	local state = self._statesByUserId[userId]
-	if not state then return false, "ERR_NO_STATE", "State unavailable.", nil end
-
-	local tier = typeof(payload) == "table" and payload.tier or "T1"
-	local tierCfg = OilConfig.PumpTiers[tier]
-	if not tierCfg then return false, "ERR_BAD_TIER", "Unknown pump tier.", nil end
-
-	local ok, code, msg, chunk, tileKey, sx, sy, sz, cellR, cellC = self:_validateTilePlacement(userId, payload)
-	if not ok then return false, code, msg, nil end
-
-	local tile = chunk.tiles and chunk.tiles[tileKey]
-	if not tile or not tile.drilled then
-		return false, "ERR_NOT_DRILLED", "Tile must be drilled first.", nil
-	end
-	if tile.hasOil == false then
-		return false, "ERR_NO_OIL", "This tile is a dry hole — no oil to pump.", nil
-	end
-
-	local ck = cellKey(cellR, cellC)
-	local ftuePumpCell = readFtueCellAttribute(userId, Constants.FtueRestrictPumpCellKeyAttribute)
-	if ftuePumpCell and ftuePumpCell ~= ck then
-		return false, "ERR_FTUE_WRONG_TILE", "Place the collector on the marked tile.", nil
-	end
-	local plrPump = Players:GetPlayerByUserId(userId)
-	local ftueStepPump = plrPump and plrPump:GetAttribute(Constants.FtueStepAttribute)
-	local ftueFreeNoSellbackPump = (
-		FtueConfig.Enabled == true
-		and ftuePumpCell ~= nil
-		and ftuePumpCell == ck
-		and typeof(ftueStepPump) == "string"
-		and ftueStepPump == FtueConfig.Step.WaitDrillOil_WIP
-	)
-	for _, existing in pairs(state.drillsById) do
-		if existing.cellKey == ck then
-			return false, "ERR_CELL_OCCUPIED", "A pump is already placed here.", nil
-		end
-	end
-	for _, active in pairs(state.activeDrills) do
-		if active.cellKey == ck then
-			return false, "ERR_CELL_BLOCKED", "Drilling in progress here.", nil
-		end
-	end
-
-	if state.activeDrillCount >= maxActiveDrillsFor(state) then
-		return false, "ERR_MAX_DRILLS", "Max active pumps reached.", nil
-	end
-
-	-- Placement does NOT charge cash. Cash was spent at the shop.
-
-	local biomeConfig = OilConfig.Biomes[chunk.biome] or OilConfig.Biomes.Desert
-	local pumpId = state.nextDrillId
-	state.nextDrillId += 1
-
-	-- Random cosmetic scale + rare variant roll (gold / rainbow tint)
-	local scaleMin = OilConfig.PumpScaleMin or 1
-	local scaleMax = OilConfig.PumpScaleMax or 1
-	local scale = scaleMin + math.random() * (scaleMax - scaleMin)
-	local roll = math.random()
-	local variant = nil
-	if roll < (OilConfig.RainbowPumpChance or 0) then
-		variant = "rainbow"
-	elseif roll < (OilConfig.RainbowPumpChance or 0) + (OilConfig.GoldPumpChance or 0) then
-		variant = "gold"
-	end
-
-	local pump = {
-		drillId = pumpId,
-		chunkId = chunk.chunkId,
-		biome = chunk.biome,
-		tier = tier,
-		tileKey = tileKey,
-		template = tierCfg.templateName,
-		scale = scale,
-		variant = variant,
-		position = Vector3.new(sx, sy, sz),
-		flowBase = OilConfig.DrillBaseFlow * biomeConfig.flowMul * tierCfg.flowMultiplier * scale,
-		tierMix = copyTierMap(biomeConfig.tierMix),
-		tileOilType = tile.oilType,
-		cellKey = ck,
-		cellRow = cellR,
-		cellCol = cellC,
-		localBuffer = emptyTierMap(),
-		connected = false,
-		placementCost = tierCfg.cost or 0,
-		ftueFreeNoSellback = ftueFreeNoSellbackPump,
-	}
-	state.drillsById[pumpId] = pump
-	state.activeDrillCount += 1
-	self:_markDirty(userId)
-
-	-- FTUE free pump: connectivity was only updated on the next production tick (~1s), and flow is fractional
-	-- (e.g. 0.2/s) so the first inventory barrel could take many seconds. Refresh pipes now + grant 1 barrel
-	-- of this tile's oil so the HUD updates immediately after placement.
-	if ftueFreeNoSellbackPump and self._pipeNetworkService then
-		(self._pipeNetworkService :: any):MarkConnectivityForTick(state)
-		local grantTier = typeof(tile.oilType) == "string" and tile.oilType or "HeavyCrude"
-		if OilTankConfig.OilColors[grantTier] == nil then
-			grantTier = "HeavyCrude"
-		end
-		local cap = tankCapacity(state, grantTier)
-		local have = state.oilByTier[grantTier] or 0
-		if cap > have then
-			state.oilByTier[grantTier] = have + 1
-			state.totalOil += 1
-			self:_markDirty(userId)
-			self:PushState(userId)
-		end
-	end
-
-	if FtueConfig.Enabled and _ftueService and typeof((_ftueService :: any).OnFtueTutorialPumpPlaced) == "function" then
-		(_ftueService :: any):OnFtueTutorialPumpPlaced(userId, ck)
-	end
-
-	return true, "OK", "Pump placed.", { drillId = pumpId, pumpId = pumpId, tier = tier, tileKey = tileKey }
-end
-
--- Legacy name kept for backward compat at call sites; now routes to TryPlacePump.
-function OilStateService:TryPlaceDrill(userId: number, payload): (boolean, string, string, any)
-	return self:TryPlacePump(userId, payload)
-end
+-- (drills-only refactor) Removed: TryStartProspect, CompleteProspect,
+-- TryPlacePump, TryPlaceDrill. Pumps are now static center-pumps auto-placed
+-- per chunk (upgraded only via prox prompt); prospecting was replaced by the
+-- per-tile drill reveal flow.
 
 local function positionVectorFromStateEntry(pos: any): Vector3?
 	local px, py, pz = worldXYZFromPersistedPosition(pos)
@@ -1990,21 +1707,9 @@ function OilStateService:GetHammerTargetWorldPosition(userId: number, payload: a
 	end
 	local kind = payload.targetKind
 	local entry: { [string]: any }? = nil
-	if kind == "pump" then
-		local drillId = tonumber(payload.targetId)
-		entry = drillId and state.drillsById[drillId] or nil
-	elseif kind == "pipe" then
-		local ck = tostring(payload.cellKey or "")
-		entry = (ck ~= "" and state.pipesByCellKey[ck]) or nil
-	elseif kind == "drum" then
-		local drumId = tonumber(payload.targetId)
-		entry = drumId and state.drumsById[drumId] or nil
-	elseif kind == "drill" then
+	if kind == "drill" then
 		local drillId = tonumber(payload.targetId)
 		entry = drillId and state.activeDrills[drillId] or nil
-	elseif kind == "prospector" then
-		local prospectId = tonumber(payload.targetId)
-		entry = prospectId and state.activeProspectors[prospectId] or nil
 	end
 	if not entry then
 		return nil
@@ -2016,20 +1721,6 @@ function OilStateService:GetHammerTargetWorldPosition(userId: number, payload: a
 		local ps = self._plotService
 		if ps then
 			local tx, ty, tz = activeDrillWorldFromChunkTile(ps, plot, chunkId, tileKey)
-			if tx and ty and tz then
-				return Vector3.new(tx, ty, tz)
-			end
-		end
-	end
-	-- Pipes use `sectionId` + global row/col (not `chunkId`/`tileKey` on the entry).
-	if kind == "pipe" and plot then
-		local ps = self._plotService
-		local secId = entry.sectionId
-		local pr = tonumber(entry.row)
-		local pc = tonumber(entry.col)
-		if ps and typeof(secId) == "string" and secId ~= "" and pr and pc then
-			local tk = globalCellToLocalTileKey(pr, pc)
-			local tx, ty, tz = activeDrillWorldFromChunkTile(ps, plot, secId, tk)
 			if tx and ty and tz then
 				return Vector3.new(tx, ty, tz)
 			end
@@ -2067,7 +1758,9 @@ function OilStateService:TryRemoveDrill(userId: number, drillId: number): (boole
 end
 
 -- Hammer destruction: refunds 10% of the placement cost.
--- payload = { targetKind = "pump"|"pipe"|"drum"|"drill"|"prospector", targetId or cellKey }
+-- payload = { targetKind = "drill", targetId } — only active (in-progress) drills can
+-- be cancelled this way. Pumps are static center-pumps (upgrade-only); pipes / drums /
+-- prospectors no longer exist post drills-only refactor.
 function OilStateService:TryHammerDestroy(userId: number, payload: any): (boolean, string, string, any)
 	local state = self._statesByUserId[userId]
 	if not state then return false, "ERR_NO_STATE", "State unavailable.", nil end
@@ -2075,44 +1768,7 @@ function OilStateService:TryHammerDestroy(userId: number, payload: any): (boolea
 	local kind = payload.targetKind
 	local refundedAmount = 0
 
-	if kind == "pump" then
-		local drillId = tonumber(payload.targetId)
-		local pump = drillId and state.drillsById[drillId]
-		if not pump then return false, "ERR_BAD_TARGET", "Pump not found.", nil end
-		if pump.isCenterPump == true then
-			return false, "ERR_CENTER_PUMP", "Center pump cannot be removed. Upgrade it instead!", nil
-		end
-		if pump.ftueFreeNoSellback == true then
-			return false, "ERR_PROTECTED_FTUE", "Tutorial equipment cannot be sold back.", nil
-		end
-		local cost = tonumber(pump.placementCost) or 0
-		refundedAmount = math.floor(cost * 0.10)
-		state.drillsById[drillId] = nil
-		state.activeDrillCount = math.max(0, state.activeDrillCount - 1)
-
-	elseif kind == "pipe" then
-		local ck = tostring(payload.cellKey or "")
-		local pipe = state.pipesByCellKey[ck]
-		if not pipe then return false, "ERR_BAD_TARGET", "Pipe not found.", nil end
-		if pipe.isCorePipe == true then
-			return false, "ERR_PROTECTED_PIPE", "Core pipe cannot be removed.", nil
-		end
-		if pipe.ftueFreeNoSellback == true then
-			return false, "ERR_PROTECTED_FTUE", "Tutorial equipment cannot be sold back.", nil
-		end
-		local cost = tonumber(pipe.placementCost) or tonumber(OilConfig.Pipes.Cost) or 0
-		refundedAmount = math.floor(cost * 0.10)
-		state.pipesByCellKey[ck] = nil
-
-	elseif kind == "drum" then
-		local drumId = tonumber(payload.targetId)
-		local drum = drumId and state.drumsById[drumId]
-		if not drum then return false, "ERR_BAD_TARGET", "Drum not found.", nil end
-		local cost = tonumber(drum.placementCost) or tonumber(OilConfig.Drums.Cost) or 0
-		refundedAmount = math.floor(cost * 0.10)
-		state.drumsById[drumId] = nil
-
-	elseif kind == "drill" then
+	if kind == "drill" then
 		-- Active (in-progress) drill — cancel the op, no refund for already-spent drill cost
 		local drillId = tonumber(payload.targetId)
 		local active = drillId and state.activeDrills[drillId]
@@ -2123,14 +1779,6 @@ function OilStateService:TryHammerDestroy(userId: number, payload: any): (boolea
 		local tierCfg = OilConfig.DrillTiers[active.tier]
 		refundedAmount = math.floor((tierCfg and tierCfg.cost or 0) * 0.10)
 		state.activeDrills[drillId] = nil
-
-	elseif kind == "prospector" then
-		local prospectId = tonumber(payload.targetId)
-		local active = prospectId and state.activeProspectors[prospectId]
-		if not active then return false, "ERR_BAD_TARGET", "Prospector not found.", nil end
-		local cost = tonumber((OilConfig.Prospecting or {}).cost) or 0
-		refundedAmount = math.floor(cost * 0.10)
-		state.activeProspectors[prospectId] = nil
 
 	else
 		return false, "ERR_BAD_KIND", "Unknown target kind.", nil
@@ -2155,190 +1803,9 @@ function OilStateService:GetActiveDrills(userId: number)
 	return out
 end
 
-function OilStateService:TryPlacePipe(userId: number, payload): (boolean, string, string, any)
-	-- Pipes removed — all drills auto-connect to center pump
-	return false, "ERR_PIPES_REMOVED", "Pipes are no longer needed! Oil flows directly to the center pump.", nil
-end
-
-function OilStateService:_TryPlacePipe_LEGACY(userId: number, payload): (boolean, string, string, any)
-	local state = self._statesByUserId[userId]
-	if not state then
-		return false, "ERR_NO_STATE", "State unavailable.", nil
-	end
-	if typeof(payload) ~= "table" then
-		return false, "ERR_BAD_PAYLOAD", "Missing payload.", nil
-	end
-
-	local plot = state.plot or self._plotService:GetOwnedPlot(userId)
-	if not plot then return false, "ERR_NO_PLOT", "No plot owned.", nil end
-
-	local row = tonumber(payload.row)
-	local col = tonumber(payload.col)
-	local sectionId = nil :: string?
-	local snappedX = nil :: number?
-	local snappedY = nil :: number?
-	local snappedZ = nil :: number?
-
-	-- Preferred path: authoritative tile resolution from chunk + world hit.
-	local chunkId = payload.chunkId
-	local x = tonumber(payload.x)
-	local z = tonumber(payload.z)
-	if typeof(chunkId) == "string" and x and z then
-		local ok, code, message, chunk, _tileKey, sx, sy, sz, cellR, cellC = self:_validateTilePlacement(userId, {
-			chunkId = chunkId,
-			x = x,
-			y = tonumber(payload.y) or 0,
-			z = z,
-		})
-		if not ok then
-			return false, code, message, nil
-		end
-		row, col = cellR, cellC
-		sectionId = chunk.chunkId
-		snappedX, snappedY, snappedZ = sx, sy, sz
-	end
-
-	-- Legacy fallback for older clients sending only row/col or x/z.
-	if not row or not col then
-		if x and z then
-			row, col = worldToCell(plot, x, z)
-		end
-	end
-	if not row or not col then
-		return false, "ERR_BAD_PAYLOAD", "Bad pipe payload.", nil
-	end
-
-	if not cellInBounds(row, col) then
-		DevLog.log(string.format(
-			"[PipePlace] OOB user=%d chunkId=%s row=%s col=%s x=%s z=%s",
-			userId,
-			tostring(payload.chunkId),
-			tostring(row),
-			tostring(col),
-			tostring(payload.x),
-			tostring(payload.z)
-		))
-		return false, "ERR_OUT_OF_PLOT", "Pipe cell out of bounds.", nil
-	end
-
-	-- Section / chunk ownership
-	sectionId = sectionId or cellToSectionId(row, col)
-	local chunk = state.chunksById[sectionId]
-	if not chunk or not chunk.unlocked then
-		return false, "ERR_LOCKED_CHUNK", "Cell is on a locked section.", nil
-	end
-
-	-- One pipe per cell
-	local key = cellKey(row, col)
-	local ftuePipeCell = readFtueCellAttribute(userId, Constants.FtueRestrictPipeCellKeyAttribute)
-	if ftuePipeCell and ftuePipeCell ~= key then
-		return false, "ERR_FTUE_WRONG_TILE", FtueConfig.WrongTilePipe, nil
-	end
-	if state.pipesByCellKey[key] then
-		return false, "ERR_CELL_OCCUPIED", "There is already a pipe here.", nil
-	end
-
-	-- Drill exclusivity: can't place pipe where a drill already is
-	for _, drill in pairs(state.drillsById) do
-		if drill.cellKey == key then
-			return false, "ERR_DRILL_HERE", "Remove the drill first to place a pipe.", nil
-		end
-	end
-
-	-- Placement does NOT charge cash. Cash was spent at the shop.
-
-	local pipeId = state.nextPipeId
-	state.nextPipeId += 1
-	local wx, wz = cellToWorld(plot, row, col)
-	if typeof(snappedX) == "number" and typeof(snappedZ) == "number" then
-		wx, wz = snappedX, snappedZ
-	end
-	local wy = if typeof(snappedY) == "number" then snappedY else 6
-
-	local plrPipe = Players:GetPlayerByUserId(userId)
-	local ftueStepPipe = plrPipe and plrPipe:GetAttribute(Constants.FtueStepAttribute)
-	local ftueFreeNoSellbackPipe = (
-		FtueConfig.Enabled == true
-		and ftuePipeCell ~= nil
-		and ftuePipeCell == key
-		and typeof(ftueStepPipe) == "string"
-		and ftueStepPipe == FtueConfig.Step.WaitDrillOil_WIP
-	)
-
-	state.pipesByCellKey[key] = {
-		pipeId = pipeId,
-		cellKey = key,
-		row = row,
-		col = col,
-		sectionId = sectionId,
-		position = Vector3.new(wx, wy, wz),
-		ftueFreeNoSellback = ftueFreeNoSellbackPipe,
-	}
-
-	self:_markDirty(userId)
-
-	if FtueConfig.Enabled and _ftueService and typeof((_ftueService :: any).OnFtueTutorialPipePlaced) == "function" then
-		(_ftueService :: any):OnFtueTutorialPipePlaced(userId, key)
-	end
-
-	return true, "OK", "Pipe placed.", { pipeId = pipeId, cellKey = key, row = row, col = col }
-end
-
-function OilStateService:TryRemovePipe(userId: number, payload): (boolean, string, string)
-	local state = self._statesByUserId[userId]
-	if not state then
-		return false, "ERR_NO_STATE", "State unavailable."
-	end
-	local row, col
-	local key
-	if typeof(payload) == "table" then
-		if typeof(payload.cellKey) == "string" then
-			key = payload.cellKey
-		else
-			row = tonumber(payload.row)
-			col = tonumber(payload.col)
-			if row and col then
-				key = cellKey(row, col)
-			elseif typeof(payload.chunkId) == "string" and tonumber(payload.x) and tonumber(payload.z) then
-				local chunk = state.chunksById[payload.chunkId]
-				local plot = state.plot or self._plotService:GetOwnedPlot(userId)
-				if not plot then return false, "ERR_NO_PLOT", "No plot owned." end
-				if chunk then
-					local tileKey = select(1, resolveTileAt(plot, chunk, tonumber(payload.x), tonumber(payload.z)))
-					if typeof(tileKey) == "string" then
-						local localR, localC = tileKeyToLocalRowCol(tileKey)
-						if localR and localC and typeof(chunk.row) == "number" and typeof(chunk.col) == "number" then
-							local s = staticGridConstants()
-							row = (chunk.row - 1) * s.subTilesPerSide + localR
-							col = (chunk.col - 1) * s.subTilesPerSide + localC
-							key = cellKey(row, col)
-						end
-					end
-				end
-			elseif tonumber(payload.x) and tonumber(payload.z) then
-				local plot = state.plot or self._plotService:GetOwnedPlot(userId)
-				if not plot then return false, "ERR_NO_PLOT", "No plot owned." end
-				row, col = worldToCell(plot, tonumber(payload.x), tonumber(payload.z))
-				key = cellKey(row, col)
-			end
-		end
-	end
-	if not key then
-		return false, "ERR_BAD_PAYLOAD", "Missing pipe cell."
-	end
-	if not state.pipesByCellKey[key] then
-		return false, "ERR_BAD_PIPE", "Pipe does not exist."
-	end
-	if state.pipesByCellKey[key].isCorePipe == true then
-		return false, "ERR_PROTECTED_PIPE", "Core pipe cannot be removed."
-	end
-	if state.pipesByCellKey[key].ftueFreeNoSellback == true then
-		return false, "ERR_PROTECTED_FTUE", "Tutorial equipment cannot be removed this way."
-	end
-	state.pipesByCellKey[key] = nil
-	self:_markDirty(userId)
-	return true, "OK", "Pipe removed."
-end
+-- (drills-only refactor) Removed: TryPlacePipe / _TryPlacePipe_LEGACY / TryRemovePipe.
+-- Pipes are obsolete; oil flows from drilled tiles directly to the auto-placed
+-- center pump per chunk (see OilProductionService:_accumulateCenterPumpChunk).
 
 function OilStateService:GetDrillById(userId: number, drillId: number)
 	local state = self._statesByUserId[userId]
@@ -2503,7 +1970,7 @@ function OilStateService:FtueTestGrantRefineryBarrels(userId: number, oilType: s
 	end
 	local tier = oilType
 	if OilTankConfig.OilColors[tier] == nil then
-		tier = "HeavyCrude"
+		tier = "Crude"
 	end
 	local want = floorPositive(barrelCount)
 	if want <= 0 then
@@ -2603,25 +2070,6 @@ function OilStateService:_rebindExistingStateToPlot(state, plot: Model)
 		end
 	end
 
-	for _, pipe in pairs(state.pipesByCellKey or {}) do
-		if typeof(pipe.row) == "number" and typeof(pipe.col) == "number" then
-			local x, z = cellToWorld(plot, pipe.row, pipe.col)
-			pipe.cellKey = cellKey(pipe.row, pipe.col)
-			pipe.sectionId = cellToSectionId(pipe.row, pipe.col)
-			local y = (typeof(pipe.position) == "Vector3" and pipe.position.Y) or 6
-			pipe.position = Vector3.new(x, y, z)
-		end
-	end
-
-	for _, drum in pairs(state.drumsById or {}) do
-		if typeof(drum.row) == "number" and typeof(drum.col) == "number" then
-			local x, z = cellToWorld(plot, drum.row, drum.col)
-			drum.cellKey = cellKey(drum.row, drum.col)
-			local y = (typeof(drum.position) == "Vector3" and drum.position.Y) or 6
-			drum.position = Vector3.new(x, y, z)
-		end
-	end
-
 	for _, drill in pairs(state.drillsById or {}) do
 		local row = drill.cellRow
 		local col = drill.cellCol
@@ -2664,10 +2112,6 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		end
 		-- Always bind the current Workspace plot Model (same plotId can be a new instance after rejoin).
 		existing.plot = plot
-		-- Keep starter infrastructure intact for migrated/legacy profiles.
-		-- Drums and pipes removed — center pump system
-		-- self:_ensureDefaultDrumForPlayer(existing, plot)
-		-- self:_ensureDefaultPipesForPlayer(existing, plot)
 		self:_invokeStateTimersReady(userId)
 		return
 	end
@@ -2741,30 +2185,23 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		storageCapacity = 0, -- set below from tankTiers
 		totalOil = 0,
 		oilByTier = {
-			HeavyCrude = 0,
-			LightSweet = 0,
-			PremiumRefined = 0,
+			Crude = 0,
+			Refined = 0,
+			Premium = 0,
 		},
 		pendingFloats = {
-			HeavyCrude = 0,
-			LightSweet = 0,
-			PremiumRefined = 0,
+			Crude = 0,
+			Refined = 0,
+			Premium = 0,
 		},
 		activeShipmentCount = 0,
 		shipSpeedLevel = 1,
 		shipCapacityLevel = 1,
 		shipSkinId = "DefaultTanker",
 		chunksById = chunksById,
-		drillsById = {},         -- each record is now a PLACED PUMP (post-refactor)
+		drillsById = {},         -- each record is a placed PUMP (center pumps + legacy migrated)
 		activeDrills = {},       -- in-progress drills; also persisted (wall-clock start/end)
-		activeProspectors = {},  -- in-progress prospects; also persisted
-		nextProspectId = 1,
-		pipesByCellKey = {},
-		drumsById = {},
 		nextDrillId = 1,
-		nextPumpId = 1,
-		nextPipeId = 1,
-		nextDrumId = 1,
 		activeDrillCount = 0,
 		equipmentOwnedByItemId = {} :: { [string]: number },
 		--- When true, first inventory sync seeds `equipmentOwnedByItemId` from shop tools in Backpack (legacy profiles).
@@ -2800,10 +2237,6 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 	-- Derive storageCapacity from per-tank capacities (after persistence may have set tankTiers).
 	state.storageCapacity = totalTankCapacity(state)
 
-	-- Drums and pipes removed — center pump system replaces them
-	-- self:_ensureDefaultDrumForPlayer(state, plot)
-	-- self:_ensureDefaultPipesForPlayer(state, plot)
-
 	-- Auto-place center pumps on all unlocked sections (including starter chunk)
 	for _, chunk in pairs(state.chunksById) do
 		if chunk.unlocked and chunk.tiles then
@@ -2832,205 +2265,9 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 	end)
 end
 
-function OilStateService:_ensureDefaultPipesForPlayer(state, plot: Model)
-	local drumRow: number? = nil
-	local drumCol: number? = nil
-	local labPivot: CFrame? = nil
-	local coreDrum = nil
-	for _, drum in pairs(state.drumsById) do
-		if drum.isCoreDrum == true then
-			coreDrum = drum
-			break
-		end
-	end
-	if not coreDrum then
-		local firstId = nil :: number?
-		for drumId, _ in pairs(state.drumsById) do
-			if not firstId or drumId < firstId then
-				firstId = drumId
-			end
-		end
-		if firstId then
-			coreDrum = state.drumsById[firstId]
-		end
-	end
-	if coreDrum then
-		drumRow = tonumber(coreDrum.row)
-		drumCol = tonumber(coreDrum.col)
-	end
-	local labModel = plot:FindFirstChild("Lab Machine")
-	if labModel and labModel:IsA("Model") then
-		labPivot = labModel:GetPivot()
-	end
-	if not drumRow or not drumCol then
-		return
-	end
-
-	local leftRow, leftCol = nil :: number?, nil :: number?
-	local rightRow, rightCol = nil :: number?, nil :: number?
-	local frontRow, frontCol = nil :: number?, nil :: number?
-	if labPivot then
-		leftRow, leftCol = pickNeighborCellByDirection(plot, drumRow, drumCol, -labPivot.RightVector)
-		rightRow, rightCol = pickNeighborCellByDirection(plot, drumRow, drumCol, labPivot.RightVector)
-		frontRow, frontCol = pickNeighborCellByDirection(plot, drumRow, drumCol, labPivot.LookVector)
-	end
-	-- Fallback to Plot_01-authored layout if machine vectors cannot be resolved.
-	if not leftRow or not leftCol then
-		leftRow, leftCol = drumRow, drumCol - 1
-	end
-	if not rightRow or not rightCol then
-		rightRow, rightCol = drumRow, drumCol + 1
-	end
-	if not frontRow or not frontCol then
-		frontRow, frontCol = drumRow - 1, drumCol
-	end
-
-	state._blockedCells = {}
-	state._blockedCells[cellKey(drumRow, drumCol)] = true
-
-	local pipeCells = {
-		{ leftRow, leftCol },
-		{ rightRow, rightCol },
-		{ frontRow, frontCol },
-	}
-	local targetCoreByCellKey = {}
-	for _, coords in ipairs(pipeCells) do
-		local row, col = coords[1], coords[2]
-		if cellInBounds(row, col) then
-			targetCoreByCellKey[cellKey(row, col)] = true
-		end
-	end
-	for key, pipe in pairs(state.pipesByCellKey) do
-		if pipe.isCorePipe == true and not targetCoreByCellKey[key] then
-			state.pipesByCellKey[key] = nil
-		end
-	end
-	for _, legacyKey in ipairs({
-		cellKey(drumRow, drumCol - 2),
-		cellKey(drumRow, drumCol + 2),
-	}) do
-		if not targetCoreByCellKey[legacyKey] then
-			local p = state.pipesByCellKey[legacyKey]
-			if p and p.isCorePipe ~= true then
-				state.pipesByCellKey[legacyKey] = nil
-			end
-		end
-	end
-	local added = 0
-
-	for _, coords in ipairs(pipeCells) do
-		local row, col = coords[1], coords[2]
-		if cellInBounds(row, col) then
-			local key = cellKey(row, col)
-			local existing = state.pipesByCellKey[key]
-			if not existing then
-				local sectionId = cellToSectionId(row, col)
-				local chunk = state.chunksById[sectionId]
-				if chunk and chunk.unlocked then
-					local tilePart = findTilePartForCell(plot, row, col)
-					local x, z = cellToWorld(plot, row, col)
-					local y = 6
-					if tilePart then
-						x = tilePart.Position.X
-						z = tilePart.Position.Z
-						y = tilePart.Position.Y + tilePart.Size.Y / 2
-					end
-					state.pipesByCellKey[key] = {
-						pipeId = state.nextPipeId,
-						cellKey = key,
-						row = row,
-						col = col,
-						sectionId = sectionId,
-						position = Vector3.new(x, y, z),
-						isCorePipe = true,
-						placementCost = 0,
-					}
-					state.nextPipeId += 1
-					added += 1
-				end
-			else
-				existing.isCorePipe = true
-				existing.placementCost = 0
-			end
-		end
-	end
-	local total = 0
-	for _, _ in pairs(state.pipesByCellKey) do
-		total += 1
-	end
-	DevLog.log(string.format(
-		"[StarterPipes] user=%d drum=R%dC%d added=%d total=%d",
-		state.ownerUserId,
-		drumRow,
-		drumCol,
-		added,
-		total
-	))
-end
-
-function OilStateService:_ensureDefaultDrumForPlayer(state, plot: Model)
-	local coreDrumId = nil :: number?
-	for drumId, drum in pairs(state.drumsById) do
-		if drum.isCoreDrum == true then
-			coreDrumId = drumId
-			break
-		end
-	end
-	if not coreDrumId then
-		for drumId, _ in pairs(state.drumsById) do
-			if not coreDrumId or drumId < coreDrumId then
-				coreDrumId = drumId
-			end
-		end
-	end
-
-	local row, col, tilePart = nil :: number?, nil :: number?, nil :: BasePart?
-	local labModel = plot:FindFirstChild("Lab Machine")
-	if labModel and labModel:IsA("Model") then
-		row, col, tilePart = findNearestPlotTileCell(plot, labModel:GetPivot().Position)
-	end
-	if not row or not col then
-		local startSectionRow = OilConfig.Chunks.StartingRow
-		local startSectionCol = OilConfig.Chunks.StartingCol
-		local s = staticGridConstants()
-		row = (startSectionRow - 1) * s.subTilesPerSide + s.subTilesPerSide
-		col = (startSectionCol - 1) * s.subTilesPerSide + math.ceil(s.subTilesPerSide / 2)
-		tilePart = findTilePartForCell(plot, row, col)
-	end
-	if not row or not col then
-		return
-	end
-	local x, z = cellToWorld(plot, row, col)
-	local y = 6
-	if tilePart then
-		x = tilePart.Position.X
-		z = tilePart.Position.Z
-		y = tilePart.Position.Y + tilePart.Size.Y / 2
-	end
-	local drumPos = Vector3.new(x, y, z)
-	local key = cellKey(row, col)
-	if coreDrumId and state.drumsById[coreDrumId] then
-		local drum = state.drumsById[coreDrumId]
-		drum.position = drumPos
-		drum.cellKey = key
-		drum.row = row
-		drum.col = col
-		drum.isCoreDrum = true
-		drum.placementCost = 0
-	else
-		local drumId = state.nextDrumId
-		state.nextDrumId += 1
-		state.drumsById[drumId] = {
-			drumId = drumId,
-			position = drumPos,
-			cellKey = key,
-			row = row,
-			col = col,
-			isCoreDrum = true,
-			placementCost = 0,
-		}
-	end
-end
+-- (drills-only refactor) Removed: _ensureDefaultPipesForPlayer / _ensureDefaultDrumForPlayer.
+-- Pipes + drums no longer exist; the per-chunk auto-placed center pump (see _ensurePlayerState)
+-- is the single oil ingress point.
 
 function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 	if typeof(persisted) ~= "table" then
@@ -3159,15 +2396,11 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 	end
 	if typeof(persisted.oilByTier) == "table" then
 		local pot = persisted.oilByTier :: { [string]: any }
-		local legacyStandard = floorPositive(tonumber(pot.StandardCrude) or 0)
 		for _, tier in ipairs(TIER_ORDER) do
 			local value = pot[tier]
 			if typeof(value) == "number" then
 				state.oilByTier[tier] = floorPositive(value)
 			end
-		end
-		if legacyStandard > 0 then
-			state.oilByTier.HeavyCrude = (state.oilByTier.HeavyCrude or 0) + legacyStandard
 		end
 	end
 
@@ -3230,16 +2463,8 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		end
 	end
 
-	if typeof(persisted.chunkProspected) == "table" then
-		for chunkId, v in pairs(persisted.chunkProspected) do
-			if typeof(chunkId) == "string" and v == true then
-				local ch = state.chunksById[chunkId]
-				if ch then
-					ch.prospected = true
-				end
-			end
-		end
-	end
+	-- (drills-only refactor) Removed: chunkProspected restore. Prospecting was deleted; chunks
+	-- become "revealed" via Chunks.RevealAfterDrillCount drilled tiles only.
 
 	-- In-progress drills (persisted so timers survive logout / server restart).
 	-- Use `pairs`: DataStore JSON can deserialize arrays as sparse/dict tables where `ipairs` would skip rows.
@@ -3378,48 +2603,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		end
 	end
 
-	-- In-progress prospectors (same wall-clock pattern as drills).
-	if typeof(persisted.activeProspectors) == "table" then
-		for _, rec in pairs(persisted.activeProspectors) do
-			if typeof(rec) == "table" then
-				local r = rec :: { [string]: any }
-				local prospectId = tonumber(r.prospectId)
-				local chunkId = r.chunkId
-				if prospectId and typeof(chunkId) == "string" then
-					local chunk = state.chunksById[chunkId]
-					if chunk and chunk.prospected ~= true then
-						local pos = positionVectorFromStateEntry(r.position)
-						if not pos then
-							pos = Vector3.new(0, 6, 0)
-						end
-						local nowWall = workspace:GetServerTimeNow()
-						local st = tonumber(r.startTime) or nowWall
-						local et = tonumber(r.endTime) or (st + 5)
-						if et <= st then
-							et = st + ((OilConfig.Prospecting and OilConfig.Prospecting.durationSeconds) or 5)
-						end
-						state.activeProspectors[prospectId] = {
-							prospectId = prospectId,
-							chunkId = chunkId,
-							tileKey = if typeof(r.tileKey) == "string" then r.tileKey :: string else "T11",
-							position = pos,
-							startTime = st,
-							endTime = et,
-							template = if typeof(r.template) == "string" then r.template :: string else "Prospector",
-						}
-					end
-				end
-			end
-		end
-	end
-	if typeof(persisted.nextProspectId) == "number" then
-		state.nextProspectId = math.max(state.nextProspectId, math.floor(persisted.nextProspectId))
-	end
-	for pid, _ in pairs(state.activeProspectors) do
-		if typeof(pid) == "number" then
-			state.nextProspectId = math.max(state.nextProspectId, pid + 1)
-		end
-	end
+	-- (drills-only refactor) Removed: activeProspectors restore + nextProspectId.
 
 	-- Restore placed pumps (requires `tileKey` + cell coords or position — v5+ saves).
 	if typeof(persisted.drills) == "table" then
@@ -3555,59 +2739,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		state.nextDrillId = math.max(state.nextDrillId, maxDrillId + 1)
 	end
 
-	if typeof(persisted.pipes) == "table" then
-		local maxPipeId = 0
-		for _, record in ipairs(persisted.pipes) do
-			if typeof(record) == "table" then
-				local row = tonumber(record.row)
-				local col = tonumber(record.col)
-				if row and col and cellInBounds(row, col) then
-					local pipeId = tonumber(record.pipeId) or (maxPipeId + 1)
-					if pipeId > maxPipeId then maxPipeId = pipeId end
-					local sectionId = cellToSectionId(row, col)
-					local x, z = cellToWorld(plot, row, col)
-					state.pipesByCellKey[cellKey(row, col)] = {
-						pipeId = pipeId,
-						cellKey = cellKey(row, col),
-						row = row,
-						col = col,
-						sectionId = sectionId,
-						position = Vector3.new(x, 6, z),
-						isCorePipe = record.isCorePipe == true,
-						ftueFreeNoSellback = record.ftueFreeNoSellback == true,
-					}
-				end
-			end
-		end
-		state.nextPipeId = math.max(state.nextPipeId, maxPipeId + 1)
-	end
-
-	if typeof(persisted.drums) == "table" then
-		local maxDrumId = 0
-		for _, record in ipairs(persisted.drums) do
-			if typeof(record) == "table" and typeof(record.position) == "table" then
-				local drumId = tonumber(record.drumId) or (maxDrumId + 1)
-				if drumId > maxDrumId then maxDrumId = drumId end
-				local px = tonumber(record.position.x) or 0
-				local py = tonumber(record.position.y) or 0
-				local pz = tonumber(record.position.z) or 0
-				local row = tonumber(record.row)
-				local col = tonumber(record.col)
-				if not row or not col then
-					row, col = worldToCell(plot, px, pz)
-				end
-				state.drumsById[drumId] = {
-					drumId = drumId,
-					position = Vector3.new(px, py, pz),
-					cellKey = cellKey(row, col),
-					row = row,
-					col = col,
-					isCoreDrum = record.isCoreDrum == true,
-				}
-			end
-		end
-		state.nextDrumId = math.max(state.nextDrumId, maxDrumId + 1)
-	end
+	-- (drills-only refactor) Removed: pipes / drums restore + nextPipeId / nextDrumId migration.
 
 	if typeof(persisted.nextDrillId) == "number" then
 		state.nextDrillId = math.max(state.nextDrillId, math.floor(persisted.nextDrillId))
@@ -3616,12 +2748,6 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		if typeof(aid) == "number" then
 			state.nextDrillId = math.max(state.nextDrillId, aid + 1)
 		end
-	end
-	if typeof(persisted.nextPipeId) == "number" then
-		state.nextPipeId = math.max(state.nextPipeId, math.floor(persisted.nextPipeId))
-	end
-	if typeof(persisted.nextDrumId) == "number" then
-		state.nextDrumId = math.max(state.nextDrumId, math.floor(persisted.nextDrumId))
 	end
 
 	state.totalOil = sumTierMap(state.oilByTier)
@@ -3795,9 +2921,9 @@ function OilStateService:_serializeState(state)
 	persisted.storageCapacity = math.max(1, floorPositive(state.storageCapacity))
 	persisted.oilByTier = copyTierMap(state.oilByTier)
 	persisted.tankTiers = {
-		HeavyCrude = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.HeavyCrude or 1),
-		LightSweet = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.LightSweet or 1),
-		PremiumRefined = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.PremiumRefined or 1),
+		Crude = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.Crude or 1),
+		Refined = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.Refined or 1),
+		Premium = OilTankConfig.ClampTier(state.tankTiers and state.tankTiers.Premium or 1),
 	}
 	persisted.unlockedChunkIds = {}
 	persisted.chunkBiomes = {}
@@ -3810,9 +2936,6 @@ function OilStateService:_serializeState(state)
 			end
 			if chunk.tiles then
 				persisted.chunkTiles[chunkId] = chunk.tiles
-			end
-			if chunk.prospected then
-				persisted.chunkProspected[chunkId] = true
 			end
 		end
 	end
@@ -3841,35 +2964,8 @@ function OilStateService:_serializeState(state)
 		})
 	end
 
-	persisted.pipes = {}
-	for _, pipe in pairs(state.pipesByCellKey) do
-		table.insert(persisted.pipes, {
-			pipeId = pipe.pipeId,
-			cellKey = pipe.cellKey,
-			row = pipe.row,
-			col = pipe.col,
-			sectionId = pipe.sectionId,
-			isCorePipe = pipe.isCorePipe == true,
-			ftueFreeNoSellback = pipe.ftueFreeNoSellback == true,
-		})
-	end
-
-	persisted.drums = {}
-	for _, drum in pairs(state.drumsById) do
-		table.insert(persisted.drums, {
-			drumId = drum.drumId,
-			position = { x = drum.position.X, y = drum.position.Y, z = drum.position.Z },
-			cellKey = drum.cellKey,
-			row = drum.row,
-			col = drum.col,
-			isCoreDrum = drum.isCoreDrum == true,
-		})
-	end
-
+	-- (drills-only refactor) Removed: pipes / drums serialization + nextProspectId / nextPipeId / nextDrumId.
 	persisted.nextDrillId = state.nextDrillId
-	persisted.nextProspectId = state.nextProspectId or 1
-	persisted.nextPipeId = state.nextPipeId
-	persisted.nextDrumId = state.nextDrumId
 	persisted.version = 7
 
 	local activeDrillIds: { number } = {}
@@ -3913,40 +3009,7 @@ function OilStateService:_serializeState(state)
 		end
 	end
 
-	local prospectIds: { number } = {}
-	local seenProspect: { [number]: boolean } = {}
-	for id, ap0 in pairs(state.activeProspectors or {}) do
-		local prospectId = typeof(id) == "number" and id or tonumber(id)
-		if typeof(prospectId) == "number" and typeof(ap0) == "table" then
-			local apt = ap0 :: { [string]: any }
-			local pid = tonumber(apt.prospectId)
-			if pid then
-				prospectId = math.floor(pid)
-			end
-			if not seenProspect[prospectId] then
-				seenProspect[prospectId] = true
-				table.insert(prospectIds, prospectId)
-			end
-		end
-	end
-	table.sort(prospectIds)
-	persisted.activeProspectors = {}
-	for _, prospectId in ipairs(prospectIds) do
-		local ap = (state.activeProspectors :: { [any]: any })[prospectId]
-			or (state.activeProspectors :: { [any]: any })[tostring(prospectId)]
-		if typeof(ap) == "table" then
-			local pos = ap.position
-			table.insert(persisted.activeProspectors, {
-				prospectId = prospectId,
-				chunkId = ap.chunkId,
-				tileKey = ap.tileKey,
-				position = if typeof(pos) == "Vector3" then { x = pos.X, y = pos.Y, z = pos.Z } else ap.position,
-				startTime = ap.startTime,
-				endTime = ap.endTime,
-				template = ap.template,
-			})
-		end
-	end
+	-- (drills-only refactor) Removed: activeProspectors serialization.
 	persisted.shipSpeedLevel = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
 	persisted.shipCapacityLevel = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
 	persisted.shipSkinId = (typeof(state.shipSkinId) == "string" and state.shipSkinId) or "DefaultTanker"
@@ -4107,52 +3170,40 @@ function OilStateService:DevRemovePersistedOilProfile(userId: number)
 	self._memoryStore[key] = nil
 end
 
---- FTUE drill tile: **one cell past** the starter **front** core pipe (same rule as `_ensureDefaultPipesForPlayer`:
---- `Lab Machine` `LookVector` from drum, else `drumRow - 1`). So: `Drum — front core pipe — drill`.
---- The following `WaitPipe` step should target `GetFtuePipeTutorialCellKeyForPlot` (the front core pipe cell).
-function OilStateService:GetFtueDrillTargetCellKeyForPlot(plot: Model, state: any, userId: number): string?
-	local drumRow: number?, drumCol: number? = nil, nil
-	for _, drum in pairs(state.drumsById or {}) do
-		if typeof(drum) == "table" and drum.isCoreDrum == true then
-			local rr = tonumber(drum.row)
-			local cc = tonumber(drum.col)
-			if typeof(rr) == "number" and typeof(cc) == "number" then
-				drumRow, drumCol = rr, cc
-				break
-			end
-		end
+--- FTUE drill tile (drills-only refactor): **two cells past** the `Lab Machine` along its
+--- LookVector. Pipes / drums no longer exist, so the rig and pump are derived from the
+--- Lab Machine pivot directly. Same authored cell as before (Drum — front pipe — drill),
+--- now reachable without persisted drum / pipe state.
+function OilStateService:GetFtueDrillTargetCellKeyForPlot(plot: Model, _state: any, _userId: number): string?
+	local labRow: number?, labCol: number? = nil, nil
+	local labModel = plot:FindFirstChild("Lab Machine")
+	if labModel and labModel:IsA("Model") then
+		labRow, labCol = findNearestPlotTileCell(plot, labModel:GetPivot().Position)
 	end
-	if not drumRow or not drumCol then
-		local labModel = plot:FindFirstChild("Lab Machine")
-		if labModel and labModel:IsA("Model") then
-			drumRow, drumCol = findNearestPlotTileCell(plot, labModel:GetPivot().Position)
-		end
-	end
-	if not drumRow or not drumCol then
+	if not labRow or not labCol then
 		local startSectionRow = OilConfig.Chunks.StartingRow
 		local startSectionCol = OilConfig.Chunks.StartingCol
 		local s = staticGridConstants()
-		drumRow = (startSectionRow - 1) * s.subTilesPerSide + s.subTilesPerSide
-		drumCol = (startSectionCol - 1) * s.subTilesPerSide + math.ceil(s.subTilesPerSide / 2)
+		labRow = (startSectionRow - 1) * s.subTilesPerSide + s.subTilesPerSide
+		labCol = (startSectionCol - 1) * s.subTilesPerSide + math.ceil(s.subTilesPerSide / 2)
 	end
-	if not drumRow or not drumCol then
+	if not labRow or not labCol then
 		return nil
 	end
 
 	local frontRow: number?, frontCol: number? = nil, nil
-	local labModel = plot:FindFirstChild("Lab Machine")
 	if labModel and labModel:IsA("Model") then
-		frontRow, frontCol = pickNeighborCellByDirection(plot, drumRow, drumCol, labModel:GetPivot().LookVector)
+		frontRow, frontCol = pickNeighborCellByDirection(plot, labRow, labCol, labModel:GetPivot().LookVector)
 	end
 	if not frontRow or not frontCol then
-		frontRow, frontCol = drumRow - 1, drumCol
+		frontRow, frontCol = labRow - 1, labCol
 	end
 	if not inBoundsCell(frontRow, frontCol) then
 		return nil
 	end
 
-	local dRow = frontRow - drumRow
-	local dCol = frontCol - drumCol
+	local dRow = frontRow - labRow
+	local dCol = frontCol - labCol
 	if dRow == 0 and dCol == 0 then
 		return nil
 	end
@@ -4161,61 +3212,10 @@ function OilStateService:GetFtueDrillTargetCellKeyForPlot(plot: Model, state: an
 	if not inBoundsCell(drillRow, drillCol) then
 		return nil
 	end
-
-	local pipes = state.pipesByCellKey or {}
-	local ck = cellKey(drillRow, drillCol)
-	local pipeOnDrill = pipes[ck]
-	if pipeOnDrill and pipeOnDrill.isCorePipe == true then
-		state.pipesByCellKey[ck] = nil
-		self:_markDirty(userId)
-	end
-	return ck
+	return cellKey(drillRow, drillCol)
 end
 
---- FTUE pipe placement (`WaitPipe`): the starter **front** core pipe cell — between drum and drill target.
-function OilStateService:GetFtuePipeTutorialCellKeyForPlot(plot: Model, state: any): string?
-	local drumRow: number?, drumCol: number? = nil, nil
-	for _, drum in pairs(state.drumsById or {}) do
-		if typeof(drum) == "table" and drum.isCoreDrum == true then
-			local rr = tonumber(drum.row)
-			local cc = tonumber(drum.col)
-			if typeof(rr) == "number" and typeof(cc) == "number" then
-				drumRow, drumCol = rr, cc
-				break
-			end
-		end
-	end
-	if not drumRow or not drumCol then
-		local labModel = plot:FindFirstChild("Lab Machine")
-		if labModel and labModel:IsA("Model") then
-			drumRow, drumCol = findNearestPlotTileCell(plot, labModel:GetPivot().Position)
-		end
-	end
-	if not drumRow or not drumCol then
-		local startSectionRow = OilConfig.Chunks.StartingRow
-		local startSectionCol = OilConfig.Chunks.StartingCol
-		local s = staticGridConstants()
-		drumRow = (startSectionRow - 1) * s.subTilesPerSide + s.subTilesPerSide
-		drumCol = (startSectionCol - 1) * s.subTilesPerSide + math.ceil(s.subTilesPerSide / 2)
-	end
-	if not drumRow or not drumCol then
-		return nil
-	end
-	local frontRow: number?, frontCol: number? = nil, nil
-	local labModel2 = plot:FindFirstChild("Lab Machine")
-	if labModel2 and labModel2:IsA("Model") then
-		frontRow, frontCol = pickNeighborCellByDirection(plot, drumRow, drumCol, labModel2:GetPivot().LookVector)
-	end
-	if not frontRow or not frontCol then
-		frontRow, frontCol = drumRow - 1, drumCol
-	end
-	if not inBoundsCell(frontRow, frontCol) then
-		return nil
-	end
-	return cellKey(frontRow, frontCol)
-end
-
---- Used while `ftueStep == WaitDrillOil_WIP` to restore drill / pipe / pump restriction attributes after join.
+--- Used while `ftueStep == WaitDrillOil_WIP` to restore drill restriction attributes after join.
 function OilStateService:IsFtueDrillTutorialCellDrilled(state: any, drillCk: string): boolean
 	local rowStr, colStr = string.match(drillCk, "^R(%d+)C(%d+)$")
 	local row = tonumber(rowStr)
@@ -4231,20 +3231,6 @@ function OilStateService:IsFtueDrillTutorialCellDrilled(state: any, drillCk: str
 	end
 	local t = (chunk.tiles :: any)[localKey]
 	return t ~= nil and t.drilled == true
-end
-
-function OilStateService:HasFtueTutorialPipeAt(state: any, pipeCk: string): boolean
-	local pipes = state.pipesByCellKey
-	return typeof(pipes) == "table" and pipes[pipeCk] ~= nil
-end
-
-function OilStateService:HasFtueTutorialPumpAt(state: any, pumpCellKey: string): boolean
-	for _, pump in pairs(state.drillsById or {}) do
-		if typeof(pump) == "table" and pump.cellKey == pumpCellKey then
-			return true
-		end
-	end
-	return false
 end
 
 return OilStateService
