@@ -251,11 +251,82 @@ local function resolveOwnerStandCFrame(boat: Model): CFrame?
 	end
 
 	local right = Vector3.new(-forward.Z, 0, forward.X)
-	local standPos = Vector3.new(anchorPos.X, deckY + 4, anchorPos.Z) - forward * 5 + right * 4
+	local standPos = Vector3.new(anchorPos.X, deckY + 4, anchorPos.Z) + forward * rig.standForwardOffset + right * rig.standRightOffset
 	if seat and (Vector3.new(standPos.X, seat.Position.Y, standPos.Z) - seat.Position).Magnitude < 6 then
 		standPos += right * 4
 	end
 	return CFrame.lookAt(standPos, standPos + forward)
+end
+
+local function resolveBoatSupportStandCFrame(boat: Model, desiredCFrame: CFrame): CFrame
+	local desiredPos = desiredCFrame.Position
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.IgnoreWater = true
+
+	local include = {}
+	for _, d in ipairs(boat:GetDescendants()) do
+		if d:IsA("BasePart") and d.CanQuery then
+			table.insert(include, d)
+		end
+	end
+	params.FilterDescendantsInstances = include
+
+	if #include == 0 then
+		if RunService:IsStudio() then
+			print(string.format(
+				"[BoatTeleportSupport] boat=%s miss=no-queryable-parts targetY=%.2f",
+				boat:GetFullName(),
+				desiredPos.Y
+			))
+		end
+		return desiredCFrame
+	end
+
+	local _, boundsSize = boat:GetBoundingBox()
+	local castHeight = math.max(12, boundsSize.Y * 0.5 + 8)
+	local castDistance = math.max(64, boundsSize.Y + 32)
+	local origin = Vector3.new(desiredPos.X, desiredPos.Y + castHeight, desiredPos.Z)
+	local result = Workspace:Raycast(origin, Vector3.new(0, -castDistance, 0), params)
+	if not result or not result.Instance or not result.Instance:IsA("BasePart") then
+		if RunService:IsStudio() then
+			print(string.format(
+				"[BoatTeleportSupport] boat=%s miss=no-hit originY=%.2f castDistance=%.2f targetY=%.2f",
+				boat:GetFullName(),
+				origin.Y,
+				castDistance,
+				desiredPos.Y
+			))
+		end
+		return desiredCFrame
+	end
+
+	local supportPart = result.Instance
+	if not supportPart.CanCollide then
+		if RunService:IsStudio() then
+			print(string.format(
+				"[BoatTeleportSupport] boat=%s miss=non-collide-hit part=%s hitY=%.2f targetY=%.2f",
+				boat:GetFullName(),
+				supportPart:GetFullName(),
+				result.Position.Y,
+				desiredPos.Y
+			))
+		end
+		return desiredCFrame
+	end
+
+	local snappedPos = Vector3.new(desiredPos.X, result.Position.Y + 4, desiredPos.Z)
+	if RunService:IsStudio() then
+		print(string.format(
+			"[BoatTeleportSupport] boat=%s support=%s hitY=%.2f targetY=%.2f snappedY=%.2f",
+			boat:GetFullName(),
+			supportPart:GetFullName(),
+			result.Position.Y,
+			desiredPos.Y,
+			snappedPos.Y
+		))
+	end
+	return CFrame.lookAt(snappedPos, snappedPos + desiredCFrame.LookVector)
 end
 
 local function teleportCharacterToBoatDeck(character: Model, boat: Model, targetCFrame: CFrame, logLabel: string)
@@ -275,7 +346,8 @@ local function teleportCharacterToBoatDeck(character: Model, boat: Model, target
 		end
 	end
 
-	CharacterTeleport.teleportWithUnseat(character, targetCFrame, logLabel)
+	local supportCFrame = resolveBoatSupportStandCFrame(boat, targetCFrame)
+	CharacterTeleport.teleportWithUnseat(character, supportCFrame, logLabel)
 
 	if hum and seat then
 		task.delay(0.15, function()
@@ -379,6 +451,8 @@ local function neutralizeBoatHelperPart(part: BasePart)
 	part.CanCollide = false
 	part.CanTouch = false
 	part.CanQuery = false
+	part.Transparency = 1
+	part.CastShadow = false
 	part.Massless = true
 	part:SetAttribute("BoatGameplayHelperDisabled", true)
 end

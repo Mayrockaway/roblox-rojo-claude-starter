@@ -10,6 +10,8 @@ export type RigDef = {
 	deckSeatName: string,
 	barrelStackRootName: string,
 	playerFlagName: string,
+	standForwardOffset: number,
+	standRightOffset: number,
 }
 
 local ShipRig = {}

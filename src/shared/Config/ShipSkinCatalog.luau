@@ -10,6 +10,8 @@ export type RigDef = {
 	deckSeatName: string,
 	barrelStackRootName: string,
 	playerFlagName: string,
+	standForwardOffset: number,
+	standRightOffset: number,
 }
 
 export type RigOverride = {
@@ -21,6 +23,8 @@ export type RigOverride = {
 	deckSeatName: string?,
 	barrelStackRootName: string?,
 	playerFlagName: string?,
+	standForwardOffset: number?,
+	standRightOffset: number?,
 }
 
 export type SkinDef = {
@@ -46,6 +50,8 @@ local DEFAULT_RIG: RigDef = {
 	deckSeatName = "DeckSeat",
 	barrelStackRootName = "BarrelStackRoot",
 	playerFlagName = "PlayerFlag",
+	standForwardOffset = -5,
+	standRightOffset = 4,
 }
 
 local TEMPLATE_RIG_OVERRIDES: { [string]: RigOverride } = {
@@ -95,6 +101,12 @@ local function applyRigOverride(rig: RigDef, over: RigOverride?)
 	if typeof(over.playerFlagName) == "string" and over.playerFlagName ~= "" then
 		rig.playerFlagName = over.playerFlagName
 	end
+	if typeof(over.standForwardOffset) == "number" then
+		rig.standForwardOffset = over.standForwardOffset
+	end
+	if typeof(over.standRightOffset) == "number" then
+		rig.standRightOffset = over.standRightOffset
+	end
 end
 
 local function buildRig(templateName: string, skinRigOverride: RigOverride?): RigDef
@@ -107,6 +119,8 @@ local function buildRig(templateName: string, skinRigOverride: RigOverride?): Ri
 		deckSeatName = DEFAULT_RIG.deckSeatName,
 		barrelStackRootName = DEFAULT_RIG.barrelStackRootName,
 		playerFlagName = DEFAULT_RIG.playerFlagName,
+		standForwardOffset = DEFAULT_RIG.standForwardOffset,
+		standRightOffset = DEFAULT_RIG.standRightOffset,
 	}
 	applyRigOverride(rig, TEMPLATE_RIG_OVERRIDES[templateName])
 	applyRigOverride(rig, skinRigOverride)

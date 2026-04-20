@@ -2855,6 +2855,8 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 				d.CanCollide = false
 				d.CanTouch = false
 				d.CanQuery = false
+				d.Transparency = 1
+				d.CastShadow = false
 				d.Massless = true
 				d:SetAttribute("BoatGameplayHelperDisabled", true)
 			end
