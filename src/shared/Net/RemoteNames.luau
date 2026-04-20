@@ -71,6 +71,13 @@ local RemoteNames = {
 	-- quantity map + requestId; atomic commit.
 	RequestOilmanSell = "RequestOilmanSell",
 
+	-- ShipOilPanel "Instant Sell" sub-modal (DeliveryMan): batch-sells local
+	-- plot oil (`oilByTier`) at fixed `InstantSellConfig` prices. Same payload
+	-- shape as `RequestOilmanSell` ({ quantities = {...}, requestId = "..." });
+	-- atomic commit; result on `OilActionResult` with code `Ok` or
+	-- `ERR_NO_OIL` / `ERR_INVALID_PAYLOAD`.
+	RequestInstantSell = "RequestInstantSell",
+
 	-- Army General NPC: nuke + airstrike
 	ArmyGeneralOpen = "ArmyGeneralOpen",
 	RequestArmyGeneralAction = "RequestArmyGeneralAction",

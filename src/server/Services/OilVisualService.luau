@@ -738,12 +738,12 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 				local tilePart = sectionModel:FindFirstChild(info.tileKey)
 				if tilePart and tilePart:IsA("BasePart") then
 					local topY = tilePart.Position.Y + tilePart.Size.Y / 2
-					part.Size = Vector3.new(6.5, part.Size.Y, 6.5)
-					part.Position = Vector3.new(tilePart.Position.X, topY + part.Size.Y / 2, tilePart.Position.Z)
+						part.Size = Vector3.new(6.5, part.Size.Y, 6.5)
+						part.Position = Vector3.new(tilePart.Position.X, topY + part.Size.Y / 2, tilePart.Position.Z)
+					end
 				end
 			end
 		end
-	end
 
 	local function eachTileVisualVariant(info: any, callback: (string?, Vector3?, string?) -> ())
 		local veinResult = info.tile.veinResult
@@ -1060,9 +1060,9 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 			-- times `scale` is NOT equal to the same delta after `Model:ScaleTo(scale)` (Roblox uses
 			-- an internal authored baseline). T1 looked fine only because that delta was tiny.
 			if model:IsA("Model") and model:GetAttribute("AppliedScale") ~= scale then
-				model:ScaleTo(scale)
-				model:SetAttribute("AppliedScale", scale)
-			end
+					model:ScaleTo(scale)
+					model:SetAttribute("AppliedScale", scale)
+				end
 			local pivotToBottom = 0
 			if model:IsA("Model") then
 				pivotToBottom = PlacementAnchor.pivotYMinusBottomWorldY(model)

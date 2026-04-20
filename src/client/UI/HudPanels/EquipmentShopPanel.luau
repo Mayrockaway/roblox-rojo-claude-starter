@@ -1,11 +1,13 @@
 --!strict
 -- Equipment shop modal (`StarterGui.ShopPanelGui` → `PlayerGui`).
--- Studio layout: `…ShopScroll.ScrollContent.EquipmentSection` with
--- `DRILLSBlock.DRILLSRow` (Low/Medium/High StyleCard), `COLLECTORSBlock.COLLECTORSRow`, and
--- `ProspectorPipesBlock.ProspectorPipesRow` (FieldProspectorHalfCard, HeavyPipeHalfCard).
--- Catalog + purchase: `RequestEquipmentShopCatalog` / `RequestPurchaseEquipment` + `OilActionResult`.
 --
--- Slots are re-resolved every time the panel opens so late-cloned StarterGui / layout changes still wire.
+-- Cards are *cloned* per item from Studio-authored `Templates.<Cat>CardTemplate`
+-- via `EquipmentShopPopulate.PopulateAllCategories`, driven by the category
+-- registry in `ShopPanelTemplates.Categories` (today: DRILLS only). Designers
+-- add a new section by stamping `ShopCategory` on a row + template and
+-- registering the category in `ShopPanelTemplates.luau` — no code change here.
+--
+-- Catalog + purchase: `RequestEquipmentShopCatalog` / `RequestPurchaseEquipment` + `OilActionResult`.
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
@@ -66,65 +68,6 @@ local function firePurchase(requestPurchase: RemoteEvent, itemId: string)
 	})
 end
 
---- Resolve equipment cards under this ScreenGui (recursive so minor hierarchy drift still works).
-local function resolveEquipmentSlots(screen: ScreenGui): { Slot }
-	local slots: { Slot } = {}
-	local es = screen:FindFirstChild("EquipmentSection", true)
-	if not (es and es:IsA("GuiObject")) then
-		return slots
-	end
-
-	local drillsBlock = es:FindFirstChild("DRILLSBlock", true)
-	local drillsRow = drillsBlock and drillsBlock:FindFirstChild("DRILLSRow", true)
-	if drillsRow and drillsRow:IsA("GuiObject") then
-		-- Cards may sit under layout wrappers; `FindFirstChild` without recursive misses them.
-		local low = drillsRow:FindFirstChild("LowStyleCard", true)
-		local med = drillsRow:FindFirstChild("MediumStyleCard", true)
-		local high = drillsRow:FindFirstChild("HighStyleCard", true)
-		if low and low:IsA("GuiObject") then
-			table.insert(slots, { card = low, itemId = "drill_t1" })
-		end
-		if med and med:IsA("GuiObject") then
-			table.insert(slots, { card = med, itemId = "drill_t2" })
-		end
-		if high and high:IsA("GuiObject") then
-			table.insert(slots, { card = high, itemId = "drill_t3" })
-		end
-	end
-
-	local collectorsBlock = es:FindFirstChild("COLLECTORSBlock", true)
-	local pumpsRow = collectorsBlock and collectorsBlock:FindFirstChild("COLLECTORSRow", true)
-	if pumpsRow and pumpsRow:IsA("GuiObject") then
-		local low = pumpsRow:FindFirstChild("LowStyleCard", true)
-		local med = pumpsRow:FindFirstChild("MediumStyleCard", true)
-		local high = pumpsRow:FindFirstChild("HighStyleCard", true)
-		if low and low:IsA("GuiObject") then
-			table.insert(slots, { card = low, itemId = "pump_t1" })
-		end
-		if med and med:IsA("GuiObject") then
-			table.insert(slots, { card = med, itemId = "pump_t2" })
-		end
-		if high and high:IsA("GuiObject") then
-			table.insert(slots, { card = high, itemId = "pump_t3" })
-		end
-	end
-
-	local ppBlock = es:FindFirstChild("ProspectorPipesBlock", true)
-	local ppRow = ppBlock and ppBlock:FindFirstChild("ProspectorPipesRow", true)
-	if ppRow and ppRow:IsA("GuiObject") then
-		local prospect = ppRow:FindFirstChild("FieldProspectorHalfCard", true)
-		local pipe = ppRow:FindFirstChild("HeavyPipeHalfCard", true)
-		if prospect and prospect:IsA("GuiObject") then
-			table.insert(slots, { card = prospect, itemId = "prospector" })
-		end
-		if pipe and pipe:IsA("GuiObject") then
-			table.insert(slots, { card = pipe, itemId = "pipe" })
-		end
-	end
-
-	return slots
-end
-
 local function catalogById(payload: CatalogPayload?): { [string]: EquipmentShopPopulate.CatalogRow }
 	local map: { [string]: EquipmentShopPopulate.CatalogRow } = {}
 	if not payload or typeof(payload.items) ~= "table" then
@@ -154,40 +97,37 @@ local function catalogById(payload: CatalogPayload?): { [string]: EquipmentShopP
 	return map
 end
 
-local function formatCountdown(secondsRemaining: number): string
-	if secondsRemaining < 0 then
-		secondsRemaining = 0
+--- Roblox's `AutomaticCanvasSize.Y` is unreliable on deeply nested
+--- `AutomaticSize` chains (the auto-size solver can lock in at a value where
+--- `canvas == window` and never grow even after children are added).
+--- We drive `CanvasSize.Y` explicitly from `ScrollContent.UIListLayout
+--- .AbsoluteContentSize`, which is updated every time the layout re-measures.
+--- Returns the connection so the caller can disconnect on cleanup if needed.
+local function bindManualCanvasSize(scroll: ScrollingFrame): RBXScriptConnection?
+	local content = scroll:FindFirstChild("ScrollContent")
+	if not (content and content:IsA("GuiObject")) then
+		return nil
 	end
-	local m = math.floor(secondsRemaining / 60)
-	local s = math.floor(secondsRemaining - m * 60)
-	return string.format("Refresh in %d:%02d", m, s)
-end
-
---- Find or lazily create a header countdown label on the shop screen. Tolerates
---- missing Studio authoring: if no pre-authored `RotationCountdown` TextLabel
---- exists, we inject one so players still see the clock.
-local function ensureCountdownLabel(screen: ScreenGui): TextLabel?
-	local existing = screen:FindFirstChild("RotationCountdown", true)
-	if existing and existing:IsA("TextLabel") then
-		return existing
+	local layout = content:FindFirstChildOfClass("UIListLayout")
+	if not layout then
+		return nil
 	end
-	-- Inject as a sibling of EquipmentSection so it floats above the cards.
-	local section = screen:FindFirstChild("EquipmentSection", true)
-	local parent: Instance? = section and section.Parent or screen
-	local label = Instance.new("TextLabel")
-	label.Name = "RotationCountdown"
-	label.BackgroundTransparency = 1
-	label.Size = UDim2.new(1, 0, 0, 20)
-	label.Position = UDim2.new(0, 0, 0, -22)
-	label.AnchorPoint = Vector2.new(0, 0)
-	label.Font = Enum.Font.Merriweather
-	label.TextSize = 14
-	label.TextColor3 = Color3.fromRGB(220, 228, 240)
-	label.TextXAlignment = Enum.TextXAlignment.Right
-	label.Text = ""
-	label.ZIndex = 20
-	label.Parent = parent
-	return label
+	local pad = content:FindFirstChildOfClass("UIPadding")
+	-- Take over from AutomaticCanvasSize so the two systems don't fight.
+	scroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+	local function recompute()
+		local h = layout.AbsoluteContentSize.Y
+		if pad then
+			-- We only sum the offset components — scale paddings on
+			-- auto-sized parents are unreliable and intentionally not authored.
+			h = h + pad.PaddingTop.Offset + pad.PaddingBottom.Offset
+		end
+		scroll.CanvasSize = UDim2.new(0, 0, 0, math.ceil(h))
+	end
+	recompute()
+	-- Re-measure one frame later to catch post-clone settling.
+	task.defer(recompute)
+	return layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(recompute)
 end
 
 function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelController?
@@ -205,76 +145,45 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 	local screen = ctrl.ScreenGui
 	local slotBuyConns: { RBXScriptConnection } = {}
 	local refreshEndsAt = 0.0
-	local countdownLabel = ensureCountdownLabel(screen)
 
-	local function disconnectSlotBuys()
+	-- Force `ShopScroll.CanvasSize.Y` to follow `ScrollContent`'s real layout
+	-- height. AutoCanvasSize was leaving canvas == window even after 6 cards
+	-- were cloned in, so the scrollbar never appeared.
+	local shopScroll = screen:FindFirstChild("ShopScroll", true)
+	if shopScroll and shopScroll:IsA("ScrollingFrame") then
+		bindManualCanvasSize(shopScroll)
+	end
+
+	-- Studio-authored `ShopRefreshTimer` (Frame with `IsTimerLabel = true` +
+	-- `TimeChildName = "TimeText"` attributes) takes priority over the legacy
+	-- injected `RotationCountdown` — we update its TimeText label directly.
+	local studioTimerLabel: TextLabel? = nil
+	local studioTimerFormat = "%d:%02d"
+	for _, d in ipairs(screen:GetDescendants()) do
+		if d:GetAttribute("IsTimerLabel") == true then
+			local childName = d:GetAttribute("TimeChildName")
+			local fmt = d:GetAttribute("TimeFormat")
+			if typeof(fmt) == "string" and fmt ~= "" then
+				studioTimerFormat = fmt
+			end
+			if typeof(childName) == "string" and childName ~= "" then
+				local tl = d:FindFirstChild(childName, true)
+				if tl and tl:IsA("TextLabel") then
+					studioTimerLabel = tl
+					break
+				end
+			elseif d:IsA("TextLabel") then
+				studioTimerLabel = d
+				break
+			end
+		end
+	end
+
+	local function wireSlotBuys(slots: { Slot })
 		for _, c in ipairs(slotBuyConns) do
 			c:Disconnect()
 		end
 		table.clear(slotBuyConns)
-	end
-
-	local function refreshCatalog(slots: { Slot })
-		local ok, payload = pcall(function()
-			return requestCatalog:InvokeServer()
-		end)
-		if ok and typeof(payload) == "table" then
-			if typeof((payload :: any).refreshEndsAt) == "number" then
-				refreshEndsAt = (payload :: any).refreshEndsAt
-			end
-			local byId = catalogById(payload :: any)
-			for _, slot in ipairs(slots) do
-				local row = byId[slot.itemId]
-				EquipmentShopPopulate.ApplyCard(slot.card, row)
-
-				local buy = slot.card:FindFirstChild("BuyButton", true)
-				if buy and buy:IsA("GuiButton") then
-					passthroughBuyDecorations(buy)
-					buy.AutoButtonColor = row ~= nil and row.available == true
-					buy.Active = row ~= nil and row.available == true
-				end
-			end
-		else
-			warn("[EquipmentShopPanel] RequestEquipmentShopCatalog failed:", payload)
-			for _, slot in ipairs(slots) do
-				EquipmentShopPopulate.ApplyCard(slot.card, nil)
-				local buy = slot.card:FindFirstChild("BuyButton", true)
-				if buy and buy:IsA("GuiButton") then
-					passthroughBuyDecorations(buy)
-					buy.AutoButtonColor = false
-					buy.Active = false
-				end
-			end
-		end
-	end
-
-	-- Stock broadcast from server: fires on every rotation refresh and every
-	-- successful purchase. Just re-pull the catalog so card copy rebuilds.
-	stockUpdate.OnClientEvent:Connect(function(msg: any)
-		if typeof(msg) == "table" and typeof(msg.refreshEndsAt) == "number" then
-			refreshEndsAt = msg.refreshEndsAt
-		end
-		local slotsNow = resolveEquipmentSlots(screen)
-		if #slotsNow > 0 then
-			refreshCatalog(slotsNow)
-		end
-	end)
-
-	-- Countdown heartbeat: ticks once per second while the panel is open.
-	task.spawn(function()
-		while countdownLabel and countdownLabel.Parent do
-			if screen.Enabled and refreshEndsAt > 0 then
-				local remaining = refreshEndsAt - workspace:GetServerTimeNow()
-				countdownLabel.Text = formatCountdown(remaining)
-			else
-				countdownLabel.Text = ""
-			end
-			task.wait(1.0)
-		end
-	end)
-
-	local function wireSlotBuys(slots: { Slot })
-		disconnectSlotBuys()
 		for _, slot in ipairs(slots) do
 			local buy = slot.card:FindFirstChild("BuyButton", true)
 			if buy and buy:IsA("GuiButton") then
@@ -287,7 +196,7 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 					end
 					firePurchase(requestPurchase, id)
 				end
-				-- Bind ONLY `Activated` — it covers mouse, touch, and gamepad. Dual
+				-- Bind ONLY `Activated` — covers mouse, touch, gamepad. Dual
 				-- binding with `MouseButton1Click` caused same-frame double-fire
 				-- → double-charge on purchase.
 				table.insert(slotBuyConns, buy.Activated:Connect(onBuy))
@@ -295,24 +204,80 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 		end
 	end
 
+	--- One-shot: pull catalog from server, clone+populate every category row,
+	--- and (re)wire buy buttons on the resulting card list.
+	local function refreshAndPopulate()
+		local ok, payload = pcall(function()
+			return requestCatalog:InvokeServer()
+		end)
+		local byId: { [string]: EquipmentShopPopulate.CatalogRow }
+		if ok and typeof(payload) == "table" then
+			if typeof((payload :: any).refreshEndsAt) == "number" then
+				refreshEndsAt = (payload :: any).refreshEndsAt
+			end
+			byId = catalogById(payload :: any)
+		else
+			if not ok then
+				warn("[EquipmentShopPanel] RequestEquipmentShopCatalog failed:", payload)
+			end
+			byId = {}
+		end
+		local slots = EquipmentShopPopulate.PopulateAllCategories(screen, byId)
+		-- Disable Active on cards whose server row is missing/unavailable so
+		-- ImageButton.Activated never fires on placeholders.
+		for _, slot in ipairs(slots) do
+			local row = byId[slot.itemId]
+			local available = row ~= nil and row.available == true
+			local buy = slot.card:FindFirstChild("BuyButton", true)
+			if buy and buy:IsA("GuiButton") then
+				buy.AutoButtonColor = available
+				buy.Active = available
+			end
+		end
+		wireSlotBuys(slots)
+	end
+
+	-- Stock broadcast from server: fires on every rotation refresh and every
+	-- successful purchase. Re-populate so stock counts + buy state rebuild.
+	stockUpdate.OnClientEvent:Connect(function(msg: any)
+		if typeof(msg) == "table" and typeof(msg.refreshEndsAt) == "number" then
+			refreshEndsAt = msg.refreshEndsAt
+		end
+		if screen.Enabled then
+			refreshAndPopulate()
+		end
+	end)
+
+	-- Countdown heartbeat: ticks once per second while the panel is open and
+	-- the Studio-authored `ShopRefreshTimer.TimeText` exists. The label keeps
+	-- whatever it was last set to between Open/Close cycles (it's hidden with
+	-- the panel anyway).
+	if studioTimerLabel then
+		task.spawn(function()
+			while studioTimerLabel and studioTimerLabel.Parent do
+				if screen.Enabled and refreshEndsAt > 0 then
+					local remaining = math.max(0, refreshEndsAt - workspace:GetServerTimeNow())
+					local m = math.floor(remaining / 60)
+					local s = math.floor(remaining - m * 60)
+					studioTimerLabel.Text = string.format(studioTimerFormat, m, s)
+				end
+				task.wait(1.0)
+			end
+		end)
+	end
+
 	-- Studio scripts (or other code) may set `ScreenGui.Enabled = true` without calling `ctrl.Open`.
-	-- Refresh whenever this bound instance becomes visible so copy never stays on StarterGui defaults.
+	-- Re-populate whenever this bound instance becomes visible so cards rebuild from the latest catalog.
 	screen:GetPropertyChangedSignal("Enabled"):Connect(function()
 		if not screen.Enabled then
 			return
 		end
-		local slotsNow = resolveEquipmentSlots(screen)
-		wireSlotBuys(slotsNow)
-		refreshCatalog(slotsNow)
+		refreshAndPopulate()
 	end)
 
 	-- `Enabled` does not fire if the modal was already visible when this bind ran.
 	if screen.Enabled then
-		task.defer(function()
-			local slotsBoot = resolveEquipmentSlots(screen)
-			wireSlotBuys(slotsBoot)
-			refreshCatalog(slotsBoot)
-		end)
+		task.defer(refreshAndPopulate)
 	end
 
 	oilActionResult.OnClientEvent:Connect(function(msg: any)
@@ -321,9 +286,8 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 		end
 		local data = msg.data
 		if typeof(data) == "table" and typeof(data.itemId) == "string" then
-			local slotsNow = resolveEquipmentSlots(screen)
-			if #slotsNow > 0 then
-				refreshCatalog(slotsNow)
+			if screen.Enabled then
+				refreshAndPopulate()
 			end
 			-- Purchase can merge stacks (**no `ChildAdded`**) or replicate a tick late — force hotbar sync.
 			if msg.ok == true then
@@ -334,16 +298,7 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 
 	local baseOpen = ctrl.Open
 	ctrl.Open = function()
-		local slotsNow = resolveEquipmentSlots(screen)
-		if #slotsNow == 0 then
-			warn(
-				"[EquipmentShopPanel] No equipment cards found under ",
-				screen:GetFullName(),
-				" — expected descendant `EquipmentSection` with DRILLSRow / COLLECTORSRow / ProspectorPipesRow."
-			)
-		end
-		wireSlotBuys(slotsNow)
-		refreshCatalog(slotsNow)
+		refreshAndPopulate()
 		baseOpen()
 	end
 

@@ -5,6 +5,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
@@ -20,6 +21,11 @@ local ViewportShipFit = require(script.Parent.Parent.ViewportShipFit)
 local ShipViewportPreviewFactory = require(script.Parent.Parent.ShipViewportPreviewFactory)
 local getClientRemotes = require(script.Parent.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
 local ClientRemotes = getClientRemotes()
+local UiSfx = require(script.Parent.Parent.Parent:WaitForChild("UiSfx")) :: {
+	playSetSail: () -> (),
+	playKaching: () -> (),
+	playUiDenied: () -> (),
+}
 
 local SCREEN_NAME = "ShipManagementPanelGui"
 
@@ -67,6 +73,23 @@ local SEGMENT_EMPTY_TRANSPARENCY = 0.35
 local lastSpeedUpgradeFire = 0.0
 local lastCapacityUpgradeFire = 0.0
 
+--- `ErrorNotification` is an authored `TextLabel` under `Canvas.PanelHost` (red,
+--- with `UIStroke`). Studio leaves it `Visible = true` so the designer can
+--- position / restyle it; we hide it on `wireShipManagement` and surface it
+--- only when an upgrade fails. `errorNotificationSeq` lets a fresh message
+--- cancel the previous fade-out so back-to-back errors do not flicker.
+local errorNotificationLabel: TextLabel? = nil
+local errorNotificationSeq = 0
+
+--- Cached from the latest snapshot so the buy-button click handler can do an
+--- instant client-side preflight (`cash >= cost?`) without waiting for the
+--- server's `oilActionResult` round-trip. The server is still authoritative —
+--- we also listen for `ERR_NOT_ENOUGH_CASH` from `oilActionResult` to catch
+--- cases where the local snapshot is stale.
+local latestCash: number = 0
+local latestSpeedUpgradeCost: number? = nil
+local latestCapacityUpgradeCost: number? = nil
+
 --- `fillShipViewport` used to run on **every** `oilStateUpdate` — each pass cloned the full tanker into
 --- the `ViewportFrame` and called `GetBoundingBox()` (brutal on Union-heavy rigs). Only rebuild when
 --- `skinId` changes; defer clone + fit so opening the panel does not freeze a single frame for seconds.
@@ -88,6 +111,16 @@ local function disconnectAll()
 	table.clear(connections)
 	viewportFillJob += 1
 	viewportFilledSkinId = nil
+	-- Cancel any in-flight fade and drop the cached label so the next bind
+	-- (potentially against a fresh `ScreenGui` instance) re-resolves it.
+	errorNotificationSeq += 1
+	if errorNotificationLabel then
+		errorNotificationLabel.Visible = false
+	end
+	errorNotificationLabel = nil
+	latestCash = 0
+	latestSpeedUpgradeCost = nil
+	latestCapacityUpgradeCost = nil
 end
 
 local function findFirstNamed(root: Instance, names: { string }): Instance?
@@ -98,6 +131,56 @@ local function findFirstNamed(root: Instance, names: { string }): Instance?
 		end
 	end
 	return nil
+end
+
+--- Match `ShipOilPanel.showErrorNotification` so error UX feels identical
+--- across the dock modals: hold the message at full opacity for `holdSeconds`,
+--- then fade `TextTransparency → 1` over 0.35s. `errorNotificationSeq` cancels
+--- any in-flight fade if a newer message comes in (avoids flicker on rapid
+--- repeat clicks of the BUY button while broke).
+local function hideErrorNotification()
+	errorNotificationSeq += 1
+	if errorNotificationLabel then
+		errorNotificationLabel.Visible = false
+	end
+end
+
+local function showErrorNotification(message: string, holdSeconds: number)
+	local label = errorNotificationLabel
+	if not label or not label.Parent then
+		return
+	end
+	errorNotificationSeq += 1
+	local seq = errorNotificationSeq
+	label.Text = message
+	label.TextTransparency = 0
+	label.Visible = true
+	task.delay(holdSeconds, function()
+		if seq ~= errorNotificationSeq or not label.Parent then
+			return
+		end
+		local tw = TweenService:Create(label, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+			TextTransparency = 1,
+		})
+		tw:Play()
+		tw.Completed:Wait()
+		if seq ~= errorNotificationSeq or not label.Parent then
+			return
+		end
+		label.Visible = false
+		label.TextTransparency = 0
+	end)
+end
+
+--- Single source of truth for "you can't afford this upgrade" UX: the red
+--- toast + the project-standard deny SFX. Server `message` (e.g. "Need $1200
+--- to upgrade speed.") is preferred over the client fallback so currency /
+--- copy stays in sync with `OilStateService:TryUpgradeShip*`.
+local function showInsufficientCashError(message: string?)
+	local text = (typeof(message) == "string" and message ~= "" and message)
+		or "Not enough cash for this upgrade."
+	showErrorNotification(text, 4.0)
+	UiSfx.playUiDenied()
 end
 
 --- Walk `placard → progressName → BarHost → Segment1..SegmentN` and return the
@@ -334,6 +417,12 @@ local function applyShipManagementUi(snap: any)
 	local speedNum = tonumber(speedCost)
 	local capNum = tonumber(capCost)
 
+	-- Cache for the buy-button preflight (`showInsufficientCashError`). Live
+	-- snapshot wins over any value the click handler computes locally.
+	latestCash = cash
+	latestSpeedUpgradeCost = speedNum
+	latestCapacityUpgradeCost = capNum
+
 	--- `tonumber(0)` is **0** (truthy in Luau). `cost and cost > 0` is false for 0, so we must not treat 0 as "MAX".
 	if speedCostLabel then
 		if speedLevel >= ShipUpgradeConfig.MaxSpeedLevel then
@@ -358,22 +447,28 @@ local function applyShipManagementUi(snap: any)
 		end
 	end
 
+	-- Keep `Active = true` while NOT maxed so the click handler runs even when
+	-- the player can't afford the upgrade — that's how `showInsufficientCashError`
+	-- gets a chance to fire. Only fully disable input at MAX (no upgrade to
+	-- attempt). `AutoButtonColor` mirrors affordability for visual feedback.
 	if speedBuyButton then
-		local canBuy = speedNum ~= nil and speedNum > 0 and cash >= speedNum
-		speedBuyButton.Active = canBuy
-		speedBuyButton.AutoButtonColor = canBuy
+		local atMax = speedLevel >= ShipUpgradeConfig.MaxSpeedLevel
+		local canAfford = speedNum ~= nil and speedNum > 0 and cash >= speedNum
+		speedBuyButton.Active = not atMax
+		speedBuyButton.AutoButtonColor = canAfford
 	end
 	if capacityBuyButton then
-		local canBuy = false
-		if capNum ~= nil and capLevel < ShipUpgradeConfig.MaxCapacityLevel then
+		local atMax = capLevel >= ShipUpgradeConfig.MaxCapacityLevel
+		local canAfford = false
+		if capNum ~= nil and not atMax then
 			if capNum == 0 then
-				canBuy = true
+				canAfford = true
 			elseif capNum > 0 then
-				canBuy = cash >= capNum
+				canAfford = cash >= capNum
 			end
 		end
-		capacityBuyButton.Active = canBuy
-		capacityBuyButton.AutoButtonColor = canBuy
+		capacityBuyButton.Active = not atMax
+		capacityBuyButton.AutoButtonColor = canAfford
 	end
 
 	if shipNameHeader then
@@ -478,10 +573,33 @@ local function wireShipManagement(screen: ScreenGui)
 	local nameHdr = findFirstNamed(screen, { "ShipNameHeader", "shipnameheader" })
 	shipNameHeader = if nameHdr and nameHdr:IsA("TextLabel") then nameHdr else nil
 
+	-- Studio authors `Canvas.PanelHost.ErrorNotification` `Visible = true` so it
+	-- can be positioned + restyled in Edit mode. We hide on bind and only
+	-- surface it on a failed BUY.
+	local errLabel = screen:FindFirstChild("ErrorNotification", true)
+	errorNotificationLabel = if errLabel and errLabel:IsA("TextLabel") then errLabel else nil
+	if errorNotificationLabel then
+		errorNotificationLabel.Visible = false
+		errorNotificationLabel.TextTransparency = 0
+	end
+
 	if speedBuyButton then
 		table.insert(connections, speedBuyButton.Activated:Connect(function()
 			local now = os.clock()
 			if now - lastSpeedUpgradeFire < 0.4 then
+				return
+			end
+			-- Client-side preflight: instant feedback while broke. Server is
+			-- still authoritative — `oilActionResult` `ERR_NOT_ENOUGH_CASH`
+			-- below catches the case where `latestSnap` is stale.
+			local cost = latestSpeedUpgradeCost
+			if cost and cost > 0 and latestCash < cost then
+				lastSpeedUpgradeFire = now
+				showInsufficientCashError(string.format(
+					"Not enough cash. Need $%d to upgrade speed (you have $%d).",
+					math.floor(cost),
+					math.floor(latestCash)
+				))
 				return
 			end
 			lastSpeedUpgradeFire = now
@@ -495,6 +613,18 @@ local function wireShipManagement(screen: ScreenGui)
 			if now - lastCapacityUpgradeFire < 0.4 then
 				return
 			end
+			-- Cargo can be FREE (FTUE first upgrade): only short-circuit the
+			-- request when there is a real positive cost the player can't pay.
+			local cost = latestCapacityUpgradeCost
+			if cost and cost > 0 and latestCash < cost then
+				lastCapacityUpgradeFire = now
+				showInsufficientCashError(string.format(
+					"Not enough cash. Need $%d to upgrade capacity (you have $%d).",
+					math.floor(cost),
+					math.floor(latestCash)
+				))
+				return
+			end
 			lastCapacityUpgradeFire = now
 			ClientRemotes.requestUpgradeShipCapacity:FireServer()
 		end))
@@ -503,6 +633,26 @@ local function wireShipManagement(screen: ScreenGui)
 	table.insert(connections, ClientRemotes.oilStateUpdate.OnClientEvent:Connect(function(snap: any)
 		if wiredScreen and wiredScreen.Enabled then
 			applyShipManagementUi(snap)
+		end
+	end))
+
+	-- Defense-in-depth for the click-side preflight: surface the server's
+	-- `ERR_NOT_ENOUGH_CASH` for ship Speed / Capacity upgrades when the local
+	-- snapshot was stale (race between `oilStateUpdate` and the click). The
+	-- server's `message` already contains the exact required amount.
+	table.insert(connections, ClientRemotes.oilActionResult.OnClientEvent:Connect(function(payload: any)
+		if typeof(payload) ~= "table" then
+			return
+		end
+		if not (wiredScreen and wiredScreen.Enabled) then
+			return
+		end
+		local action = (payload :: any).action
+		if action ~= "UpgradeShipSpeed" and action ~= "UpgradeShipCapacity" then
+			return
+		end
+		if (payload :: any).ok == false and (payload :: any).code == "ERR_NOT_ENOUGH_CASH" then
+			showInsufficientCashError((payload :: any).message)
 		end
 	end))
 
@@ -537,6 +687,9 @@ local function wireShipManagement(screen: ScreenGui)
 				end
 			end
 		else
+			-- Modal closed: cancel any pending fade so the next open does not
+			-- inherit a half-faded message.
+			hideErrorNotification()
 			local plr = Players.LocalPlayer
 			if
 				plr

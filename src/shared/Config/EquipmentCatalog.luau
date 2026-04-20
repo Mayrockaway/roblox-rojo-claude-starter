@@ -31,6 +31,9 @@ export type EquipmentRow = {
 	prospectDurationSeconds: number?,
 	--- Second line on shop cards (e.g. one-use vs persistent).
 	shopSubtitle: string?,
+	--- Display rarity bucket for shop UI (`ShopPanelTemplates.Rarities`).
+	--- Server treats this as cosmetic only; it never gates purchases or affects price.
+	rarity: string?,
 	--- Placed model / ghost: extra world +Y after anchor/bbox alignment (fine trim). Prefer naming
 	--- a `BasePart` `Bottom` or `bottom` on the asset; see `Shared.Utils.PlacementAnchor`.
 	visualGroundOffsetStuds: number?,
@@ -56,6 +59,7 @@ local ITEMS: { EquipmentRow } = {
 		pipeSnapRadius = nil,
 		prospectDurationSeconds = nil,
 		shopSubtitle = "One-use reveal",
+		rarity = "COMMON",
 	},
 	{
 		id = "drill_t2",
@@ -75,6 +79,7 @@ local ITEMS: { EquipmentRow } = {
 		pipeSnapRadius = nil,
 		prospectDurationSeconds = nil,
 		shopSubtitle = "One-use reveal",
+		rarity = "UNCOMMON",
 	},
 	{
 		id = "drill_t3",
@@ -94,6 +99,73 @@ local ITEMS: { EquipmentRow } = {
 		pipeSnapRadius = nil,
 		prospectDurationSeconds = nil,
 		shopSubtitle = "One-use reveal",
+		rarity = "RARE",
+	},
+	-- Placeholder drills (EPIC / LEGENDARY / MYTHIC). They render in the shop
+	-- (`purchasable = true`) but `tierKey = nil` keeps them out of
+	-- `OilConfig.DrillTiers` so they can't be placed/used until real Tool
+	-- templates and gameplay tuning ship. Server `EquipmentShopService` will
+	-- reject the actual purchase until a matching Tool exists in
+	-- `ServerStorage.EquipmentShopTemplates.<toolName>`.
+	{
+		id = "drill_t4",
+		toolName = "Drill_T4",
+		toolKind = "Drill",
+		tierKey = nil,
+		displayName = "Heavy Bore",
+		cashCost = 0,
+		shopPrice = 12000,
+		purchasable = true,
+		sortOrder = 4.1,
+		drillTimeDivisor = nil,
+		drillFallbackSeconds = nil,
+		pumpFlowMultiplier = nil,
+		pipeMinLength = nil,
+		pipeMaxLength = nil,
+		pipeSnapRadius = nil,
+		prospectDurationSeconds = nil,
+		shopSubtitle = "Coming soon",
+		rarity = "EPIC",
+	},
+	{
+		id = "drill_t5",
+		toolName = "Drill_T5",
+		toolKind = "Drill",
+		tierKey = nil,
+		displayName = "Diesel Rig",
+		cashCost = 0,
+		shopPrice = 35000,
+		purchasable = true,
+		sortOrder = 4.2,
+		drillTimeDivisor = nil,
+		drillFallbackSeconds = nil,
+		pumpFlowMultiplier = nil,
+		pipeMinLength = nil,
+		pipeMaxLength = nil,
+		pipeSnapRadius = nil,
+		prospectDurationSeconds = nil,
+		shopSubtitle = "Coming soon",
+		rarity = "LEGENDARY",
+	},
+	{
+		id = "drill_t6",
+		toolName = "Drill_T6",
+		toolKind = "Drill",
+		tierKey = nil,
+		displayName = "Tycoon Auger",
+		cashCost = 0,
+		shopPrice = 100000,
+		purchasable = true,
+		sortOrder = 4.3,
+		drillTimeDivisor = nil,
+		drillFallbackSeconds = nil,
+		pumpFlowMultiplier = nil,
+		pipeMinLength = nil,
+		pipeMaxLength = nil,
+		pipeSnapRadius = nil,
+		prospectDurationSeconds = nil,
+		shopSubtitle = "Coming soon",
+		rarity = "MYTHIC",
 	},
 	{
 		id = "pump_t1",
@@ -200,6 +272,7 @@ export type ShopCatalogRow = {
 	toolKind: string,
 	tier: string?,
 	subtitle: string?,
+	rarity: string?,
 }
 
 export type ShopStockBand = { min: number, max: number }
@@ -217,6 +290,9 @@ local ShopRotation = {
 		drill_t1   = { min = 2,  max = 4  } :: ShopStockBand,
 		drill_t2   = { min = 0,  max = 2  } :: ShopStockBand,
 		drill_t3   = { min = 0,  max = 1  } :: ShopStockBand,
+		drill_t4   = { min = 0,  max = 1  } :: ShopStockBand,
+		drill_t5   = { min = 0,  max = 1  } :: ShopStockBand,
+		drill_t6   = { min = 0,  max = 1  } :: ShopStockBand,
 		pump_t1    = { min = 1,  max = 3  } :: ShopStockBand,
 		pump_t2    = { min = 0,  max = 2  } :: ShopStockBand,
 		pump_t3    = { min = 0,  max = 1  } :: ShopStockBand,
@@ -285,6 +361,7 @@ function EquipmentCatalog.buildShopItems(): { ShopCatalogRow }
 				toolKind = r.toolKind,
 				tier = r.tierKey,
 				subtitle = r.shopSubtitle,
+				rarity = r.rarity,
 			})
 		end
 	end

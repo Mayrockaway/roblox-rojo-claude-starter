@@ -52,48 +52,22 @@ local SellOilPanel = {}
 local wiredScreen: ScreenGui? = nil
 local connections: { RBXScriptConnection } = {}
 
-local STATUS_TOAST_TEXT_RED = Color3.fromRGB(220, 40, 40)
 local ERROR_NOTIFICATION_NAME = "ErrorNotification"
 
 local errorNotificationLabel: TextLabel? = nil
 local errorNotificationSeq = 0
 
-local function ensureErrorNotificationLabel(screen: ScreenGui): TextLabel?
-	local canvas = screen:FindFirstChild("Canvas")
-	if not canvas then
-		return nil
+--- Studio-authored ephemeral red label, located anywhere under the panel
+--- (canonically `Canvas.PanelHost.ErrorNotification`). Runtime ONLY mutates
+--- `Text` / `Visible` / `TextTransparency` — appearance + placement stay 1:1
+--- with the Studio placeholder. If Studio hasn't authored one, we surface
+--- a single warn so it's caught (no fabricated fallback that drifts visually).
+local function findStudioErrorNotificationLabel(screen: ScreenGui): TextLabel?
+	local found = screen:FindFirstChild(ERROR_NOTIFICATION_NAME, true)
+	if found and found:IsA("TextLabel") then
+		return found
 	end
-	local existing = canvas:FindFirstChild(ERROR_NOTIFICATION_NAME)
-	if existing and existing:IsA("TextLabel") then
-		return existing
-	end
-	local toast = Instance.new("TextLabel")
-	toast.Name = ERROR_NOTIFICATION_NAME
-	toast.BackgroundTransparency = 1
-	toast.BorderSizePixel = 0
-	toast.AnchorPoint = Vector2.new(0.5, 1)
-	toast.Position = UDim2.new(0.5, 0, 0.88, 0)
-	toast.Size = UDim2.new(0.5, 0, 0, 0)
-	toast.AutomaticSize = Enum.AutomaticSize.Y
-	toast.ZIndex = 50
-	toast.Visible = false
-	toast.Text = ""
-	toast.TextColor3 = STATUS_TOAST_TEXT_RED
-	toast.TextScaled = true
-	toast.TextWrapped = true
-	toast.Font = Enum.Font.Merriweather
-	toast.TextXAlignment = Enum.TextXAlignment.Center
-	toast.TextYAlignment = Enum.TextYAlignment.Bottom
-	local tc = Instance.new("UITextSizeConstraint")
-	tc.MaxTextSize = 22
-	tc.MinTextSize = 10
-	tc.Parent = toast
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(40, 10, 10)
-	stroke.Thickness = 1.25
-	stroke.Parent = toast
-	toast.Parent = canvas
-	return toast
+	return nil
 end
 
 local function hideErrorNotification()
@@ -578,10 +552,20 @@ local function wireSellOil(screen: ScreenGui, closePanel: (() -> ())?)
 	disconnectAll()
 	wiredScreen = screen
 
-	errorNotificationLabel = ensureErrorNotificationLabel(screen)
+	-- Studio authors `ErrorNotification` somewhere under the panel
+	-- (canonically `Canvas.PanelHost.ErrorNotification`) with `Visible = true`
+	-- so it can be positioned + restyled in Edit mode. We hide on wire and
+	-- only swap `.Text` at runtime — placement + look stay 1:1 with Studio.
+	errorNotificationLabel = findStudioErrorNotificationLabel(screen)
 	if errorNotificationLabel then
 		errorNotificationLabel.Visible = false
 		errorNotificationLabel.TextTransparency = 0
+	else
+		warn(
+			"[SellOilPanel] No `ErrorNotification` TextLabel found under "
+				.. screen:GetFullName()
+				.. " — author one in Studio (recommended path: Canvas.PanelHost.ErrorNotification). Errors will be silent until added."
+		)
 	end
 
 	local panel = screen:FindFirstChild("Panel", true)

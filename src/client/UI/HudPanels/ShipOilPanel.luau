@@ -3,6 +3,7 @@
 -- Cargo rows = refinery/plot storage (`OilStateService` `oilByTier`). `WarehouseCapacityLabel` = strait **`WarehouseService`** totals (`WarehouseStateUpdate`).
 -- UI counts whole barrels; manifest uses oil units (`barrels selected * PerBarrelOil`) to match `ConsumeManifest`.
 
+local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
@@ -11,6 +12,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
 local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
+local InstantSellConfig = require(Shared:WaitForChild("Config"):WaitForChild("InstantSellConfig"))
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
@@ -41,55 +43,19 @@ local function applyMerriweatherToPanelText(root: ScreenGui)
 	end
 end
 
---- Ephemeral red banner on `Canvas` only (not in `Body` layouts). Default: centered, just above lower area / dispatch zone — reposition freely in Studio.
-local STATUS_TOAST_TEXT_RED = Color3.fromRGB(220, 40, 40)
-
+--- Studio-authored ephemeral red label, located anywhere under the panel
+--- (canonically `Canvas.PanelHost.ErrorNotification`). Runtime ONLY mutates
+--- `Text` / `Visible` / `TextTransparency` — appearance + placement stay 1:1
+--- with the Studio placeholder. If Studio hasn't authored one, we surface
+--- a single warn so it's caught (no fabricated fallback that drifts visually).
 local ERROR_NOTIFICATION_NAME = "ErrorNotification"
-local LEGACY_ERROR_TOAST_NAME = "ShipOilStatusToast"
 
-local function ensureErrorNotificationLabel(screen: ScreenGui): TextLabel?
-	local canvas = screen:FindFirstChild("Canvas")
-	if not canvas then
-		return nil
+local function findStudioErrorNotificationLabel(screen: ScreenGui): TextLabel?
+	local found = screen:FindFirstChild(ERROR_NOTIFICATION_NAME, true)
+	if found and found:IsA("TextLabel") then
+		return found
 	end
-	local existing = canvas:FindFirstChild(ERROR_NOTIFICATION_NAME)
-	if not (existing and existing:IsA("TextLabel")) then
-		local legacy = canvas:FindFirstChild(LEGACY_ERROR_TOAST_NAME)
-		if legacy and legacy:IsA("TextLabel") then
-			legacy.Name = ERROR_NOTIFICATION_NAME
-			existing = legacy
-		end
-	end
-	if existing and existing:IsA("TextLabel") then
-		return existing
-	end
-	local toast = Instance.new("TextLabel")
-	toast.Name = ERROR_NOTIFICATION_NAME
-	toast.BackgroundTransparency = 1
-	toast.BorderSizePixel = 0
-	toast.AnchorPoint = Vector2.new(0.5, 1)
-	toast.Position = UDim2.new(0.66, 0, 0.9, 0)
-	toast.Size = UDim2.new(0.14, 0, 0, 0)
-	toast.AutomaticSize = Enum.AutomaticSize.Y
-	toast.ZIndex = 50
-	toast.Visible = false
-	toast.Text = ""
-	toast.TextColor3 = STATUS_TOAST_TEXT_RED
-	toast.TextScaled = true
-	toast.TextWrapped = true
-	toast.Font = PANEL_FONT
-	toast.TextXAlignment = Enum.TextXAlignment.Center
-	toast.TextYAlignment = Enum.TextYAlignment.Bottom
-	local tc = Instance.new("UITextSizeConstraint")
-	tc.MaxTextSize = 22
-	tc.MinTextSize = 10
-	tc.Parent = toast
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(40, 10, 10)
-	stroke.Thickness = 1.25
-	stroke.Parent = toast
-	toast.Parent = canvas
-	return toast
+	return nil
 end
 
 local function hideErrorNotification()
@@ -252,6 +218,52 @@ local defaultDispatchText: string? = nil
 --- Last values sent to FTUE pointer sequencing (avoid spamming refresh every 250ms boat tick).
 local lastFtueShipOilPeekOpen: boolean? = nil
 local lastFtueShipOilPeekBarrels: number? = nil
+
+------------------------------------------------------------
+-- InstantSell sub-modal state (`ShipOilInstantSellGui.InstantSellConfirm` —
+-- own ScreenGui with `IgnoreGuiInset = true` so the dim covers the full
+-- viewport regardless of the underlying ShipOil panel layout).
+------------------------------------------------------------
+-- Sells from the same `refineryOilByTier` pool the ShipOilPanel cargo rows
+-- show, but at fixed `InstantSellConfig` prices instead of going through
+-- shipping. Modal lives inside ShipOilPanelGui (sub-modal, not its own
+-- ScreenGui) so closing the parent panel implicitly hides it via Visible.
+local instantSellModalRoot: Frame? = nil
+local instantSellSellButton: GuiButton? = nil
+local instantSellSellButtonText: TextLabel? = nil
+local instantSellCancelButton: GuiButton? = nil
+local instantSellCloseButton: GuiButton? = nil
+local instantSellSaleTotalLabel: TextLabel? = nil
+local instantSellMarketLossLabel: TextLabel? = nil
+local instantSellOpenButton: GuiButton? = nil
+
+type InstantSellRowBinding = {
+	tier: string,
+	pricePill: TextLabel?,
+	amountField: AmountField,
+	minus: GuiButton,
+	plus: GuiButton,
+	maxLabel: TextLabel?,
+}
+
+local instantSellRows: { [string]: InstantSellRowBinding } = {}
+-- Selected sell qty per tier (driven by steppers; clamped to current holdings).
+local instantSellSel: { [string]: number } = {
+	HeavyCrude = 0,
+	LightSweet = 0,
+	PremiumRefined = 0,
+}
+-- Market $/bbl from `MarketPriceUpdate` / `RequestMarketSnapshot`. Used only
+-- for the "Market value" + "You lose" subtitles; the sell PRICE itself is
+-- always `InstantSellConfig.pricePerBarrel(tier)`.
+local marketPricesByTier: { [string]: number } = {
+	HeavyCrude = 0,
+	LightSweet = 0,
+	PremiumRefined = 0,
+}
+-- TextBox lookup so Enter-to-commit (UserInputService) can route the input
+-- back to the right tier when the InstantSell amount field is focused.
+local instantSellAmountTextBoxTier: { [TextBox]: string } = {}
 
 local function resolvedStats(): { capacity: number, dispatchFee: number }
 	local cap: number
@@ -627,6 +639,211 @@ local function tryDispatch()
 	})
 end
 
+------------------------------------------------------------
+-- InstantSell sub-modal helpers
+------------------------------------------------------------
+local function instantSellMaxForTier(tier: string): number
+	return maxBarrelsInRefineryForTier(tier)
+end
+
+local function instantSellPriceForTier(tier: string): number
+	return InstantSellConfig.pricePerBarrel(tier)
+end
+
+local function instantSellMarketPriceForTier(tier: string): number
+	return marketPricesByTier[tier] or 0
+end
+
+local function clampInstantSellSelections()
+	for _, k in ipairs(TIER_KEYS) do
+		local m = instantSellMaxForTier(k)
+		if (instantSellSel[k] or 0) > m then
+			instantSellSel[k] = m
+		end
+		if (instantSellSel[k] or 0) < 0 then
+			instantSellSel[k] = 0
+		end
+	end
+end
+
+--- Sale total = `Σ qty * InstantSellConfig price`. Drives the SELL button
+--- copy + the "Sale Total" label. Market value (informational only) uses
+--- the strait market prices.
+local function instantSellSaleTotal(): number
+	local t = 0
+	for _, k in ipairs(TIER_KEYS) do
+		t += (instantSellSel[k] or 0) * instantSellPriceForTier(k)
+	end
+	return t
+end
+
+local function instantSellMarketValue(): number
+	local t = 0
+	for _, k in ipairs(TIER_KEYS) do
+		t += (instantSellSel[k] or 0) * instantSellMarketPriceForTier(k)
+	end
+	return t
+end
+
+local function refreshInstantSellRowsAndTotals()
+	clampInstantSellSelections()
+
+	for _, bind in pairs(instantSellRows) do
+		local t = bind.tier
+		local maxQty = instantSellMaxForTier(t)
+		local sel = math.min(instantSellSel[t] or 0, maxQty)
+		instantSellSel[t] = sel
+
+		setAmountFieldText(bind.amountField, sel)
+
+		if bind.maxLabel then
+			bind.maxLabel.Text = string.format("/ %d bbls", maxQty)
+		end
+		if bind.pricePill then
+			local p = instantSellPriceForTier(t)
+			bind.pricePill.Text = if p > 0 then string.format("$%d/bbl", p) else "$—/bbl"
+		end
+	end
+
+	local sale = instantSellSaleTotal()
+	local market = instantSellMarketValue()
+	local loss = math.max(0, market - sale)
+
+	if instantSellSaleTotalLabel then
+		instantSellSaleTotalLabel.Text = string.format("Sale Total: $%d", sale)
+	end
+	if instantSellMarketLossLabel then
+		instantSellMarketLossLabel.Text = string.format("Market value: $%d  —  You lose $%d", market, loss)
+	end
+	if instantSellSellButtonText then
+		instantSellSellButtonText.Text = string.format("SELL FOR $%d", sale)
+	end
+	if instantSellSellButton then
+		-- Disable click + dim auto-color when there's nothing to sell so the
+		-- button visibly communicates "no-op" without a separate styled state.
+		local hasSomething = sale > 0
+		instantSellSellButton.Active = hasSomething
+		instantSellSellButton.AutoButtonColor = hasSomething
+	end
+end
+
+--- Smooth `BackgroundColor3` fade on hover/press for InstantSell modal
+--- buttons (stepper +/- and the modal close button). Matches the soft
+--- color-shift feel of the ShipOil dispatch steppers — no size tween.
+--- Disable `AutoButtonColor` so it doesn't fight the tween.
+local STEPPER_HOVER_TWEEN = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local STEPPER_HOVER_LERP = 0.18
+local STEPPER_PRESS_LERP = 0.22
+
+local function attachColorFadeHover(btn: GuiButton, conns: { RBXScriptConnection })
+	if btn:GetAttribute("InstantSellHoverFadeBound") == true then
+		return
+	end
+	btn:SetAttribute("InstantSellHoverFadeBound", true)
+
+	-- Strip the previous experiment's scale child if it lingers from prior runs.
+	local stale = btn:FindFirstChild("HoverScale")
+	if stale and stale:IsA("UIScale") then
+		stale:Destroy()
+	end
+
+	btn.AutoButtonColor = false
+
+	local baseColor = btn.BackgroundColor3
+	local hoverColor = baseColor:Lerp(Color3.new(1, 1, 1), STEPPER_HOVER_LERP)
+	local pressedColor = baseColor:Lerp(Color3.new(0, 0, 0), STEPPER_PRESS_LERP)
+
+	local function tweenTo(color: Color3)
+		TweenService:Create(btn, STEPPER_HOVER_TWEEN, { BackgroundColor3 = color }):Play()
+	end
+
+	table.insert(conns, btn.MouseEnter:Connect(function()
+		tweenTo(hoverColor)
+	end))
+	table.insert(conns, btn.MouseLeave:Connect(function()
+		tweenTo(baseColor)
+	end))
+	table.insert(conns, btn.MouseButton1Down:Connect(function()
+		tweenTo(pressedColor)
+	end))
+	table.insert(conns, btn.MouseButton1Up:Connect(function()
+		tweenTo(hoverColor)
+	end))
+end
+
+local function bumpInstantSellTier(tier: string, delta: number)
+	local maxQty = instantSellMaxForTier(tier)
+	local cur = instantSellSel[tier] or 0
+	local next_ = math.clamp(cur + delta, 0, maxQty)
+	if next_ == cur then
+		return
+	end
+	instantSellSel[tier] = next_
+	refreshInstantSellRowsAndTotals()
+end
+
+local function applyTypedInstantSellTier(tier: string, raw: string)
+	local want = parseUnsignedBarrelInput(raw)
+	local maxQty = instantSellMaxForTier(tier)
+	instantSellSel[tier] = math.clamp(want, 0, maxQty)
+	refreshInstantSellRowsAndTotals()
+end
+
+local function setInstantSellModalVisible(show: boolean)
+	if instantSellModalRoot then
+		instantSellModalRoot.Visible = show
+	end
+end
+
+--- Reset selected qty to the player's current holdings (the "max of all
+--- types") whenever the modal opens, per spec. Re-running while open is a
+--- no-op since the user controls the steppers from there.
+local function openInstantSellModal()
+	if not instantSellModalRoot then
+		return
+	end
+	for _, k in ipairs(TIER_KEYS) do
+		instantSellSel[k] = instantSellMaxForTier(k)
+	end
+	refreshInstantSellRowsAndTotals()
+	setInstantSellModalVisible(true)
+end
+
+local function closeInstantSellModal()
+	setInstantSellModalVisible(false)
+end
+
+local function tryInstantSell()
+	if not instantSellModalRoot or not instantSellModalRoot.Visible then
+		return
+	end
+	local total = instantSellSaleTotal()
+	if total <= 0 then
+		-- Nothing to sell; the button should already be inactive but guard
+		-- anyway in case of stale state.
+		return
+	end
+	local quantities: { [string]: number } = {}
+	for _, k in ipairs(TIER_KEYS) do
+		local q = math.max(0, math.floor(instantSellSel[k] or 0))
+		if q > 0 then
+			quantities[k] = q
+		end
+	end
+	if next(quantities) == nil then
+		return
+	end
+	-- Optimistic close: we'll get the receipt on `oilActionResult` (action
+	-- = "InstantSell") and play the kaching SFX there. Closing immediately
+	-- matches the "instant" feel the modal name implies; if the server
+	-- rejects we surface the error via `errorNotificationLabel`.
+	closeInstantSellModal()
+	ClientRemotes.requestInstantSell:FireServer({
+		quantities = quantities,
+		requestId = HttpService:GenerateGUID(false),
+	})
+end
+
 local function disconnectAll()
 	for _, c in ipairs(connections) do
 		c:Disconnect()
@@ -634,6 +851,18 @@ local function disconnectAll()
 	table.clear(connections)
 	table.clear(rowBindings)
 	table.clear(shipAmountTextBoxTier)
+	table.clear(instantSellRows)
+	table.clear(instantSellAmountTextBoxTier)
+	-- Hide the InstantSell modal too — it now lives in a sibling
+	-- `ShipOilInstantSellGui` ScreenGui that closing the ShipOil panel
+	-- doesn't disable on its own.
+	if instantSellModalRoot then
+		instantSellModalRoot.Visible = false
+	end
+	for _, k in ipairs(TIER_KEYS) do
+		instantSellSel[k] = 0
+		marketPricesByTier[k] = 0
+	end
 	shipmentCostLabel = nil
 	totalBarrelsLabel = nil
 	shipCapacityLabel = nil
@@ -642,6 +871,14 @@ local function disconnectAll()
 	warehouseCapTotal = 0
 	hasWarehouseTotals = false
 	dispatchButton = nil
+	instantSellModalRoot = nil
+	instantSellSellButton = nil
+	instantSellSellButtonText = nil
+	instantSellCancelButton = nil
+	instantSellCloseButton = nil
+	instantSellSaleTotalLabel = nil
+	instantSellMarketLossLabel = nil
+	instantSellOpenButton = nil
 	wiredScreen = nil
 	latestResolved = nil
 	lastFtueShipOilPeekOpen = nil
@@ -657,11 +894,20 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 	disconnectAll()
 	wiredScreen = screen
 
-	-- Studio: sample `Text` + `Visible = true` on `Canvas.ErrorNotification` for layout; we hide when wired.
-	errorNotificationLabel = ensureErrorNotificationLabel(screen)
+	-- Studio authors `ErrorNotification` somewhere under the panel
+	-- (canonically `Canvas.PanelHost.ErrorNotification`) with `Visible = true`
+	-- so it can be positioned + restyled in Edit mode. We hide on wire and
+	-- only swap `.Text` at runtime — placement + look stay 1:1 with Studio.
+	errorNotificationLabel = findStudioErrorNotificationLabel(screen)
 	if errorNotificationLabel then
 		errorNotificationLabel.Visible = false
 		errorNotificationLabel.TextTransparency = 0
+	else
+		warn(
+			"[ShipOilPanel] No `ErrorNotification` TextLabel found under "
+				.. screen:GetFullName()
+				.. " — author one in Studio (recommended path: Canvas.PanelHost.ErrorNotification). Errors will be silent until added."
+		)
 	end
 
 	local shipmentBand = screen:FindFirstChild("ShipmentCostBand", true)
@@ -800,11 +1046,16 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 			return
 		end
 		local tKey = shipAmountTextBoxTier[tb]
-		if not tKey then
+		if tKey then
+			applyTypedBarrelsForTier(tKey, tb.Text)
+			tb:ReleaseFocus()
 			return
 		end
-		applyTypedBarrelsForTier(tKey, tb.Text)
-		tb:ReleaseFocus()
+		local instantTier = instantSellAmountTextBoxTier[tb]
+		if instantTier then
+			applyTypedInstantSellTier(instantTier, tb.Text)
+			tb:ReleaseFocus()
+		end
 	end))
 
 	if dispatchButton then
@@ -829,6 +1080,13 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 		if mergeOilByTierFromSnapshot(snap) then
 			clampSelectionsToInventory()
 			refreshRowUi()
+			-- Re-render InstantSell MaxLabel + clamped sel qty whenever
+			-- holdings change (drilling / pickup / shipment fulfillment).
+			-- Cheap when modal is hidden; only the next open call needs the
+			-- updated max anyway.
+			if next(instantSellRows) ~= nil then
+				refreshInstantSellRowsAndTotals()
+			end
 		end
 		refreshFooter()
 	end))
@@ -838,6 +1096,27 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 			return
 		end
 		local data = (payload :: any).data
+		-- InstantSell receipts (server tags `action = "InstantSell"`). Play
+		-- kaching on success; surface the error toast + deny SFX on failure.
+		if (payload :: any).action == "InstantSell" then
+			if payload.ok == true then
+				UiSfx.playKaching()
+				for _, k in ipairs(TIER_KEYS) do
+					instantSellSel[k] = 0
+				end
+				if next(instantSellRows) ~= nil then
+					refreshInstantSellRowsAndTotals()
+				end
+			elseif payload.ok == false then
+				if errorNotificationLabel and wiredScreen == screen and screen.Enabled then
+					local msg = typeof((payload :: any).message) == "string" and (payload :: any).message
+						or "Instant sell failed."
+					showErrorNotification(msg, 4)
+				end
+				UiSfx.playUiDenied()
+			end
+			return
+		end
 		if payload.ok == true and typeof(data) == "table" and typeof(data.shipmentId) == "string" then
 			hideErrorNotification()
 			UiSfx.playSetSail()
@@ -929,6 +1208,186 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 		if ok then
 			mergeWarehouseTotalsFromPayload(data)
 		end
+	end
+
+	------------------------------------------------------------
+	-- InstantSell sub-modal wiring (`ShipOilInstantSellGui.InstantSellConfirm`)
+	------------------------------------------------------------
+	-- The modal lives in its OWN ScreenGui sibling (`ShipOilInstantSellGui`,
+	-- DisplayOrder = 41, IgnoreGuiInset = true) so the dim covers the full
+	-- viewport regardless of the underlying ShipOil panel's layout / inset.
+	-- Falls back to the legacy `Canvas.InstantSellConfirm` location during
+	-- a transitional state where the Studio split hasn't been saved yet.
+	local function resolveInstantSellModal(): Frame?
+		local parent = screen.Parent
+		if parent then
+			local sib = parent:FindFirstChild("ShipOilInstantSellGui")
+			if sib then
+				local m = sib:FindFirstChild("InstantSellConfirm")
+				if m and m:IsA("Frame") then
+					return m :: Frame
+				end
+			end
+		end
+		local canvasLegacy = screen:FindFirstChild("Canvas")
+		local legacy = canvasLegacy and canvasLegacy:FindFirstChild("InstantSellConfirm")
+		if legacy and legacy:IsA("Frame") then
+			return legacy :: Frame
+		end
+		return nil
+	end
+
+	local modal = resolveInstantSellModal()
+	if modal and modal:IsA("Frame") then
+		instantSellModalRoot = modal
+		modal.Visible = false -- start hidden; opened via InstantSell button
+
+		local body = modal:FindFirstChild("ConfirmHost", true)
+		body = body and body:FindFirstChild("ConfirmCard", true) or body
+		body = body and body:FindFirstChild("Body", true) or body
+
+		local closeBtn = body and body:FindFirstChild("CloseButton", true)
+		if closeBtn and closeBtn:IsA("GuiButton") then
+			instantSellCloseButton = closeBtn
+		end
+
+		local actionRow = body and body:FindFirstChild("ActionRow", true)
+		local cancelBtn = actionRow and actionRow:FindFirstChild("CancelButton", true)
+		if cancelBtn and cancelBtn:IsA("GuiButton") then
+			instantSellCancelButton = cancelBtn
+		end
+		local sellBtn = actionRow and actionRow:FindFirstChild("SellButton", true)
+		if sellBtn and sellBtn:IsA("GuiButton") then
+			instantSellSellButton = sellBtn
+			local txt = sellBtn:FindFirstChild("Text")
+			if txt and txt:IsA("TextLabel") then
+				instantSellSellButtonText = txt
+			end
+		end
+
+		local totalsBlock = body and body:FindFirstChild("TotalsBlock", true)
+		local saleTotal = totalsBlock and totalsBlock:FindFirstChild("SaleTotalLabel", true)
+		if saleTotal and saleTotal:IsA("TextLabel") then
+			instantSellSaleTotalLabel = saleTotal
+		end
+		local marketLoss = totalsBlock and totalsBlock:FindFirstChild("MarketLossLabel", true)
+		if marketLoss and marketLoss:IsA("TextLabel") then
+			instantSellMarketLossLabel = marketLoss
+		end
+
+		-- Per-tier rows (HeavyCrudeRow / LightSweetRow / PremiumRefinedRow).
+		local oilRows = body and body:FindFirstChild("OilRows", true)
+		local ROW_NAME_FOR_TIER: { [string]: string } = {
+			HeavyCrude = "HeavyCrudeRow",
+			LightSweet = "LightSweetRow",
+			PremiumRefined = "PremiumRefinedRow",
+		}
+		if oilRows then
+			for _, tier in ipairs(TIER_KEYS) do
+				local rowName = ROW_NAME_FOR_TIER[tier]
+				local row = rowName and oilRows:FindFirstChild(rowName)
+				if not (row and row:IsA("GuiObject")) then
+					continue
+				end
+				local stepper = row:FindFirstChild("Stepper", true)
+				local minus = stepper and stepper:FindFirstChild("MinusButton", true)
+				local plus = stepper and stepper:FindFirstChild("PlusButton", true)
+				local amt = stepper and stepper:FindFirstChild("AmountLabel", true)
+				if not (minus and minus:IsA("GuiButton") and plus and plus:IsA("GuiButton") and amt) then
+					continue
+				end
+				if not (amt:IsA("TextBox") or amt:IsA("TextLabel")) then
+					continue
+				end
+				local amountField = amt :: AmountField
+				if amt:IsA("TextBox") then
+					amt.ClearTextOnFocus = false
+					instantSellAmountTextBoxTier[amt :: TextBox] = tier
+				end
+
+				local pricePill = row:FindFirstChild("PricePill", true)
+				local maxLabel = row:FindFirstChild("MaxLabel", true)
+
+				instantSellRows[tier] = {
+					tier = tier,
+					pricePill = (pricePill and pricePill:IsA("TextLabel")) and pricePill or nil,
+					amountField = amountField,
+					minus = minus :: GuiButton,
+					plus = plus :: GuiButton,
+					maxLabel = (maxLabel and maxLabel:IsA("TextLabel")) and maxLabel or nil,
+				}
+
+				StepperHold.bind(minus :: GuiButton, function()
+					bumpInstantSellTier(tier, -1)
+				end, connections)
+				StepperHold.bind(plus :: GuiButton, function()
+					bumpInstantSellTier(tier, 1)
+				end, connections)
+				attachColorFadeHover(minus :: GuiButton, connections)
+				attachColorFadeHover(plus :: GuiButton, connections)
+				if amt:IsA("TextBox") then
+					table.insert(connections, amt.FocusLost:Connect(function()
+						applyTypedInstantSellTier(tier, amt.Text)
+					end))
+				end
+			end
+		end
+
+		-- Cancel / Close → hide modal. Close button gets the same color-fade
+		-- hover as the steppers so it feels consistent inside the modal.
+		if instantSellCancelButton then
+			table.insert(connections, instantSellCancelButton.Activated:Connect(closeInstantSellModal))
+		end
+		if instantSellCloseButton then
+			table.insert(connections, instantSellCloseButton.Activated:Connect(closeInstantSellModal))
+			attachColorFadeHover(instantSellCloseButton, connections)
+		end
+		-- Sell → server (`RequestInstantSell`). Receipt comes in on
+		-- `oilActionResult` (action = "InstantSell"); we already close on
+		-- send for the "instant" feel.
+		if instantSellSellButton then
+			table.insert(connections, instantSellSellButton.Activated:Connect(tryInstantSell))
+		end
+
+		-- Live market prices → drives the "Market value / You lose" line in
+		-- the totals block. NOT used for the actual sell price.
+		table.insert(connections, ClientRemotes.marketPriceUpdate.OnClientEvent:Connect(function(data: any)
+			if typeof(data) ~= "table" or typeof(data.prices) ~= "table" then
+				return
+			end
+			local p = data.prices :: { [string]: any }
+			for _, k in ipairs(TIER_KEYS) do
+				marketPricesByTier[k] = math.max(0, math.floor(tonumber(p[k]) or 0))
+			end
+			if instantSellModalRoot and instantSellModalRoot.Visible then
+				refreshInstantSellRowsAndTotals()
+			end
+		end))
+		do
+			local ok, data = pcall(function()
+				return ClientRemotes.requestMarketSnapshot:InvokeServer()
+			end)
+			if ok and typeof(data) == "table" and typeof((data :: any).prices) == "table" then
+				local p = (data :: any).prices
+				for _, k in ipairs(TIER_KEYS) do
+					marketPricesByTier[k] = math.max(0, math.floor(tonumber(p[k]) or 0))
+				end
+			end
+		end
+
+		-- Initial paint (modal hidden) so labels aren't placeholder copy
+		-- the first time the player opens it.
+		refreshInstantSellRowsAndTotals()
+	end
+
+	-- InstantSell open button lives on the main panel (`InstantSellSection.InstantSellButton`).
+	local instantSellSection = screen:FindFirstChild("InstantSellSection", true)
+	local openBtn = instantSellSection and instantSellSection:FindFirstChild("InstantSellButton", true)
+	if openBtn and openBtn:IsA("GuiButton") then
+		instantSellOpenButton = openBtn
+		table.insert(connections, openBtn.Activated:Connect(function()
+			openInstantSellModal()
+		end))
 	end
 
 	applyMerriweatherToPanelText(screen)
