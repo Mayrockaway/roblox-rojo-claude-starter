@@ -12,6 +12,7 @@ local OIL_REVEAL_SPRAY_SECONDS = 2.0
 local OIL_TUBE_REVEAL_DURATION = 1.5
 local OIL_TUBE_VISIBLE_TRANSPARENCY = 0.5
 local OIL_TUBE_ENDPOINT_EPSILON = 0.05
+local BARREL_CONVEYOR_MIN_EJECT_INTERVAL = 0.25
 local TIER_ORDER = { "Crude", "Refined", "Premium" }
 local function floorPositive(value: number): number
 	return math.max(0, math.floor(value))
@@ -117,6 +118,45 @@ local function getHighestBasePartTopPosition(instance: Instance?): Vector3?
 		end
 	end
 	return bestPos
+end
+local function getBasePartWorldHalfHeight(part: BasePart): number
+	local sx, sy, sz = part.Size.X / 2, part.Size.Y / 2, part.Size.Z / 2
+	local cf = part.CFrame
+	return math.abs(cf.RightVector.Y) * sx + math.abs(cf.UpVector.Y) * sy + math.abs(cf.LookVector.Y) * sz
+end
+local function getInstanceBottomOffset(instance: Instance): number
+	if instance:IsA("BasePart") then
+		return getBasePartWorldHalfHeight(instance)
+	end
+	local pivot = instance:GetPivot()
+	local boundsCf, boundsSize = instance:GetBoundingBox()
+	if boundsSize.Y <= 0 then
+		return 0
+	end
+	local boundsBottomY = boundsCf.Position.Y - boundsSize.Y / 2
+	return math.max(0, pivot.Position.Y - boundsBottomY)
+end
+local function getInstanceFootprint(instance: Instance): number
+	if instance:IsA("BasePart") then
+		return math.max(instance.Size.X, instance.Size.Z)
+	end
+	local _, size = instance:GetBoundingBox()
+	return math.max(size.X, size.Z)
+end
+local function conveyorPathPosition(startPos: Vector3, cornerPos: Vector3, endPos: Vector3, seg1Len: number, seg2Len: number, distance: number): Vector3
+	local startToCorner = cornerPos - startPos
+	local startDir = startToCorner.Magnitude > 1e-4 and startToCorner.Unit or Vector3.new(0, 0, -1)
+	if distance <= 0 then
+		return startPos + startDir * distance
+	end
+	if seg1Len > 1e-4 and distance < seg1Len then
+		return startPos:Lerp(cornerPos, distance / seg1Len)
+	end
+	local seg2Distance = distance - seg1Len
+	if seg2Len > 1e-4 and seg2Distance < seg2Len then
+		return cornerPos:Lerp(endPos, math.max(0, seg2Distance) / seg2Len)
+	end
+	return endPos
 end
 local PUMP_ENDPOINT_Y_OFFSET = -2.4 -- tubes enter inside the pump body
 local function getCenterPumpEndpoint(plot: Model, sectionModel: Instance, centerTile: BasePart, drills: { any }?, chunkId: string): Vector3
@@ -1428,7 +1468,7 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 	local convEnd = staging:FindFirstChild("ConveyorEnd")
 	if not (convStart and convEnd) then return end
 	-- Small Y offset so barrels sit just above the belt surface, not clipping into it
-	local BELT_Y_OFFSET = Vector3.new(0, 0.2, 0)
+	local BELT_Y_OFFSET = Vector3.new(0, 0.45, 0)
 	local startPos = convStart.Position + BELT_Y_OFFSET
 	local cornerPos = (convCorner and convCorner.Position or convStart.Position) + BELT_Y_OFFSET
 	local endPos = convEnd.Position + BELT_Y_OFFSET
@@ -1436,6 +1476,9 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 	local seg1Len = (cornerPos - startPos).Magnitude
 	local seg2Len = (endPos - cornerPos).Magnitude
 	local totalLen = math.max(seg1Len + seg2Len, 1)
+	local beltSpeed = totalLen / math.max(0.1, tweenSeconds)
+	local now = workspace:GetServerTimeNow()
+	local nextEjectAt = tonumber(barrelsFolder:GetAttribute("NextEjectAt")) or 0
 	-- Set drum fill level
 	local drumsFolder = barrelsFolder.Parent and barrelsFolder.Parent:FindFirstChild("Drums")
 	if drumsFolder then
@@ -1454,6 +1497,8 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 	for _, tier in ipairs(TIER_ORDER) do
 		local oil = oilByTier[tier] or 0
 		local desired = clamp(math.floor(oil / perBarrel), 0, maxPerTier)
+		local pendingAttr = "PendingEject_" .. tier
+		local pendingCount = math.max(0, math.floor(tonumber(barrelsFolder:GetAttribute(pendingAttr)) or 0))
 		-- Count existing piled + conveyor barrels for this tier
 		local piledCount = 0
 		local conveyorCount = 0
@@ -1467,77 +1512,82 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 			end
 		end
 		local totalVisual = piledCount + conveyorCount
-		if desired > totalVisual then
-			local toSpawn = desired - totalVisual
+		local effectiveVisual = totalVisual + pendingCount
+		if desired > effectiveVisual then
+			local toSpawn = desired - effectiveVisual
 			for _ = 1, toSpawn do
-				local barrel = self:_createBarrelForTier(tier, tierTemplates[tier])
-				barrel:SetAttribute("Tier", tier)
-				barrel:SetAttribute("OnConveyor", true)
-				barrel.Parent = barrelsFolder
-				-- Barrel half-height for proper Y placement
-				local barrelHalfHeight = 0
-				if barrel:IsA("BasePart") then
-					barrelHalfHeight = barrel.Size.Y / 2
-				end
-				local function moveBarrel(pos)
-					local cf = CFrame.new(pos.X, pos.Y + barrelHalfHeight, pos.Z)
-					if barrel:IsA("Model") then
-						barrel:PivotTo(cf)
-					elseif barrel:IsA("BasePart") then
-						barrel.CFrame = cf
+				local previewBarrel = self:_createBarrelForTier(tier, tierTemplates[tier])
+				local queueSpacing = math.max(4, getInstanceFootprint(previewBarrel) + 0.75)
+				previewBarrel:Destroy()
+				local ejectInterval = math.max(BARREL_CONVEYOR_MIN_EJECT_INTERVAL, queueSpacing / math.max(beltSpeed, 0.1))
+				local scheduledEjectAt = math.max(now, nextEjectAt)
+				nextEjectAt = scheduledEjectAt + ejectInterval
+				pendingCount += 1
+				barrelsFolder:SetAttribute(pendingAttr, pendingCount)
+
+				task.delay(math.max(0, scheduledEjectAt - now), function()
+					if not barrelsFolder.Parent then
+						return
 					end
-				end
-				moveBarrel(startPos)
-				anchorAllBaseParts(barrel)
-				-- Scripted lerp along the exact belt path (anchored, no physics bounce).
-				-- Belt physics moves the PLAYER at the same speed â€” looks identical.
-				local seg1Time = math.max(0.1, tweenSeconds * (seg1Len / totalLen))
-				local seg2Time = math.max(0.1, tweenSeconds * (seg2Len / totalLen))
-				task.spawn(function()
-					local elapsed = 0
-					while elapsed < seg1Time and barrel.Parent do
-						local dt = task.wait()
-						elapsed += dt
-						moveBarrel(startPos:Lerp(cornerPos, math.min(1, elapsed / seg1Time)))
-					end
-					elapsed = 0
-					while elapsed < seg2Time and barrel.Parent do
-						local dt = task.wait()
-						elapsed += dt
-						moveBarrel(cornerPos:Lerp(endPos, math.min(1, elapsed / seg2Time)))
-					end
-					if not barrel.Parent then return end
-					-- Barrel reached ConveyorEnd; animate it into the matching OilTank tube
-					-- and destroy on arrival. No more on-dock pile; capacity is expressed by
-					-- the tank's liquid fill level (see OilTankFx client FX).
-					barrel:SetAttribute("OnConveyor", false)
-					local tankCenter = endPos
-					local oilTanks = plot:FindFirstChild("OilTanks")
-					if oilTanks then
-						for _, tube in ipairs(oilTanks:GetChildren()) do
-							if tube:GetAttribute("OilType") == tier then
-								local testTube = tube:FindFirstChild("test tube")
-								local union = testTube and testTube:FindFirstChild("Union")
-								if union and union:IsA("BasePart") then
-									tankCenter = union.Position
-								end
-								break
-							end
+					local latestPending = math.max(0, math.floor(tonumber(barrelsFolder:GetAttribute(pendingAttr)) or 0))
+					barrelsFolder:SetAttribute(pendingAttr, math.max(0, latestPending - 1))
+
+					local barrel = self:_createBarrelForTier(tier, tierTemplates[tier])
+					barrel:SetAttribute("Tier", tier)
+					barrel:SetAttribute("OnConveyor", true)
+					barrel.Parent = barrelsFolder
+					local barrelBottomOffset = getInstanceBottomOffset(barrel)
+					local function moveBarrel(pos)
+						local cf = CFrame.new(pos.X, pos.Y + barrelBottomOffset, pos.Z)
+						if barrel:IsA("Model") then
+							barrel:PivotTo(cf)
+						elseif barrel:IsA("BasePart") then
+							barrel.CFrame = cf
 						end
 					end
-					local flyTime = 0.35
-					local flyElapsed = 0
-					while flyElapsed < flyTime and barrel.Parent do
-						local dt = task.wait()
-						flyElapsed += dt
-						local alpha = math.min(1, flyElapsed / flyTime)
-						moveBarrel(endPos:Lerp(tankCenter, alpha))
-					end
-					if barrel.Parent then
-						barrel:Destroy()
-					end
+					moveBarrel(startPos)
+					anchorAllBaseParts(barrel)
+
+					task.spawn(function()
+						local distance = 0
+						while distance < totalLen and barrel.Parent do
+							local dt = task.wait()
+							distance += beltSpeed * dt
+							moveBarrel(conveyorPathPosition(startPos, cornerPos, endPos, seg1Len, seg2Len, distance))
+						end
+						if not barrel.Parent then
+							return
+						end
+						barrel:SetAttribute("OnConveyor", false)
+						local tankCenter = endPos
+						local oilTanks = plot:FindFirstChild("OilTanks")
+						if oilTanks then
+							for _, tube in ipairs(oilTanks:GetChildren()) do
+								if tube:GetAttribute("OilType") == tier then
+									local testTube = tube:FindFirstChild("test tube")
+									local union = testTube and testTube:FindFirstChild("Union")
+									if union and union:IsA("BasePart") then
+										tankCenter = union.Position
+									end
+									break
+								end
+							end
+						end
+						local flyTime = 0.35
+						local flyElapsed = 0
+						while flyElapsed < flyTime and barrel.Parent do
+							local dt = task.wait()
+							flyElapsed += dt
+							local alpha = math.min(1, flyElapsed / flyTime)
+							moveBarrel(endPos:Lerp(tankCenter, alpha))
+						end
+						if barrel.Parent then
+							barrel:Destroy()
+						end
+					end)
 				end)
 			end
+			barrelsFolder:SetAttribute("NextEjectAt", nextEjectAt)
 		elseif desired < totalVisual then
 			-- Remove excess barrels: pile first (top down), then conveyor
 			local toRemove = totalVisual - desired

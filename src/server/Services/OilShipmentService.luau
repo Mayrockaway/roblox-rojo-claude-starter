@@ -1435,11 +1435,7 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 	local assetsFolder = ReplicatedStorage:FindFirstChild("Assets")
 	if not assetsFolder then return end
 
-	local tierTemplates = {
-		Premium = "Barrel_Premium",
-		Refined = "Barrel_Refined",
-		Crude = "Barrel_Crude",
-	}
+	local tierTemplates = (OilConfig.Barrels and OilConfig.Barrels.TierTemplates) or {}
 
 	-- Pre-measure each barrel template's actual height for proper stacking
 	local tierHeights = {}

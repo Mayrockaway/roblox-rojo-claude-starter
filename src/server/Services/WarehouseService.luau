@@ -8,6 +8,7 @@ local Workspace = game:GetService("Workspace")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 local DataStoreWriteGate = require(script.Parent.Parent.Utils.DataStoreWriteGate)
+local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local WarehouseConfig = require(Shared:WaitForChild("Config"):WaitForChild("WarehouseConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
@@ -862,11 +863,7 @@ function WarehouseService:_syncBarrelVisuals(userId: number)
 	local assetsFolder = ReplicatedStorage:FindFirstChild("Assets")
 	if not assetsFolder then return end
 
-	local tierTemplates = {
-		Crude = "Barrel_Crude",
-		Refined = "Barrel_Refined",
-		Premium = "Barrel_Premium",
-	}
+	local tierTemplates = (OilConfig.Barrels and OilConfig.Barrels.TierTemplates) or {}
 
 	local maxVisual = WarehouseConfig.BarrelVisuals.MaxPerTier -- 20 per tier total
 	local barrelHeight = WarehouseConfig.BarrelVisuals.BarrelHeight
