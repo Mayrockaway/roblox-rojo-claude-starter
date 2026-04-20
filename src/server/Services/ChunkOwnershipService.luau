@@ -99,12 +99,9 @@ function ChunkOwnershipService:_refreshAll(userId: number, plot: Model)
 end
 
 function ChunkOwnershipService:_costFor(_state, chunk): number
-	local OilConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("OilConfig"))
-	local rd = math.abs(chunk.row - OilConfig.Chunks.StartingRow)
-	local cd = math.abs(chunk.col - OilConfig.Chunks.StartingCol)
-	local dist = math.max(rd, cd)
-	if dist <= 0 then return 0 end
-	return math.max(0, math.floor(OilConfig.ChunkUnlockBaseCost * (1 + (dist - 1) * OilConfig.ChunkUnlockDistanceMultiplier)))
+	local VeinConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("VeinConfig"))
+	local groundType = VeinConfig.GroundByRow[chunk.row] or VeinConfig.GroundTypes.Bronze
+	return VeinConfig.GetChunkUnlockCostByGround(groundType.name)
 end
 
 -- Idempotent property setters: writing the same value still triggers engine repaint

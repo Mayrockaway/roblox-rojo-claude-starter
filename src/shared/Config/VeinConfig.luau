@@ -13,6 +13,7 @@ export type GroundTypeDef = {
 	color: Color3,
 	material: Enum.Material,
 	drillSeconds: number,
+	depthMeters: number,
 	unlockCost: number,
 }
 
@@ -23,6 +24,7 @@ VeinConfig.GroundTypes = {
 		color = Color3.fromRGB(176, 120, 72),
 		material = Enum.Material.Metal,
 		drillSeconds = 30,
+		depthMeters = 30,
 		unlockCost = 750,
 	},
 	Silver = {
@@ -30,7 +32,8 @@ VeinConfig.GroundTypes = {
 		row = 3,
 		color = Color3.fromRGB(196, 202, 210),
 		material = Enum.Material.Metal,
-		drillSeconds = 8 * 60,
+		drillSeconds = 900,
+		depthMeters = 900,
 		unlockCost = 5000,
 	},
 	Gold = {
@@ -38,7 +41,8 @@ VeinConfig.GroundTypes = {
 		row = 2,
 		color = Color3.fromRGB(255, 200, 46),
 		material = Enum.Material.Metal,
-		drillSeconds = 35 * 60,
+		drillSeconds = 3600,
+		depthMeters = 3600,
 		unlockCost = 45000,
 	},
 	Diamond = {
@@ -46,7 +50,8 @@ VeinConfig.GroundTypes = {
 		row = 1,
 		color = Color3.fromRGB(154, 235, 255),
 		material = Enum.Material.Metal,
-		drillSeconds = 2 * 60 * 60,
+		drillSeconds = 21600,
+		depthMeters = 21600,
 		unlockCost = 350000,
 	},
 } :: { [string]: GroundTypeDef }
