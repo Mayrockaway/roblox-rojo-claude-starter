@@ -188,6 +188,13 @@ local function buildDefaultPersisted()
 		unlockedChunkIds = {},
 		drills = {},
 		equipmentOwned = {},
+		--- Stackable, single-use "run upgrades" (e.g. Security Personnel —
+		--- next-shipment event immunity). Stored as `{ itemId, count }` rows
+		--- like `equipmentOwned` so adding new run-upgrade ids later is just
+		--- a new id string; no schema bump. `nil` on legacy profiles is read
+		--- as "no rows owned" (NOT a backfill flag — there's no inventory to
+		--- migrate from).
+		runUpgradesOwned = {},
 		nextDrillId = 1,
 		nextAttachmentId = 1,
 		activeDrills = {},
@@ -549,6 +556,13 @@ function OilStateService:Init(remoteService, plotService)
 	self._stateReadyForTimersCallback = nil :: ((number, { any }) -> ())?
 	self._dataStore = nil
 	self._devSkipSaveOnNextDrop = {} :: { [number]: boolean }
+	--- Set by `init.server` after `MonetizationService` is required. Used by
+	--- `AddCash` to apply the **DoubleEarnings** GamePass multiplier to every
+	--- gameplay cash credit. Refunds and direct Robux currency packs opt out
+	--- via the `skipMultiplier = true` option so the player isn't getting back
+	--- 2x what they paid (refund) or doubling a cash pack the price was set
+	--- against (Robux currency grant).
+	self._monetizationService = nil :: any
 	local okStore, storeOrErr = pcall(function()
 		return DataStoreService:GetDataStore(DATASTORE_NAME)
 	end)
@@ -562,6 +576,13 @@ end
 
 function OilStateService:SetFtueService(ftueService: any)
 	_ftueService = ftueService
+end
+
+--- Set by `init.server` after `MonetizationService` is constructed. Optional
+--- — without it `AddCash` skips the GamePass multiplier (effectively the same
+--- as every caller passing `{ skipMultiplier = true }`).
+function OilStateService:SetMonetizationService(monetizationService: any)
+	self._monetizationService = monetizationService
 end
 
 --- Clears tutorial-only placement flags so hammer sellback / removal works after FTUE (and old saves cannot keep protection).
@@ -631,16 +652,29 @@ function OilStateService:SetFtueDoneScreenAcknowledged(userId: number, acknowled
 	self:_markDirty(userId)
 end
 
---- Persist the dock-ship sub-step (`Dockman` / `CargoBuy` / `CloseModal` / `nil`)
---- so a player who quits mid-leg rejoins on the **same** dockman beam / cargo
---- upgrade pointer / close-modal pointer they last saw. `FtueService` mirrors its
---- `Constants.FtueDocksUpgradeSubStepAttribute` writes through this setter.
+--- Persist the dock-ship sub-step so a player who quits mid-leg rejoins on the
+--- **same** beam / pointer they last saw. Valid values:
+---   * `Dockman` — world beam to the dockman (no UI pointer)
+---   * `CargoBuy` — `CargoUpgradePointer` over the cargo upgrade button
+---   * `ChangeShip` — `ChangeShipPointer` over the change-ship button (after upgrade buy)
+---   * `SelectShipOpen` — `CloseButtonPointer` on `SelectShipPanelGui` (browse + close)
+---   * `CloseModal` — `ClosePointer` on `ShipManagementPanelGui` (close to advance)
+---   * `nil` — not in the leg
+--- `FtueService` mirrors its `Constants.FtueDocksUpgradeSubStepAttribute` writes
+--- through this setter.
 function OilStateService:SetFtueDocksUpgradeSubStep(userId: number, sub: string?)
 	local state = self._statesByUserId[userId]
 	if not state then
 		return
 	end
-	if sub ~= nil and sub ~= "Dockman" and sub ~= "CargoBuy" and sub ~= "CloseModal" then
+	if
+		sub ~= nil
+		and sub ~= "Dockman"
+		and sub ~= "CargoBuy"
+		and sub ~= "ChangeShip"
+		and sub ~= "SelectShipOpen"
+		and sub ~= "CloseModal"
+	then
 		sub = nil
 	end
 	if (state :: any).ftueDocksUpgradeSubStep == sub then
@@ -1093,6 +1127,24 @@ function OilStateService:GetStateForClient(userId: number)
 			cols = OilConfig.Chunks.GridCols,
 			startingCenterSize = OilConfig.Chunks.StartingCenterSize,
 		},
+		--- Per-itemId stack counts of single-use run-upgrades the player
+		--- currently owns. Drives the "x N" badge on `RunUpgradeCard*` in
+		--- `ShipOilPanelGui` and lets the panel disable / hide the buy CTA
+		--- when sufficient stock is in inventory. `{}` when nothing owned.
+		runUpgradeOwnedByItemId = (function()
+			local out: { [string]: number } = {}
+			if typeof(state.runUpgradeOwnedByItemId) == "table" then
+				for itemId, n in pairs(state.runUpgradeOwnedByItemId) do
+					if typeof(itemId) == "string" and itemId ~= "" and typeof(n) == "number" then
+						local c = math.floor(n)
+						if c > 0 then
+							out[itemId] = c
+						end
+					end
+				end
+			end
+			return out
+		end)(),
 	}
 end
 
@@ -1132,18 +1184,53 @@ function OilStateService:TrySpendCash(userId: number, amount: number): boolean
 	return true
 end
 
-function OilStateService:AddCash(userId: number, amount: number): boolean
+--- Credits the player's cash balance, applying the **DoubleEarnings** GamePass
+--- multiplier (2x) when the player owns it and the caller did not pass
+--- `opts.skipMultiplier = true`.
+---
+--- Returns `(success, actualAdded)` — `actualAdded` reflects the post-multiplier
+--- amount so callers that surface the payout in user-facing copy
+--- (`OilMarketService` "Sold N barrels for $X!" toasts) can show the real
+--- credited number instead of the pre-multiplier number.
+---
+--- Pass `opts = { skipMultiplier = true }` for:
+---   * **Refunds** (`ArmyGeneralService` airstrike refund, `EquipmentShopService`
+---     backpack-failure refund) — refunding 2x what the player paid would
+---     duplicate cash on every failure.
+---   * **Direct Robux currency grants** (`MonetizationService:_grantCurrency`) —
+---     the listed Robux price was sized against the catalog's `cashAmount`;
+---     doubling that on top of the GamePass would silently overpay.
+---   * Anywhere else the credit is "money the player already had returning",
+---     not money they earned through gameplay.
+function OilStateService:AddCash(userId: number, amount: number, opts: { skipMultiplier: boolean? }?): (boolean, number)
 	local state = self._statesByUserId[userId]
 	if not state then
-		return false
+		return false, 0
 	end
 	local value = floorPositive(amount)
 	if value <= 0 then
-		return true
+		return true, 0
+	end
+	local skipMultiplier = (opts ~= nil) and (opts :: any).skipMultiplier == true
+	if not skipMultiplier and self._monetizationService then
+		local player = Players:GetPlayerByUserId(userId)
+		if player then
+			-- `HasGamePassEffect` itself caches `UserOwnsGamePassAsync` per
+			-- (userId, gamePassId); the call here is hot but cheap after the
+			-- first lookup. If `MonetizationService` somehow throws, we
+			-- swallow it and treat the player as not owning the boost so a
+			-- transient marketplace error never blocks gameplay credits.
+			local ok, owns = pcall(function()
+				return self._monetizationService:HasGamePassEffect(player, "DoubleEarnings")
+			end)
+			if ok and owns == true then
+				value = value * 2
+			end
+		end
 	end
 	state.cash += value
 	self:_markDirty(userId)
-	return true
+	return true, value
 end
 
 -- Auto-place a T1 pump at the center tile (T33) of a section.
@@ -2352,6 +2439,11 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		equipmentOwnedByItemId = {} :: { [string]: number },
 		--- When true, first inventory sync seeds `equipmentOwnedByItemId` from shop tools in Backpack (legacy profiles).
 		equipmentOwnedNeedsInventoryBackfill = false,
+		--- Runtime mirror of persisted `runUpgradesOwned`. itemId -> stack
+		--- count. Consumed by gameplay services (e.g. Security Personnel
+		--- decrements on dispatch via `:ConsumeRunUpgradeOwned`). Empty table
+		--- means no run-upgrades stocked.
+		runUpgradeOwnedByItemId = {} :: { [string]: number },
 		ftueStep = if FtueConfig.Enabled then FtueConfig.Step.Intro else nil,
 		ftueCompleted = not FtueConfig.Enabled,
 		ftueDoneScreenAcknowledged = false,
@@ -2605,6 +2697,26 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		end
 	elseif persisted.equipmentOwned == nil then
 		state.equipmentOwnedNeedsInventoryBackfill = true
+	end
+
+	-- Run-upgrades (e.g. Security Personnel). Same `{ itemId, count }` row
+	-- shape as `equipmentOwned`. Legacy profiles without the field are
+	-- treated as "none owned" (no inventory to backfill from).
+	state.runUpgradeOwnedByItemId = {}
+	if typeof(persisted.runUpgradesOwned) == "table" then
+		for _, row in ipairs(persisted.runUpgradesOwned) do
+			if typeof(row) == "table" then
+				local r = row :: { [string]: any }
+				local itemId = r.itemId
+				local cnt = r.count
+				if typeof(itemId) == "string" and itemId ~= "" and typeof(cnt) == "number" then
+					local c = floorPositive(cnt)
+					if c > 0 then
+						state.runUpgradeOwnedByItemId[itemId] = c
+					end
+				end
+			end
+		end
 	end
 
 	-- Player ship (v4): migrate from legacy `selectedBoatTypeId` when profile version < 4.
@@ -2998,6 +3110,12 @@ function OilStateService:_flushAndDropUser(userId: number)
 	self:_saveUser(userId, true, true)
 	self._statesByUserId[userId] = nil
 	self._dirtyByUserId[userId] = nil
+	-- Bump the FTUE tile-marker generation so any in-flight retry stops cleanly,
+	-- then forget the entry to avoid the map growing across many sessions.
+	if self._ftueTileMarkerRetryGen then
+		self._ftueTileMarkerRetryGen[userId] = (self._ftueTileMarkerRetryGen[userId] or 0) + 1
+		self._ftueTileMarkerRetryGen[userId] = nil
+	end
 end
 
 function OilStateService:_flushDirtyUsers(force: boolean?)
@@ -3261,6 +3379,14 @@ function OilStateService:_serializeState(state)
 		end
 	end
 
+	persisted.runUpgradesOwned = {}
+	for itemId, n in pairs(state.runUpgradeOwnedByItemId or {}) do
+		local c = floorPositive(n)
+		if typeof(itemId) == "string" and itemId ~= "" and c > 0 then
+			table.insert(persisted.runUpgradesOwned, { itemId = itemId, count = c })
+		end
+	end
+
 	return persisted
 end
 
@@ -3430,6 +3556,64 @@ function OilStateService:NotifyShopToolConsumed(userId: number, itemId: string)
 	self:_markDirty(userId)
 end
 
+--- Run-upgrade inventory ----------------------------------------------------
+--- Generic stackable consumables that gameplay services consume on a
+--- per-action basis (e.g. `SecurityPersonnelService` decrements on
+--- shipment dispatch). Keyed by stable `itemId`. Mirrors
+--- `equipmentOwnedByItemId` shape so persistence stays uniform.
+
+function OilStateService:AddRunUpgradeOwned(userId: number, itemId: string, count: number)
+	if typeof(itemId) ~= "string" or itemId == "" or count <= 0 then
+		return
+	end
+	local state = self._statesByUserId[userId]
+	if not state then
+		return
+	end
+	state.runUpgradeOwnedByItemId[itemId] = (state.runUpgradeOwnedByItemId[itemId] or 0) + floorPositive(count)
+	self:_markDirty(userId)
+end
+
+function OilStateService:GetRunUpgradeOwned(userId: number, itemId: string): number
+	if typeof(itemId) ~= "string" or itemId == "" then
+		return 0
+	end
+	local state = self._statesByUserId[userId]
+	if not state then
+		return 0
+	end
+	return state.runUpgradeOwnedByItemId[itemId] or 0
+end
+
+--- Decrement N stacks. Returns true when the full quantity was consumed,
+--- false when the player did not own enough (state untouched on false).
+--- Defaults to 1 when `count` is omitted.
+function OilStateService:ConsumeRunUpgradeOwned(userId: number, itemId: string, count: number?): boolean
+	if typeof(itemId) ~= "string" or itemId == "" then
+		return false
+	end
+	local n = floorPositive(count or 1)
+	if n <= 0 then
+		return false
+	end
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false
+	end
+	local cur = state.runUpgradeOwnedByItemId[itemId] or 0
+	if cur < n then
+		return false
+	end
+	local nxt = cur - n
+	if nxt <= 0 then
+		state.runUpgradeOwnedByItemId[itemId] = nil
+	else
+		state.runUpgradeOwnedByItemId[itemId] = nxt
+	end
+	self:_markDirty(userId)
+	return true
+end
+
 function OilStateService:MarkEquipmentInventoryBackfillComplete(userId: number)
 	local state = self._statesByUserId[userId]
 	if not state then
@@ -3499,13 +3683,28 @@ end
 --- **`FtueService`** so the per-plot world beam (see `FtuePoiBeamConfig` `WaitReveal`
 --- rule + `PlayerToPoiBeamBootstrap`) can find the tile reliably even after streaming
 --- in late or after respawn.
+---
+--- Rejoin bulletproofing: on first call after a fresh server load (or after a player
+--- rejoins while their plot is still being assembled by `PlotService` /
+--- `ChunkOwnershipService`), the plot may not yet contain the section / tile BasePart
+--- the marker has to land on. A naive "stamp once" returns silently in that case and
+--- the highlight (`FtueTutorialTileHighlight`) and the WaitReveal world beam never
+--- resolve. We therefore retry every 0.5 s for ~30 s. A per-user generation token
+--- invalidates the prior retry loop the moment a *different* call comes in (e.g.
+--- step advances and the marker is supposed to clear), so we never re-stamp a stale
+--- cell on top of fresh state.
 function OilStateService:SetFtueTutorialTileMarker(userId: number, enabled: boolean)
 	local plr = Players:GetPlayerByUserId(userId)
 	if not plr then return end
-	local plot = self._plotService and self._plotService:GetOwnedPlot(userId)
-	if not plot then return end
+	-- Lazily-initialised per-user generation token map (this method is the only
+	-- writer/reader of it, so initialising here is safe and avoids touching
+	-- `OilStateService.new` / `Init`).
+	self._ftueTileMarkerRetryGen = self._ftueTileMarkerRetryGen or {}
+	-- Bump the per-user generation so any in-flight retry from a prior call exits.
+	self._ftueTileMarkerRetryGen[userId] = (self._ftueTileMarkerRetryGen[userId] or 0) + 1
+	local myGen = self._ftueTileMarkerRetryGen[userId]
 
-	local function clearAll()
+	local function clearAllOnPlot(plot: Model)
 		local ground = plot:FindFirstChild("PlotGround")
 		if not (ground and ground:IsA("Model")) then return end
 		for _, sect in ipairs(ground:GetChildren()) do
@@ -3519,17 +3718,55 @@ function OilStateService:SetFtueTutorialTileMarker(userId: number, enabled: bool
 		end
 	end
 
-	clearAll()
-	if not enabled then return end
-
-	local ck = readFtueCellAttribute(userId, Constants.FtueRestrictDrillCellKeyAttribute)
-	if not ck then return end
-	local row, col = globalCellFromCellKeyString(ck)
-	if not row or not col then return end
-	local part = findTilePartForCell(plot, row, col)
-	if part then
+	--- Returns true once the desired stamping/clearing reached its terminal state
+	--- (so the retry loop can exit). Returns false if we still need to wait for
+	--- streaming/world build.
+	local function attempt(): boolean
+		if self._ftueTileMarkerRetryGen[userId] ~= myGen then
+			return true -- a newer call superseded us; stop quietly
+		end
+		local plot = self._plotService and self._plotService:GetOwnedPlot(userId)
+		if not plot then
+			return false
+		end
+		clearAllOnPlot(plot)
+		if not enabled then
+			return true
+		end
+		local ck = readFtueCellAttribute(userId, Constants.FtueRestrictDrillCellKeyAttribute)
+		if not ck then
+			-- Player attribute not yet replicated/restored. Wait and retry.
+			return false
+		end
+		local row, col = globalCellFromCellKeyString(ck)
+		if not row or not col then
+			-- Malformed cell key; nothing we can stamp. Don't keep retrying.
+			return true
+		end
+		local part = findTilePartForCell(plot, row, col)
+		if not part then
+			-- Plot section / tile BasePart not built yet. Wait and retry.
+			return false
+		end
 		part:SetAttribute("IsFtueTutorialTile", true)
+		return true
 	end
+
+	if attempt() then
+		return
+	end
+	task.spawn(function()
+		for _ = 1, 60 do
+			task.wait(0.5)
+			local p = Players:GetPlayerByUserId(userId)
+			if not p or not p.Parent then
+				return
+			end
+			if attempt() then
+				return
+			end
+		end
+	end)
 end
 
 --- Used while `ftueStep == WaitDrillOil_WIP` to restore drill restriction attributes after join.

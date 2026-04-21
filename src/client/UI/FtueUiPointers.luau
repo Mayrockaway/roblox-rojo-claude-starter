@@ -46,6 +46,7 @@ local ALL_POINTER_ROOT_NAMES = {
 	"ShipBarrelPointerRoot",
 	"DispatchPointerRoot",
 	"CargoUpgradePointerRoot",
+	"ChangeShipPointerRoot",
 	"ClosePointerRoot",
 	"OilPricePointerRoot",
 	"BuyDrillPointerRoot",
@@ -66,6 +67,7 @@ local SELL_OIL_PANEL_GUI = "SellOilPanelGui"
 local SHIP_MANAGEMENT_PANEL_GUI = "ShipManagementPanelGui"
 local SHIP_OIL_PANEL_GUI = "ShipOilPanelGui"
 local SHOP_PANEL_GUI = "ShopPanelGui"
+local SELECT_SHIP_PANEL_GUI = "SelectShipPanelGui"
 local HUD_SCREEN_GUI = "HUD"
 
 --- World-hierarchy `GuiObject` roots (e.g. under `BillboardGui` / `SurfaceGui` in `Workspace`).
@@ -78,15 +80,22 @@ local WORKSPACE_POINTER_ROOT_NAMES: { [string]: boolean } = {
 local warnedMissingTpHomeRoot = false
 
 --- Prefer modal `ScreenGui` for roots that must align with cargo / CTA (author under that panel in Studio).
-local PANEL_FIRST_ROOT: { [string]: string } = {
+--- A root may resolve to **multiple** panels — `findPointerRootFrame` walks the
+--- list in order and returns the first authored copy. This is needed for
+--- `CloseButtonPointerRoot` which is authored under both `ShopPanelGui` (FTUE
+--- equipment-shop close prompt) and `SelectShipPanelGui` (FTUE select-ship
+--- close prompt). Only one panel is open at any time so visibility-wise they
+--- never collide.
+local PANEL_FIRST_ROOT: { [string]: string | { string } } = {
 	SellBarrelPointerRoot = SELL_OIL_PANEL_GUI,
 	SellPointerRoot = SELL_OIL_PANEL_GUI,
 	CargoUpgradePointerRoot = SHIP_MANAGEMENT_PANEL_GUI,
+	ChangeShipPointerRoot = SHIP_MANAGEMENT_PANEL_GUI,
 	ClosePointerRoot = SHIP_MANAGEMENT_PANEL_GUI,
 	ShipBarrelPointerRoot = SHIP_OIL_PANEL_GUI,
 	DispatchPointerRoot = SHIP_OIL_PANEL_GUI,
 	BuyDrillPointerRoot = SHOP_PANEL_GUI,
-	CloseButtonPointerRoot = SHOP_PANEL_GUI,
+	CloseButtonPointerRoot = { SHOP_PANEL_GUI, SELECT_SHIP_PANEL_GUI },
 	-- Legacy authored roots (kept so they're still discoverable for hide-when-inactive):
 	SellButtonPointerRoot = SELL_OIL_PANEL_GUI,
 	ShipCapacityUpgradeBuyPointerRoot = SHIP_MANAGEMENT_PANEL_GUI,
@@ -120,6 +129,13 @@ local function resolveWaitDocksUpgradeShipPointer(player: Player, step: string):
 	local sub = if typeof(subAny) == "string" then (subAny :: string) else ""
 	if sub == "CargoBuy" then
 		return "CargoUpgradePointerRoot"
+	elseif sub == "ChangeShip" then
+		return "ChangeShipPointerRoot"
+	elseif sub == "SelectShipOpen" then
+		--- `CloseButtonPointerRoot` lives under `SelectShipPanelGui` for this
+		--- sub-step (also under `ShopPanelGui` for the equipment-shop leg —
+		--- `findPointerRootFrame` walks both panel candidates).
+		return "CloseButtonPointerRoot"
 	elseif sub == "CloseModal" then
 		return "ClosePointerRoot"
 	end
@@ -246,8 +262,37 @@ local function findPointerRootFrame(playerGui: PlayerGui, rootName: string): Gui
 		end
 	end
 	local panelFirst = PANEL_FIRST_ROOT[rootName]
+	local panelCandidates: { string } = {}
 	if typeof(panelFirst) == "string" then
-		local sg = playerGui:FindFirstChild(panelFirst, true)
+		table.insert(panelCandidates, panelFirst :: string)
+	elseif typeof(panelFirst) == "table" then
+		for _, name in ipairs(panelFirst :: { string }) do
+			if typeof(name) == "string" then
+				table.insert(panelCandidates, name)
+			end
+		end
+	end
+	--- Pass 1: prefer the candidate whose `ScreenGui.Enabled == true`. This
+	--- is the panel currently visible to the player, which is the one whose
+	--- authored pointer copy can actually be seen. Critical for shared root
+	--- names like `CloseButtonPointerRoot` (authored under both `ShopPanelGui`
+	--- and `SelectShipPanelGui`): without this, the iteration order in
+	--- `PANEL_FIRST_ROOT` would pick the wrong panel's copy and toggle
+	--- `Visible = true` on a frame inside a disabled `ScreenGui`, leaving
+	--- nothing visible on screen.
+	for _, panelName in ipairs(panelCandidates) do
+		local sg = playerGui:FindFirstChild(panelName, true)
+		if sg and sg:IsA("ScreenGui") and (sg :: ScreenGui).Enabled then
+			local fr = sg:FindFirstChild(rootName, true)
+			if fr and fr:IsA("GuiObject") then
+				return fr
+			end
+		end
+	end
+	--- Pass 2: fall back to the first authored copy regardless of `Enabled`.
+	--- Lets the iteration loop still address (hide) inactive copies.
+	for _, panelName in ipairs(panelCandidates) do
+		local sg = playerGui:FindFirstChild(panelName, true)
 		if sg and sg:IsA("ScreenGui") then
 			local fr = sg:FindFirstChild(rootName, true)
 			if fr and fr:IsA("GuiObject") then
@@ -496,6 +541,16 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 		hookDescendantRefresh(shipOil0)
 	end
 
+	local selectShip0 = playerGui:FindFirstChild(SELECT_SHIP_PANEL_GUI, true)
+	if selectShip0 and selectShip0:IsA("ScreenGui") then
+		hookDescendantRefresh(selectShip0)
+	end
+
+	local shop0 = playerGui:FindFirstChild(SHOP_PANEL_GUI, true)
+	if shop0 and shop0:IsA("ScreenGui") then
+		hookDescendantRefresh(shop0)
+	end
+
 	playerGui.ChildAdded:Connect(function(ch)
 		if ch:IsA("ScreenGui") and (ch.Name == "FTUEDialogueGui" or ch.Name == "FtueDialogueGui") then
 			hookDescendantRefresh(ch)
@@ -503,7 +558,13 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 		end
 		if
 			ch:IsA("ScreenGui")
-			and (ch.Name == SELL_OIL_PANEL_GUI or ch.Name == SHIP_MANAGEMENT_PANEL_GUI or ch.Name == SHIP_OIL_PANEL_GUI)
+			and (
+				ch.Name == SELL_OIL_PANEL_GUI
+				or ch.Name == SHIP_MANAGEMENT_PANEL_GUI
+				or ch.Name == SHIP_OIL_PANEL_GUI
+				or ch.Name == SELECT_SHIP_PANEL_GUI
+				or ch.Name == SHOP_PANEL_GUI
+			)
 		then
 			hookDescendantRefresh(ch)
 			scheduleRefresh()
@@ -521,6 +582,8 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 			inst.Name == SELL_OIL_PANEL_GUI
 			or inst.Name == SHIP_MANAGEMENT_PANEL_GUI
 			or inst.Name == SHIP_OIL_PANEL_GUI
+			or inst.Name == SELECT_SHIP_PANEL_GUI
+			or inst.Name == SHOP_PANEL_GUI
 			or inst.Name == HUD_SCREEN_GUI
 		then
 			scheduleRefresh()

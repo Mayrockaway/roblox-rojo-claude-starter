@@ -316,8 +316,9 @@ function ArmyGeneralService:_handleAirstrike(player: Player, payload)
 	-- Get victim's boat position
 	local victimShipment = self._oilShipmentService:GetActiveShipmentForUser(victimUserId)
 	if not victimShipment then
-		-- Refund
-		self._oilStateService:AddCash(player.UserId, AIRSTRIKE_COST)
+		-- Refund — `skipMultiplier = true` so DoubleEarnings owners don't
+		-- get back 2x what they paid on every cancelled airstrike.
+		self._oilStateService:AddCash(player.UserId, AIRSTRIKE_COST, { skipMultiplier = true })
 		self._oilStateService:PushState(player.UserId)
 		resultEvent:FireClient(player, { ok = false, message = "Target's shipment ended." })
 		return
@@ -325,7 +326,7 @@ function ArmyGeneralService:_handleAirstrike(player: Player, payload)
 
 	local boat = self._oilShipmentService:GetActiveBoat(victimShipment.shipmentId)
 	if not boat then
-		self._oilStateService:AddCash(player.UserId, AIRSTRIKE_COST)
+		self._oilStateService:AddCash(player.UserId, AIRSTRIKE_COST, { skipMultiplier = true })
 		self._oilStateService:PushState(player.UserId)
 		resultEvent:FireClient(player, { ok = false, message = "Target boat not found." })
 		return
@@ -333,7 +334,7 @@ function ArmyGeneralService:_handleAirstrike(player: Player, payload)
 
 	local root = boat:IsA("Model") and boat.PrimaryPart or boat:FindFirstChildWhichIsA("BasePart")
 	if not root then
-		self._oilStateService:AddCash(player.UserId, AIRSTRIKE_COST)
+		self._oilStateService:AddCash(player.UserId, AIRSTRIKE_COST, { skipMultiplier = true })
 		self._oilStateService:PushState(player.UserId)
 		resultEvent:FireClient(player, { ok = false, message = "Target boat error." })
 		return

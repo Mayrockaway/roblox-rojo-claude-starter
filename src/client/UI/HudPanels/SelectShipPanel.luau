@@ -9,10 +9,13 @@
 -- `MarketplaceService.ProcessReceipt`, calls `OilStateService:GrantShipSkin`,
 -- and pushes a fresh snapshot so this panel re-paints into the owned state.
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
+local Constants = require(Shared:WaitForChild("Constants"))
+local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
@@ -441,6 +444,34 @@ local function wireSelectShip(_playerGui: PlayerGui, screen: ScreenGui, ctrl: Hu
 			showErrorNotification("You don't own this ship yet.")
 		end
 	end))
+
+	--- FTUE bridge: the `WaitDocksUpgradeShip → ChangeShip` sub-step waits for
+	--- the player to open this panel (`SelectShipOpened` → sub `SelectShipOpen`,
+	--- lights up `CloseButtonPointer` so they browse + close). Closing the
+	--- panel while the sub is `SelectShipOpen` advances to `CloseModal`, which
+	--- lights up the `ClosePointer` on `ShipManagementPanel`.
+	table.insert(
+		connections,
+		screen:GetPropertyChangedSignal("Enabled"):Connect(function()
+			local plr = Players.LocalPlayer
+			if not plr then
+				return
+			end
+			if plr:GetAttribute(Constants.FtueStepAttribute) ~= FtueConfig.Step.WaitDocksUpgradeShip then
+				return
+			end
+			local sub = plr:GetAttribute(Constants.FtueDocksUpgradeSubStepAttribute)
+			if screen.Enabled then
+				if sub == "ChangeShip" then
+					ClientRemotes.requestFtueDocksProgress:FireServer("SelectShipOpened")
+				end
+			else
+				if sub == "SelectShipOpen" then
+					ClientRemotes.requestFtueDocksProgress:FireServer("SelectShipClosed")
+				end
+			end
+		end)
+	)
 
 	refreshAllCardSelection(cards)
 end

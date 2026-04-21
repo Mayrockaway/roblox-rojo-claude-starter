@@ -177,6 +177,18 @@ function FtueService:_setStep(player: Player, step: string?)
 		player:SetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute, nil)
 	end
 	fireState(player, step)
+	--- The sell-leg can't progress unless the player is standing on the
+	--- warehouse `WarehouseSpawn` (the proximity prompt + sell terminal both
+	--- live there). On every entry into `WaitWarehouseSell` — including the
+	--- normal "boat just landed" transition — force-teleport the player to
+	--- the warehouse so the leg is reachable no matter where they currently
+	--- are (e.g. they jumped off the boat, were knocked off-platform, etc.).
+	--- Rejoin / death-respawn cases are covered separately by
+	--- `_onCharacterSpawnedDuringFtue`, since `SyncFromOilState` bypasses
+	--- `_setStep` and sets the attribute directly.
+	if typeof(step) == "string" and step == FtueConfig.Step.WaitWarehouseSell then
+		self:_ensureAtWarehouse(player)
+	end
 	ftueDbg(
 		"_setStep uid=%d -> FtueStateUpdate(%s) SetAttribute(FtueStep)",
 		player.UserId,
@@ -349,7 +361,13 @@ function FtueService:SyncFromOilState(userId: number)
 	if step == FtueConfig.Step.WaitDocksUpgradeShip then
 		local subAny = (st :: any).ftueDocksUpgradeSubStep
 		local sub = if typeof(subAny) == "string" then (subAny :: string) else nil
-		if sub ~= "Dockman" and sub ~= "CargoBuy" and sub ~= "CloseModal" then
+		if
+			sub ~= "Dockman"
+			and sub ~= "CargoBuy"
+			and sub ~= "ChangeShip"
+			and sub ~= "SelectShipOpen"
+			and sub ~= "CloseModal"
+		then
 			sub = "Dockman"
 			--- Backfill so the next save round-trip keeps the recovered sub-step.
 			if self._oilState and typeof((self._oilState :: any).SetFtueDocksUpgradeSubStep) == "function" then
@@ -501,7 +519,8 @@ function FtueService:Init(
 	_equipmentShop: any,
 	_drilling: any,
 	_shipment: any,
-	_market: any
+	_market: any,
+	_warehouse: any?
 )
 	_remoteService = remoteService
 	self._plotService = _plotService
@@ -510,6 +529,7 @@ function FtueService:Init(
 	self._drilling = _drilling
 	self._shipment = _shipment
 	self._market = _market
+	self._warehouse = _warehouse
 end
 
 --- After the FTUE drill completes on the tutorial tile: advance to **`WaitReveal`**.
@@ -670,7 +690,13 @@ function FtueService:OnFtueEquipmentShopPurchase(player: Player, itemId: string)
 	fireState(player, FtueConfig.Step.WaitDocksEquipmentShop)
 end
 
---- FTUE docks sub-leg: `DockmanOpened` → `CargoBuy`; `ShipPanelClosed` (after upgrade + close UI) → **`WaitDocksHire`**.
+--- FTUE docks sub-leg flow:
+---   `DockmanOpened`     (sub `Dockman`)        → sub `CargoBuy`        (CargoUpgradePointer)
+---   cargo upgrade buy   (sub `CargoBuy`)       → sub `ChangeShip`      (ChangeShipPointer)
+---     — handled by `OnFtueShipCapacityUpgradeSuccess`
+---   `SelectShipOpened`  (sub `ChangeShip`)     → sub `SelectShipOpen`  (CloseButtonPointer / SelectShip)
+---   `SelectShipClosed`  (sub `SelectShipOpen`) → sub `CloseModal`      (ClosePointer / ShipManagement)
+---   `ShipPanelClosed`   (sub `CloseModal`)     → step **`WaitDocksHire`**
 --- Equipment shop leg: `EquipmentShopPanelClosed` (after free drill purchased) → **`WaitDocksUpgradeShip` (Dockman)`**.
 function FtueService:OnFtueDocksProgress(player: Player, action: any)
 	if FtueConfig.Enabled ~= true then
@@ -716,6 +742,20 @@ function FtueService:OnFtueDocksProgress(player: Player, action: any)
 		if typeof((self._oilState :: any).PushState) == "function" then
 			(self._oilState :: any):PushState(player.UserId)
 		end
+	elseif a == "SelectShipOpened" then
+		if sub ~= "ChangeShip" then
+			return
+		end
+		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, "SelectShipOpen")
+		;(self._oilState :: any):SetFtueDocksUpgradeSubStep(player.UserId, "SelectShipOpen")
+		fireState(player, FtueConfig.Step.WaitDocksUpgradeShip)
+	elseif a == "SelectShipClosed" then
+		if sub ~= "SelectShipOpen" then
+			return
+		end
+		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, "CloseModal")
+		;(self._oilState :: any):SetFtueDocksUpgradeSubStep(player.UserId, "CloseModal")
+		fireState(player, FtueConfig.Step.WaitDocksUpgradeShip)
 	elseif a == "ShipPanelClosed" then
 		if sub ~= "CloseModal" then
 			return
@@ -727,6 +767,9 @@ function FtueService:OnFtueDocksProgress(player: Player, action: any)
 end
 
 --- After first free cargo upgrade succeeds during **`WaitDocksUpgradeShip`** (`CargoBuy` sub-step).
+--- Advances sub-step to `ChangeShip` so the **`ChangeShipPointer`** lights up next
+--- (the player still has to open SelectShip and close it before the leg ends —
+--- see `OnFtueDocksProgress` for the rest of the chain).
 function FtueService:OnFtueShipCapacityUpgradeSuccess(player: Player)
 	if FtueConfig.Enabled ~= true then
 		return
@@ -738,9 +781,120 @@ function FtueService:OnFtueShipCapacityUpgradeSuccess(player: Player)
 	if player:GetAttribute(Constants.FtueDocksUpgradeSubStepAttribute) ~= "CargoBuy" then
 		return
 	end
-	player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, "CloseModal")
-	;(self._oilState :: any):SetFtueDocksUpgradeSubStep(player.UserId, "CloseModal")
+	player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, "ChangeShip")
+	;(self._oilState :: any):SetFtueDocksUpgradeSubStep(player.UserId, "ChangeShip")
 	fireState(player, FtueConfig.Step.WaitDocksUpgradeShip)
+end
+
+--- Force the player onto their warehouse `WarehouseSpawn` for the
+--- `WaitWarehouseSell` leg. The step can't progress unless they reach the
+--- warehouse terminal, so we teleport on every entry / respawn / rejoin
+--- regardless of where they currently stand.
+---
+--- Retries for ~5s because the warehouse visual may not be fully replicated
+--- right after the boat lands (the dispatch flow tears down the ship while
+--- swapping `WaitShipment → WaitWarehouseSell`).
+function FtueService:_ensureAtWarehouse(player: Player)
+	if FtueConfig.Enabled ~= true then
+		return
+	end
+	if not self._warehouse or typeof((self._warehouse :: any).TryTeleportPlayerToWarehouse) ~= "function" then
+		ftueDbg("WaitWarehouseSell ensure-at-warehouse uid=%d skipped (no warehouse service)", player.UserId)
+		return
+	end
+	task.spawn(function()
+		for _ = 1, 12 do
+			if not player.Parent then
+				return
+			end
+			if player:GetAttribute(Constants.FtueStepAttribute) ~= FtueConfig.Step.WaitWarehouseSell then
+				return
+			end
+			if player.Character then
+				local ok = (self._warehouse :: any):TryTeleportPlayerToWarehouse(player)
+				if ok then
+					ftueDbg("WaitWarehouseSell ensure-at-warehouse uid=%d teleport ok", player.UserId)
+					return
+				end
+			end
+			task.wait(0.5)
+		end
+		ftueDbg("WaitWarehouseSell ensure-at-warehouse uid=%d gave up (visual or character never ready)", player.UserId)
+	end)
+end
+
+--- Safety net for character respawns mid-FTUE.
+---
+--- * `WaitShipment`: dying mid-voyage strands the player at the default spawn
+---   while their boat keeps sailing. Re-seat them on the boat (same path as
+---   the HUD Ship button → `BoatDockService:TeleportOwnerToSeat`).
+--- * `WaitWarehouseSell`: dying after the boat lands strands them off-plot
+---   with no way to reach the sell terminal. Force-teleport to
+---   `WarehouseSpawn`.
+---
+--- Hooked on `Player.CharacterAdded` for both joining and existing players,
+--- so this also covers rejoin (where `SyncFromOilState` sets the step
+--- attribute directly without going through `_setStep`).
+function FtueService:_onCharacterSpawnedDuringFtue(player: Player)
+	if FtueConfig.Enabled ~= true then
+		return
+	end
+	local step = player:GetAttribute(Constants.FtueStepAttribute)
+	if step == FtueConfig.Step.WaitShipment then
+		if not (self._shipment and typeof((self._shipment :: any).HasActiveShipment) == "function") then
+			return
+		end
+		if (self._shipment :: any):HasActiveShipment(player.UserId) ~= true then
+			return
+		end
+		local boatDock = (self._shipment :: any)._boatDockService
+		if not boatDock or typeof(boatDock.TeleportOwnerToSeat) ~= "function" then
+			return
+		end
+		-- Wait briefly for the character to fully spawn (Humanoid + parts ready)
+		-- before teleporting; CharacterAdded fires before the model finishes
+		-- assembling, and `TeleportOwnerToSeat` requires a live character.
+		task.delay(0.25, function()
+			if not player.Parent then
+				return
+			end
+			if player:GetAttribute(Constants.FtueStepAttribute) ~= FtueConfig.Step.WaitShipment then
+				return
+			end
+			if (self._shipment :: any):HasActiveShipment(player.UserId) ~= true then
+				return
+			end
+			local ok, err = boatDock:TeleportOwnerToSeat(player)
+			if not ok then
+				ftueDbg("WaitShipment respawn safety net failed uid=%d err=%s", player.UserId, tostring(err))
+			else
+				ftueDbg("WaitShipment respawn safety net teleported uid=%d back to boat", player.UserId)
+			end
+		end)
+	elseif step == FtueConfig.Step.WaitWarehouseSell then
+		-- 0.25s lead so the spawned character has a Humanoid + parts before
+		-- `TryTeleportPlayerToWarehouse` runs (matches the WaitShipment delay).
+		task.delay(0.25, function()
+			if not player.Parent then
+				return
+			end
+			self:_ensureAtWarehouse(player)
+		end)
+	end
+end
+
+function FtueService:_bindCharacterSafetyNet(player: Player)
+	-- Cover the existing character (joined mid-voyage rejoin) plus future
+	-- spawns (death respawn).
+	if player.Character then
+		self:_onCharacterSpawnedDuringFtue(player)
+	end
+	table.insert(
+		_connections,
+		player.CharacterAdded:Connect(function()
+			self:_onCharacterSpawnedDuringFtue(player)
+		end)
+	)
 end
 
 function FtueService:Start()
@@ -748,6 +902,7 @@ function FtueService:Start()
 		(self._drilling :: any):SetFtueService(self)
 	end
 	table.insert(_connections, Players.PlayerAdded:Connect(function(player)
+		self:_bindCharacterSafetyNet(player)
 		task.defer(function()
 			-- Attributes are applied when oil profile loads (`OilStateService` plot assign → `SyncFromOilState`).
 			if FtueConfig.Enabled ~= true then
@@ -772,6 +927,7 @@ function FtueService:Start()
 	end))
 
 	for _, player in Players:GetPlayers() do
+		self:_bindCharacterSafetyNet(player)
 		task.defer(function()
 			if FtueConfig.Enabled ~= true then
 				self:_clearRestrictionAttributes(player)

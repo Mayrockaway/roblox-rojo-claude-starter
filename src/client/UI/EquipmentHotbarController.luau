@@ -59,6 +59,18 @@ local keyboardConn: RBXScriptConnection? = nil
 local MAX_HOTBAR_SLOTS = 10
 local toolBySlot: { Tool? } = {}
 
+--- Forward declared so `rebuild` (defined further down) can wire each slot's
+--- `Activated` handler to the same equip / toggle helper that the keyboard
+--- path uses. Without this forward declaration Luau parses the reference
+--- inside `rebuild`'s click closure as a **global** (because the `local
+--- function equipOrToggleHotbarTool` declaration is lexically below `rebuild`),
+--- which resolves to `nil` at runtime — every left click / tap on a slot then
+--- silently calls `nil` and the tool never equips even though the strip looks
+--- correct (the `1`–`9` / `0` keyboard handler still works because it lives
+--- after the local declaration). Keep this **above** every function that wants
+--- to invoke the helper (currently `rebuild` and `equipSlotIndex`).
+local equipOrToggleHotbarTool: (Player, Tool) -> ()
+
 local function prefersTouchHotbar(): boolean
 	return UserInputService.TouchEnabled
 end
@@ -513,6 +525,15 @@ local function rebuild(player: Player)
 
 		local icon = clone:FindFirstChild("Icon")
 		if icon and icon:IsA("ImageLabel") then
+			-- Pin canonical icon geometry: icon fills the entire slot edge to
+			-- edge. ScaleType=Fit preserves aspect ratio so the rbxthumb is
+			-- not stretched. Defensive against manual Studio edits to the
+			-- template (sizes/positions get re-asserted on every clone).
+			icon.Size = UDim2.fromScale(1, 1)
+			icon.Position = UDim2.fromScale(0.5, 0.5)
+			icon.AnchorPoint = Vector2.new(0.5, 0.5)
+			icon.ScaleType = Enum.ScaleType.Fit
+			icon.BackgroundTransparency = 1
 			local tid = entry.tool.TextureId
 			local resolved: string? = nil
 			if typeof(tid) == "string" and tid ~= "" then
@@ -532,8 +553,21 @@ local function rebuild(player: Player)
 			end
 		end
 
+		-- Label sits INSIDE the slot at the bottom, text-only (no background
+		-- strip). Slot clips descendants so the text stays inside the slot's
+		-- rounded corners. TextStroke gives legibility over any icon.
+		clone.ClipsDescendants = true
 		local nameLabel = clone:FindFirstChild("NameLabel")
 		if nameLabel and nameLabel:IsA("TextLabel") then
+			nameLabel.AnchorPoint = Vector2.new(0.5, 1)
+			nameLabel.Position = UDim2.fromScale(0.5, 1)
+			nameLabel.Size = UDim2.fromScale(1, 0.22)
+			nameLabel.BackgroundTransparency = 1
+			nameLabel.TextScaled = true
+			nameLabel.TextColor3 = Color3.new(1, 1, 1)
+			-- ZIndex 3: above Icon (1) so the text reads on top of it, below
+			-- Hit (5) so taps on the text area still equip the slot.
+			nameLabel.ZIndex = 3
 			nameLabel.Text = resolveDisplayName(entry.tool)
 			nameLabel.Visible = true
 		end
@@ -563,6 +597,14 @@ local function rebuild(player: Player)
 		end
 
 		if clickTarget then
+			-- Defensive: `Activated` fires for **mouse click + touch tap +
+			-- gamepad A** on every `GuiButton`, but only when the button is
+			-- `Active = true`. Authored `Hit` button already ships `Active =
+			-- true`, but force it here so a future Studio re-author (or a clone
+			-- whose Hit button got toggled inactive) still equips on tap.
+			clickTarget.Active = true
+			clickTarget.Selectable = true
+			clickTarget.AutoButtonColor = false
 			clickTarget.Activated:Connect(function()
 				local t = slotToTool[clone]
 				if not t then
@@ -621,8 +663,11 @@ local function scheduleFullRebuild(player: Player)
 	end)
 end
 
---- Same slot / key again while that tool is equipped → unequip (default backpack-style toggle).
-local function equipOrToggleHotbarTool(player: Player, tool: Tool)
+--- Same slot / key again while that tool is equipped → unequip (default
+--- backpack-style toggle). Bound to the forward declaration near the top of
+--- this module so `rebuild`'s click closure can resolve it; do **not**
+--- redeclare with `local function` here or the upvalue stays `nil`.
+function equipOrToggleHotbarTool(player: Player, tool: Tool)
 	if tool.Parent == nil then
 		return
 	end

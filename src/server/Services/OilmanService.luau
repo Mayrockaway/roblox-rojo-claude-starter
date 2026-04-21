@@ -179,19 +179,21 @@ function OilmanService:_handleSell(player: Player, payload: any)
 		self:_sendActionResult(player, false, ErrorCodes.Unknown, "Sell failed — please retry.")
 		return
 	end
-	self._oilStateService:AddCash(player.UserId, totalPayout)
+	-- `actualPayout` carries the post-DoubleEarnings amount so the toast
+	-- message + payload reflect what was actually credited.
+	local _ok, actualPayout = self._oilStateService:AddCash(player.UserId, totalPayout)
 	self._oilStateService:PushState(player.UserId)
 
 	DevLog.log(string.format(
 		"[Oilman] %s sold %d barrels for $%d",
 		player.Name,
 		totalBarrels,
-		totalPayout
+		actualPayout
 	))
 
 	self:_sendActionResult(player, true, ErrorCodes.Ok,
-		string.format("Sold %d barrels for $%d.", totalBarrels, totalPayout),
-		{ lines = lines, totalBarrels = totalBarrels, totalPayout = totalPayout })
+		string.format("Sold %d barrels for $%d.", totalBarrels, actualPayout),
+		{ lines = lines, totalBarrels = totalBarrels, totalPayout = actualPayout })
 end
 
 function OilmanService:Start()

@@ -717,7 +717,7 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			bb.Name = "TimerGui"
 			bb.Adornee = anchor
 			bb.Size = UDim2.new(0, 160, 0, 60)
-			bb.StudsOffsetWorldSpace = Vector3.new(0, 8, 0)
+			bb.StudsOffsetWorldSpace = Vector3.new(0, 3, 0)
 			bb.AlwaysOnTop = true
 			bb.Parent = anchor
 			local lbl = Instance.new("TextLabel")
@@ -730,8 +730,18 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			lbl.TextStrokeTransparency = 0
 			lbl.Font = Enum.Font.GothamBold
 			lbl.TextScaled = true
+			lbl.TextWrapped = false
+			lbl.TextTruncate = Enum.TextTruncate.None
 			lbl.Text = "--"
 			lbl.Parent = bb
+			local lblCorner = Instance.new("UICorner")
+			lblCorner.CornerRadius = UDim.new(0, 6)
+			lblCorner.Parent = lbl
+			-- NOTE: do NOT add UIPadding or UITextSizeConstraint here.
+			-- TextScaled lets the label fill the full 160x60 box; padding +
+			-- a low MaxTextSize cap previously shrank the depth/timer text to
+			-- almost-illegible — keep the box wide-open so 2-line text still
+			-- renders large.
 			anchor:SetAttribute("StartTime", tonumber(entry.startTime) or 0)
 			anchor:SetAttribute("EndTime", tonumber(entry.endTime) or 0)
 			anchor:SetAttribute("DepthMeters", tonumber(entry.depthMeters) or 0)
@@ -769,6 +779,18 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			anchor:SetAttribute("DepthMeters", tonumber(entry.depthMeters) or 0)
 			anchor:SetAttribute("MetersPerSecond", tonumber(entry.metersPerSecond) or 1)
 			anchor.Position = getActiveDrillTimerAnchorPosition(model, Vector3.new(px, py + 3, pz))
+
+			-- Strip stale TimerLabel padding/cap from labels created by an earlier
+			-- code path so existing live drills get the larger depth/timer text
+			-- without needing a server restart.
+			local timerBb = anchor:FindFirstChild("TimerGui")
+			local timerLbl = timerBb and timerBb:FindFirstChild("TimerLabel")
+			if timerLbl and timerLbl:IsA("TextLabel") then
+				local stalePad = timerLbl:FindFirstChildOfClass("UIPadding")
+				if stalePad then stalePad:Destroy() end
+				local staleConstraint = timerLbl:FindFirstChildOfClass("UITextSizeConstraint")
+				if staleConstraint then staleConstraint:Destroy() end
+			end
 		end
 		if model then
 			ensureSellBackPromptOnHost(self, model, {
@@ -1335,7 +1357,7 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				holoPart.Parent = model
 				local billboard = Instance.new("BillboardGui")
 				billboard.Name = "HoloGui"
-				billboard.Size = UDim2.fromOffset(150, 44)
+				billboard.Size = UDim2.fromOffset(220, 56)
 				billboard.StudsOffsetWorldSpace = Vector3.new(0, 0.2, 0)
 				billboard.AlwaysOnTop = true
 				billboard.LightInfluence = 0
@@ -1358,7 +1380,14 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				label.Size = UDim2.fromScale(1, 1)
 				label.BackgroundTransparency = 1
 				label.Font = Enum.Font.LuckiestGuy
-				label.TextSize = 34
+				-- Fixed pixel size matches the previous (pre-padding) look so
+				-- "0.00 bbl/sec" reads at-a-glance from a normal play camera
+				-- distance. TextScaled + a low MaxTextSize cap previously
+				-- shrank the text to almost-illegible; keep it pixel-fixed.
+				label.TextSize = 32
+				label.TextScaled = false
+				label.TextWrapped = false
+				label.TextTruncate = Enum.TextTruncate.None
 				label.TextTransparency = 0.05
 				label.TextStrokeTransparency = 0
 				label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
@@ -1367,14 +1396,30 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 			end
 			-- Update hologram text + reposition
 			local holoGui = holoPart:FindFirstChild("HoloGui")
-			local infoLabel = holoGui and holoGui:FindFirstChild("Info")
+			local infoLabel = holoGui and holoGui:FindFirstChild("Info", true)
 			if infoLabel then
 				local topPos = getHighestBasePartTopPosition(model)
 				local topY2 = topPos and topPos.Y or model:GetPivot().Position.Y
 				holoPart.Position = Vector3.new(model:GetPivot().Position.X, topY2 + 3.6, model:GetPivot().Position.Z)
 
+				-- Strip stale font-shrink artifacts on labels created by an earlier
+				-- code path (UIPadding on the parent backdrop + UITextSizeConstraint
+				-- on the label) so existing live drills get the larger bbl/sec text
+				-- without needing a server restart.
+				local backdrop = infoLabel.Parent
+				if backdrop and backdrop:IsA("GuiObject") then
+					local stalePad = backdrop:FindFirstChildOfClass("UIPadding")
+					if stalePad then stalePad:Destroy() end
+				end
+				local staleConstraint = infoLabel:FindFirstChildOfClass("UITextSizeConstraint")
+				if staleConstraint then staleConstraint:Destroy() end
+				if infoLabel:IsA("TextLabel") and infoLabel.TextScaled then
+					infoLabel.TextScaled = false
+					infoLabel.TextSize = 32
+				end
+
 				local flowRate = getFlowRate(drill)
-				infoLabel.Text = string.format("%.1f/s", flowRate)
+				infoLabel.Text = string.format("%.2f bbl/sec", flowRate)
 				-- Color by production threshold
 				if flowRate >= 2 then
 					-- Excellent: rainbow cycle handled client-side, use gold as static fallback

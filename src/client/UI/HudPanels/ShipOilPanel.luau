@@ -13,6 +13,7 @@ local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"
 local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
 local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
 local InstantSellConfig = require(Shared:WaitForChild("Config"):WaitForChild("InstantSellConfig"))
+local MonetizationCatalog = require(Shared:WaitForChild("Config"):WaitForChild("MonetizationCatalog"))
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
@@ -834,6 +835,171 @@ local function tryInstantSell()
 	})
 end
 
+------------------------------------------------------------
+-- RunUpgradeCard1 — Security Personnel (Robux DevProduct)
+------------------------------------------------------------
+-- Wires the FIRST run-upgrade card in `ShipOilPanelGui` to the Security
+-- Personnel consumable (`MonetizationCatalog.consumable.security_personnel_x1`).
+-- Card 2/3 still carry their `ComingSoonOverlay` in Studio — only card 1 has
+-- a live product behind it so we don't touch the other two from script.
+--
+-- Ownership repaint: piggybacks on the existing `oilStateUpdate` listener
+-- below (so the badge updates in the same frame the server pushes the
+-- consumed/added stack). Click → `RequestPromptRobuxPurchase`. The
+-- "next run protected" toast notification is a separate follow-up; this
+-- module deliberately stays silent on success and lets
+-- `MonetizationSfxBootstrap` own the kaching.
+
+local RUN_UPGRADE_ITEM_ID = "consumable.security_personnel_x1"
+local RUN_UPGRADE_INVENTORY_ID = "security_personnel"
+
+local runUpgradeCard1Binding: {
+	titleLabel: TextLabel,
+	descriptionLabel: TextLabel?,
+	costLabel: TextLabel?,
+	buyButton: GuiButton,
+	baseTitle: string,
+	baseDescription: string,
+}? = nil
+
+local function formatRunUpgradeDescription(ownedCount: number): string
+	if not runUpgradeCard1Binding then
+		return ""
+	end
+	local base = runUpgradeCard1Binding.baseDescription
+	if ownedCount > 0 then
+		-- "Ready" emphasises the upgrade is armed; the count makes stacking
+		-- legible without a second badge UI element. Keeps the description
+		-- short enough that `TextScaled` doesn't shrink unreadably on phones.
+		return string.format("Ready ×%d  •  %s", ownedCount, base)
+	end
+	return base
+end
+
+local function refreshRunUpgradeCard1(ownedCount: number)
+	local b = runUpgradeCard1Binding
+	if not b then
+		return
+	end
+	if b.descriptionLabel then
+		b.descriptionLabel.Text = formatRunUpgradeDescription(math.max(0, math.floor(ownedCount)))
+	end
+end
+
+local function readRunUpgradeOwnedFromSnapshot(snap: any): number?
+	if typeof(snap) ~= "table" then
+		return nil
+	end
+	local owned = (snap :: any).runUpgradeOwnedByItemId
+	if typeof(owned) ~= "table" then
+		return nil
+	end
+	local n = (owned :: { [string]: any })[RUN_UPGRADE_INVENTORY_ID]
+	if typeof(n) ~= "number" then
+		return 0
+	end
+	return math.max(0, math.floor(n))
+end
+
+--- Bind `RunUpgradeCard1` to the Security Personnel product. Idempotent on
+--- the same screen because `disconnectAll()` clears the binding before
+--- `wireShipOil` calls us again. Safe to call before the catalog row exists
+--- (warns + early-returns so the rest of the panel still wires).
+local function wireRunUpgradeCard1(screen: ScreenGui, conns: { RBXScriptConnection })
+	local section = screen:FindFirstChild("RunUpgradesSection", true)
+	local cards = section and section:FindFirstChild("RunUpgradeCards")
+	local card = cards and cards:FindFirstChild("RunUpgradeCard1")
+	if not (card and card:IsA("GuiObject")) then
+		warn("[ShipOilPanel] RunUpgradeCard1 not found under " .. screen:GetFullName() .. " — Security Personnel buy CTA will not be wired.")
+		return
+	end
+
+	local titleLabel = card:FindFirstChild("TitleLabel", true)
+	local descLabel = card:FindFirstChild("DescriptionLabel", true)
+	local costPill = card:FindFirstChild("CostPill", true)
+	-- Studio numbered the per-card cost label `CostLabel1` so it is unique
+	-- inside `Body` (matters for any future global `FindFirstChild` lookups).
+	local costLabel = costPill and (costPill:FindFirstChild("CostLabel1") or costPill:FindFirstChildWhichIsA("TextLabel", true))
+	local buyButton = card:FindFirstChild("BuyButton", true)
+
+	if not (titleLabel and titleLabel:IsA("TextLabel")) then
+		warn("[ShipOilPanel] RunUpgradeCard1.TitleLabel missing — skipping wire.")
+		return
+	end
+	if not (buyButton and buyButton:IsA("GuiButton")) then
+		warn("[ShipOilPanel] RunUpgradeCard1.BuyButton missing — skipping wire.")
+		return
+	end
+
+	local item = MonetizationCatalog.GetItem(RUN_UPGRADE_ITEM_ID)
+	if not item then
+		warn(string.format(
+			"[ShipOilPanel] MonetizationCatalog has no entry for %q — RunUpgradeCard1 will keep Studio placeholder text.",
+			RUN_UPGRADE_ITEM_ID
+		))
+		return
+	end
+
+	-- `displayName` mirrors the Studio author's text but we re-stamp from
+	-- the catalog so a copy change in Lua propagates without a Studio edit.
+	titleLabel.Text = (typeof(item.displayName) == "string" and item.displayName) or titleLabel.Text
+	local baseDescription = if typeof(item.subtitle) == "string" and item.subtitle ~= ""
+		then item.subtitle
+		else "Protects your next shipment"
+
+	if costLabel and costLabel:IsA("TextLabel") then
+		local price = item.robuxPrice
+		if typeof(price) == "number" and price > 0 then
+			costLabel.Text = string.format("R$%d", math.floor(price))
+		else
+			costLabel.Text = "R$—"
+		end
+	end
+
+	runUpgradeCard1Binding = {
+		titleLabel = titleLabel :: TextLabel,
+		descriptionLabel = (descLabel and descLabel:IsA("TextLabel")) and (descLabel :: TextLabel) or nil,
+		costLabel = (costLabel and costLabel:IsA("TextLabel")) and (costLabel :: TextLabel) or nil,
+		buyButton = buyButton :: GuiButton,
+		baseTitle = titleLabel.Text,
+		baseDescription = baseDescription,
+	}
+
+	-- Initial paint with `0` owned; the snapshot fetched below in
+	-- `wireShipOil` will overwrite this within the same wire pass.
+	refreshRunUpgradeCard1(0)
+
+	table.insert(conns, (buyButton :: GuiButton).Activated:Connect(function()
+		ClientRemotes.requestPromptRobuxPurchase:FireServer({ itemId = RUN_UPGRADE_ITEM_ID })
+	end))
+
+	-- Surface failure codes for this card's prompt to the console only
+	-- (mirrors `RobuxShopPanel`'s policy — there's no per-card error toast,
+	-- and we don't want to fight `ShipOilPanel`'s own `ErrorNotification`
+	-- which is reserved for dispatch errors).
+	table.insert(conns, ClientRemotes.monetizationResult.OnClientEvent:Connect(function(payload: any)
+		if typeof(payload) ~= "table" then
+			return
+		end
+		local data = (payload :: any).data
+		local itemId = (typeof(data) == "table" and (data :: any).itemId) or nil
+		if itemId ~= RUN_UPGRADE_ITEM_ID then
+			return
+		end
+		if payload.ok == true then
+			return
+		end
+		local code = tostring(payload.code)
+		if code == "ERR_PRODUCT_NOT_CONFIGURED" then
+			warn(string.format("[ShipOilPanel] %s — DevProduct id is 0 in MonetizationCatalog. Set the real productId from the Creator Dashboard.", itemId))
+		elseif code == "ERR_MONETIZATION_DISABLED" then
+			warn(string.format("[ShipOilPanel] %s — MonetizationCatalog.Enabled is false; toggle it on to allow purchases.", itemId))
+		elseif code == "ERR_PROMPT_FAILED" then
+			warn(string.format("[ShipOilPanel] %s — MarketplaceService prompt failed; user may retry.", itemId))
+		end
+	end))
+end
+
 local function disconnectAll()
 	for _, c in ipairs(connections) do
 		c:Disconnect()
@@ -873,6 +1039,7 @@ local function disconnectAll()
 	latestResolved = nil
 	lastFtueShipOilPeekOpen = nil
 	lastFtueShipOilPeekBarrels = nil
+	runUpgradeCard1Binding = nil
 	hideErrorNotification()
 	errorNotificationLabel = nil
 end
@@ -1079,6 +1246,14 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 				refreshInstantSellRowsAndTotals()
 			end
 		end
+		-- Run-upgrade owned counts ride on the same packet so the
+		-- RunUpgradeCard1 "Ready ×N" badge updates in the same frame as a
+		-- successful Robux receipt OR a dispatch consume. Skips silently
+		-- when the card isn't wired yet (Studio template missing).
+		local owned = readRunUpgradeOwnedFromSnapshot(snap)
+		if owned ~= nil then
+			refreshRunUpgradeCard1(owned)
+		end
 		refreshFooter()
 	end))
 
@@ -1187,6 +1362,10 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 				mergeBoatFromSnapshot(st)
 				if mergeOilByTierFromSnapshot(st) then
 					clampSelectionsToInventory()
+				end
+				local owned = readRunUpgradeOwnedFromSnapshot(st)
+				if owned ~= nil then
+					refreshRunUpgradeCard1(owned)
 				end
 			end
 		end
@@ -1370,6 +1549,11 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 		-- the first time the player opens it.
 		refreshInstantSellRowsAndTotals()
 	end
+
+	-- Run upgrades — only RunUpgradeCard1 (Security Personnel) is live;
+	-- cards 2/3 still carry their `ComingSoonOverlay` in Studio so they're
+	-- intentionally left unwired here.
+	wireRunUpgradeCard1(screen, connections)
 
 	-- InstantSell open button lives on the main panel (`InstantSellSection.InstantSellButton`).
 	local instantSellSection = screen:FindFirstChild("InstantSellSection", true)

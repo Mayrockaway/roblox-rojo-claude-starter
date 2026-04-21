@@ -15,6 +15,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local StraitEventCatalog = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("Catalog"))
 local getClientRemotes = require(script.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
+--- Coordinates with `ClientPlotGrid.setStatus` / `setStatusLocked` so cruise
+--- dots, halt text, and resolved text don't clobber locked or recently-written
+--- non-cruise messages (and vice versa). See `HintLineState.luau` header.
+local HintLineState = require(script.Parent:WaitForChild("HintLineState")) :: any
 
 local localPlayer = Players.LocalPlayer
 
@@ -48,7 +52,17 @@ local COLORS = {
 }
 
 local CRUISE_TEXT = "Shipment safely in progress"
-local IDLE_STATUS_TEXT = "Dispatch a shipment to see status here."
+--- Hide entirely when there is no active shipment and no recent `setStatus`
+--- chatter. Empty string + the `ClientPlotGrid` fade hook (TextTransparency
+--- tween at 5s) means the line collapses to nothing on its own; we never
+--- print a "Dispatch a shipment to see status here." filler line anymore.
+local IDLE_STATUS_TEXT = ""
+
+--- After a halt resolves, only resume cruise dots when the line has had at
+--- least this many seconds since its last non-cruise write — matches the 5s
+--- fade hold in `ClientPlotGrid` so explicit messages get their full read
+--- time before cruise dots come back.
+local CRUISE_RESUME_READ_SECONDS = 5
 
 local playerGuiRef: PlayerGui? = nil
 local hudChildConn: RBXScriptConnection? = nil
@@ -1151,12 +1165,21 @@ local function startCruiseDots()
 	h.TextColor3 = COLORS.cruise
 	local sid = cruiseDotsSession
 	local phase = 0
-	h.Text = CRUISE_TEXT .. "."
+	-- Cruise tick is the lowest-priority writer on the Hint line: skip the
+	-- text update while a higher-priority lock is active (e.g. contractor
+	-- "your hit landed" gold notification from `setStatusLocked`). The lock
+	-- typically lines up with the 5s fade hold, so cruise resumes naturally
+	-- once the lock expires.
+	if not HintLineState.isLocked() then
+		h.Text = CRUISE_TEXT .. "."
+	end
 	cruiseDotsThread = task.spawn(function()
 		while sid == cruiseDotsSession and h.Parent do
 			phase = (phase % 3) + 1
-			local dots = string.rep(".", phase)
-			h.Text = CRUISE_TEXT .. dots
+			if not HintLineState.isLocked() then
+				local dots = string.rep(".", phase)
+				h.Text = CRUISE_TEXT .. dots
+			end
 			task.wait(0.42)
 		end
 	end)
@@ -1252,6 +1275,39 @@ local function ownerProgressFillAlpha(): number
 	return 0
 end
 
+--- Try to resume cruise dots after a halt, but back off until any recent
+--- non-cruise message (`setStatus` chatter, halt text, success/loss text) has
+--- had `CRUISE_RESUME_READ_SECONDS` of read time on screen, AND the priority
+--- lock from `setStatusLocked` has expired. Re-schedules itself instead of
+--- writing if either condition isn't met.
+local function tryResumeCruiseDots(originalHaltGen: number)
+	if originalHaltGen ~= haltGeneration then
+		return
+	end
+	if not activeShipmentId then
+		return
+	end
+	local nowClock = os.clock()
+	local sinceLastNonCruise = nowClock - HintLineState.getLastNonCruiseClock()
+	if sinceLastNonCruise < CRUISE_RESUME_READ_SECONDS then
+		local wait = CRUISE_RESUME_READ_SECONDS - sinceLastNonCruise
+		haltResumeThread = task.delay(wait, function()
+			haltResumeThread = nil
+			tryResumeCruiseDots(originalHaltGen)
+		end)
+		return
+	end
+	if HintLineState.isLocked() then
+		local lockRemaining = math.max(0.05, HintLineState.getLockExpiryClock() - nowClock)
+		haltResumeThread = task.delay(lockRemaining, function()
+			haltResumeThread = nil
+			tryResumeCruiseDots(originalHaltGen)
+		end)
+		return
+	end
+	startCruiseDots()
+end
+
 local function showHalted(severityRaw: string, holdSeconds: number)
 	local h = statusLine
 	if not (h and h.Parent) then
@@ -1263,15 +1319,24 @@ local function showHalted(severityRaw: string, holdSeconds: number)
 	cancelAllHintFx()
 	h.RichText = false
 	local level = severityKey(severityRaw)
-	h.Text = "Ship halted!"
+	-- Skip the text overwrite while a higher-priority lock is active, but keep
+	-- driving the FX (pulse / shake / fill freeze) — those are still useful.
+	if not HintLineState.isLocked() then
+		h.Text = "Ship halted!"
+		if level == "low" then
+			h.TextColor3 = COLORS.low
+		elseif level == "medium" then
+			h.TextColor3 = COLORS.medium
+		else
+			h.TextColor3 = COLORS.high
+		end
+		HintLineState.markNonCruiseWritten()
+	end
 	if level == "low" then
-		h.TextColor3 = COLORS.low
 		startPulseLoop("low")
 	elseif level == "medium" then
-		h.TextColor3 = COLORS.medium
 		startPulseLoop("medium")
 	else
-		h.TextColor3 = COLORS.high
 		startPulseLoop("high")
 		startShake(2.2)
 	end
@@ -1289,9 +1354,7 @@ local function showHalted(severityRaw: string, holdSeconds: number)
 		if hintFxScale then
 			hintFxScale.Scale = 1
 		end
-		if activeShipmentId then
-			startCruiseDots()
-		end
+		tryResumeCruiseDots(resumeGen)
 	end)
 end
 
@@ -1305,8 +1368,11 @@ local function showTotalLossDuringPause(holdSeconds: number)
 	haltProgressFreezeUntil = workspace:GetServerTimeNow() + hold
 	cancelAllHintFx()
 	h.RichText = false
-	h.Text = "Shipment lost…"
-	h.TextColor3 = COLORS.lost
+	if not HintLineState.isLocked() then
+		h.Text = "Shipment lost…"
+		h.TextColor3 = COLORS.lost
+		HintLineState.markNonCruiseWritten()
+	end
 	startPulseLoop("high")
 	startShake(3.5)
 	haltResumeThread = task.delay(hold, function()
@@ -1462,21 +1528,27 @@ function ShipmentProgressHud.onVisualPacket(kind: string, data: Packet, localPla
 		if h and h.Parent then
 			if failed then
 				h.RichText = false
-				h.Text = "Shipment lost…"
-				h.TextColor3 = COLORS.lost
+				if not HintLineState.isLocked() then
+					h.Text = "Shipment lost…"
+					h.TextColor3 = COLORS.lost
+					HintLineState.markNonCruiseWritten()
+				end
 				startShake(4)
 				startPulseLoop("high")
 			else
 				local lost = tonumber(data.lost) or 0
 				h.RichText = false
-				h.TextColor3 = COLORS.success
-				if lost > 0 then
-					h.Text = string.format(
-						"Shipment successful! %d barrel(s) lost at sea — the rest reached your warehouse.",
-						lost
-					)
-				else
-					h.Text = "Shipment successful!"
+				if not HintLineState.isLocked() then
+					h.TextColor3 = COLORS.success
+					if lost > 0 then
+						h.Text = string.format(
+							"Shipment successful! %d barrel(s) lost at sea — the rest reached your warehouse.",
+							lost
+						)
+					else
+						h.Text = "Shipment successful!"
+					end
+					HintLineState.markNonCruiseWritten()
 				end
 				if hintFxScale then
 					hintFxScale.Scale = 1
@@ -1501,11 +1573,20 @@ function ShipmentProgressHud.onVisualPacket(kind: string, data: Packet, localPla
 
 		clearTask = task.delay(3.4, function()
 			clearTask = nil
+			-- Always cancel the FX state (shake / pulse) here — it would otherwise
+			-- keep running until the next ShipmentStarted/Resolved cancelAllHintFx.
 			cancelAllHintFx()
 			restoreHintBaseline()
+			-- Clear text only if nothing more recent has claimed the line in the
+			-- last `CRUISE_RESUME_READ_SECONDS` and no priority lock is active.
+			-- Otherwise leave the recent message visible (the fade hook will
+			-- still hide it on its own 5s timer).
 			if statusLine and statusLine.Parent then
-				statusLine.Text = IDLE_STATUS_TEXT
-				statusLine.RichText = baselineRichText
+				local sinceLastNonCruise = os.clock() - HintLineState.getLastNonCruiseClock()
+				if not HintLineState.isLocked() and sinceLastNonCruise >= CRUISE_RESUME_READ_SECONDS then
+					statusLine.Text = IDLE_STATUS_TEXT
+					statusLine.RichText = baselineRichText
+				end
 			end
 			setFillScaleX(0)
 		end)

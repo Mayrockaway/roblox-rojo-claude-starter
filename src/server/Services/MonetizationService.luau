@@ -101,6 +101,48 @@ function MonetizationService:Start()
 		self._gamePassCache[player.UserId] = nil
 	end))
 
+	-- GamePass purchases never go through `ProcessReceipt`; instead Roblox
+	-- fires `PromptGamePassPurchaseFinished` when the prompt closes. We use
+	-- this signal to (a) invalidate `_gamePassCache` so the next
+	-- `HasGamePassEffect` call re-asks `UserOwnsGamePassAsync` (which now
+	-- returns true), and (b) re-push the player's effect snapshot so the
+	-- HUD active-state chrome (e.g. rainbow stroke around the 2x earnings
+	-- icon) lights up immediately without a rejoin. Cache is invalidated
+	-- even on `wasPurchased = false` because Roblox occasionally fires the
+	-- event with stale `wasPurchased` and the next ownership check is the
+	-- final word anyway.
+	table.insert(self._connections, MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, gamePassId, wasPurchased)
+		if typeof(player) ~= "Instance" or not player:IsA("Player") then
+			return
+		end
+		local byUser = self._gamePassCache[player.UserId]
+		if byUser then
+			byUser[gamePassId] = nil
+		end
+		if wasPurchased then
+			self:_pushGamePassEffectsToClient(player)
+		end
+	end))
+
+	-- Push the initial effects snapshot to every player as they join. Done
+	-- on a deferred task so the client's `ClientRemotes` `WaitForChild`
+	-- has a chance to land before the event fires (a `FireClient` to a
+	-- player who hasn't connected the listener yet is silently dropped).
+	table.insert(self._connections, Players.PlayerAdded:Connect(function(player)
+		task.delay(2, function()
+			if player.Parent then
+				self:_pushGamePassEffectsToClient(player)
+			end
+		end)
+	end))
+	for _, player in ipairs(Players:GetPlayers()) do
+		task.delay(2, function()
+			if player.Parent then
+				self:_pushGamePassEffectsToClient(player)
+			end
+		end)
+	end
+
 	self:_registerStraitForceLockHandlers()
 end
 
@@ -362,7 +404,12 @@ function MonetizationService:_grantCurrency(userId: number, cashAmount: number?)
 	if typeof(cashAmount) ~= "number" or cashAmount <= 0 then
 		return false, "ERR_BAD_GRANT_PAYLOAD"
 	end
-	local added = self._oilStateService:AddCash(userId, cashAmount)
+	-- Direct Robux → cash grants opt out of the DoubleEarnings multiplier:
+	-- the Robux price for a "Cash $5,000" pack is sized against the listed
+	-- `cashAmount`. Doubling that on top of the GamePass would silently
+	-- double-pay every owner. Same reasoning applies to Bundle sub-grants
+	-- whose `kind == "Currency"` (they route here too).
+	local added = self._oilStateService:AddCash(userId, cashAmount, { skipMultiplier = true })
 	if not added then
 		return false, "ERR_NO_STATE"
 	end
@@ -499,6 +546,46 @@ function MonetizationService:HasGamePassEffect(player: Player, effectId: string)
 		end
 	end
 	return false
+end
+
+--- Snapshot every distinct `gamePassEffect` declared in the catalog → boolean
+--- ownership for the given player. The map only includes effect ids the
+--- catalog actually publishes a GamePass for; clients should treat missing
+--- keys as `false`. Used by the HUD chrome (`EarningsGamepassController`)
+--- to decide whether to show the active-state pulsing rainbow stroke.
+function MonetizationService:GetGamePassEffectsForPlayer(player: Player): { [string]: boolean }
+	local out: { [string]: boolean } = {}
+	for _, item in ipairs(MonetizationCatalog.Items) do
+		if
+			item.productKind == "GamePass"
+			and item.grant.kind == "GamePassEffect"
+			and typeof(item.grant.gamePassEffect) == "string"
+			and item.grant.gamePassEffect ~= ""
+			and MonetizationCatalog.IsValidProductId(item.productId)
+		then
+			local effectId = item.grant.gamePassEffect :: string
+			if out[effectId] ~= true then
+				out[effectId] = self:HasGamePass(player, item.productId)
+			end
+		end
+	end
+	return out
+end
+
+function MonetizationService:_pushGamePassEffectsToClient(player: Player)
+	if not self._remoteService then
+		return
+	end
+	local ok, ev = pcall(function()
+		return self._remoteService:GetEvent(RemoteNames.GamePassEffectsUpdate)
+	end)
+	if not ok or not ev then
+		return
+	end
+	local effects = self:GetGamePassEffectsForPlayer(player)
+	pcall(function()
+		ev:FireClient(player, { effects = effects })
+	end)
 end
 
 return MonetizationService

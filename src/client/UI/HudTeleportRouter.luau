@@ -1,11 +1,18 @@
 --!strict
 -- Wires HUD teleport buttons → server teleport `RemoteEvent`s (no payload).
--- Buttons live in two authored regions of `HUD.Canvas`:
---   * `TeleportStack`           → `TeleportHomeButton`, `TeleportShipButton`
---   * `Buttons` (right-side grid) → `BuyButton`, `SellButton`, `HireButton`
+-- All buttons live in `HUD.Canvas.Buttons` (right-side grid):
+--   `BuyButton`, `SellButton`, `HomeButton`, `ShipButton`, `HireButton`
 -- DAILY / SETTINGS in `Canvas.Buttons` open modal panels via `HudPanelRouter` (not here).
+--
+-- Also owns the **camera snap on `TeleportHomeApplied`**: when the server pivots the character
+-- on a Home teleport, the default follow camera keeps its internal yaw (so the player ends up
+-- looking at the back of their own head). On the server signal we briefly switch to
+-- `Scriptable`, place the camera behind the character on the pad's LookVector, then hand back
+-- to `Custom` so the PlayerModule re-initializes from the new CFrame.
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 
 local HudTriggerHover = require(script.Parent.HudTriggerHover)
 local FtueTpHomePointerSignals = require(script.Parent:WaitForChild("FtueTpHomePointerSignals"))
@@ -13,14 +20,63 @@ local RemoteNames = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChil
 local getClientRemotes = require(script.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
 local ClientRemotes = getClientRemotes()
 
+local LocalPlayer = Players.LocalPlayer
+
+--- Distance the camera sits behind the character after a Home teleport. Tuned to match the
+--- default Roblox follow camera's typical eye-distance so the snap is barely perceptible
+--- (it just rotates around the character, the zoom level stays familiar).
+local CAMERA_BEHIND_DISTANCE = 14
+local CAMERA_HEAD_OFFSET = Vector3.new(0, 2, 0)
+
+local function snapCameraBehindCharacter(targetCFrame: CFrame)
+	local cam = Workspace.CurrentCamera
+	if not cam then
+		return
+	end
+	local char = LocalPlayer.Character
+	local hrp: BasePart? = if char then char:FindFirstChild("HumanoidRootPart") :: BasePart? else nil
+	--- Anchor on the server-authoritative target CFrame (we may receive this packet before the
+	--- replicated HRP CFrame catches up on the client). Use HRP only as a refinement.
+	local focal = targetCFrame.Position + CAMERA_HEAD_OFFSET
+	local look = targetCFrame.LookVector
+	if hrp then
+		focal = hrp.Position + CAMERA_HEAD_OFFSET
+		look = hrp.CFrame.LookVector
+	end
+	local desiredPos = focal - look * CAMERA_BEHIND_DISTANCE + Vector3.new(0, 3, 0)
+
+	local subject = cam.CameraSubject
+	cam.CameraType = Enum.CameraType.Scriptable
+	cam.CFrame = CFrame.lookAt(desiredPos, focal)
+	cam.Focus = CFrame.new(focal)
+
+	--- Two-frame interlude: the PlayerModule's CameraInput reads `Camera.CFrame` when it
+	--- transitions back into `Custom` and uses that as its new yaw/pitch baseline. One frame
+	--- is usually enough; two is belt-and-suspenders against a missed Heartbeat tick.
+	task.delay(0.05, function()
+		if cam.Parent == nil then
+			return
+		end
+		cam.CameraSubject = subject
+		cam.CameraType = Enum.CameraType.Custom
+	end)
+end
+
+ClientRemotes.teleportHomeApplied.OnClientEvent:Connect(function(targetCFrame)
+	if typeof(targetCFrame) ~= "CFrame" then
+		return
+	end
+	snapCameraBehindCharacter(targetCFrame)
+end)
+
 -- Each entry maps a HUD button name to the *typed* RemoteEvent on `ClientRemotes`.
 -- Keeping it as a function table (not a name string) means a typo here is a *type*
 -- error at module-load time instead of a silent `WaitForChild` timeout at runtime.
 local BUTTON_TO_REMOTE: { [string]: RemoteEvent } = {
-	TeleportHomeButton = ClientRemotes.requestTeleportHome,
-	TeleportShipButton = ClientRemotes.requestTeleportToShip,
 	BuyButton = ClientRemotes.requestTeleportToDocks,         -- "front of Shop" = DocksTeleportTarget
 	SellButton = ClientRemotes.requestTeleportToWarehouse,    -- player warehouse spawn
+	HomeButton = ClientRemotes.requestTeleportHome,
+	ShipButton = ClientRemotes.requestTeleportToShip,
 	HireButton = ClientRemotes.requestTeleportToHire,         -- Workspace.HireTeleportTarget
 }
 
@@ -53,26 +109,16 @@ function HudTeleportRouter.start(playerGui: PlayerGui)
 				continue
 			end
 			local canvas = hud:FindFirstChild("Canvas")
-			-- We only require `Canvas` here. `TeleportStack` (legacy left-side stack) and the
-			-- new `Buttons` grid are each consulted in `findTrigger`; either may be missing.
 			if not (canvas and canvas:IsA("Frame")) then
 				task.wait(0.5)
 				continue
 			end
-			local stack = canvas:FindFirstChild("TeleportStack")
 			local buttonsFrame = canvas:FindFirstChild("Buttons")
 
 			local function findTrigger(name: string): GuiButton?
 				-- Search order:
-				--   1. `TeleportStack`  — TeleportHomeButton / TeleportShipButton
-				--   2. `Buttons` grid   — BuyButton / SellButton / HireButton
-				--   3. recursive HUD   — fallback for any future relocation
-				if stack and stack:IsA("GuiObject") then
-					local b = stack:FindFirstChild(name, true)
-					if b and b:IsA("GuiButton") then
-						return b :: GuiButton
-					end
-				end
+				--   1. `Buttons` grid   — primary location for all teleport buttons
+				--   2. recursive HUD    — fallback for any future relocation
 				if buttonsFrame and buttonsFrame:IsA("GuiObject") then
 					local b = buttonsFrame:FindFirstChild(name, true)
 					if b and b:IsA("GuiButton") then

@@ -25,6 +25,20 @@ pcall(function()
 	ReplicatedFirst:RemoveDefaultLoadingScreen()
 end)
 
+--- Kill the default Roblox `Backpack` CoreGui at the earliest possible point
+--- in the client lifecycle. The custom hotbar lives at
+--- `PlayerGui.HUD.Canvas.EquipmentHotbar` and is the only inventory UI we
+--- ever want to render — the default toolbar must never flash on screen.
+--- Disabling it here (in ReplicatedFirst, before `StarterPlayerScripts`
+--- runs) is unconditional and runs before `EquipmentHotbarController` even
+--- has a chance to bind, so there is no race where the default slot row
+--- shows up while we wait for the custom strip to replicate. The post-bind
+--- call in `init.client.luau` stays as a belt-and-braces re-assertion.
+local StarterGui = game:GetService("StarterGui")
+pcall(function()
+	StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+end)
+
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
@@ -548,7 +562,7 @@ task.spawn(function()
 end)
 
 waitForCharacter()
-waitForHud()
+local hudScreen = waitForHud()
 
 while not blockingDone do
 	task.wait(0.05)
@@ -568,6 +582,41 @@ task.wait(FINAL_GRACE_SECONDS)
 
 if progressLoopThread then
 	pcall(task.cancel, progressLoopThread)
+end
+
+--- Suppress the HUD ScreenGui ONLY across the fade-and-destroy window so the
+--- authored HUD (`EquipmentHotbar`, `CashStrip`, `TopRow`, etc.) cannot bleed
+--- through the loading cover during its 0.4s opacity tween (the cover sits
+--- at `DisplayOrder = 1_000_000`, fully opaque — but as it fades to
+--- transparency the HUD underneath would otherwise peek through). We do this
+--- as late as possible (immediately before `fadeAndDestroy`) instead of
+--- pre-load so any error / hang during preload cannot leave the HUD
+--- permanently disabled — the original earlier-suppression placement bricked
+--- the entire HUD (including `EquipmentHotbar`) when anything in the
+--- blocking-load loop got stuck. `FtueHudReveal` writes the correct
+--- per-piece `Visible` state in parallel so the right pieces are already
+--- configured by the time we re-enable.
+local hudWasSuppressedForFade = false
+if hudScreen and hudScreen:IsA("ScreenGui") then
+	hudWasSuppressedForFade = true
+	(hudScreen :: ScreenGui).Enabled = false
+end
+
+--- Watchdog: regardless of how the next ~1.5s plays out (fade tween, destroy,
+--- any pcalled error), force the HUD ScreenGui back on after a hard timeout.
+--- Last-resort guarantee that the player never gets stranded with a black /
+--- empty viewport because of a loading-bootstrap regression. Cheap and
+--- idempotent — re-enabling an already-enabled ScreenGui is a no-op.
+if hudWasSuppressedForFade then
+	task.delay(8, function()
+		local hud = playerGui:FindFirstChild("HUD")
+			or (hudScreen and hudScreen.Parent ~= nil and hudScreen)
+			or nil
+		if hud and hud:IsA("ScreenGui") and (hud :: ScreenGui).Enabled == false then
+			warn("[LoadingBootstrap] HUD ScreenGui was still disabled 8s after fade — forcing Enabled=true (watchdog).")
+			(hud :: ScreenGui).Enabled = true
+		end
+	end)
 end
 
 local function fadeAndDestroy()
@@ -600,7 +649,27 @@ local function fadeAndDestroy()
 	screen:Destroy()
 end
 
-fadeAndDestroy()
+--- pcall the fade-and-destroy so a tween/destroy error cannot strand us with
+--- the HUD permanently disabled (see suppression block above). The watchdog
+--- still re-enables on a hard timeout, but this is the primary path.
+local fadeOk, fadeErr = pcall(fadeAndDestroy)
+if not fadeOk then
+	warn("[LoadingBootstrap] fadeAndDestroy errored — proceeding to restore HUD: " .. tostring(fadeErr))
+end
+
+--- Loading cover is gone — restore the HUD ScreenGui so `EquipmentHotbar` /
+--- `CashStrip` / `TopRow` / etc. become visible. Per-child visibility was
+--- already set by `FtueHudReveal` (FTUE-active players) or defaults to
+--- `Visible = true` (FTUE-completed players), so flipping `Enabled` here is
+--- the final reveal step. We refetch in case the original handle drifted.
+if hudWasSuppressedForFade then
+	local hudNow = playerGui:FindFirstChild("HUD")
+	if hudNow and hudNow:IsA("ScreenGui") then
+		(hudNow :: ScreenGui).Enabled = true
+	elseif hudScreen and hudScreen:IsA("ScreenGui") and hudScreen.Parent ~= nil then
+		(hudScreen :: ScreenGui).Enabled = true
+	end
+end
 
 task.spawn(function()
 	local seenInstances: InstanceDeduper = {}

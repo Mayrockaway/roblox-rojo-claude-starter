@@ -35,6 +35,7 @@ export type ClientRemotes = {
 	requestPickupBarrel: RemoteEvent,
 	requestTeleportToShip: RemoteEvent,
 	requestTeleportHome: RemoteEvent,
+	teleportHomeApplied: RemoteEvent,
 	requestTeleportToDocks: RemoteEvent,
 	requestTeleportToHire: RemoteEvent,
 	requestUpgradeWarehouse: RemoteEvent,
@@ -82,6 +83,7 @@ export type ClientRemotes = {
 	requestPromptRobuxPurchase: RemoteEvent,
 	monetizationResult: RemoteEvent,
 	requestMonetizationCatalog: RemoteFunction,
+	gamePassEffectsUpdate: RemoteEvent,
 }
 
 local Remotes: ClientRemotes = {
@@ -95,6 +97,7 @@ local Remotes: ClientRemotes = {
 	requestPickupBarrel = waitRemote(RemoteNames.RequestPickupBarrel) :: RemoteEvent,
 	requestTeleportToShip = waitRemote(RemoteNames.RequestTeleportToShip) :: RemoteEvent,
 	requestTeleportHome = waitRemote(RemoteNames.RequestTeleportHome) :: RemoteEvent,
+	teleportHomeApplied = waitRemote(RemoteNames.TeleportHomeApplied) :: RemoteEvent,
 	requestTeleportToDocks = waitRemote(RemoteNames.RequestTeleportToDocks) :: RemoteEvent,
 	requestTeleportToHire = waitRemote(RemoteNames.RequestTeleportToHire) :: RemoteEvent,
 	requestUpgradeWarehouse = waitRemote(RemoteNames.RequestUpgradeWarehouse) :: RemoteEvent,
@@ -143,6 +146,11 @@ local Remotes: ClientRemotes = {
 	requestPromptRobuxPurchase = waitRemote(RemoteNames.RequestPromptRobuxPurchase) :: RemoteEvent,
 	monetizationResult = waitRemote(RemoteNames.MonetizationResult) :: RemoteEvent,
 	requestMonetizationCatalog = waitRemote(RemoteNames.RequestMonetizationCatalog) :: RemoteFunction,
+	--- Server → one client: `{ effects = { DoubleEarnings = true, ... } }` snapshot
+	--- of which `gamePassEffect` ids the player currently owns. Pushed on join
+	--- and again whenever a GamePass prompt finishes with `wasPurchased = true`.
+	--- Consumed by `EarningsGamepassController` to drive the HUD active-state chrome.
+	gamePassEffectsUpdate = waitRemote(RemoteNames.GamePassEffectsUpdate) :: RemoteEvent,
 }
 
 local devLogEvent = waitRemote(RemoteNames.DevLog) :: RemoteEvent

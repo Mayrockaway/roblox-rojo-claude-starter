@@ -63,6 +63,18 @@ local focusLabel: TextLabel? = nil
 local hammerHoverBB: BillboardGui? = nil
 local hammerHoverLbl: TextLabel? = nil
 
+-- Mobile / touch placement: tap-to-preview-then-confirm. The active touch flow
+-- locks the ghost onto a specific tile (`MobilePreviewHit` below); a second tap
+-- on the **same** tile commits via `tryPrimaryAction` while a tap on a
+-- different tile re-locks the preview without placing. Cleared automatically
+-- when the player switches off Drill (see `updateGhost`).
+export type MobilePreviewHit = {
+	chunkId: string,
+	hitPos: Vector3,
+	tileName: string?,
+}
+local mobilePreviewHit: MobilePreviewHit? = nil
+
 -- ===================== exported functions =====================
 
 local function getTargetedChunkHit(): (Instance?, Vector3?, string?)
@@ -79,6 +91,66 @@ local function getTargetedChunkHit(): (Instance?, Vector3?, string?)
 	while cursor do
 		if typeof(cursor:GetAttribute("ChunkId")) == "string" then
 			return cursor, mouse.Hit.Position, cursor:GetAttribute("ChunkId")
+		end
+		cursor = cursor.Parent
+		if cursor == nil or cursor == ownedPlot.Parent then
+			break
+		end
+	end
+	return nil, nil, nil
+end
+
+--- Camera-ray version of `getTargetedChunkHit` for **touch** input on mobile —
+--- `Mouse.Target`/`Mouse.Hit` are unreliable before a tap actually lands, so
+--- the touch handler hands us the screen-space tap position and we cast from
+--- the live `Camera` through that point. Returns `(chunkId, hitPos, tileName)`
+--- so the touch handler can both lock the preview (`tileName` is the snap key
+--- for "is the second tap on the same tile?") and re-snap to the surface Y.
+local function raycastTouchToChunk(touchScreenPos: Vector2): (string?, Vector3?, string?)
+	local camera = _Workspace.CurrentCamera
+	if not camera then
+		return nil, nil, nil
+	end
+	local ownedPlot = ClientPlotGrid.getOwnedPlot()
+	if not ownedPlot then
+		return nil, nil, nil
+	end
+
+	local ray = camera:ViewportPointToRay(touchScreenPos.X, touchScreenPos.Y, 0)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	-- Ignore the local character so a tap that grazes the player doesn't snap
+	-- the ghost onto the avatar instead of the tile underneath.
+	local exclude: { Instance } = {}
+	if _player and _player.Character then
+		table.insert(exclude, _player.Character)
+	end
+	if ghostDrill then
+		table.insert(exclude, ghostDrill)
+	end
+	params.FilterDescendantsInstances = exclude
+	params.IgnoreWater = true
+
+	local result = _Workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
+	if not result or not result.Instance then
+		return nil, nil, nil
+	end
+	local hitInst = result.Instance
+	local hitPos = result.Position
+
+	-- Tile name (T01..T99) is captured so the touch handler can decide whether
+	-- a second tap landed on the **same** tile (= confirm) vs a new one (= move
+	-- preview). Walk **only** the ray hit itself for the tile name; chunkId is
+	-- found by climbing parents like the desktop path does.
+	local tileName: string? = nil
+	if hitInst:IsA("BasePart") and hitInst.Name:match("^T%d%d$") then
+		tileName = hitInst.Name
+	end
+
+	local cursor: Instance? = hitInst
+	while cursor do
+		if typeof(cursor:GetAttribute("ChunkId")) == "string" then
+			return cursor:GetAttribute("ChunkId") :: string, hitPos, tileName
 		end
 		cursor = cursor.Parent
 		if cursor == nil or cursor == ownedPlot.Parent then
@@ -117,6 +189,25 @@ local function surfaceYFromRayTarget(): number?
 	local t = mouse.Target
 	if t and t:IsA("BasePart") and t.Name:match("^T%d%d$") then
 		return t.Position.Y + t.Size.Y / 2
+	end
+	return nil
+end
+
+--- Per-tile surface Y by name (e.g. `"T13"`) inside a specific chunk. Used by
+--- the **mobile** path so the locked preview snaps to the **same** Y as the
+--- desktop ray-on-tile path even though `mouse.Target` is stale between taps.
+local function tileSurfaceYInChunk(chunkId: string, tileName: string): number?
+	if tileName == "" then
+		return nil
+	end
+	local sectionModel = ClientPlotGrid.getChunkPartById()[chunkId]
+	if not sectionModel then
+		return nil
+	end
+	for _, d in ipairs(sectionModel:GetDescendants()) do
+		if d:IsA("BasePart") and d.Name == tileName then
+			return d.Position.Y + d.Size.Y / 2
+		end
 	end
 	return nil
 end
@@ -313,14 +404,55 @@ local function hideGhost()
 	clearGhostTimerUi()
 end
 
+--- Resolve the current intended placement coordinate. On **mobile**, when the
+--- player has locked a preview via the touch handler, that locked hit wins so
+--- the ghost stays pinned to the tapped tile while the player decides whether
+--- to confirm. On **desktop** (or before the first mobile tap), falls back to
+--- the live `mouse.Hit` reading from `getTargetedChunkHit()`.
+local function getDesiredPlacementHit(): (string?, Vector3?, string?)
+	if mobilePreviewHit ~= nil then
+		return mobilePreviewHit.chunkId, mobilePreviewHit.hitPos, mobilePreviewHit.tileName
+	end
+	local hit, hitPos, chunkId = getTargetedChunkHit()
+	if hit and hitPos and chunkId then
+		local tileName: string? = nil
+		local mt = mouse.Target
+		if mt and mt:IsA("BasePart") and mt.Name:match("^T%d%d$") then
+			tileName = mt.Name
+		end
+		return chunkId, hitPos, tileName
+	end
+	return nil, nil, nil
+end
+
+local function getMobilePreviewHit(): MobilePreviewHit?
+	return mobilePreviewHit
+end
+
+local function setMobilePreviewHit(chunkId: string, hitPos: Vector3, tileName: string?)
+	mobilePreviewHit = {
+		chunkId = chunkId,
+		hitPos = hitPos,
+		tileName = tileName,
+	}
+end
+
+local function clearMobilePreview()
+	mobilePreviewHit = nil
+end
+
 local function updateGhost()
 	local kind = select(1, ClientPlotGrid.getEquippedToolInfo())
 	local equipped = ClientPlotGrid.getEquippedToolName()
 	if kind ~= "Drill" and equipped ~= TOOL_DRILL then
+		-- Switching off Drill must also drop any locked mobile preview so the
+		-- next time we re-equip, the ghost doesn't immediately re-appear on a
+		-- stale tile.
+		mobilePreviewHit = nil
 		hideGhost()
 		return
 	end
-	local _, hitPos, chunkId = getTargetedChunkHit()
+	local chunkId, hitPos, tileName = getDesiredPlacementHit()
 	if not (hitPos and chunkId) then
 		hideGhost()
 		return
@@ -334,7 +466,17 @@ local function updateGhost()
 	if not g then
 		return
 	end
-	local surfaceY = surfaceYFromRayTarget() or getChunkSurfaceY(chunkId) or hitPos.Y
+	-- Surface Y resolution priority:
+	--   1. `mouse.Target` is a tile part (desktop hover) — exact tile top.
+	--   2. Locked mobile preview's tile name → look up that tile's Y in the
+	--      chunk so the second-tap-confirm position matches the ghost exactly.
+	--   3. Chunk's highest tile Y (conservative — drill won't sink).
+	--   4. Raw ray hit Y (last resort).
+	local surfaceY = surfaceYFromRayTarget()
+	if not surfaceY and tileName then
+		surfaceY = tileSurfaceYInChunk(chunkId, tileName)
+	end
+	surfaceY = surfaceY or getChunkSurfaceY(chunkId) or hitPos.Y
 	-- Pivot → ground: optional `Bottom` / `bottom` anchor part, else full-model bbox (PlacementAnchor).
 	local pivotToBottom = 0
 	if g:IsA("Model") then
@@ -354,14 +496,22 @@ local function updateGhost()
 		end
 	end
 
-	-- Update ghost timer preview
+	-- Update ghost timer preview. On mobile, `mouse.Target` is stale between
+	-- taps so prefer the tile name resolved by `getDesiredPlacementHit` (which
+	-- comes from the locked preview when set, else from the live `mouse.Target`).
 	if ghostTimerLabel then
 		local chunkStateById = ClientPlotGrid.getChunkStateById()
 		local chunk = chunkStateById[chunkId]
-		local target = mouse.Target
 		local _, eqTier = ClientPlotGrid.getEquippedToolInfo()
-		if chunk and chunk.tiles and target and target:IsA("BasePart") and eqTier then
-			local tileData = chunk.tiles[target.Name]
+		local resolvedTileName = tileName
+		if not resolvedTileName then
+			local target = mouse.Target
+			if target and target:IsA("BasePart") and target.Name:match("^T%d%d$") then
+				resolvedTileName = target.Name
+			end
+		end
+		if chunk and chunk.tiles and resolvedTileName and eqTier then
+			local tileData = chunk.tiles[resolvedTileName]
 			local drillTiers = _OilConfig.DrillTiers
 			local tierCfg = drillTiers and drillTiers[eqTier]
 			if tileData and not tileData.drilled and tierCfg then
@@ -562,6 +712,7 @@ M.getTargetedChunkHit = getTargetedChunkHit
 M.isChunkUnlocked = isChunkUnlocked
 M.getChunkSurfaceY = getChunkSurfaceY
 M.surfaceYFromRayTarget = surfaceYFromRayTarget
+M.tileSurfaceYInChunk = tileSurfaceYInChunk
 M.distanceXZ = distanceXZ
 M.isPlacementValid = isPlacementValid
 M.updateGhost = updateGhost
@@ -569,5 +720,11 @@ M.updateFocusUi = updateFocusUi
 M.updateHammerHover = updateHammerHover
 M.hideGhost = hideGhost
 M.hideHammerHover = hideHammerHover
+-- Mobile placement (tap-to-preview, tap-again-to-confirm):
+M.raycastTouchToChunk = raycastTouchToChunk
+M.getDesiredPlacementHit = getDesiredPlacementHit
+M.getMobilePreviewHit = getMobilePreviewHit
+M.setMobilePreviewHit = setMobilePreviewHit
+M.clearMobilePreview = clearMobilePreview
 
 return M

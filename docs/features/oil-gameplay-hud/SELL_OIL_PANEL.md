@@ -69,7 +69,7 @@ Horizontal **`UIListLayout`** (`SortOrder = LayoutOrder`, **`ItemLineAlignment =
 
 | Child | Role |
 |-------|------|
-| `OilIcon` | `ImageLabel` placeholder for barrel art |
+| `OilIcon` | `ImageLabel`, square `UIAspectRatioConstraint` (`AspectRatio=1`, `FitWithinMaxSize`, `DominantAxis=Width`); **`Image`** is the per-tier barrel art from **`QualityConfig.Tiers.<Tier>.iconAssetId`** (Crude / Refined / Premium). Update both **`QualityConfig`** and Studio if art changes. |
 | `InfoColumn` | `TypeName` (TextLabel), `StoredLabel` (TextLabel) |
 | `RowSpacer` | Invisible flex slot; **do not** remove for layout |
 | `PriceLabel` | Current $/bbl (placeholder copy until wired) |

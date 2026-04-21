@@ -9,7 +9,7 @@ This document is the **repo source of truth** for structure and **author-intent*
 
 1. **Save** the place in Studio.
 2. If you moved anchors or shell sizes, **update this file** to match intent (or re-run the dump in `scripts/mcp_dump_startergui_hud.luau` and fold intentional changes in).
-3. Optionally run **`scripts/mcp_normalize_startergui_hud.luau`** via MCP `execute_luau` to re-apply the **fixed** `LeftStack` / `TeleportStack` anchors (below).
+3. Optionally run **`scripts/mcp_normalize_startergui_hud.luau`** via MCP `execute_luau` to re-apply the **fixed** `LeftStack` anchors (below). *(Legacy `TeleportStack` was removed; teleport buttons live under `Canvas.Buttons`.)*
 
 **Do not** add a partial `src/StarterGui/HUD` path to `default.project.json` until the **entire** HUD hierarchy is mirrored on disk — a partial Rojo subtree can **delete** undocumented children on sync.
 
@@ -43,7 +43,7 @@ HUD [ScreenGui]
    │     └─ StraitStatusButton (`TextButton`) → StraitText (plus strait indicator widget if present in Studio); opens **`StraitInfoPanelGui`**
    ├─ LeftStack [Frame]
    │  ├─ UIListLayout (Vertical)
-   │  ├─ CashStrip → CashIcon, CashText
+   │  ├─ CashStrip → CashIcon, CashText, **`CashGainToastTemplate`** *(see § CashGainToast (Studio) below)*
    │  ├─ ShopButton
    │  ├─ ShipOilButton
    │  ├─ SellOilButton
@@ -59,14 +59,10 @@ HUD [ScreenGui]
    │     ├─ **StackBadge** (`TextLabel`) — visible when shop stack **count > 1**; `TextScaled = true`, **`UITextSizeConstraint`** min **8** max **18**.
    │     └─ **Hit** (`ImageButton`) — `AutoButtonColor = false`, `BackgroundTransparency = 1`, **full slot** (`Size` scale `1,1`); equips bound tool on click.
    ├─ StraitControlCta [ImageButton] *(direct child of `Canvas`, top-left edge; opens `StraitControlPanelGui`. Routed via `HudPanelRouter` aliases `StraitControlCta` / `StraitControlCTA`. Hover scale by `StraitControlCtaHover`.)*
-   ├─ StraitForceLockTimer [Frame] *(sibling of `StraitControlCta`, sits to its right. **Authored in Studio**, **`Visible = false`** by default. `StraitForceLockTimer` controller (`src/client/UI/StraitForceLockTimer.luau`) shows / hides + drives `TimerLabel.Text` ("M:SS") + theme color + pulse animation while a Robux strait force-open / force-close lock is active (`MonetizationCatalog` consumables `strait_open_2min` / `strait_close_2min` → `StraitStateService:ForceStateForDuration`). Required children: `UIAspectRatioConstraint` (`AspectType = FitWithinMaxSize`, `AspectRatio ≈ 2.4`, `DominantAxis = Width`), `UICorner`, `UIStroke`, `UIPadding`, **`TimerLabel` (`TextLabel`)** with **`UITextSizeConstraint`** (min ≥ 18) so the countdown reads big on phone too. **Do not** override its `Position` / `Size` / `AnchorPoint` from controllers (per `ui-architecture.mdc` §3); the controller only writes `Visible`, `BackgroundColor3`, `Text`, plus a runtime-added `UIScale` (`PulseScale`) for the pulse / opening pop animation.)*
-   └─ TeleportStack [Frame]
-      ├─ UIListLayout (Vertical)
-      ├─ TeleportHomeButton
-      ├─ TeleportShipButton
-      ├─ TeleportWarehouseButton
-      └─ TeleportDocksButton *(clone of another teleport row for identical layout; `HudTeleportRouter` → `RequestTeleportToDocks`.)*
+   └─ StraitForceLockTimer [Frame] *(sibling of `StraitControlCta`, sits to its right. **Authored in Studio**, **`Visible = false`** by default. `StraitForceLockTimer` controller (`src/client/UI/StraitForceLockTimer.luau`) shows / hides + drives `TimerLabel.Text` ("M:SS") + theme color + pulse animation while a Robux strait force-open / force-close lock is active (`MonetizationCatalog` consumables `strait_open_2min` / `strait_close_2min` → `StraitStateService:ForceStateForDuration`). Required children: `UIAspectRatioConstraint` (`AspectType = FitWithinMaxSize`, `AspectRatio ≈ 2.4`, `DominantAxis = Width`), `UICorner`, `UIStroke`, `UIPadding`, **`TimerLabel` (`TextLabel`)** with **`UITextSizeConstraint`** (min ≥ 18) so the countdown reads big on phone too. **Do not** override its `Position` / `Size` / `AnchorPoint` from controllers (per `ui-architecture.mdc` §3); the controller only writes `Visible`, `BackgroundColor3`, `Text`, plus a runtime-added `UIScale` (`PulseScale`) for the pulse / opening pop animation.)*
 ```
+
+*(Legacy `TeleportStack` was deleted — its `TeleportHomeButton` / `TeleportShipButton` rows are replaced by `Canvas.Buttons.HomeButton` / `Canvas.Buttons.ShipButton` in the right-side button grid; `HudTeleportRouter` fires the same `RequestTeleportHome` / `RequestTeleportToShip` remotes for both.)*
 
 ## ShipmentProgressPanel (Studio)
 
@@ -99,7 +95,6 @@ Author this block **in Studio** (not via `ShipmentProgressHud` creating instance
 | `Canvas.UIPadding` | Safe areas | Top `0.012`, Bottom `0.14` (toolbar reserve), Left/Right `0.018` scale |
 | `TopRow` | Top strip | `Size` `(1,0), (0.092,0)`, under `Canvas` after padding |
 | `LeftStack` | Cash + shop + sell/ship | **`AnchorPoint (0.5, 0.5)`**, **`Position` scale `(0.25, 0.5)`** — vertically centered, centered in **left half**; **`Size` scale `(0.22, 0.46)`** |
-| `TeleportStack` | Teleports | **`AnchorPoint (1, 1)`**, **`Position` scale `(1, 1)`** (offset `0,0`) — bottom-right of **Canvas**; **`Size` scale `(0.13, 0.32)`** — taller frame for **four** rows without shrinking row **`0.3`** scale; list **`Padding`** `UDim.new(0.012, 3)`; each **`GuiButton`** row height **`0.3`**; `UITextSizeConstraint` max **13** on teleports |
 | `EquipmentHotbar` | Custom toolbar (replaces Core backpack strip) | **`AnchorPoint (0.5, 1)`**, **`Position` scale `(0.5, 1)`**, **`Size` scale `(0.92, 0.10)`** — sits in bottom safe band above `Canvas.UIPadding` bottom inset; **`BackgroundTransparency = 1`** or a **very high** transparency (e.g. `0.92`) so the strip is barely visible in **Edit** mode |
 | `EquipmentHotbar.SlotStrip` | Row host | **`Size` scale `(1, 1)`**, **`BackgroundTransparency = 1`**; horizontal **`UIListLayout`** |
 
@@ -111,6 +106,33 @@ Author this block **in Studio** (not via `ShipmentProgressHud` creating instance
 - **`SlotTemplate` slot size:** Prefer **offset-based** width/height (or rely on the controller’s post-clone pixel sizing). A template using **only `UDim2` scale width** under a horizontal **`UIListLayout`** often renders as **0px wide** in Roblox.
 - Server sets shop tool attribute **`EquipmentStackCount`** (see `Constants.EquipmentStackCountAttribute`); badge reads that sum per `EquipmentItemId` when multiple instances exist transiently.
 - After this block exists in Studio, **`StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)`** runs from client bootstrap **only** when the controller binds successfully.
+
+## CashGainToast (Studio)
+
+Small green status pop-up rendered above **`CashStrip`** every time the local player **gains** cash (sell-all, market sell, refund, gamepass currency grant, etc.). Authored once in Studio so the toast scales with the strip on phone / desktop; controller (`src/client/UI/CashGainToast.luau`) **clones** the template on each gain and tweens it.
+
+**Template path:** `StarterGui.HUD.Canvas.CashStrip.CashGainToastTemplate` (`Frame`, **`Visible = false`**)
+
+| Instance | Property | Value |
+|----------|----------|-------|
+| `CashGainToastTemplate` | `AnchorPoint` | **`(1, 1)`** — bottom-right pinned to CashStrip's top-right corner |
+| `CashGainToastTemplate` | `Position` | `UDim2.fromScale(1, -0.06)` — sits just above the strip's right edge |
+| `CashGainToastTemplate` | `Size` | `UDim2.fromScale(0.7, 0.75)` — scales with CashStrip (no offset pixels) |
+| `CashGainToastTemplate` | `BackgroundTransparency` | `1` |
+| `CashGainToastTemplate` | `Visible` | **`false`** (controller toggles clones to `true`) |
+| `CashGainToastTemplate.Amount` (`TextLabel`) | `Size` | `UDim2.fromScale(1, 1)` |
+| `CashGainToastTemplate.Amount` | `BackgroundTransparency` | `1` |
+| `CashGainToastTemplate.Amount` | `Font` | **`Enum.Font.Merriweather`** |
+| `CashGainToastTemplate.Amount` | `TextColor3` | `Color3.fromRGB(80, 220, 100)` (status green) |
+| `CashGainToastTemplate.Amount` | `TextScaled` | `true` |
+| `CashGainToastTemplate.Amount` | `TextXAlignment` | `Right` |
+| `CashGainToastTemplate.Amount.UIStroke` | `Color` | **black** `Color3.fromRGB(0, 0, 0)` |
+| `CashGainToastTemplate.Amount.UIStroke` | `Thickness` | `2` |
+| `CashGainToastTemplate.Amount.UITextSizeConstraint` | `MinTextSize` / `MaxTextSize` | `14` / `36` |
+
+**Trigger:** `init.client.luau` `updateCashHud()` tracks `lastSyncedCash`. When the snapshot pushes a **new** cash value strictly **greater** than the previous one (and the previous one isn't `nil`, i.e. not the initial-load baseline), it calls `CashGainToast.notifyGain(playerGui, delta)`. The toast formats the delta as `"+$X,XXX"`, fades in, holds briefly, then **lifts upward + fades out**. Concurrent rapid gains stack via `STACK_LIFT_SCALE` so back-to-back transactions don't overwrite each other.
+
+To re-author from scratch: re-run the MCP authoring snippet that originally created the template (or just `script.Parent` / Studio Properties pane edit). Do **not** drive `Position` / `Size` from controllers (per `ui-architecture.mdc` §3) — only `Visible`, `Text`, `TextTransparency`, `UIStroke.Transparency`, and the lift `Position` tween on **clones** are owned by `CashGainToast`.
 
 ## Placeholder copy (scripts will replace later)
 

@@ -128,7 +128,7 @@ local FtueConfig = {
 		},
 		WaitDocksUpgradeShip = {
 			title = "VISIT THE DOCKMAN",
-			body = "Find the Dockman to upgrade your ship - your first upgrade is on the house! Close the panel when you're done to proceed.",
+			body = "Find the Dockman to manage your ship - your first upgrade is on the house! You can also change your ship's appearance here. Close the panel when you're done to move on.",
 		},
 		WaitDocksHire = {
 			title = "SUSPICIOUS PERSONS",

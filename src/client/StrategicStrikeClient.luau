@@ -21,6 +21,11 @@ export type StrategicStrikeRemotes = {
 }
 
 export type ArmyGeneralEarlyDeps = {
+	-- `player` is required for the auto-close-on-walk-away heartbeat that
+	-- watches `player.Character.HumanoidRootPart`. Without it the heartbeat
+	-- inside `armyGeneralOpenEvent.OnClientEvent` indexes a `nil` upvalue
+	-- every frame the panel is open and spams `attempt to index nil with 'Character'`.
+	player: Player,
 	playerGui: PlayerGui,
 	setStatus: (message: string, ok: boolean?) -> (),
 }
@@ -41,6 +46,7 @@ local StrategicStrikeClient = {}
 
 --- Subscribe to `ArmyGeneralOpen` / result as soon as `setStatus` exists (same race as Pirate Hire).
 function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDeps, remotes: ArmyGeneralEarlyRemotes)
+	local player = deps.player
 	local playerGui = deps.playerGui
 	local setStatus = deps.setStatus
 	local armyGeneralOpenEvent = remotes.armyGeneralOpenEvent

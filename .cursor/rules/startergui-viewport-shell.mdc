@@ -52,6 +52,6 @@ If the workspace also has **`ui-scaling-responsive.mdc`** / **`docs/UI_SCALING_A
 
 - **Canonical structure + intent anchors:** `docs/features/oil-gameplay-hud/CANONICAL_STUDIO_LAYOUT.md`
 - **Dump from Studio (diff / audit):** run `scripts/mcp_dump_startergui_hud.luau` via MCP `execute_luau` (or Command Bar).
-- **Re-apply anchors** if `LeftStack` / `TeleportStack` drift: `scripts/mcp_normalize_startergui_hud.luau`
+- **Re-apply anchors** if `LeftStack` drifts: `scripts/mcp_normalize_startergui_hud.luau`
 
 **Do not** add `StarterGui.HUD` (or any HUD subtree) to **`default.project.json` `$path`** until the **full** hierarchy exists under `src/StarterGui/` — a partial Rojo subtree can **delete** instances in Studio on sync. Until then, **Studio Save** + the **canonical doc** are the source of truth.

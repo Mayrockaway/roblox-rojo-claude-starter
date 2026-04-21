@@ -27,6 +27,7 @@ local ParticleFxScale = require(Shared:WaitForChild("ParticleFxScale"))
 local ShipRig = require(Shared:WaitForChild("Utils"):WaitForChild("ShipRig"))
 local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 local BarrelStacking = require(script.Parent.Parent.Utils.BarrelStacking)
+local BoatCollisionContract = require(script.Parent.Parent.Utils.BoatCollisionContract)
 local DevLog = require(Shared:WaitForChild("DevLog"))
 
 local OilShipmentService = {}
@@ -203,23 +204,10 @@ local function findBoatSeat(boat: Instance): Seat?
 	return ShipRig.FindSeat(boat, rig.deckSeatName) or ShipRig.FindSeat(boat, "DeckSeat")
 end
 
-local NON_COLLIDABLE_BOAT_HELPER_NAMES = {
-	BarrelStackRoot = true,
-	FRONT_MARKER = true,
-	PlayerFlag = true,
-	WaterlineAnchor = true,
-	ZIPLINE_LAND_ANCHOR = true,
-}
-
-local function isNonCollidableBoatHelperPart(part: BasePart): boolean
-	if NON_COLLIDABLE_BOAT_HELPER_NAMES[part.Name] == true then
-		return true
-	end
-	if part:GetAttribute("AllowInvisibleCollision") == true then
-		return false
-	end
-	return part.Transparency >= 0.95
-end
+-- Helper-part detection (FRONT_MARKER, WaterlineAnchor, etc., plus the
+-- transparency ≥ 0.95 fallback) lives in `BoatCollisionContract` so the
+-- voyage hull and the dock-spawner agree on what counts as a "helper".
+local isNonCollidableBoatHelperPart = BoatCollisionContract.IsNonCollidableBoatHelperPart
 
 local function findBarrelStackRoot(boat: Instance): BasePart?
 	if not boat:IsA("Model") then
@@ -493,6 +481,14 @@ function OilShipmentService:SetLeaderboardService(leaderboardService: any)
 	self._leaderboardService = leaderboardService
 end
 
+--- Inject the run-upgrade service that owns "Security Personnel" inventory.
+--- Setter (not constructor arg) so older tests / call sites that don't know
+--- about run-upgrades still load. When unset, `_handleDispatch` simply skips
+--- the consume step and shipments roll events as usual.
+function OilShipmentService:SetSecurityPersonnelService(securityPersonnelService: any)
+	self._securityPersonnelService = securityPersonnelService
+end
+
 function OilShipmentService:_discoverLanes()
 	self._lanes = {}
 	local Workspace = game:GetService("Workspace")
@@ -678,7 +674,16 @@ function OilShipmentService:_handleTeleportHome(player: Player)
 	if not plot then return end
 	local claimPad = plot:FindFirstChild("ClaimPad")
 	if claimPad and claimPad:IsA("BasePart") then
-		CharacterTeleport.teleportWithUnseat(character, CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)), "RequestTeleportHome")
+		--- Use the pad's full CFrame (not just `.Position`) so the character lands facing whichever
+		--- way the ClaimPad is authored to face — currently 180° so the player ends up looking at
+		--- the Delivery Man. `CFrame + Vector3` translates in world space without touching the
+		--- pad's LookVector.
+		local targetCFrame = claimPad.CFrame + Vector3.new(0, 5, 0)
+		CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportHome")
+		--- `PivotTo` rotates the character but does NOT re-align the default follow camera's
+		--- internal yaw — without this signal the camera ends up looking at the back of the
+		--- character's head. The client snaps its camera behind the character on receipt.
+		self._remoteService:GetEvent(RemoteNames.TeleportHomeApplied):FireClient(player, targetCFrame)
 	end
 end
 
@@ -919,6 +924,17 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		ftueTutorialSuppressStraitIncidents = tutorialEscort,
 	}
 
+	-- Run-upgrade hooks. When a player owns a stackable single-shipment
+	-- upgrade (currently just Security Personnel), consume one stack here
+	-- so the very next voyage carries the buff. Order matters: this MUST
+	-- happen before `_runShipment` spawns, otherwise the strait waypoint
+	-- handler can't see the flag in time. Each hook stamps a shipment-
+	-- scoped boolean (`eventImmunity`, future `damageReduction`, …) that
+	-- the corresponding gameplay path reads.
+	if self._securityPersonnelService and self._securityPersonnelService:TryConsumeForDispatch(player.UserId) then
+		(shipment :: any).eventImmunity = true
+	end
+
 	self:_sendActionResult(player, true, "OK", "Shipment dispatched.", {
 		shipmentId = shipment.shipmentId,
 		shipSkinId = skinId,
@@ -1144,7 +1160,13 @@ function OilShipmentService:_runShipment(shipment)
 
 		if ctx and not voyageAborted then
 			local forcedLost = false
-			if (shipment :: any).ftueTutorialSuppressStraitIncidents ~= true then
+			-- Suppress on FTUE tutorial AND when Security Personnel has been
+			-- consumed for this dispatch — the upgrade promises "complete
+			-- run immunity to all events", which by intent includes contract
+			-- pirate hits queued against this player.
+			local suppressForcedHits = (shipment :: any).ftueTutorialSuppressStraitIncidents == true
+				or (shipment :: any).eventImmunity == true
+			if not suppressForcedHits then
 				forcedLost = self:_maybeProcessForcedPirateHit(shipment, ownerUserId, voyageClock, boat, ctx)
 			end
 			if forcedLost then
@@ -1710,12 +1732,20 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 			barrel.Parent = boat
 
 			-- Position from the authored stack root, but weld directly to the ship root so
-			-- barrel models always travel with the moving boat assembly.
+			-- barrel models always travel with the moving boat assembly. Barrels are
+			-- cargo (not helpers) — players walk on them while on deck — so we DO
+			-- want CanCollide = true here. Tag them in the `ShipmentShip` group too
+			-- so a barrel that pokes past the gunwale doesn't snag on `MarinaDock`
+			-- pier geometry or `MapDecor` buoys (matches the universal boat rule
+			-- in `BoatCollisionContract`).
 			for _, part in ipairs(barrel:IsA("Model") and barrel:GetDescendants() or {barrel}) do
 				if part:IsA("BasePart") then
 					part.Anchored = false
 					part.Massless = true
 					part.CanCollide = true
+					pcall(function()
+						(part :: BasePart).CollisionGroup = BoatCollisionContract.CollisionGroup
+					end)
 					local wc = Instance.new("WeldConstraint")
 					wc.Part0 = shipRoot
 					wc.Part1 = part
@@ -2149,6 +2179,16 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	boat: Instance
 ): boolean
 	if (shipment :: any).ftueTutorialSuppressStraitIncidents == true then
+		return false
+	end
+	-- Run-upgrade: Security Personnel deflects every strait incident on this
+	-- voyage. Stamped at dispatch by `_handleDispatch` after consuming one
+	-- inventory stack via `SecurityPersonnelService:TryConsumeForDispatch`.
+	-- Short-circuit BEFORE rolling occurrence so debug overrides
+	-- (`ForceOccurrenceAtWaypoint`) also respect the immunity — design intent
+	-- is "this shipment is untouchable", not "events still fire but get
+	-- absorbed", so QA toggles shouldn't bypass it either.
+	if (shipment :: any).eventImmunity == true then
 		return false
 	end
 	local dbg = Constants.StraitEventsDebug
@@ -2845,21 +2885,15 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 	-- Their frames (DOOR*_Frame) DO get welded so they move with the ship.
 	-- Skip welding "Paddle" parts too — they'll be assembled into wheels below
 	-- and connected to root via a HingeConstraint motor so they spin while sailing.
+	--
+	-- CanCollide is RESPECTED here (no force-true) — see `BoatCollisionContract`
+	-- for the rationale. The contract apply below handles helper neutralization
+	-- and ShipmentShip group tagging uniformly with the dock spawner.
 	for _, d in ipairs(boatModel:GetDescendants()) do
 		if d:IsA("BasePart") then
 			d.Anchored = false
-			d.CanCollide = true
 			d.CanTouch = true
 			d.CanQuery = true
-			if isNonCollidableBoatHelperPart(d) then
-				d.CanCollide = false
-				d.CanTouch = false
-				d.CanQuery = false
-				d.Transparency = 1
-				d.CastShadow = false
-				d.Massless = true
-				d:SetAttribute("BoatGameplayHelperDisabled", true)
-			end
 			if d == root then
 				d.Massless = false
 			elseif d:GetAttribute("IsDoor") then
@@ -2874,11 +2908,13 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 				wc.Part1 = d
 				wc.Parent = root
 			end
-			pcall(function()
-				d.CollisionGroup = "ShipmentShip"
-			end)
 		end
 	end
+
+	-- Universal boat-collision rule: helpers neutralized (invisible, no collision),
+	-- every other BasePart tagged `ShipmentShip` so it ignores other ships,
+	-- MarinaDock pier, and MapDecor props, while still colliding with characters.
+	BoatCollisionContract.Apply(boatModel)
 
 	-- 3. Server authority — prevents client from fighting for physics ownership
 	pcall(function()

@@ -49,6 +49,7 @@ local OilTankService = require(serviceFolder:WaitForChild("OilTankService"))
 local FighterPlaneWaveService = require(serviceFolder:WaitForChild("FighterPlaneWaveService"))
 local HitContractService = require(serviceFolder:WaitForChild("HitContractService"))
 local ArmyGeneralService = require(serviceFolder:WaitForChild("ArmyGeneralService"))
+local SecurityPersonnelService = require(serviceFolder:WaitForChild("SecurityPersonnelService"))
 local KillZoneService = require(serviceFolder:WaitForChild("KillZoneService"))
 local LeaderboardService = require(serviceFolder:WaitForChild("LeaderboardService"))
 
@@ -105,8 +106,10 @@ BoatDockService:Init(RemoteService, OilStateService)
 OilShipmentService:Init(RemoteService, OilStateService, PlotService, WarehouseService, StraitStateService, BoatDockService)
 HitContractService:Init(RemoteService, OilStateService, OilShipmentService)
 ArmyGeneralService:Init(RemoteService, OilStateService, OilShipmentService)
+SecurityPersonnelService:Init(OilStateService)
 OilShipmentService:SetHitContractService(HitContractService)
 OilShipmentService:SetLeaderboardService(LeaderboardService)
+OilShipmentService:SetSecurityPersonnelService(SecurityPersonnelService)
 ChunkOwnershipService:Init(PlotService, OilStateService)
 WarehouseService:Init(RemoteService, OilStateService)
 OilMarketService:Init(RemoteService, StraitStateService, WarehouseService, OilStateService)
@@ -114,12 +117,19 @@ EquipmentShopService:Init(RemoteService, OilStateService, PlotService)
 OilmanService:Init(RemoteService, OilStateService)
 InstantSellService:Init(RemoteService, OilStateService)
 MonetizationService:Init(RemoteService, OilStateService, StraitStateService)
+-- Inject `MonetizationService` into `OilStateService` so every `AddCash`
+-- credit picks up the **DoubleEarnings** GamePass multiplier without each
+-- earning service needing to know about the boost (oil sales, FTUE rewards,
+-- etc.). Refunds and Robux currency packs explicitly opt out via
+-- `AddCash(uid, amt, { skipMultiplier = true })` — see `OilStateService:AddCash`.
+OilStateService:SetMonetizationService(MonetizationService)
 ArmyGeneralService:SetMonetizationService(MonetizationService)
+SecurityPersonnelService:SetMonetizationService(MonetizationService)
 EquipmentShopService:SetMonetizationService(MonetizationService)
 PlotResourceService:Init(RemoteService, OilStateService, PlotService, OilVisualService, OilShipmentService, ChunkOwnershipService)
 OilProductionService:Init(OilStateService)
 DrillingService:Init(RemoteService, OilStateService)
-FtueService:Init(RemoteService, PlotService, OilStateService, EquipmentShopService, DrillingService, OilShipmentService, OilMarketService)
+FtueService:Init(RemoteService, PlotService, OilStateService, EquipmentShopService, DrillingService, OilShipmentService, OilMarketService, WarehouseService)
 OilStateService:SetFtueService(FtueService)
 OilShipmentService:SetFtueService(FtueService)
 OilMarketService:SetFtueService(FtueService)
@@ -156,6 +166,7 @@ BoatDockService:Start()
 OilShipmentService:Start()
 HitContractService:Start()
 ArmyGeneralService:Start()
+SecurityPersonnelService:Start()
 ChunkOwnershipService:Start()
 WarehouseService:Start()
 OilMarketService:Start()
@@ -192,6 +203,7 @@ game:BindToClose(function()
 	ChunkOwnershipService:Stop()
 	OilShipmentService:Stop()
 	ArmyGeneralService:Stop()
+	SecurityPersonnelService:Stop()
 	HitContractService:Stop()
 	BoatDockService:Stop()
 	OilVisualService:Stop()
@@ -345,6 +357,32 @@ do
 			local itemId = "drill_" .. tier
 			EquipmentShopService:GrantFreeOwnedEquipment(player, itemId, count)
 			print(string.format("[Dev] Gave %s x%d %s drills", player.Name, count, tier:upper()))
+		elseif cmd == "/unlockboats" or cmd == "/unlockallboats" or cmd == "/giveallboats" then
+			-- Dev-only: grant every cosmetic ship skin in `ShipSkinCatalog` to
+			-- the calling player (mirrors what `MonetizationService` does on a
+			-- successful Robux receipt for each `gamepass.*Skin` /
+			-- `consumable.*Skin` grant). Use this to QA each hull's collision /
+			-- rig under the new `BoatCollisionContract` without buying every
+			-- skin. Idempotent — `OilStateService:GrantShipSkin` returns
+			-- `OK_ALREADY_OWNED` for skins the player already has, so spamming
+			-- the command is safe. Re-equip via the in-game Ship Management
+			-- panel after running.
+			local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
+			local granted, already = 0, 0
+			for skinId, _ in pairs(ShipSkinCatalog.Skins) do
+				local ok, code = OilStateService:GrantShipSkin(player.UserId, skinId)
+				if ok then
+					granted += 1
+				elseif code == "OK_ALREADY_OWNED" then
+					already += 1
+				else
+					warn(string.format("[Dev] /unlockboats GrantShipSkin(%s) failed: %s", skinId, tostring(code)))
+				end
+			end
+			print(string.format(
+				"[Dev] /unlockboats by %s -> granted=%d alreadyOwned=%d (re-equip via Ship Management panel)",
+				player.Name, granted, already
+			))
 		elseif cmd == "/straitopen" or cmd == "/straitclose" then
 			-- Mirrors the `MonetizationService` consumable handlers for the
 			-- Robux strait force-open / force-close products without going
@@ -398,6 +436,7 @@ do
 		"/grant500", "/wipedata", "/dev_wipeme", "/wipealldata", "/dev_wipeall",
 		"/giveall", "/testvein", "/givedrills",
 		"/straitopen", "/straitclose",
+		"/unlockboats", "/unlockallboats", "/giveallboats",
 	}
 	for _, alias in ipairs(DEV_COMMAND_ALIASES) do
 		local ok, err = pcall(function()

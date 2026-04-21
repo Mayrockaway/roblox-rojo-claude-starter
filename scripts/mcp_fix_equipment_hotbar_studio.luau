@@ -79,9 +79,13 @@ else
 	return "ERROR: No EquipmentHotbar under HUD. Run scripts/mcp_author_equipment_hotbar.luau once, then re-run this fix.\n" .. table.concat(lines, "\n")
 end
 
-bar.AnchorPoint = Vector2.new(0.5, 1)
-bar.Position = UDim2.fromScale(0.5, 1)
-bar.Size = UDim2.fromScale(0.92, 0.1)
+-- Position / size / anchor are intentionally NOT reset here. The hotbar
+-- frame's exact placement depends on `HUD.Canvas.UIPadding` (top 1.2%,
+-- bottom 14% currently), so a one-size canonical value would land off-screen
+-- when padding changes. Author the bar position in Studio (or in
+-- `mcp_author_equipment_hotbar.luau` when first creating the bar) and let
+-- this script only repair *structure* (children, list layout, slot template
+-- innards) without clobbering manual placement.
 bar.ZIndex = 25
 bar.BackgroundColor3 = Color3.fromRGB(25, 28, 35)
 bar.BackgroundTransparency = 0.92
@@ -149,7 +153,8 @@ if not (tpl and tpl:IsA("GuiObject")) then
 	hotkey.Parent = f
 	local htc = Instance.new("UITextSizeConstraint")
 	htc.MaxTextSize = 18
-	htc.MinTextSize = 8
+	-- MinTextSize 1 so HotkeyLabel never truncates on small mobile slots.
+	htc.MinTextSize = 1
 	htc.Parent = hotkey
 	local badge = Instance.new("TextLabel")
 	badge.Name = "StackBadge"
@@ -166,7 +171,8 @@ if not (tpl and tpl:IsA("GuiObject")) then
 	badge.Parent = f
 	local btc = Instance.new("UITextSizeConstraint")
 	btc.MaxTextSize = 18
-	btc.MinTextSize = 8
+	-- MinTextSize 1 so StackBadge counts (e.g. "x12") never truncate on mobile.
+	btc.MinTextSize = 1
 	btc.Parent = badge
 	local hit = Instance.new("ImageButton")
 	hit.Name = "Hit"
@@ -178,6 +184,107 @@ if not (tpl and tpl:IsA("GuiObject")) then
 	f.Parent = bar
 	tpl = f
 	log("Added missing SlotTemplate subtree.")
+end
+
+-- Re-assert canonical SlotTemplate visuals even when the subtree already exists.
+-- Canonical design (per gameplay request):
+--   * Icon FILLS the entire slot edge-to-edge (Size 1,1 ScaleType=Fit).
+--   * NameLabel sits INSIDE the slot at the bottom as TEXT ONLY (no
+--     background strip), on top of the icon. TextStroke gives legibility
+--     against any icon. Slot clips descendants so text stays inside the
+--     rounded corners.
+--   * HotkeyLabel ("1"..) and StackBadge stay overlaid on the icon corners.
+-- We only touch a small allow-list of properties so colour, corner radius,
+-- stroke thickness etc. that artists tweak in Studio are preserved.
+if tpl and tpl:IsA("GuiObject") then
+	if tpl.Visible ~= false then
+		tpl.Visible = false
+		log("Normalized SlotTemplate.Visible -> false (template should never render).")
+	end
+	if tpl.ClipsDescendants ~= true then
+		tpl.ClipsDescendants = true
+		log("Normalized SlotTemplate.ClipsDescendants -> true (overlay stays inside rounded corners).")
+	end
+	local icon = tpl:FindFirstChild("Icon")
+	if icon and icon:IsA("ImageLabel") then
+		local desiredIconSize = UDim2.fromScale(1, 1)
+		local desiredIconPos = UDim2.fromScale(0.5, 0.5)
+		local desiredAnchor = Vector2.new(0.5, 0.5)
+		if icon.Size ~= desiredIconSize then
+			icon.Size = desiredIconSize
+			log("Normalized Icon.Size -> (1, 1) so the icon fills the entire slot.")
+		end
+		if icon.Position ~= desiredIconPos then
+			icon.Position = desiredIconPos
+			log("Normalized Icon.Position -> (0.5, 0.5).")
+		end
+		if icon.AnchorPoint ~= desiredAnchor then
+			icon.AnchorPoint = desiredAnchor
+			log("Normalized Icon.AnchorPoint -> (0.5, 0.5).")
+		end
+		if icon.ScaleType ~= Enum.ScaleType.Fit then
+			icon.ScaleType = Enum.ScaleType.Fit
+			log("Normalized Icon.ScaleType -> Fit.")
+		end
+	end
+	local nameLabel = tpl:FindFirstChild("NameLabel")
+	if nameLabel and nameLabel:IsA("TextLabel") then
+		local desiredNameAnchor = Vector2.new(0.5, 1)
+		local desiredNamePos = UDim2.fromScale(0.5, 1)
+		local desiredNameSize = UDim2.fromScale(1, 0.22)
+		if nameLabel.AnchorPoint ~= desiredNameAnchor then
+			nameLabel.AnchorPoint = desiredNameAnchor
+			log("Normalized NameLabel.AnchorPoint -> (0.5, 1) so it anchors to slot bottom.")
+		end
+		if nameLabel.Position ~= desiredNamePos then
+			nameLabel.Position = desiredNamePos
+			log("Normalized NameLabel.Position -> (0.5, 1).")
+		end
+		if nameLabel.Size ~= desiredNameSize then
+			nameLabel.Size = desiredNameSize
+			log("Normalized NameLabel.Size -> (1, 0.22) text-only overlay.")
+		end
+		if nameLabel.Visible ~= true then
+			nameLabel.Visible = true
+			log("Normalized NameLabel.Visible -> true.")
+		end
+		if nameLabel.BackgroundTransparency ~= 1 then
+			nameLabel.BackgroundTransparency = 1
+			log("Normalized NameLabel.BackgroundTransparency -> 1 (text only, no strip).")
+		end
+		if nameLabel.ZIndex < 3 then
+			nameLabel.ZIndex = 3
+		end
+		local nstroke = nameLabel:FindFirstChild("TextStroke")
+		if not (nstroke and nstroke:IsA("UIStroke")) then
+			nstroke = Instance.new("UIStroke")
+			nstroke.Name = "TextStroke"
+			nstroke.Parent = nameLabel
+			log("Added missing NameLabel TextStroke for legibility over icon.")
+		end
+		nstroke.Color = Color3.new(0, 0, 0)
+		nstroke.Thickness = 1.5
+		nstroke.Transparency = 0
+		nstroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+	end
+end
+
+-- Canvas bottom safe-area clearance: gives the hotbar a gap from the viewport
+-- bottom on devices where Roblox does not insert its own safe-area inset
+-- (Studio mobile emulation, devices with hidden touch controls).
+local canvas = bar.Parent
+if canvas and canvas:IsA("GuiObject") then
+	local cpad = canvas:FindFirstChildOfClass("UIPadding")
+	if not cpad then
+		cpad = Instance.new("UIPadding")
+		cpad.Parent = canvas
+		log("Added missing Canvas UIPadding for safe-area clearance.")
+	end
+	local desiredBottom = UDim.new(0.025, 0)
+	if cpad.PaddingBottom ~= desiredBottom then
+		cpad.PaddingBottom = desiredBottom
+		log("Normalized Canvas UIPadding.PaddingBottom -> 2.5% (safe-area clearance).")
+	end
 end
 
 log("Done. **Save** the place. EquipmentHotbar should be: " .. bar:GetFullName())

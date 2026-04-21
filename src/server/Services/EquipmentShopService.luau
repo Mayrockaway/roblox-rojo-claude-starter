@@ -515,7 +515,9 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 
 	local backpack = player:FindFirstChild("Backpack") or player:WaitForChild("Backpack", 5)
 	if not backpack or not backpack:IsA("Backpack") then
-		self._oilStateService:AddCash(player.UserId, totalCost)
+		-- Refund — `skipMultiplier = true` so a DoubleEarnings owner doesn't
+		-- get back 2x the equipment's cost when the backpack-grant fails.
+		self._oilStateService:AddCash(player.UserId, totalCost, { skipMultiplier = true })
 		if isRotating then
 			self._currentStock[itemId] = (self._currentStock[itemId] or 0) + paidQty
 		end

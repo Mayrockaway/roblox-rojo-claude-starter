@@ -77,7 +77,23 @@ local function getOwnedPlotByAttribute(plotId: number): Model?
 	return nil
 end
 
-local function findTilePart(plot: Model, row: number, col: number): BasePart?
+--- Prefer the server-stamped `IsFtueTutorialTile` attribute as the single source
+--- of truth: `OilStateService:SetFtueTutorialTileMarker` already chose the right
+--- BasePart (handling the case where a tile is a `Model` whose `PrimaryPart` is
+--- the cosmetic part). Falling back to client-side cell-key geometry can pick a
+--- *different* BasePart (or fail entirely) if the tile hierarchy is non-trivial,
+--- which leaves the highlight off while the world beam (which uses the marker)
+--- works fine. The fallback handles legacy / pre-stamp cases.
+local function findTilePartByMarker(plot: Model): BasePart?
+	for _, d in ipairs(plot:GetDescendants()) do
+		if d:IsA("BasePart") and d:GetAttribute("IsFtueTutorialTile") == true then
+			return d
+		end
+	end
+	return nil
+end
+
+local function findTilePartByCell(plot: Model, row: number, col: number): BasePart?
 	local ground = plot:FindFirstChild("PlotGround")
 	if not (ground and ground:IsA("Model")) then
 		return nil
@@ -98,6 +114,17 @@ local function findTilePart(plot: Model, row: number, col: number): BasePart?
 		if d:IsA("BasePart") and d.Name == tileKey then
 			return d
 		end
+	end
+	return nil
+end
+
+local function findTilePart(plot: Model, row: number?, col: number?): BasePart?
+	local marked = findTilePartByMarker(plot)
+	if marked then
+		return marked
+	end
+	if typeof(row) == "number" and typeof(col) == "number" then
+		return findTilePartByCell(plot, row, col)
 	end
 	return nil
 end
@@ -153,10 +180,73 @@ function FtueTutorialTileHighlight.start(player: Player)
 	local borderFolder: Folder? = nil
 	local conn: RBXScriptConnection? = nil
 	local attrConn: { RBXScriptConnection } = {}
+	--- Streaming-retry watchers: rebound every refresh to react to plot or tile
+	--- replication. Without these, a player on slower hardware (mobile) whose
+	--- plot is **not** in their `Workspace.Map.Plots` when the first refresh
+	--- runs would never see the highlight — `FtueStep` / `FtueRestrictDrillCellKey`
+	--- replicate **before** the plot model on first spawn, so attribute-change
+	--- signals alone don't recover.
+	local streamingConn: { RBXScriptConnection } = {}
 
-	local function refresh()
+	local function clearStreamingWatchers()
+		for _, c in ipairs(streamingConn) do
+			c:Disconnect()
+		end
+		table.clear(streamingConn)
+	end
+
+	local refresh
+
+	local function watchPlotsRoot()
+		local map = Workspace:FindFirstChild("Map")
+		local plots = map and map:FindFirstChild("Plots")
+		if not plots then
+			--- `Map.Plots` itself isn't replicated yet (very early spawn). Watch
+			--- Workspace for it to appear; the next `refresh` rebinds the watcher.
+			table.insert(streamingConn, Workspace.DescendantAdded:Connect(function(d)
+				if d.Name == "Plots" or d.Name == "Map" then
+					refresh()
+				end
+			end))
+			return
+		end
+		--- Plot model itself streams in as a child of `Plots`.
+		table.insert(streamingConn, plots.ChildAdded:Connect(function()
+			refresh()
+		end))
+	end
+
+	local function watchPlotInternals(plot: Model)
+		--- Sections and individual tiles can stream in lazily once the plot model
+		--- is present; refresh whenever a `BasePart` with the marker attribute
+		--- appears, or whenever any descendant whose name looks like a tile shows up.
+		table.insert(streamingConn, plot.DescendantAdded:Connect(function(d)
+			if d:IsA("BasePart") and d:GetAttribute("IsFtueTutorialTile") == true then
+				refresh()
+				return
+			end
+			if d:IsA("BasePart") and string.match(d.Name, "^T%d+$") then
+				refresh()
+			end
+		end))
+		--- Marker can be **stamped on** a part that already streamed in (server
+		--- moves the marker between tiles between drill / reveal legs). Catch
+		--- attribute changes on every existing BasePart in the plot too.
+		for _, d in ipairs(plot:GetDescendants()) do
+			if d:IsA("BasePart") then
+				table.insert(streamingConn, d:GetAttributeChangedSignal("IsFtueTutorialTile"):Connect(function()
+					if d:GetAttribute("IsFtueTutorialTile") == true then
+						refresh()
+					end
+				end))
+			end
+		end
+	end
+
+	refresh = function()
 		destroyBorder(borderFolder)
 		borderFolder = nil
+		clearStreamingWatchers()
 
 		local pid = player:GetAttribute("PlotId") :: any
 		if typeof(pid) ~= "number" then
@@ -165,6 +255,9 @@ function FtueTutorialTileHighlight.start(player: Player)
 		local plotId = pid :: number
 		local plot = getOwnedPlotByAttribute(plotId)
 		if not plot then
+			--- Plot model not in `Workspace.Map.Plots` yet (streaming or first
+			--- spawn race). Watch for it to arrive then retry.
+			watchPlotsRoot()
 			return
 		end
 
@@ -173,11 +266,11 @@ function FtueTutorialTileHighlight.start(player: Player)
 			return
 		end
 		local row, col = parseCellKey(ck)
-		if not row or not col then
-			return
-		end
 		local tile = findTilePart(plot, row, col)
 		if not tile then
+			--- Plot exists but the marked tile / cell-key tile isn't replicated
+			--- yet. Watch the plot for tile streaming + marker stamping.
+			watchPlotInternals(plot)
 			return
 		end
 
@@ -196,9 +289,15 @@ function FtueTutorialTileHighlight.start(player: Player)
 			if typeof(st) ~= "string" then
 				destroyBorder(borderFolder)
 				borderFolder = nil
+				clearStreamingWatchers()
 				return
 			end
 			refresh()
+		end))
+		--- Re-spawn / respawn re-replicates plot under the player; trigger another
+		--- attempt so a death mid-FTUE doesn't lose the highlight.
+		table.insert(attrConn, player.CharacterAdded:Connect(function()
+			task.defer(refresh)
 		end))
 		refresh()
 	end
@@ -216,6 +315,7 @@ function FtueTutorialTileHighlight.start(player: Player)
 				c:Disconnect()
 			end
 			table.clear(attrConn)
+			clearStreamingWatchers()
 			destroyBorder(borderFolder)
 		end
 	end)

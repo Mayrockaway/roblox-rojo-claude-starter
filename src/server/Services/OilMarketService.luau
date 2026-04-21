@@ -204,17 +204,19 @@ function OilMarketService:HandleSellType(userId: number, oilType: string)
 
 	local payout = barrelCount * price
 	self._warehouseService:RemoveBarrelsByType(userId, oilType)
-	self._oilStateService:AddCash(userId, payout)
+	-- `actualPayout` reflects the post-DoubleEarnings amount so the toast
+	-- below shows the real number credited (2x for owners, 1x otherwise).
+	local _ok, actualPayout = self._oilStateService:AddCash(userId, payout)
 	self._oilStateService:PushState(userId)
 
-	if self._ftueService and FtueConfig.Enabled and payout > 0 then
-		(self._ftueService :: any):OnFtueWarehouseSaleSuccess(userId, payout)
+	if self._ftueService and FtueConfig.Enabled and actualPayout > 0 then
+		(self._ftueService :: any):OnFtueWarehouseSaleSuccess(userId, actualPayout)
 	end
 
 	local displayName = QualityConfig.Tiers[oilType] and QualityConfig.Tiers[oilType].displayName or oilType
 	resultEvent:FireClient(player, {
 		ok = true,
-		message = string.format("Sold %d %s for $%s!", barrelCount, displayName, tostring(payout)),
+		message = string.format("Sold %d %s for $%s!", barrelCount, displayName, tostring(actualPayout)),
 	})
 end
 
@@ -266,16 +268,18 @@ function OilMarketService:HandleSellWarehouseBarrels(userId: number, payload: an
 		return
 	end
 
-	self._oilStateService:AddCash(userId, totalPayout)
+	-- `actualPayout` carries the post-DoubleEarnings amount so the message
+	-- and FTUE callback below reflect what the player actually received.
+	local _ok, actualPayout = self._oilStateService:AddCash(userId, totalPayout)
 	self._oilStateService:PushState(userId)
 
-	if self._ftueService and FtueConfig.Enabled and totalPayout > 0 then
-		(self._ftueService :: any):OnFtueWarehouseSaleSuccess(userId, totalPayout)
+	if self._ftueService and FtueConfig.Enabled and actualPayout > 0 then
+		(self._ftueService :: any):OnFtueWarehouseSaleSuccess(userId, actualPayout)
 	end
 
 	resultEvent:FireClient(player, {
 		ok = true,
-		message = string.format("Sold %d barrels for $%d!", totalSell, totalPayout),
+		message = string.format("Sold %d barrels for $%d!", totalSell, actualPayout),
 	})
 end
 
@@ -301,16 +305,18 @@ function OilMarketService:HandleSellAll(userId: number)
 	end
 
 	self._warehouseService:RemoveAllBarrels(userId)
-	self._oilStateService:AddCash(userId, totalPayout)
+	-- `actualPayout` is the post-DoubleEarnings amount so the toast +
+	-- FTUE callback reflect what was actually credited.
+	local _ok, actualPayout = self._oilStateService:AddCash(userId, totalPayout)
 	self._oilStateService:PushState(userId)
 
-	if self._ftueService and FtueConfig.Enabled and totalPayout > 0 then
-		(self._ftueService :: any):OnFtueWarehouseSaleSuccess(userId, totalPayout)
+	if self._ftueService and FtueConfig.Enabled and actualPayout > 0 then
+		(self._ftueService :: any):OnFtueWarehouseSaleSuccess(userId, actualPayout)
 	end
 
 	resultEvent:FireClient(player, {
 		ok = true,
-		message = string.format("Sold %d barrels for $%s!", totalSold, tostring(totalPayout)),
+		message = string.format("Sold %d barrels for $%s!", totalSold, tostring(actualPayout)),
 	})
 end
 

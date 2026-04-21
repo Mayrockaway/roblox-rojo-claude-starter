@@ -72,8 +72,8 @@ stroke.Parent = tpl
 local icon = Instance.new("ImageLabel")
 icon.Name = "Icon"
 icon.BackgroundTransparency = 1
-icon.Size = UDim2.fromScale(0.72, 0.72)
-icon.Position = UDim2.fromScale(0.5, 0.45)
+icon.Size = UDim2.fromScale(1, 1)
+icon.Position = UDim2.fromScale(0.5, 0.5)
 icon.AnchorPoint = Vector2.new(0.5, 0.5)
 icon.ScaleType = Enum.ScaleType.Fit
 icon.Parent = tpl
@@ -91,7 +91,9 @@ hotkey.Text = ""
 hotkey.Parent = tpl
 local htc = Instance.new("UITextSizeConstraint")
 htc.MaxTextSize = 18
-htc.MinTextSize = 8
+-- MinTextSize 1 so HotkeyLabel never truncates on small mobile slots; TextScaled
+-- collapses tiny text gracefully even when the slot is < 30px wide.
+htc.MinTextSize = 1
 htc.Parent = hotkey
 
 local badge = Instance.new("TextLabel")
@@ -109,7 +111,9 @@ badge.Text = ""
 badge.Parent = tpl
 local btc = Instance.new("UITextSizeConstraint")
 btc.MaxTextSize = 18
-btc.MinTextSize = 8
+-- MinTextSize 1 so StackBadge stack counts (e.g. "x12") never truncate on
+-- mobile slots; TextScaled handles the shrink.
+btc.MinTextSize = 1
 btc.Parent = badge
 
 local hit = Instance.new("ImageButton")

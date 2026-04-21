@@ -12,6 +12,11 @@
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 
+--- Coordinates Hint-line writes between this module's `setStatus` /
+--- `setStatusLocked` and `ShipmentProgressHud`'s direct text writes (cruise
+--- dots, "Ship halted!", success/loss). See `UI/HintLineState.luau` header.
+local HintLineState = require(script.Parent:WaitForChild("UI"):WaitForChild("HintLineState")) :: any
+
 -- ===================== types =====================
 export type InitParams = {
 	player: Player,
@@ -173,7 +178,10 @@ end
 --- clobbered by routine `setStatus` chatter (drilling progress, prospector
 --- pings, etc.). `setStatus` checks this gate and silently drops while the
 --- lock is still in effect; once it expires, the next `setStatus` wins.
-local statusLockUntilClock = 0
+---
+--- Lock state lives in `HintLineState` so `ShipmentProgressHud` (cruise dots,
+--- halt text, success/loss writes) can also honor it — otherwise the cruise
+--- loop's 0.42s tick would overwrite locked text.
 
 -- ===================== shipment-hint auto-fade =====================
 -- The shipment-hint `TextLabel` (under `ShipmentProgressPanel.Hint`) is a
@@ -284,7 +292,7 @@ local function ensureHintFadeWatch(line: TextLabel | TextButton)
 end
 
 local function setStatus(message: string, ok: boolean?)
-	if os.clock() < statusLockUntilClock then
+	if HintLineState.isLocked() then
 		if RunService:IsStudio() then
 			print("[Client] status (suppressed by lock):", message, " ok=", ok)
 		end
@@ -305,6 +313,7 @@ local function setStatus(message: string, ok: boolean?)
 			line.TextColor3 = Color3.fromRGB(218, 228, 240)
 		end
 		ensureHintFadeWatch(line)
+		HintLineState.markNonCruiseWritten()
 	end
 	if RunService:IsStudio() then
 		print("[Client] status:", message, " ok=", ok)
@@ -327,9 +336,10 @@ local function setStatusLocked(message: string, color: Color3, holdSeconds: numb
 		line.Text = message
 		line.TextColor3 = color
 		ensureHintFadeWatch(line)
+		HintLineState.markNonCruiseWritten()
 	end
 	if typeof(holdSeconds) == "number" and holdSeconds > 0 then
-		statusLockUntilClock = os.clock() + holdSeconds
+		HintLineState.setLockUntil(holdSeconds)
 	end
 	if RunService:IsStudio() then
 		print(string.format("[Client] status (locked %.1fs):", math.max(0, holdSeconds)), message)

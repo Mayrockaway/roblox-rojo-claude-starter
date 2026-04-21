@@ -12,6 +12,7 @@ local StarterGui = game:GetService("StarterGui")
 local ActiveManifestHud = require(script.Parent.ActiveManifestHud)
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local ManifestIncidentTitle = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("ManifestIncidentTitle"))
+local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig")) :: any
 
 local TIER_ORDER = { "Crude", "Refined", "Premium" }
 
@@ -389,10 +390,17 @@ local function layoutLossChips(host: Frame, lossOilByTier: { [string]: any }, pe
 		chip.Size = UDim2.new(w, 0, 0.82, 0)
 		local ticon = chip:FindFirstChild("TierIcon")
 		if ticon and ticon:IsA("ImageLabel") then
-			local col = TIER_CHIP_COLOR[entry.tier] or Color3.fromRGB(90, 90, 90)
-			ticon.Image = ""
-			ticon.BackgroundColor3 = col
-			ticon.BackgroundTransparency = 0
+			local iconId = QualityConfig.iconAssetIdForTier(entry.tier)
+			if typeof(iconId) == "string" and iconId ~= "" then
+				ticon.Image = iconId
+				ticon.BackgroundTransparency = 1
+				ticon.ImageColor3 = Color3.fromRGB(255, 255, 255)
+			else
+				local col = TIER_CHIP_COLOR[entry.tier] or Color3.fromRGB(90, 90, 90)
+				ticon.Image = ""
+				ticon.BackgroundColor3 = col
+				ticon.BackgroundTransparency = 0
+			end
 		end
 		local lam = chip:FindFirstChild("LossAmount")
 		if lam and lam:IsA("TextLabel") then

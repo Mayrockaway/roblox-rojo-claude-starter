@@ -11,6 +11,20 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local mouse = player:GetMouse()
 
+--- Custom hotbar lives at `PlayerGui.HUD.Canvas.EquipmentHotbar` — the
+--- default Roblox `Backpack` CoreGui must never render. The loading
+--- bootstrap (`replicated_first/init.client.luau`) disables it first, this
+--- is a re-assertion early in `StarterPlayerScripts` in case anything
+--- between (a different bootstrap path, the engine re-enabling on respawn,
+--- etc.) flipped it back on. Disabled unconditionally — i.e. **not** gated
+--- on `EquipmentHotbarController.tryStart` returning true — because if our
+--- custom hotbar fails to bind, surfacing the default one is worse than
+--- showing no toolbar at all (the user has explicitly asked we never use
+--- the default chrome).
+pcall(function()
+	StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+end)
+
 local playerScripts = player:WaitForChild("PlayerScripts")
 local resolveClientModuleScript: ModuleScript? = nil
 for _ = 1, 300 do
@@ -385,6 +399,7 @@ PirateHireClient.connect({
 })
 
 StrategicStrikeClient.connectArmyGeneralEarly({
+	player = player,
 	playerGui = playerGui,
 	setStatus = setStatus,
 }, {
@@ -439,6 +454,42 @@ local function resolveCashTextLabel(pg: PlayerGui): TextLabel?
 	return nil
 end
 
+-- Forward-declared so `tryResolveCashGainToast` (next) can reference the lookup
+-- helper that's defined a few lines below `updateCashHud`. Without this forward
+-- declaration Luau treats `getHudUiFolder` as a global (= nil) inside this
+-- closure and the first cash gain crashes the client cash HUD updater.
+local getHudUiFolder: () -> Instance?
+
+--- Resolved on first cash gain — kept lazy so the module isn't required at
+--- script start (the UI folder may not have replicated yet on a slow client).
+local cashGainToastModule: { notifyGain: (PlayerGui, number) -> () }? = nil
+local function tryResolveCashGainToast(): { notifyGain: (PlayerGui, number) -> () }?
+	if cashGainToastModule then
+		return cashGainToastModule
+	end
+	local uiFolder = getHudUiFolder()
+	if not uiFolder then
+		return nil
+	end
+	local mod = uiFolder:FindFirstChild("CashGainToast")
+	if not (mod and mod:IsA("ModuleScript")) then
+		return nil
+	end
+	local ok, loaded = pcall(require, mod)
+	if ok and typeof(loaded) == "table" then
+		cashGainToastModule = loaded :: any
+		return cashGainToastModule
+	end
+	return nil
+end
+
+--- Tracks the last cash value we've seen on the client so `updateCashHud` can
+--- detect a **positive delta** (= player just gained cash) and fire a green
+--- "+$X,XXX" toast above the CashStrip via `CashGainToast.notifyGain`. Set to
+--- `nil` initially so the very first snapshot apply (initial load / respawn
+--- snapshot) does **not** trigger a toast for the entire starting balance.
+local lastSyncedCash: number? = nil
+
 local function updateCashHud()
 	local cash = 0
 	if typeof(state) == "table" then
@@ -454,6 +505,18 @@ local function updateCashHud()
 		return
 	end
 	cashTextLabel.Text = "$" .. formatCashWithCommas(cash)
+
+	-- Toast on positive delta. `lastSyncedCash == nil` means this is the
+	-- baseline sync (initial snapshot or post-respawn snapshot) so we skip the
+	-- toast for the full starting balance.
+	if lastSyncedCash ~= nil and cash > lastSyncedCash then
+		local delta = cash - lastSyncedCash
+		local toast = tryResolveCashGainToast()
+		if toast then
+			toast.notifyGain(playerGui, delta)
+		end
+	end
+	lastSyncedCash = cash
 end
 
 local function updateUi()
@@ -461,7 +524,7 @@ local function updateUi()
 	updateCashHud()
 end
 
-local function getHudUiFolder(): Instance?
+function getHudUiFolder(): Instance?
 	-- Play: LocalScripts usually live under `PlayerScripts.Client`; Rojo `src/client/UI` mirrors there.
 	local psInst = player:FindFirstChild("PlayerScripts")
 	if not (psInst and psInst:IsA("PlayerScripts")) then
@@ -534,6 +597,16 @@ local function startHudModalWiring()
 			)
 			return
 		end
+		--- Bind the hotbar FIRST inside this `pcall` so a downstream require
+		--- failure (e.g. a Luau parser error in any other UI controller) cannot
+		--- starve `EquipmentHotbarController.tryStart`. Previously this call
+		--- lived at the very end of the chain — when `EarningsGamepassController`
+		--- failed to load, the entire `pcall` aborted before reaching the
+		--- hotbar bind and the player saw an empty viewport. The character /
+		--- HUD-ChildAdded fallbacks below only fire on respawn / late-replicate,
+		--- so first join needs this to be ahead of risky requires.
+		tryBindEquipmentHotbarAsync()
+
 		local routerMod = uiFolder:WaitForChild("HudPanelRouter", 30)
 		if not (routerMod and routerMod:IsA("ModuleScript")) then
 			warn("[Client] HUD wiring: HudPanelRouter ModuleScript missing under UI folder.")
@@ -541,6 +614,17 @@ local function startHudModalWiring()
 	end
 		local HudPanelRouter = require(routerMod) :: { start: (PlayerGui) -> () }
 		HudPanelRouter.start(playerGui)
+
+		-- 2x Earnings GamePass active-state chrome: pulses a rainbow stroke
+		-- around the HUD `EarningsGamepass` icon when the player owns the
+		-- DoubleEarnings boost. Click → prompt is wired by `HudPanelRouter`
+		-- via `ROBUX_PURCHASE_HUD_BUTTONS`; this controller only handles
+		-- visuals reacting to `gamePassEffectsUpdate`.
+		local earningsMod = uiFolder:FindFirstChild("EarningsGamepassController")
+		if earningsMod and earningsMod:IsA("ModuleScript") then
+			local EarningsGamepassController = require(earningsMod) :: { start: (PlayerGui) -> () }
+			EarningsGamepassController.start(playerGui)
+		end
 
 		local ppoMod = uiFolder:FindFirstChild("ProximityPanelOpener")
 		if ppoMod and ppoMod:IsA("ModuleScript") then
@@ -555,11 +639,14 @@ local function startHudModalWiring()
 		else
 			warn("[Client] HUD wiring: HudTeleportRouter ModuleScript missing under UI folder.")
 		end
-
-		tryBindEquipmentHotbarAsync()
 	end)
 	if not ok then
 		warn("[Client] HUD wiring bootstrap failed: ", err)
+		--- Even if the chain aborted partway, make sure the hotbar still binds.
+		--- The first `tryBindEquipmentHotbarAsync()` ran at the top of the pcall
+		--- and may have already succeeded; this is an extra belt-and-braces in
+		--- case the failing module ran before the bind itself was reached.
+		pcall(tryBindEquipmentHotbarAsync)
 	end
 end
 
@@ -662,13 +749,22 @@ local function tryPrimaryAction()
 
 	if kind ~= "Drill" then return end
 
-	local _, hitPos, chunkId = getTargetedChunkHit()
+	-- Prefer the **locked mobile preview** when present so a confirm-tap on the
+	-- same tile places exactly where the ghost was shown. Falls back to the
+	-- live mouse hit on desktop / before the first mobile tap.
+	local chunkId, hitPos, previewTileName = PlacementClient.getDesiredPlacementHit()
 	if not (hitPos and chunkId) then return end
 	if not isChunkUnlocked(chunkId) then
 		setStatus("That chunk is locked.", false)
 		return
 	end
-	local surfaceY = surfaceYFromRayTarget() or getChunkSurfaceY(chunkId) or hitPos.Y
+	-- Prefer the preview's tile-name surface Y so the placement Y matches the
+	-- ghost the player just confirmed (mouse.Target is stale on touch).
+	local surfaceY = surfaceYFromRayTarget()
+	if not surfaceY and previewTileName then
+		surfaceY = PlacementClient.tileSurfaceYInChunk(chunkId, previewTileName)
+	end
+	surfaceY = surfaceY or getChunkSurfaceY(chunkId) or hitPos.Y
 	local payload = {
 		chunkId = chunkId,
 		x = hitPos.X,
@@ -754,7 +850,62 @@ player.CharacterAdded:Connect(function()
 end)
 
 mouse.Button1Down:Connect(function()
+	-- On touch devices `Mouse.Button1Down` **also** fires for taps. The
+	-- dedicated touch handler below owns the mobile flow (tap-to-preview →
+	-- tap-again-to-confirm), so swallow the duplicate fire here when the most
+	-- recent input was Touch — otherwise the **first** mobile tap would both
+	-- lock a preview AND immediately fire `tryPrimaryAction`, defeating the
+	-- whole point of the preview step.
+	if UserInputService:GetLastInputType() == Enum.UserInputType.Touch then
+		return
+	end
+	tryPrimaryAction()
+end)
+
+-- Touch (mobile / tablet) placement: tap-to-preview, tap-again-to-confirm.
+--   * 1st tap on a chunk tile while Drill is equipped → lock the ghost preview
+--     to that tile via `PlacementClient.setMobilePreviewHit` (no server fire).
+--   * 2nd tap on the **same** tile → fire `tryPrimaryAction` (which prefers
+--     the locked preview over `mouse.Hit`), then clear the preview.
+--   * Tap on a different tile → re-lock the preview at the new tile.
+--   * Tap on nothing (water / sky) → clear the preview (= dismiss).
+-- Desktop mouse path is untouched: `Mouse.Button1Down` still places on the
+-- same tap that the user clicks (and ignores Touch via the early-return above).
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then
+		return
+	end
+	if input.UserInputType ~= Enum.UserInputType.Touch then
+		return
+	end
+	local kind, _ = getEquippedToolInfo()
+	if kind == nil and getEquippedToolName() == TOOL_DRILL then
+		kind = "Drill"
+	end
+	if kind ~= "Drill" then
+		PlacementClient.clearMobilePreview()
+		return
+	end
+	local touchPos = Vector2.new(input.Position.X, input.Position.Y)
+	local chunkId, hitPos, tileName = PlacementClient.raycastTouchToChunk(touchPos)
+	if not (chunkId and hitPos) then
+		-- Tap landed off-grid (water, sky, locked overlay with no ChunkId);
+		-- treat it as a dismiss so the player can cancel a preview by tapping
+		-- away.
+		PlacementClient.clearMobilePreview()
+		return
+	end
+	local prev = PlacementClient.getMobilePreviewHit()
+	local sameTile = prev ~= nil and prev.chunkId == chunkId and prev.tileName == tileName and tileName ~= nil
+	if sameTile then
+		-- Confirm: `tryPrimaryAction` reads `getDesiredPlacementHit()` which
+		-- still returns the locked preview, so the placement coord matches the
+		-- visible ghost exactly. Clear after firing.
 		tryPrimaryAction()
+		PlacementClient.clearMobilePreview()
+	else
+		PlacementClient.setMobilePreviewHit(chunkId, hitPos, tileName)
+	end
 end)
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -1043,6 +1194,31 @@ end)
 			(FtueUiPointers :: any).start(player, playerGui, ftueStateUpdate)
 		else
 			warn("[FTUE] FtueUiPointers has no start()")
+		end
+	end)
+
+	task.defer(function()
+		local uiRoot = (script.Parent and script.Parent:FindFirstChild("UI")) or getHudUiFolder()
+		if not uiRoot then
+			warn("[FTUE] Client UI folder missing — cannot load FtueHudReveal")
+			return
+		end
+		local modReveal = uiRoot:FindFirstChild("FtueHudReveal")
+		if not (modReveal and modReveal:IsA("ModuleScript")) then
+			warn("[FTUE] FtueHudReveal ModuleScript not found under " .. uiRoot:GetFullName())
+			return
+		end
+		local okR, FtueHudReveal = pcall(require, modReveal)
+		if not okR then
+			warn("[FTUE] FtueHudReveal require failed: " .. tostring(FtueHudReveal))
+			return
+		end
+		local startReveal = (FtueHudReveal :: any).start
+		if typeof(FtueHudReveal) == "table" and typeof(startReveal) == "function" then
+			print("[FTUE] Starting FtueHudReveal")
+			startReveal(player)
+		else
+			warn("[FTUE] FtueHudReveal has no start()")
 		end
 	end)
 

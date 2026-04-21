@@ -45,20 +45,28 @@ local BUTTON_TO_SCREEN: { [string]: string } = {
 
 -- Buttons that should get the same `HudTriggerHover` lift as modal triggers but
 -- don't open a `ScreenGui` here — typically because they fire something else
--- (e.g. `MarketplaceService:PromptGamePassPurchase` /
--- `MarketplaceService:PromptProductPurchase`) and that wiring lives elsewhere.
--- The decorator pass below attaches to **every** matching `GuiButton`, so it's
--- safe even if the same name ever repeats on the rail.
-local HOVER_ONLY_BUTTON_NAMES: { string } = {
-	"EarningsGamepass",
-}
+-- and that wiring lives elsewhere (e.g. `EarningsGamepassController` owns the
+-- pulsing rainbow active-state chrome on `EarningsGamepass`, but the
+-- *purchase prompt* still routes through the generic `ROBUX_PURCHASE_HUD_BUTTONS`
+-- wiring below). Empty by default; add names here if a HUD button needs only
+-- the lift treatment with no other behavior.
+local HOVER_ONLY_BUTTON_NAMES: { string } = {}
 
 -- HUD buttons that fire `RequestPromptRobuxPurchase` directly (no modal).
 -- Keys = `GuiButton.Name`, values = `MonetizationCatalog` item id. The wiring
 -- pass below attaches Activated → fire prompt, plus the same `HudTriggerHover`
 -- lift modal triggers get. Debounced per item id so spam-clicks don't multi-prompt.
+--
+-- `EarningsGamepass` is wired here even though `EarningsGamepassController`
+-- attaches the active-state visuals on top — the controller listens to
+-- `MonetizationResult` for ownership changes and never connects `Activated`,
+-- so the click → prompt flow stays owned by this router. Also: the catalog
+-- entry has `productId = 0` until the Roblox Creator Dashboard GamePass is
+-- created; until then `MonetizationService` returns `ERR_PRODUCT_NOT_CONFIGURED`
+-- and the click silently no-ops (handled below).
 local ROBUX_PURCHASE_HUD_BUTTONS: { [string]: string } = {
 	NukeDevProduct = "consumable.nuke_x1",
+	EarningsGamepass = "gamepass.double_earnings",
 }
 
 local SCREEN_BIND: { [string]: (PlayerGui) -> HudPanelTypes.HudPanelController? } = {
@@ -165,6 +173,11 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 			local byScreen = controllersByScreen
 
 			local function wireTrigger(btn: GuiButton, ctrl: HudPanelTypes.HudPanelController)
+				-- Defensive: ensure the button itself receives input. Many StarterGui HUD
+				-- buttons ship with `Active = false`, which lets any overlapping GuiObject
+				-- (FTUE pointer, hotbar strip, popups) swallow the click before it reaches
+				-- the trigger — manifests as "modal sometimes doesn't open".
+				btn.Active = true
 				passthroughDecorationsToTrigger(btn)
 				local armed = false
 				local function onPress()

@@ -21,6 +21,11 @@ local RemoteNames = {
 	RequestPickupBarrel = "RequestPickupBarrel",
 	RequestTeleportToShip = "RequestTeleportToShip",
 	RequestTeleportHome = "RequestTeleportHome",
+	--- Server → one client: fired immediately after `OilShipmentService:_handleTeleportHome` pivots
+	--- the character. Payload is the target `CFrame` (post-lift) so the client can snap its camera
+	--- behind the character on the new LookVector — `PivotTo` does not re-align the default follow
+	--- camera's internal yaw, so it has to be reset client-side.
+	TeleportHomeApplied = "TeleportHomeApplied",
 	RequestTeleportToDocks = "RequestTeleportToDocks",
 	RequestTeleportToHire = "RequestTeleportToHire",
 	RequestUpgradeWarehouse = "RequestUpgradeWarehouse",
@@ -95,6 +100,16 @@ local RemoteNames = {
 	-- waiting for a push. Keeps the wire small and snapshot-shaped like
 	-- `RequestEquipmentShopCatalog`.
 	RequestMonetizationCatalog = "RequestMonetizationCatalog",
+	-- Server → one client: which `gamePassEffect` ids (e.g. "DoubleEarnings")
+	-- the player currently owns, as `{ effects = { DoubleEarnings = true, ... } }`.
+	-- Pushed on join (after `MarketplaceService:UserOwnsGamePassAsync` resolves)
+	-- and again whenever `MarketplaceService.PromptGamePassPurchaseFinished` fires
+	-- with `wasPurchased = true` so the HUD active-state chrome (rainbow stroke
+	-- around `EarningsGamepass` etc.) lights up immediately after purchase
+	-- without requiring a rejoin. Server `MonetizationService:HasGamePassEffect`
+	-- stays the source of truth for any cash-multiplier checks; this is
+	-- display-only.
+	GamePassEffectsUpdate = "GamePassEffectsUpdate",
 
 	-- Per-plot oil tanks: three tubes (Crude/Refined/Premium) upgradable 1..10.
 	RequestUpgradeOilTank = "RequestUpgradeOilTank",
@@ -106,7 +121,8 @@ local RemoteNames = {
 	RequestFtueAcknowledge = "RequestFtueAcknowledge",
 	RequestFtueSkip = "RequestFtueSkip",
 	FtueStateUpdate = "FtueStateUpdate",
-	--- Client → server: docks FTUE progression (`DockmanOpened`, `ShipPanelClosed`). See `FtueService`.
+	--- Client → server: docks FTUE progression (`DockmanOpened`, `SelectShipOpened`,
+	--- `SelectShipClosed`, `ShipPanelClosed`, `EquipmentShopPanelClosed`). See `FtueService`.
 	RequestFtueDocksProgress = "RequestFtueDocksProgress",
 }
 

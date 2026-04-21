@@ -5,7 +5,26 @@ local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local DevLog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("DevLog"))
 local Constants = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Constants"))
+local RemoteNames = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Net"):WaitForChild("RemoteNames"))
 local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
+
+--- Cached on first use. The `Remotes` folder is populated by `RemoteService:Init()` (runs in
+--- `init.server.luau` before `PlotService:Start()`), so by the time any spawn happens this
+--- lookup is a single `FindFirstChild` on a folder that already exists.
+local _teleportHomeAppliedEvent: RemoteEvent? = nil
+local function getTeleportHomeAppliedEvent(): RemoteEvent?
+	if _teleportHomeAppliedEvent and _teleportHomeAppliedEvent.Parent then
+		return _teleportHomeAppliedEvent
+	end
+	local shared = ReplicatedStorage:FindFirstChild("Shared")
+	local remotes = shared and shared:FindFirstChild("Remotes")
+	local ev = remotes and remotes:FindFirstChild(RemoteNames.TeleportHomeApplied)
+	if ev and ev:IsA("RemoteEvent") then
+		_teleportHomeAppliedEvent = ev
+		return ev
+	end
+	return nil
+end
 
 local PlotService = {}
 
@@ -681,7 +700,12 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 	CharacterTeleport.unseatIfSitting(character)
 	DevLog.log(string.format("[teleport] path=PlotService:spawnClaim seated=%s", tostring(wasSitting)))
 
-	local target = CFrame.new(
+	--- Preserve the ClaimPad's authored rotation so the character spawns facing whichever
+	--- way the pad is pointed (currently 180° → looking at the Delivery Man). Using
+	--- `CFrame.new(x,y,z)` here would discard rotation and the player would always land
+	--- facing world -Z. `CFrame.Rotation + Vector3` keeps the pad's LookVector and just
+	--- translates to the lifted XYZ.
+	local target = spawnPart.CFrame.Rotation + Vector3.new(
 		spawnPart.Position.X,
 		math.max(14, spawnPart.Position.Y + 8),
 		spawnPart.Position.Z
@@ -691,6 +715,27 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 	hrp.AssemblyLinearVelocity = Vector3.zero
 	hrp.AssemblyAngularVelocity = Vector3.zero
 
+	--- Camera snap on spawn. Originally I assumed Roblox would auto-rotate the default
+	--- follow camera behind the new character on `CharacterAdded`, but in this game the
+	--- camera keeps its previous yaw — same failure mode as the live `PivotTo` teleport-
+	--- home path. Reuse the same `TeleportHomeApplied` signal so `HudTeleportRouter`
+	--- runs `snapCameraBehindCharacter` and the player ends up looking at the Delivery
+	--- Man over their own shoulder.
+	---
+	--- Why fire **twice** (immediate + after the safety re-teleport):
+	---   • t=0: covers in-session **respawn** — `HudTeleportRouter` is already required
+	---     and `OnClientEvent` is connected, so this snap lands.
+	---   • t=0.4 (after the 0.3s safety re-teleport): covers **initial join** — on the
+	---     very first spawn the client's `HudTeleportRouter` may not have required /
+	---     connected `OnClientEvent` yet, so the t=0 fire would silently drop. By 0.4s
+	---     the client has bootstrapped in the common case.
+	--- Both fires target the same CFrame, so when both land it's a no-op refinement
+	--- (`cam.CFrame` is set to the same value twice).
+	local snapEvent = getTeleportHomeAppliedEvent()
+	if snapEvent then
+		snapEvent:FireClient(player, target)
+	end
+
 	-- One safety re-teleport 0.3s later: absorbs character-load settle (default-spawn
 	-- logic, humanoid state transitions) that can clobber the initial CFrame.
 	task.delay(0.3, function()
@@ -699,6 +744,16 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 				hrp.CFrame = target
 				hrp.AssemblyLinearVelocity = Vector3.zero
 			end
+		end
+	end)
+
+	task.delay(0.4, function()
+		if not (hrp.Parent and character.Parent and player.Parent) then
+			return
+		end
+		local ev = getTeleportHomeAppliedEvent()
+		if ev then
+			ev:FireClient(player, target)
 		end
 	end)
 end

@@ -21,7 +21,7 @@ ShipOilPanelGui [ScreenGui]
             │  ├─ CargoHeader  ("Cargo")
             │  ├─ CargoRows  (vertical list, scale Padding)
             │  │  └─ **Canonical:** `ShipCargoRowCrude` | `ShipCargoRowRefined` | `ShipCargoRowPremium` — tiers **Crude**, **Refined**, **Premium** (`ShipOilPanel.luau` → `Crude` / `Refined` / `Premium`). Renamed rows can still resolve via the `ShipOilTier` attribute or the row's title text.
-            │  │        OilIcon, NameColumn / `<Tier>Title` (e.g. `CrudeTitle` / `RefinedTitle` / `PremiumTitle`), RowSpacer+UIFlexItem.Fill,
+            │  │        **`OilIcon`** (`ImageLabel`, square `UIAspectRatioConstraint`; `Image` from **`QualityConfig.Tiers.<Tier>.iconAssetId`**), NameColumn / `<Tier>Title` (e.g. `CrudeTitle` / `RefinedTitle` / `PremiumTitle`), RowSpacer+UIFlexItem.Fill,
             │  │        InventoryCount, Stepper
             │  └─ CargoSubtotalBand  — horizontal row (scale height matches former subtotal row)
             │        ├─ WarehouseCapacityLabel  — gold **`TextLabel`**, placeholder **`— / —`** (stored / capacity); **`TextScaled`** + **`UITextSizeConstraint`** (8–16) + thin **`UIStroke`** — wire later
@@ -50,7 +50,9 @@ ShipOilPanelGui [ScreenGui]
 ## Runtime (intent)
 
 - **Cargo:** **`InventoryCount`** = whole barrels at the **home refinery** from **`OilStateUpdate.state.oilByTier`** (not strait **`WarehouseService`** barrels). Dispatch manifest uses **oil units** (`barrels × OilConfig.Barrels.PerBarrelOil`). Implementation: **`ShipOilPanel.luau`**.
-- **Run upgrades:** set **`TitleLabel` / `CostLabel*`** when replacing placeholders; wire **`RunUpgradeCard* .BuyButton`**.
+- **Run upgrades:**
+  - **`RunUpgradeCard1` — Security Personnel (live):** wired by **`ShipOilPanel.luau`** (`wireRunUpgradeCard1`). Reads **`MonetizationCatalog.GetItem("consumable.security_personnel_x1")`** for `displayName` (`TitleLabel`), `subtitle` (`DescriptionLabel` base copy), and `robuxPrice` (`CostPill.CostLabel1` → `R$%d`). `BuyButton.Activated` → **`requestPromptRobuxPurchase`** with `{ itemId = "consumable.security_personnel_x1" }`. Owned-stack count rides on **`OilStateUpdate.runUpgradeOwnedByItemId.security_personnel`** and re-paints the description as **`Ready ×N • <subtitle>`** in the same frame the server pushes (Robux receipt grant or `_handleDispatch` consume). Stacking allowed — buying N protects the next N dispatches.
+  - **`RunUpgradeCard2` / `RunUpgradeCard3`:** keep their **`ComingSoonOverlay`** in Studio; intentionally **not** wired. When a future product lands, give the card its own `wireRunUpgradeCard*` analog and remove the overlay in Studio.
 - **Insurance:** **`InsuranceCostLabel`**, **`InsuranceBuyButton`** (distinct **purple** CTA — do not reuse run-supply green styling).
 - **Shipment cost:** **`Body.ShipmentCostBand.ShipmentCostLabel.Text`** (e.g. fees + upgrades + insurance) — server-authoritative when wired.
 - **Dispatch:** **`Footer.DispatchShipmentButton`** — unchanged role; **no** shell layout patches from scripts.

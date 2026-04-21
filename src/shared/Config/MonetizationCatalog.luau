@@ -213,8 +213,22 @@ MonetizationCatalog.Items = {
 	-- symbolic id consuming services check via
 	-- `MonetizationService:HasGamePassEffect(player, "DoubleEarnings")` — keep
 	-- that string stable; renaming it would silently disable the multiplier
-	-- for every owner. Apply scope (cash from oil sales, contract payouts,
-	-- etc.) is owned by whichever service reads the effect, not declared here.
+	-- for every owner.
+	--
+	-- Apply scope: `OilStateService:AddCash` reads the effect on EVERY
+	-- gameplay cash credit (oil sales, FTUE rewards, dev grants, …) and
+	-- doubles the value before crediting `state.cash`. Refunds and direct
+	-- Robux currency packs opt out via `AddCash(uid, amt, { skipMultiplier
+	-- = true })` so the player isn't getting back 2x what they paid (refund)
+	-- or doubling a cash pack the price was sized against (Robux currency).
+	-- HUD chrome lives in `EarningsGamepassController`.
+	--
+	-- TODO(monetization): set `productId` to the real Roblox GamePass id
+	-- from the Creator Dashboard (https://create.roblox.com → your
+	-- experience → Monetization → Passes → "2x Earnings" → copy the URL id).
+	-- Until then `MonetizationService` returns `ERR_PRODUCT_NOT_CONFIGURED`
+	-- on click and `HasGamePass` returns false (so the multiplier is off
+	-- and the HUD chrome stays inactive — safe placeholder).
 	{
 		id = "gamepass.double_earnings",
 		productKind = "GamePass",
@@ -283,6 +297,34 @@ MonetizationCatalog.Items = {
 		subtitle = "One-time use",
 		category = "Strait",
 		grant = { kind = "Consumable", consumable = { id = "strait_close_2min", quantity = 1 } },
+	},
+
+	-- Security Personnel: hires a single-shipment crewmate who deflects every
+	-- strait incident on the player's NEXT dispatched shipment (storms,
+	-- pirates, mines, missiles, coast guard, US ship slap, tornado — and
+	-- also forced contract pirate hits). Stacks: buying N grants protection
+	-- on the next N dispatches.
+	--
+	-- Behavioral contract for the future handler (`SecurityPersonnelService`):
+	--   * On grant, +1 to `OilStateService:AddRunUpgradeOwned("security_personnel")`.
+	--   * On dispatch (`OilShipmentService:_handleDispatch`), if owned > 0
+	--     consume one stack and set `shipment.eventImmunity = true`.
+	--   * Strait waypoint trigger + forced contract pirate path early-return
+	--     when the flag is set, so no event lands and no cargo is lost.
+	--
+	-- `productId = 0` until the Roblox Creator Hub DevProduct exists; until
+	-- then `MonetizationService` returns `ERR_PRODUCT_NOT_CONFIGURED` from
+	-- the prompt and the row is filtered out of `IsBuyable()` so the future
+	-- shop UI shows a "Coming Soon" affordance instead of crashing.
+	{
+		id = "consumable.security_personnel_x1",
+		productKind = "DevProduct",
+		productId = 0,
+		robuxPrice = 49,
+		displayName = "Security Personnel",
+		subtitle = "Protects your next shipment",
+		category = "RunUpgrades",
+		grant = { kind = "Consumable", consumable = { id = "security_personnel", quantity = 1 } },
 	},
 
 	-- Future categories — left as a commented template so adding the first

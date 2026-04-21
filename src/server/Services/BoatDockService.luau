@@ -18,6 +18,7 @@ local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
+local BoatCollisionContract = require(script.Parent.Parent.Utils.BoatCollisionContract)
 local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
 local ShipRig = require(Shared:WaitForChild("Utils"):WaitForChild("ShipRig"))
 
@@ -283,10 +284,16 @@ local function resolveBoatSupportStandCFrame(boat: Model, desiredCFrame: CFrame)
 		return desiredCFrame
 	end
 
-	local _, boundsSize = boat:GetBoundingBox()
-	local castHeight = math.max(12, boundsSize.Y * 0.5 + 8)
-	local castDistance = math.max(64, boundsSize.Y + 32)
-	local origin = Vector3.new(desiredPos.X, desiredPos.Y + castHeight, desiredPos.Z)
+	-- Clamp the support search to a thin band around the rig's intended deck Y.
+	-- Starting only `SLACK_ABOVE` studs above `desiredPos.Y` means a roof / cabin /
+	-- mast above the rig's deck can never be picked as "support" — the ray either
+	-- finds the deck just below the target or misses (in which case we use
+	-- `desiredCFrame` directly via the early-return below). This is universal
+	-- across every ship skin: no per-ship CanQuery / DeckAnchor authoring needed.
+	local SLACK_ABOVE = 2
+	local SEARCH_BELOW = 12
+	local origin = Vector3.new(desiredPos.X, desiredPos.Y + SLACK_ABOVE, desiredPos.Z)
+	local castDistance = SLACK_ABOVE + SEARCH_BELOW
 	local result = Workspace:Raycast(origin, Vector3.new(0, -castDistance, 0), params)
 	if not result or not result.Instance or not result.Instance:IsA("BasePart") then
 		if RunService:IsStudio() then
@@ -429,40 +436,12 @@ local function neutralizeSeat(seat: Seat)
 	seat:SetAttribute("SeatGameplayDisabled", true)
 end
 
-local NON_COLLIDABLE_BOAT_HELPER_NAMES = {
-	BarrelStackRoot = true,
-	FRONT_MARKER = true,
-	PlayerFlag = true,
-	WaterlineAnchor = true,
-	ZIPLINE_LAND_ANCHOR = true,
-}
-
-local function isNonCollidableBoatHelperPart(part: BasePart): boolean
-	if NON_COLLIDABLE_BOAT_HELPER_NAMES[part.Name] == true then
-		return true
-	end
-	if part:GetAttribute("AllowInvisibleCollision") == true then
-		return false
-	end
-	return part.Transparency >= 0.95
-end
-
-local function neutralizeBoatHelperPart(part: BasePart)
-	part.CanCollide = false
-	part.CanTouch = false
-	part.CanQuery = false
-	part.Transparency = 1
-	part.CastShadow = false
-	part.Massless = true
-	part:SetAttribute("BoatGameplayHelperDisabled", true)
-end
-
-local function neutralizeBoatHelpers(root: Instance)
-	for _, d in ipairs(root:GetDescendants()) do
-		if d:IsA("BasePart") and isNonCollidableBoatHelperPart(d) then
-			neutralizeBoatHelperPart(d)
-		end
-	end
+-- Boat-wide collision contract (helper neutralization + ShipmentShip tagging)
+-- now lives in `BoatCollisionContract`. Both this service (idle dock spawn)
+-- and `OilShipmentService._setupShip` (voyage hull) MUST funnel through
+-- `BoatCollisionContract.Apply` so the universal rule stays consistent.
+local function applyBoatCollisionContract(root: Instance)
+	BoatCollisionContract.Apply(root)
 end
 
 local function logRemainingInvisibleBoatColliders(root: Instance)
@@ -593,11 +572,17 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 		end
 	end
 
-	-- Anchor every BasePart (static idle; no constraints, no welds, no collision-group).
+	-- Idle boat: anchor every BasePart (static; no constraints, no welds).
+	-- IMPORTANT: do NOT force `CanCollide = true` here. The previous version
+	-- did that and silently re-enabled artist-disabled parts (e.g. 60+ tiny
+	-- `Ball` decorations on the Whale rig, both `SaddlePad` MeshParts, the
+	-- `SprayPoint`, and on the Ducky template the duck-body invisible cube
+	-- + raft-pillar block-vs-cylinder mismatch). Authored `CanCollide` is the
+	-- source of truth; the `BoatCollisionContract.Apply` call below handles
+	-- the helper neutralization + `ShipmentShip` group tagging uniformly.
 	for _, d in ipairs(boat:GetDescendants()) do
 		if d:IsA("BasePart") then
 			d.Anchored = true
-			d.CanCollide = true
 			d.CanTouch = true
 			d.CanQuery = true
 		end
@@ -697,7 +682,7 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 	if seat then
 		neutralizeSeat(seat)
 	end
-	neutralizeBoatHelpers(boat)
+	applyBoatCollisionContract(boat)
 	logRemainingInvisibleBoatColliders(boat)
 	stripBoatBoardPrompt(boat)
 
@@ -778,7 +763,10 @@ function BoatDockService:CheckoutBoat(userId: number, shipmentId: string): (Mode
 	boat:SetAttribute("IsIdleBob", false)   -- stop client bob
 	boat.Name = "ActiveShipmentBoat"
 	boat:SetAttribute("ShipmentId", shipmentId)
-	neutralizeBoatHelpers(boat)
+	-- Idempotent — the idle spawn already applied this; reapplying covers the
+	-- (rare) case where some controller poked CanCollide between spawn and
+	-- checkout. `_setupShip` below will also re-apply after un-anchoring.
+	applyBoatCollisionContract(boat)
 	logRemainingInvisibleBoatColliders(boat)
 	stripBoatBoardPrompt(boat)
 	self:_pushSnapshot(userId)

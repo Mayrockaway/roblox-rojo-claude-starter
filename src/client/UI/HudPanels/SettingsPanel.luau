@@ -196,25 +196,27 @@ local function rowHasTogglePattern(tab: GuiObject): boolean
 	return hasNonCloseGuiButton(tab) or hasStudioFrameToggle(tab)
 end
 
---- Clear **`Active`** on the whole row, then enable the chain from **`tab`** down to **`target`** so **`Frame`** toggles receive input.
-local function passthroughTabForInputTarget(tab: GuiObject, target: GuiObject)
+--- Clear **`Active`** on the whole row, then enable the chain from **`tab`** down to each **`target`** so **`Frame`** toggles receive input. Supports multiple targets so parallel chrome rows (one Toggle inside `tab.Active`, another inside `tab.Inactive`) both stay clickable as their visibility flips on each press.
+local function passthroughTabForInputTargets(tab: GuiObject, targets: { GuiObject })
 	for _, d in ipairs(tab:GetDescendants()) do
 		if d:IsA("GuiObject") then
 			d.Active = false
 		end
 	end
-	local p: Instance? = target
-	while p and p ~= tab.Parent do
-		if p:IsA("GuiObject") then
-			(p :: GuiObject).Active = true
+	for _, target in ipairs(targets) do
+		local p: Instance? = target
+		while p and p ~= tab.Parent do
+			if p:IsA("GuiObject") then
+				(p :: GuiObject).Active = true
+			end
+			if p == tab then
+				break
+			end
+			p = p.Parent
 		end
-		if p == tab then
-			break
+		if target:IsA("GuiButton") then
+			(target :: GuiButton).Selectable = true
 		end
-		p = p.Parent
-	end
-	if target:IsA("GuiButton") then
-		(target :: GuiButton).Selectable = true
 	end
 end
 
@@ -255,6 +257,33 @@ local function resolveToggleInputTarget(tab: GuiObject): GuiObject?
 		end
 	end
 	return nil
+end
+
+--- Gather **every** Toggle hit target in the row. Studio settings use parallel chrome:
+--- `tab.Active.Toggle-Container.Toggle` and `tab.Inactive.Toggle-Container.Toggle`. After
+--- the first press flips `Active`/`Inactive` Visible, the previously-bound Toggle becomes
+--- hidden and stops receiving input — binding both keeps the row clickable on every press.
+local function gatherAllToggleInputTargets(tab: GuiObject, primary: GuiObject?): { GuiObject }
+	local out: { GuiObject } = {}
+	local seen: { [Instance]: boolean } = {}
+	local function pushUnique(obj: GuiObject)
+		if not seen[obj] then
+			seen[obj] = true
+			table.insert(out, obj)
+		end
+	end
+	if primary then
+		pushUnique(primary)
+	end
+	for _, d in ipairs(tab:GetDescendants()) do
+		if d:IsA("GuiObject") and d.Name == "Toggle" then
+			local parent = d.Parent
+			if parent and parent:IsA("Instance") and parent.Name == "Toggle-Container" then
+				pushUnique(d :: GuiObject)
+			end
+		end
+	end
+	return out
 end
 
 local function applyToggleVisual(activeF: GuiObject?, inactiveF: GuiObject?, enabled: boolean)
@@ -472,47 +501,65 @@ end
 
 local function wireToggleRow(tab: GuiObject, getEnabled: () -> boolean, setPreference: (boolean) -> ())
 	local activeF, inactiveF = findRowChromeActiveInactive(tab)
-	local target = resolveToggleInputTarget(tab)
-	if not target then
+	local primary = resolveToggleInputTarget(tab)
+	local targets = gatherAllToggleInputTargets(tab, primary)
+	if #targets == 0 then
 		warn("[SettingsPanel] No toggle hit target (expect **`GuiButton`** or **`Toggle-Container.Toggle`** `Frame`) under", tab:GetFullName())
 		return
 	end
-	passthroughTabForInputTarget(tab, target)
+	passthroughTabForInputTargets(tab, targets)
 
 	logSettings(
 		"Toggle row wired: row="
 			.. tab:GetFullName()
-			.. " | target="
-			.. target:GetFullName()
-			.. " | class="
-			.. target.ClassName
+			.. " | targets="
+			.. tostring(#targets)
+			.. " (first="
+			.. targets[1]:GetFullName()
+			.. " class="
+			.. targets[1].ClassName
+			.. ")"
 	)
 
 	applyToggleVisual(activeF, inactiveF, getEnabled())
 
-	local function onPress()
-		logSettings("TOGGLE HANDLER FIRED: " .. target:GetFullName())
+	local lastFire = 0
+	local function onPress(sourceFullName: string)
+		-- Both parallel toggles fire onPress; debounce so a single user press
+		-- (which only ever hits one of them, since the other is currently hidden)
+		-- can't double-flip if any future Studio change makes both visible at once.
+		local now = os.clock()
+		if now - lastFire < 0.05 then
+			return
+		end
+		lastFire = now
+		logSettings("TOGGLE HANDLER FIRED: " .. sourceFullName)
 		local on = not getEnabled()
 		setPreference(on)
 		applyToggleVisual(activeF, inactiveF, on)
 	end
 
-	if target:IsA("GuiButton") then
-		(target :: GuiButton).Activated:Connect(onPress)
-		if DEBUG_SETTINGS_CLICKS then
-			(target :: GuiButton).MouseButton1Click:Connect(function()
-				logSettings("MouseButton1Click on " .. target:GetFullName())
+	for _, target in ipairs(targets) do
+		if target:IsA("GuiButton") then
+			local btn = target :: GuiButton
+			btn.Activated:Connect(function()
+				onPress(btn:GetFullName())
+			end)
+			if DEBUG_SETTINGS_CLICKS then
+				btn.MouseButton1Click:Connect(function()
+					logSettings("MouseButton1Click on " .. btn:GetFullName())
+				end)
+			end
+		else
+			target.InputBegan:Connect(function(input: InputObject)
+				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+					if DEBUG_SETTINGS_CLICKS then
+						logSettings("InputBegan on Frame toggle " .. target:GetFullName())
+					end
+					onPress(target:GetFullName())
+				end
 			end)
 		end
-	else
-		target.InputBegan:Connect(function(input: InputObject)
-			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-				if DEBUG_SETTINGS_CLICKS then
-					logSettings("InputBegan on Frame toggle " .. target:GetFullName())
-				end
-				onPress()
-			end
-		end)
 	end
 end
 
