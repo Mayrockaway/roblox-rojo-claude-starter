@@ -34,7 +34,12 @@ local UNCLAIMED_COLOR = Color3.fromRGB(105, 210, 120)
 local PLOT_OWNER_BILLBOARD_NAME = "PlotOwnerBillboard"
 -- Server-authored `BillboardGui` on workspace `ClaimPad`; replicates to every client.
 local PLOT_NAME_BILLBOARD_STUDS_OFFSET_Y = 54
-local PLOT_NAME_TEXT_MAX_SIZE = 48
+-- `TextScaled` fills the 440x96 BillboardGui, and the BillboardGui itself is
+-- distance-scaled by the engine, so the same on-screen proportion shows on
+-- phone / desktop / console. The cap was previously `48` which clamped the
+-- text to ~half the box vertically (looked tiny on small viewports); leave
+-- generous headroom so 1-line text fills the box on every platform.
+local PLOT_NAME_TEXT_MAX_SIZE = 96
 local PLOT_NAME_TEXT_MIN_SIZE = 18
 local PREFERRED_PLOT_CLAIM_ORDER = { 3, 4, 5, 6, 2, 1, 7, 8 }
 

@@ -1380,12 +1380,13 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				label.Size = UDim2.fromScale(1, 1)
 				label.BackgroundTransparency = 1
 				label.Font = Enum.Font.LuckiestGuy
-				-- Fixed pixel size matches the previous (pre-padding) look so
-				-- "0.00 bbl/sec" reads at-a-glance from a normal play camera
-				-- distance. TextScaled + a low MaxTextSize cap previously
-				-- shrank the text to almost-illegible; keep it pixel-fixed.
-				label.TextSize = 32
-				label.TextScaled = false
+				-- TextScaled (no UIPadding, no UITextSizeConstraint) so the
+				-- label fills the full 220x56 box. The BillboardGui is
+				-- distance-scaled by the engine, so this gives the same
+				-- on-screen proportion across phone / desktop / console.
+				-- Fixed `TextSize` was readable at one resolution but left
+				-- mobile players with relatively tiny text — do not re-add it.
+				label.TextScaled = true
 				label.TextWrapped = false
 				label.TextTruncate = Enum.TextTruncate.None
 				label.TextTransparency = 0.05
@@ -1402,10 +1403,11 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				local topY2 = topPos and topPos.Y or model:GetPivot().Position.Y
 				holoPart.Position = Vector3.new(model:GetPivot().Position.X, topY2 + 3.6, model:GetPivot().Position.Z)
 
-				-- Strip stale font-shrink artifacts on labels created by an earlier
-				-- code path (UIPadding on the parent backdrop + UITextSizeConstraint
-				-- on the label) so existing live drills get the larger bbl/sec text
-				-- without needing a server restart.
+				-- Strip stale font-shrink artifacts on labels created by an
+				-- earlier code path (UIPadding on the parent + a low-cap
+				-- UITextSizeConstraint) so existing live drills get the
+				-- distance-scaling TextScaled treatment without needing a
+				-- server restart.
 				local backdrop = infoLabel.Parent
 				if backdrop and backdrop:IsA("GuiObject") then
 					local stalePad = backdrop:FindFirstChildOfClass("UIPadding")
@@ -1413,9 +1415,8 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				end
 				local staleConstraint = infoLabel:FindFirstChildOfClass("UITextSizeConstraint")
 				if staleConstraint then staleConstraint:Destroy() end
-				if infoLabel:IsA("TextLabel") and infoLabel.TextScaled then
-					infoLabel.TextScaled = false
-					infoLabel.TextSize = 32
+				if infoLabel:IsA("TextLabel") and not infoLabel.TextScaled then
+					infoLabel.TextScaled = true
 				end
 
 				local flowRate = getFlowRate(drill)
@@ -1658,35 +1659,35 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 					local latestPending = math.max(0, math.floor(tonumber(barrelsFolder:GetAttribute(pendingAttr)) or 0))
 					barrelsFolder:SetAttribute(pendingAttr, math.max(0, latestPending - 1))
 
-					local barrel = self:_createBarrelForTier(tier, tierTemplates[tier])
-					barrel:SetAttribute("Tier", tier)
-					barrel:SetAttribute("OnConveyor", true)
+				local barrel = self:_createBarrelForTier(tier, tierTemplates[tier])
+				barrel:SetAttribute("Tier", tier)
+				barrel:SetAttribute("OnConveyor", true)
 					barrel:SetAttribute("RepresentedUnits", representedUnits)
-					barrel.Parent = barrelsFolder
+				barrel.Parent = barrelsFolder
 					ensureBarrelMultiplierGui(barrel, representedUnits)
 					local barrelBottomOffset = getInstanceBottomOffset(barrel)
-					local function moveBarrel(pos)
+				local function moveBarrel(pos)
 						local cf = CFrame.new(pos.X, pos.Y + barrelBottomOffset, pos.Z)
-						if barrel:IsA("Model") then
-							barrel:PivotTo(cf)
-						elseif barrel:IsA("BasePart") then
-							barrel.CFrame = cf
-						end
+					if barrel:IsA("Model") then
+						barrel:PivotTo(cf)
+					elseif barrel:IsA("BasePart") then
+						barrel.CFrame = cf
 					end
-					moveBarrel(startPos)
-					anchorAllBaseParts(barrel)
+				end
+				moveBarrel(startPos)
+				anchorAllBaseParts(barrel)
 
-					task.spawn(function()
+				task.spawn(function()
 						local distance = 0
 						while distance < totalLen and barrel.Parent do
-							local dt = task.wait()
+						local dt = task.wait()
 							distance += beltSpeed * dt
 							moveBarrel(conveyorPathPosition(startPos, cornerPos, endPos, seg1Len, seg2Len, distance))
 						end
 						if not barrel.Parent then
 							return
 						end
-						barrel:SetAttribute("OnConveyor", false)
+					barrel:SetAttribute("OnConveyor", false)
 						local tankCenter = endPos
 						local oilTanks = plot:FindFirstChild("OilTanks")
 						if oilTanks then
@@ -1698,8 +1699,8 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 										tankCenter = union.Position
 									end
 									break
-								end
 							end
+						end
 						end
 						local flyTime = 0.35
 						local flyElapsed = 0
@@ -1724,14 +1725,14 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 				barrelsFolder:SetAttribute(pendingAttr, 0)
 				pendingCount = 0
 			end
-			for _, child in ipairs(barrelsFolder:GetChildren()) do
+				for _, child in ipairs(barrelsFolder:GetChildren()) do
 				if child:GetAttribute("Tier") == tier then
-					child:Destroy()
+						child:Destroy()
+					end
 				end
 			end
 		end
 	end
-end
 function OilVisualService:_createBarrelForTier(tier: string, templateName: string?): Instance
 	-- Try to clone from the per-type template in Assets
 	if self._assetsFolder and templateName then
