@@ -90,13 +90,27 @@ local function ensureCharConn(player: Player)
 	end
 	disconnectCharIfIdle()
 	charConnPlayer = player
-	charConn = player.CharacterAdded:Connect(function()
-		task.defer(function()
-			for beamId, ch in pairs(channels) do
-				if ch.trackedPlayer == player and ch.trackedTarget and ch.trackedTarget.Parent then
-					PlayerToPoiBeam._tryWireBeamChannel(beamId, player)
-				end
+	charConn = player.CharacterAdded:Connect(function(character)
+		--- `CharacterAdded` fires the moment the Character model is parented,
+		--- but `HumanoidRootPart` can be a frame or two behind on respawn /
+		--- rejoin (especially with streaming). A bare `task.defer(rewire)`
+		--- frequently runs while `Character:FindFirstChild("HumanoidRootPart")`
+		--- is still nil — `_tryWireBeamChannel` then short-circuits (destroys
+		--- visuals, returns), the FTUE beams vanish, and nothing retries
+		--- until the next attribute change. Waiting for HRP first guarantees
+		--- a successful rewire on every respawn.
+		task.spawn(function()
+			local hrp = character:WaitForChild("HumanoidRootPart", 10)
+			if not hrp then
+				return
 			end
+			task.defer(function()
+				for beamId, ch in pairs(channels) do
+					if ch.trackedPlayer == player and ch.trackedTarget and ch.trackedTarget.Parent then
+						PlayerToPoiBeam._tryWireBeamChannel(beamId, player)
+					end
+				end
+			end)
 		end)
 	end)
 end

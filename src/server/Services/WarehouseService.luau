@@ -1019,7 +1019,16 @@ function WarehouseService:TryTeleportPlayerToWarehouse(player: Player): boolean
 	if not character then
 		return false
 	end
-	CharacterTeleport.teleportWithUnseat(character, CFrame.new(spawn.Position + Vector3.new(0, 3, 0)), "RequestTeleportToWarehouse")
+	--- Preserve `WarehouseSpawn` rotation so the player lands facing whichever way the pad
+	--- is authored to face (was discarded by `CFrame.new(<position>)` — same bug shape as
+	--- the Home / Town teleports). `CFrame.Rotation + Vector3` keeps the pad's LookVector
+	--- and just lifts Y by 3.
+	local targetCFrame = spawn.CFrame.Rotation + (spawn.Position + Vector3.new(0, 3, 0))
+	CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportToWarehouse")
+	--- Snap the client camera behind the character on the new LookVector. `PivotTo` does
+	--- not re-align the default follow camera's yaw on a live character, so without this
+	--- signal the player would end up staring at the back of their own head after landing.
+	self._remoteService:GetEvent(RemoteNames.TeleportHomeApplied):FireClient(player, targetCFrame)
 	return true
 end
 

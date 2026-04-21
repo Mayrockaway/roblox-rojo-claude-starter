@@ -716,8 +716,15 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			local bb = Instance.new("BillboardGui")
 			bb.Name = "TimerGui"
 			bb.Adornee = anchor
-			bb.Size = UDim2.new(0, 160, 0, 60)
-			bb.StudsOffsetWorldSpace = Vector3.new(0, 3, 0)
+			-- BillboardGui size is the *intrinsic* screen size before the engine
+			-- applies its distance / FOV scaling. The previous 160x60 made the
+			-- 2-line "Xm / Ym\nZs" text render at ~30 px per line at point-blank
+			-- and almost-illegibly small on phone / mid-range. Bumped to 320x120
+			-- so each line has ~60 px of vertical room before distance scaling.
+			-- Bigger box also means we lift `StudsOffsetWorldSpace.Y` so it does
+			-- not clip into the drill model.
+			bb.Size = UDim2.new(0, 320, 0, 120)
+			bb.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
 			bb.AlwaysOnTop = true
 			bb.Parent = anchor
 			local lbl = Instance.new("TextLabel")
@@ -728,7 +735,10 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			lbl.TextColor3 = Color3.fromRGB(255, 230, 100)
 			lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
 			lbl.TextStrokeTransparency = 0
-			lbl.Font = Enum.Font.GothamBold
+			-- Match the pump `HoloGui` `Info` label (and the rest of the on-world
+			-- billboards in this service) so the drill timer / depth meter reads
+			-- with the same font weight + character as the rest of the world UI.
+			lbl.Font = Enum.Font.LuckiestGuy
 			lbl.TextScaled = true
 			lbl.TextWrapped = false
 			lbl.TextTruncate = Enum.TextTruncate.None
@@ -780,16 +790,34 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			anchor:SetAttribute("MetersPerSecond", tonumber(entry.metersPerSecond) or 1)
 			anchor.Position = getActiveDrillTimerAnchorPosition(model, Vector3.new(px, py + 3, pz))
 
-			-- Strip stale TimerLabel padding/cap from labels created by an earlier
-			-- code path so existing live drills get the larger depth/timer text
-			-- without needing a server restart.
+			-- Live cleanup so existing in-progress drills pick up the current
+			-- depth/timer billboard sizing without a server restart:
+			--   * strip stale TimerLabel UIPadding / UITextSizeConstraint that
+			--     an earlier code path added (those clamped TextScaled tiny).
+			--   * resize the BillboardGui itself if it was created at the older
+			--     160x60 — the new 320x120 box is what gives the 2-line text
+			--     enough headroom to read on phone after distance scaling.
 			local timerBb = anchor:FindFirstChild("TimerGui")
+			if timerBb and timerBb:IsA("BillboardGui") then
+				if timerBb.Size ~= UDim2.new(0, 320, 0, 120) then
+					timerBb.Size = UDim2.new(0, 320, 0, 120)
+				end
+				if timerBb.StudsOffsetWorldSpace ~= Vector3.new(0, 4, 0) then
+					timerBb.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
+				end
+			end
 			local timerLbl = timerBb and timerBb:FindFirstChild("TimerLabel")
 			if timerLbl and timerLbl:IsA("TextLabel") then
 				local stalePad = timerLbl:FindFirstChildOfClass("UIPadding")
 				if stalePad then stalePad:Destroy() end
 				local staleConstraint = timerLbl:FindFirstChildOfClass("UITextSizeConstraint")
 				if staleConstraint then staleConstraint:Destroy() end
+				if not timerLbl.TextScaled then
+					timerLbl.TextScaled = true
+				end
+				if timerLbl.Font ~= Enum.Font.LuckiestGuy then
+					timerLbl.Font = Enum.Font.LuckiestGuy
+				end
 			end
 		end
 		if model then
@@ -1338,7 +1366,16 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				end
 			end
 			model:SetAttribute("WasConnected", isConnected)
-			-- Hologram text above pump: oil type + output rate
+			-- Hologram text above pump: oil type + output rate.
+			-- Only the chunk's center pump aggregates flow from drilled tiles
+			-- (`getFlowRate` short-circuits to `drill.flowBase` for everything
+			-- else). Showing the label on a regular drill froze it at exactly
+			-- `DrillBaseFlow * biomeMul * tierMul = 0.20 bbl/sec` no matter
+			-- what — the visible "stuck 0.20" report. Gate the entire block
+			-- (creation + per-tick text update) on `isCenterPump`, and fall
+			-- through to a cleanup pass that removes any stale `PumpHologram`
+			-- still attached to a regular drill from a previous deploy.
+			if drill.isCenterPump then
 			local holoName = "PumpHologram"
 			local holoPart = model:FindFirstChild(holoName)
 			if not holoPart then
@@ -1389,34 +1426,172 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				label.TextScaled = true
 				label.TextWrapped = false
 				label.TextTruncate = Enum.TextTruncate.None
-				label.TextTransparency = 0.05
-				label.TextStrokeTransparency = 0
-				label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+				label.TextTransparency = 0
+				-- Disable the engine's software stroke. The 4-pass offset stroke
+				-- on `LuckiestGuy` + `TextScaled` rendering visibly separates
+				-- from the body fill at distance / phone resolution, which
+				-- looks exactly like a duplicated label on the pump (it is
+				-- not — there is only ever one `Info` TextLabel here, see the
+				-- aggressive cleanup above). Replace with a single-pass
+				-- `UIStroke` (GPU, anti-aliased, scales cleanly).
+				label.TextStrokeTransparency = 1
 				label.ZIndex = 2
 				label.Parent = billboard
+				local labelStroke = Instance.new("UIStroke")
+				labelStroke.Name = "TextOutline"
+				labelStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+				labelStroke.Thickness = 1.5
+				labelStroke.Color = Color3.fromRGB(0, 0, 0)
+				labelStroke.Transparency = 0
+				labelStroke.LineJoinMode = Enum.LineJoinMode.Round
+				labelStroke.Parent = label
+			end
+			-- Cull any extra BillboardGui sitting on the same PumpHologram part
+			-- that isn't the canonical `HoloGui`. An older code path may have
+			-- created a second BillboardGui with a different name (or no
+			-- name), leaving two billboards adorned to the same anchor and
+			-- rendering on top of each other. Keep the first `HoloGui`, kill
+			-- everything else.
+			do
+				local seenCanonical = false
+				for _, child in ipairs(holoPart:GetChildren()) do
+					if child:IsA("BillboardGui") then
+						if child.Name == "HoloGui" and not seenCanonical then
+							seenCanonical = true
+						else
+							child:Destroy()
+						end
+					end
+				end
 			end
 			-- Update hologram text + reposition
 			local holoGui = holoPart:FindFirstChild("HoloGui")
-			local infoLabel = holoGui and holoGui:FindFirstChild("Info", true)
+			-- Aggressive cull of duplicate / stale labels on the pump hologram:
+			--   * Older code path parented an `Info` label inside the inner
+			--     `Backdrop` Frame; the current path parents it directly to
+			--     the `BillboardGui`. Long-lived servers ended up with BOTH
+			--     labels rendering on top of each other (the visible "stacked
+			--     text" on the pump hologram).
+			--   * Even within the canonical parent (the `BillboardGui`), there
+			--     can be more than one `Info` label from successive deploys.
+			--   * Any other `TextLabel` (any name) that an older path left in
+			--     the `BillboardGui` would also visibly stack.
+			-- Strategy: collect every `TextLabel` under the `HoloGui`. Keep
+			-- exactly one — preferring an `Info` already at the canonical
+			-- parent — and `Destroy()` the rest. Recreate one if none exist.
+			local infoLabel: TextLabel? = nil
+			if holoGui then
+				local allLabels: { TextLabel } = {}
+				for _, descendant in ipairs(holoGui:GetDescendants()) do
+					if descendant:IsA("TextLabel") then
+						table.insert(allLabels, descendant)
+					end
+				end
+				-- Pick the keeper: priority 1 = `Info` directly under `holoGui`,
+				-- priority 2 = any `Info` (anywhere), priority 3 = anything.
+				for _, lbl in ipairs(allLabels) do
+					if lbl.Name == "Info" and lbl.Parent == holoGui then
+						infoLabel = lbl
+						break
+					end
+				end
+				if not infoLabel then
+					for _, lbl in ipairs(allLabels) do
+						if lbl.Name == "Info" then
+							infoLabel = lbl
+							break
+						end
+					end
+				end
+				if not infoLabel and #allLabels > 0 then
+					infoLabel = allLabels[1]
+				end
+				-- Destroy everything else.
+				for _, lbl in ipairs(allLabels) do
+					if lbl ~= infoLabel then
+						lbl:Destroy()
+					end
+				end
+				-- Promote the keeper to the canonical parent + name if needed.
+				if infoLabel then
+					if infoLabel.Parent ~= holoGui then
+						infoLabel.Parent = holoGui
+					end
+					if infoLabel.Name ~= "Info" then
+						infoLabel.Name = "Info"
+					end
+				else
+					-- Nothing left at all — recreate a canonical label so the
+					-- pump still shows its rate this tick.
+					local newLabel = Instance.new("TextLabel")
+					newLabel.Name = "Info"
+					newLabel.Size = UDim2.fromScale(1, 1)
+					newLabel.BackgroundTransparency = 1
+					newLabel.Font = Enum.Font.LuckiestGuy
+					newLabel.TextScaled = true
+					newLabel.TextWrapped = false
+					newLabel.TextTruncate = Enum.TextTruncate.None
+					newLabel.TextTransparency = 0
+					newLabel.TextStrokeTransparency = 1
+					newLabel.ZIndex = 2
+					newLabel.Parent = holoGui
+					local newStroke = Instance.new("UIStroke")
+					newStroke.Name = "TextOutline"
+					newStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+					newStroke.Thickness = 1.5
+					newStroke.Color = Color3.fromRGB(0, 0, 0)
+					newStroke.Transparency = 0
+					newStroke.LineJoinMode = Enum.LineJoinMode.Round
+					newStroke.Parent = newLabel
+					infoLabel = newLabel
+				end
+			end
 			if infoLabel then
 				local topPos = getHighestBasePartTopPosition(model)
 				local topY2 = topPos and topPos.Y or model:GetPivot().Position.Y
 				holoPart.Position = Vector3.new(model:GetPivot().Position.X, topY2 + 3.6, model:GetPivot().Position.Z)
 
-				-- Strip stale font-shrink artifacts on labels created by an
-				-- earlier code path (UIPadding on the parent + a low-cap
-				-- UITextSizeConstraint) so existing live drills get the
+				-- Strip stale font-shrink artifacts on the surviving label
+				-- (UIPadding on a Backdrop parent + a low-cap
+				-- UITextSizeConstraint) so existing live pumps get the
 				-- distance-scaling TextScaled treatment without needing a
-				-- server restart.
-				local backdrop = infoLabel.Parent
-				if backdrop and backdrop:IsA("GuiObject") then
-					local stalePad = backdrop:FindFirstChildOfClass("UIPadding")
-					if stalePad then stalePad:Destroy() end
+				-- server restart. Also strip a stale `Backdrop` UIPadding even
+				-- though the canonical label no longer lives there.
+				if holoGui then
+					local backdrop = holoGui:FindFirstChild("Backdrop")
+					if backdrop and backdrop:IsA("GuiObject") then
+						local stalePad = backdrop:FindFirstChildOfClass("UIPadding")
+						if stalePad then stalePad:Destroy() end
+					end
 				end
 				local staleConstraint = infoLabel:FindFirstChildOfClass("UITextSizeConstraint")
 				if staleConstraint then staleConstraint:Destroy() end
-				if infoLabel:IsA("TextLabel") and not infoLabel.TextScaled then
+				if not infoLabel.TextScaled then
 					infoLabel.TextScaled = true
+				end
+				if infoLabel.Font ~= Enum.Font.LuckiestGuy then
+					infoLabel.Font = Enum.Font.LuckiestGuy
+				end
+				-- Migrate from engine soft stroke (which renders as a fake
+				-- doubled label on `LuckiestGuy + TextScaled`) to a single-pass
+				-- `UIStroke`. Idempotent on each tick.
+				if infoLabel.TextStrokeTransparency ~= 1 then
+					infoLabel.TextStrokeTransparency = 1
+				end
+				if infoLabel.TextTransparency ~= 0 then
+					infoLabel.TextTransparency = 0
+				end
+				local outline = infoLabel:FindFirstChild("TextOutline")
+				if not outline or not outline:IsA("UIStroke") then
+					if outline then outline:Destroy() end
+					outline = Instance.new("UIStroke")
+					outline.Name = "TextOutline"
+					outline.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+					outline.Thickness = 1.5
+					outline.Color = Color3.fromRGB(0, 0, 0)
+					outline.Transparency = 0
+					outline.LineJoinMode = Enum.LineJoinMode.Round
+					outline.Parent = infoLabel
 				end
 
 				local flowRate = getFlowRate(drill)
@@ -1435,6 +1610,13 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 					-- Low: white
 					infoLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 				end
+			end
+			else
+				-- Regular drill: nuke any leftover PumpHologram from the old
+				-- always-on code path so the misleading "0.20 bbl/sec" label
+				-- disappears from existing live drills without a server wipe.
+				local stale = model:FindFirstChild("PumpHologram")
+				if stale then stale:Destroy() end
 			end
 			-- Rare cosmetic variant: add a Highlight in the variant's color
 			local variant = drill.variant

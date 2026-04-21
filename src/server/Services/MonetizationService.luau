@@ -121,6 +121,16 @@ function MonetizationService:Start()
 		end
 		if wasPurchased then
 			self:_pushGamePassEffectsToClient(player)
+			-- Mirror the DevProduct receipt path: a successful GamePass buy
+			-- also suppresses the post-login Robux Shop auto-open. Idempotent
+			-- on already-dismissed profiles. See `_processReceipt` for the
+			-- DevProduct equivalent and `OilStateService:MarkRobuxShopAutoOpenDismissed`
+			-- for the persisted flag semantics.
+			if self._oilStateService and typeof(self._oilStateService.MarkRobuxShopAutoOpenDismissed) == "function" then
+				pcall(function()
+					self._oilStateService:MarkRobuxShopAutoOpenDismissed(player.UserId)
+				end)
+			end
 		end
 	end))
 
@@ -331,6 +341,18 @@ function MonetizationService:_processReceipt(receiptInfo)
 
 	self:_recordReceiptGranted(userId, purchaseId)
 	DevLog.log(string.format("[Monetization] Granted %s to user %d.", item.id, userId))
+
+	-- Suppress the post-login Robux Shop auto-open for this player from now
+	-- on. They've spent Robux at least once, so re-prompting the upsell on
+	-- every subsequent login is more nag than upsell. The shop is still
+	-- accessible via the HUD `RobuxShop` button at any time.
+	-- Idempotent on already-dismissed profiles, and pcall'd because a state
+	-- error must not block reporting the purchase as granted to the client.
+	if self._oilStateService and typeof(self._oilStateService.MarkRobuxShopAutoOpenDismissed) == "function" then
+		pcall(function()
+			self._oilStateService:MarkRobuxShopAutoOpenDismissed(userId)
+		end)
+	end
 
 	local player = Players:GetPlayerByUserId(userId)
 	if player then

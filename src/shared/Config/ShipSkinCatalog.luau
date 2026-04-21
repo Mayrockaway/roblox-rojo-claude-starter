@@ -147,14 +147,14 @@ local ShipSkinCatalog = {
 			displayName = "The Sparrow",
 			templateName = "PirateShip",
 			fxParticleScale = 1,
-			rarityDisplay = "Rare",
+			rarityDisplay = "Epic",
 			icon = "rbxassetid://80699672548624",
 		},
 		Ship5Skin = {
 			displayName = "Jet Duck",
 			templateName = "Ducky",
 			fxParticleScale = 1,
-			rarityDisplay = "Epic",
+			rarityDisplay = "Legendary",
 			icon = "rbxassetid://122817352338651",
 		},
 		WhaleSkin = {

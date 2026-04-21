@@ -189,6 +189,35 @@ function FtueService:_setStep(player: Player, step: string?)
 	if typeof(step) == "string" and step == FtueConfig.Step.WaitWarehouseSell then
 		self:_ensureAtWarehouse(player)
 	end
+	--- FTUE rejoin / death-respawn anchor: every transition **into** an active
+	--- FTUE step snapshots the player's HumanoidRootPart `CFrame` ~1s later
+	--- (so any step-driven teleport — `_ensureAtWarehouse`, the WaitShipment
+	--- boat-deck reseat — has had time to land before we capture). Transition
+	--- to `Done` / `nil` clears the anchor immediately so post-FTUE rejoins go
+	--- back to the ClaimPad. The `PlayerRemoving` snapshot in
+	--- `OilStateService` overrides this with the latest position right before
+	--- the flush, so the persisted value is always the most recent of
+	--- `step-entry` and `disconnect-time`.
+	if FtueConfig.Enabled == true and self._oilState and typeof((self._oilState :: any).SetFtueLastSpawn) == "function" then
+		if step == nil or step == FtueConfig.Step.Done then
+			(self._oilState :: any):SetFtueLastSpawn(player.UserId, nil)
+		else
+			local stepAtSchedule = step
+			task.delay(1.0, function()
+				if not player.Parent then
+					return
+				end
+				if player:GetAttribute(Constants.FtueStepAttribute) ~= stepAtSchedule then
+					return
+				end
+				local oilState = self._oilState
+				if not (oilState and typeof((oilState :: any).CaptureFtueSpawnSnapshot) == "function") then
+					return
+				end
+				(oilState :: any):CaptureFtueSpawnSnapshot(player.UserId)
+			end)
+		end
+	end
 	ftueDbg(
 		"_setStep uid=%d -> FtueStateUpdate(%s) SetAttribute(FtueStep)",
 		player.UserId,
@@ -826,15 +855,41 @@ end
 --- Safety net for character respawns mid-FTUE.
 ---
 --- * `WaitShipment`: dying mid-voyage strands the player at the default spawn
----   while their boat keeps sailing. Re-seat them on the boat (same path as
----   the HUD Ship button → `BoatDockService:TeleportOwnerToSeat`).
+---   while their boat keeps sailing. Drop them STANDING on the deck (boats no
+---   longer have seats — `BoatDockService:TeleportOwnerToSeat` keeps its name
+---   for callsite compatibility but resolves a stand CFrame via the rig's
+---   `deckAnchor` / `barrelStackRoot`, with the literal seat as last resort).
 --- * `WaitWarehouseSell`: dying after the boat lands strands them off-plot
 ---   with no way to reach the sell terminal. Force-teleport to
 ---   `WarehouseSpawn`.
 ---
+--- Anti-thrash: if the player has hit this safety net more than a couple of
+--- times in the last few seconds (almost always means they keep sliding off
+--- the moving deck and dying from the kill plane), back off and let them stay
+--- at home. The FTUE bumper UI will still tell them to dispatch again — better
+--- a recoverable stuck-at-home than a permanent death loop.
+---
 --- Hooked on `Player.CharacterAdded` for both joining and existing players,
 --- so this also covers rejoin (where `SyncFromOilState` sets the step
 --- attribute directly without going through `_setStep`).
+local _ftueRespawnReseatHistory = {} :: { [number]: { [number]: number } }
+local FTUE_RESEAT_WINDOW_SEC = 8
+local FTUE_RESEAT_MAX_IN_WINDOW = 2
+
+--- Tracks whether the **generic else-branch** rejoin restore (mid-FTUE
+--- `ftueLastSpawn` snapshot → HRP teleport) has already fired for this
+--- player **this server session**. Set once per UserId on the **first**
+--- post-PlayerAdded `CharacterAdded`; checked on every subsequent
+--- `CharacterAdded` so death-respawns DO NOT re-teleport the player to a
+--- stale saved CFrame (which is frequently mid-air over water — boats
+--- moved, rafts despawned, etc., causing a permanent death loop where the
+--- player drops into the kill plane every respawn). On death-respawn we
+--- want `PlotService:_teleportCharacterToOwnedPlot` (home ClaimPad) to be
+--- the final word. Cleared per-session only — fresh server = fresh
+--- restore. Leak per join is intentional and matches
+--- `_ftueRespawnReseatHistory` above.
+local _ftueRejoinRestoreDone = {} :: { [number]: boolean }
+
 function FtueService:_onCharacterSpawnedDuringFtue(player: Player)
 	if FtueConfig.Enabled ~= true then
 		return
@@ -851,6 +906,29 @@ function FtueService:_onCharacterSpawnedDuringFtue(player: Player)
 		if not boatDock or typeof(boatDock.TeleportOwnerToSeat) ~= "function" then
 			return
 		end
+
+		-- Anti-thrash check before the delayed re-teleport.
+		local now = os.clock()
+		local hist = _ftueRespawnReseatHistory[player.UserId]
+		if not hist then
+			hist = {}
+			_ftueRespawnReseatHistory[player.UserId] = hist
+		end
+		local kept: { number } = {}
+		for _, t in ipairs(hist) do
+			if now - t < FTUE_RESEAT_WINDOW_SEC then
+				table.insert(kept, t)
+			end
+		end
+		_ftueRespawnReseatHistory[player.UserId] = kept
+		if #kept >= FTUE_RESEAT_MAX_IN_WINDOW then
+			ftueDbg(
+				"WaitShipment respawn safety net BACKING OFF uid=%d (%d re-teleports in last %ds — likely sliding off seatless deck)",
+				player.UserId, #kept, FTUE_RESEAT_WINDOW_SEC
+			)
+			return
+		end
+
 		-- Wait briefly for the character to fully spawn (Humanoid + parts ready)
 		-- before teleporting; CharacterAdded fires before the model finishes
 		-- assembling, and `TeleportOwnerToSeat` requires a live character.
@@ -868,7 +946,8 @@ function FtueService:_onCharacterSpawnedDuringFtue(player: Player)
 			if not ok then
 				ftueDbg("WaitShipment respawn safety net failed uid=%d err=%s", player.UserId, tostring(err))
 			else
-				ftueDbg("WaitShipment respawn safety net teleported uid=%d back to boat", player.UserId)
+				table.insert(_ftueRespawnReseatHistory[player.UserId], os.clock())
+				ftueDbg("WaitShipment respawn safety net teleported uid=%d standing on boat deck", player.UserId)
 			end
 		end)
 	elseif step == FtueConfig.Step.WaitWarehouseSell then
@@ -879,6 +958,71 @@ function FtueService:_onCharacterSpawnedDuringFtue(player: Player)
 				return
 			end
 			self:_ensureAtWarehouse(player)
+		end)
+	else
+		--- Generic FTUE **rejoin-only** anchor restore. `PlotService`
+		--- always teleports the freshly-spawned character to the ClaimPad on
+		--- `CharacterAdded`; this handler runs from the same event but with a
+		--- 0.5s defer so the ClaimPad teleport (and the 0.3s safety
+		--- re-teleport inside `_teleportCharacterToOwnedPlot`) have time to
+		--- finish — our re-teleport then wins the final position. Skipped for
+		--- `WaitShipment` / `WaitWarehouseSell` (handled by the explicit
+		--- branches above with their own destinations) and post-FTUE players
+		--- (`GetFtueLastSpawnCFrame` early-outs on `ftueCompleted`).
+		---
+		--- **Death-respawn safety:** only fires on the FIRST CharacterAdded
+		--- for this session (`_ftueRejoinRestoreDone[uid]` flag). On
+		--- subsequent respawns (i.e. the player died and is being reloaded),
+		--- we let `PlotService` place them at the safe home ClaimPad and do
+		--- NOT re-apply the saved `ftueLastSpawn` snapshot — that snapshot is
+		--- frequently a now-invalid spot (boat sailed away, raft despawned,
+		--- intermediate dock cleared) and re-teleporting there drops the
+		--- player into open water → kill plane → die → respawn → loop. The
+		--- "rejoin to where I left off mid-FTUE" UX still works on session
+		--- start; only the death-loop cycle is broken.
+		if _ftueRejoinRestoreDone[player.UserId] then
+			return
+		end
+		local oilState = self._oilState
+		if not (oilState and typeof((oilState :: any).GetFtueLastSpawnCFrame) == "function") then
+			return
+		end
+		local target = (oilState :: any):GetFtueLastSpawnCFrame(player.UserId)
+		if not target then
+			return
+		end
+		local restoreStep = step
+		task.delay(0.5, function()
+			if not player.Parent then
+				return
+			end
+			if player:GetAttribute(Constants.FtueStepAttribute) ~= restoreStep then
+				return
+			end
+			local char = player.Character
+			if not char then
+				return
+			end
+			local hrp = char:FindFirstChild("HumanoidRootPart")
+			if not (hrp and hrp:IsA("BasePart")) then
+				return
+			end
+			-- Match `PlotService:_teleportCharacterToOwnedPlot`: assign HRP CFrame
+			-- directly (more reliable than PivotTo during character load) and zero
+			-- velocities so the player doesn't inherit any momentum from the
+			-- intermediate ClaimPad teleport.
+			hrp.CFrame = target
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			hrp.AssemblyAngularVelocity = Vector3.zero
+			-- Latch AFTER the teleport actually happens so a failed/cancelled
+			-- restore (player left, step changed mid-defer) doesn't burn the
+			-- one allowed restore for this session.
+			_ftueRejoinRestoreDone[player.UserId] = true
+			ftueDbg(
+				"FTUE rejoin restore uid=%d step=%s -> (%.1f, %.1f, %.1f) [latched: death-respawns will use ClaimPad]",
+				player.UserId, tostring(restoreStep),
+				target.Position.X, target.Position.Y, target.Position.Z
+			)
 		end)
 	end
 end

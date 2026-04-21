@@ -21,10 +21,22 @@ local RemoteNames = {
 	RequestPickupBarrel = "RequestPickupBarrel",
 	RequestTeleportToShip = "RequestTeleportToShip",
 	RequestTeleportHome = "RequestTeleportHome",
-	--- Server → one client: fired immediately after `OilShipmentService:_handleTeleportHome` pivots
-	--- the character. Payload is the target `CFrame` (post-lift) so the client can snap its camera
-	--- behind the character on the new LookVector — `PivotTo` does not re-align the default follow
-	--- camera's internal yaw, so it has to be reset client-side.
+	--- Server → one client: fired immediately after a server-driven teleport that changes the
+	--- character's facing direction. Payload is the **post-teleport** `CFrame` (i.e. the same
+	--- one passed to `PivotTo`) so the client can snap its camera behind the character on the
+	--- new LookVector. Required because `PivotTo` rotates the character but does NOT re-align
+	--- the default follow camera's internal yaw, so the camera ends up looking at the back of
+	--- the player's head until they manually drag.
+	---
+	--- Fired by:
+	---   * `OilShipmentService:_handleTeleportHome`         — Home button
+	---   * `OilShipmentService:_handleTeleportToDocks`      — BuyButton (Town)
+	---   * `WarehouseService:TryTeleportPlayerToWarehouse`  — SellButton (Warehouse)
+	---   * `PlotService:_teleportCharacterToOwnedPlot`      — initial spawn / respawn
+	---
+	--- Listener: `HudTeleportRouter` (`teleportHomeApplied.OnClientEvent` →
+	--- `snapCameraBehindCharacter`). Name kept as `TeleportHomeApplied` for wire-compat
+	--- with existing client; the role is generic camera-snap, not Home-specific.
 	TeleportHomeApplied = "TeleportHomeApplied",
 	RequestTeleportToDocks = "RequestTeleportToDocks",
 	RequestTeleportToHire = "RequestTeleportToHire",
@@ -58,8 +70,12 @@ local RemoteNames = {
 	-- One-shot equipment shop (Tools cloned into `Player.Backpack`; cash via `OilStateService`).
 	RequestPurchaseEquipment = "RequestPurchaseEquipment",
 	RequestEquipmentShopCatalog = "RequestEquipmentShopCatalog",
-	-- Server → all clients: rotating-shop stock map + refreshEndsAt. Fires on
-	-- every rotation refresh and on every successful purchase.
+	-- Server → all clients: rotating-shop stock map + `refreshEndsAt`. Fires on
+	-- every rotation refresh AND on every successful purchase. Payload includes
+	-- `reason = "rotation"` only on the periodic stock refresh — purchases pass
+	-- `reason = nil`. `ShopRefreshNotification.luau` shows a gold "shop
+	-- refreshed" hint on the shipment progress HUD only when `reason` is
+	-- `"rotation"` (not on per-purchase restocks).
 	EquipmentShopStockUpdate = "EquipmentShopStockUpdate",
 
 	-- Oilman NPC (`Workspace.Oilman.RodgerDodger`): batch-sells local plot

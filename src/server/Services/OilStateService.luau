@@ -213,12 +213,33 @@ local function buildDefaultPersisted()
 		ftueStep = if FtueConfig.Enabled then FtueConfig.Step.Intro else nil,
 		ftueCompleted = not FtueConfig.Enabled,
 		ftueDoneScreenAcknowledged = false,
+		--- One-shot suppression flag for the **post-login Robux Shop auto-open**
+		--- (`init.client.luau` opens `RobuxShop` once per session for any player
+		--- whose FTUE is complete and who hasn't bought a Robux item yet — the
+		--- Starter Pack upsell). Flips to `true` the first time
+		--- `MonetizationService` records a successful purchase
+		--- (`_processReceipt` for DevProducts, `PromptGamePassPurchaseFinished`
+		--- for GamePasses). Once true, the auto-open never fires again for this
+		--- profile, so a paying customer is not nagged on every login.
+		robuxShopAutoOpenDismissed = false,
 		--- Persisted **sub-step** within `WaitDocksUpgradeShip` so a player who quits
 		--- mid-leg (after talking to the dockman / mid-cargo-buy / about to close
 		--- the modal) resumes on the **same** dock ship beam + UI pointer they last
 		--- saw. Values: `"Dockman"` | `"CargoBuy"` | `"CloseModal"`. `nil` outside
 		--- that step. Mirrors `Constants.FtueDocksUpgradeSubStepAttribute` 1-to-1.
 		ftueDocksUpgradeSubStep = nil :: string?,
+		--- Persisted **rejoin / death-respawn anchor** while the player is mid-FTUE.
+		--- Captured (a) ~1s after every `_setStep` transition (post-step-driven
+		--- teleports settle), and (b) on `PlayerRemoving` right before the profile
+		--- flushes — so a disconnect-mid-leg or in-session death drops the player
+		--- back where they were instead of the `ClaimPad`. Cleared the moment the
+		--- FTUE reaches `Done` (or is otherwise nil) so post-FTUE rejoins go to
+		--- `ClaimPad` as before. Stored as raw position + Y-axis yaw (radians) —
+		--- pitch / roll are intentionally dropped to avoid spawning the character
+		--- ragdolled. See `OilStateService:SetFtueLastSpawn` /
+		--- `:GetFtueLastSpawnCFrame` for read/write, and `FtueService` for the
+		--- step-change capture + character-spawn restore wiring.
+		ftueLastSpawn = nil :: { x: number, y: number, z: number, yaw: number }?,
 	}
 end
 
@@ -554,7 +575,7 @@ function OilStateService:Init(remoteService, plotService)
 	self._boatDockService = nil :: any
 	self._skinChangedHandler = nil :: ((number, string) -> ())?
 	self._stateReadyForTimersCallback = nil :: ((number, { any }) -> ())?
-	self._dataStore = nil
+		self._dataStore = nil
 	self._devSkipSaveOnNextDrop = {} :: { [number]: boolean }
 	--- Set by `init.server` after `MonetizationService` is required. Used by
 	--- `AddCash` to apply the **DoubleEarnings** GamePass multiplier to every
@@ -564,15 +585,15 @@ function OilStateService:Init(remoteService, plotService)
 	--- against (Robux currency grant).
 	self._monetizationService = nil :: any
 	local okStore, storeOrErr = pcall(function()
-		return DataStoreService:GetDataStore(DATASTORE_NAME)
-	end)
+			return DataStoreService:GetDataStore(DATASTORE_NAME)
+		end)
 	if okStore then
-		self._dataStore = storeOrErr
-	else
-		self._dataStore = nil
+			self._dataStore = storeOrErr
+		else
+			self._dataStore = nil
 		warn("[OilStateService] DataStore unavailable (enable API access in Studio if needed); using memory fallback:", storeOrErr)
+		end
 	end
-end
 
 function OilStateService:SetFtueService(ftueService: any)
 	_ftueService = ftueService
@@ -652,6 +673,77 @@ function OilStateService:SetFtueDoneScreenAcknowledged(userId: number, acknowled
 	self:_markDirty(userId)
 end
 
+--- Persist (or clear with `nil`) the player's FTUE rejoin anchor.
+--- Pass a `CFrame` to snapshot — only position + Y-axis yaw are stored so we
+--- never spawn the player ragdolled (pitch/roll dropped). `nil` clears the
+--- anchor (called on `Done`/cancel so post-FTUE rejoins go back to ClaimPad).
+--- Reads/writes are no-ops if the player has no loaded state — silently safe
+--- to call from `_setStep` even mid-load.
+function OilStateService:SetFtueLastSpawn(userId: number, cframe: CFrame?)
+	local state = self._statesByUserId[userId]
+	if not state then
+		return
+	end
+	if cframe == nil then
+		if (state :: any).ftueLastSpawn == nil then
+			return
+		end
+		(state :: any).ftueLastSpawn = nil
+		self:_markDirty(userId)
+		return
+	end
+	local _, yaw, _ = cframe:ToEulerAnglesYXZ()
+	local pos = cframe.Position
+	;(state :: any).ftueLastSpawn = {
+		x = pos.X,
+		y = pos.Y,
+		z = pos.Z,
+		yaw = yaw,
+	}
+	self:_markDirty(userId)
+end
+
+--- Returns the persisted FTUE rejoin CFrame (position + yaw only) or nil if
+--- the player has no anchor or is no longer mid-FTUE. Consumers
+--- (`PlotService` / `FtueService`) use this to override the default ClaimPad
+--- teleport on the first character spawn after rejoin and on in-session FTUE
+--- death-respawns.
+function OilStateService:GetFtueLastSpawnCFrame(userId: number): CFrame?
+	local state = self._statesByUserId[userId]
+	if not state then
+		return nil
+	end
+	if (state :: any).ftueCompleted == true then
+		return nil
+	end
+	local snap = (state :: any).ftueLastSpawn
+	if typeof(snap) ~= "table" then
+		return nil
+	end
+	return CFrame.new(snap.x, snap.y, snap.z) * CFrame.fromEulerAnglesYXZ(0, snap.yaw, 0)
+end
+
+--- Look up the player by `userId`, read their HumanoidRootPart `CFrame`, and
+--- persist it as the FTUE rejoin anchor. No-op (and does **not** clear the
+--- existing anchor) when the character / HRP isn't available — that way a
+--- mid-respawn `PlayerRemoving` falls back to the previous step-change
+--- snapshot rather than wiping it.
+function OilStateService:CaptureFtueSpawnSnapshot(userId: number)
+	local player = Players:GetPlayerByUserId(userId)
+	if not player then
+		return
+	end
+	local char = player.Character
+	if not char then
+		return
+	end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not (hrp and hrp:IsA("BasePart")) then
+		return
+	end
+	self:SetFtueLastSpawn(userId, hrp.CFrame)
+end
+
 --- Persist the dock-ship sub-step so a player who quits mid-leg rejoins on the
 --- **same** beam / pointer they last saw. Valid values:
 ---   * `Dockman` — world beam to the dockman (no UI pointer)
@@ -719,6 +811,20 @@ function OilStateService:Start()
 	end))
 
 	table.insert(self._connections, Players.PlayerRemoving:Connect(function(player)
+		--- Snapshot the FTUE rejoin anchor **before** flushing so a player who
+		--- disconnects mid-leg lands back where they were on next join (instead
+		--- of the ClaimPad). No-op when the character has already torn down or
+		--- when the player is post-FTUE (`SetFtueLastSpawn` early-outs there).
+		--- Done here (vs. `FtueService:PlayerRemoving`) so we don't depend on
+		--- listener connect-order between services — the very next line is the
+		--- flush, so the snapshot is guaranteed to be in the persisted blob.
+		local stepAttr = player:GetAttribute(Constants.FtueStepAttribute)
+		if FtueConfig.Enabled == true
+			and typeof(stepAttr) == "string"
+			and stepAttr ~= FtueConfig.Step.Done
+		then
+			self:CaptureFtueSpawnSnapshot(player.UserId)
+		end
 		self:_flushAndDropUser(player.UserId)
 	end))
 
@@ -1127,6 +1233,16 @@ function OilStateService:GetStateForClient(userId: number)
 			cols = OilConfig.Chunks.GridCols,
 			startingCenterSize = OilConfig.Chunks.StartingCenterSize,
 		},
+		--- Tutorial completion flag. Mirrors `state.ftueCompleted` so the
+		--- client can gate features that should only run after the tutorial
+		--- (currently: the post-login Robux Shop auto-open in
+		--- `init.client.luau`). Always boolean (`true`/`false`) — never `nil`.
+		ftueCompleted = (state :: any).ftueCompleted == true,
+		--- Suppression flag for the post-login Robux Shop auto-open. The
+		--- client only auto-opens the shop when this is `false`. Server
+		--- flips it to `true` on the first successful Robux purchase via
+		--- `MonetizationService` → `OilStateService:MarkRobuxShopAutoOpenDismissed`.
+		robuxShopAutoOpenDismissed = (state :: any).robuxShopAutoOpenDismissed == true,
 		--- Per-itemId stack counts of single-use run-upgrades the player
 		--- currently owns. Drives the "x N" badge on `RunUpgradeCard*` in
 		--- `ShipOilPanelGui` and lets the panel disable / hide the buy CTA
@@ -1397,8 +1513,8 @@ local function pointInsideChunkOnPlot(plot: Model?, chunk, x: number, z: number)
 					if d2 < nearestDist then
 						nearestDist = d2
 						nearest = t
-					end
-				end
+		end
+	end
 			end
 		end
 	end
@@ -1433,8 +1549,8 @@ local function resolveTileAt(plot: Model, chunk, x: number, z: number): (string?
 				if d2 < nearestDist then
 					nearestDist = d2
 					nearest = t
-				end
 			end
+		end
 		end
 		if nearest then
 			local key = nearest.Name
@@ -1529,13 +1645,13 @@ function OilStateService:_validateTilePlacement(userId: number, payload)
 			-- Fallback: highest T## surface in section (legacy flat layout).
 			local bestTop: number? = nil
 			for _, d in ipairs(sectionModel:GetDescendants()) do
-				if d:IsA("BasePart") and d.Name:match("^T%d%d$") then
-					local surface = d.Position.Y + d.Size.Y / 2
+			if d:IsA("BasePart") and d.Name:match("^T%d%d$") then
+				local surface = d.Position.Y + d.Size.Y / 2
 					if bestTop == nil or surface > bestTop then
 						bestTop = surface
-					end
 				end
 			end
+		end
 			if bestTop then
 				y = bestTop
 			end
@@ -2108,13 +2224,13 @@ function OilStateService:DrainDrillBuffer(userId: number, drillId: number): numb
 		local cap = tankCapacity(state, tier)
 		local tierSpace = cap - (state.oilByTier[tier] or 0)
 		if tierSpace > 0 then
-			local amt = floorPositive(drill.localBuffer[tier] or 0)
+		local amt = floorPositive(drill.localBuffer[tier] or 0)
 			local take = math.min(tierSpace, amt)
-			if take > 0 then
-				drill.localBuffer[tier] -= take
-				state.oilByTier[tier] += take
-				state.totalOil += take
-				drained += take
+		if take > 0 then
+			drill.localBuffer[tier] -= take
+			state.oilByTier[tier] += take
+			state.totalOil += take
+			drained += take
 			end
 		end
 	end
@@ -2171,7 +2287,7 @@ function OilStateService:ApplyProduction(userId: number, additionsByTier): numbe
 		local cap = tankCapacity(state, tier)
 		local space = cap - (state.oilByTier[tier] or 0)
 		if space > 0 and integersToAdd[tier] > 0 then
-			local take = math.min(space, integersToAdd[tier])
+		local take = math.min(space, integersToAdd[tier])
 			state.oilByTier[tier] += take
 			state.totalOil += take
 			added += take
@@ -2447,9 +2563,18 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		ftueStep = if FtueConfig.Enabled then FtueConfig.Step.Intro else nil,
 		ftueCompleted = not FtueConfig.Enabled,
 		ftueDoneScreenAcknowledged = false,
+		--- See `buildDefaultPersisted` — runtime mirror of the Robux-shop
+		--- post-login auto-open suppression flag. Flips on the first
+		--- successful Robux purchase (see `MarkRobuxShopAutoOpenDismissed`).
+		robuxShopAutoOpenDismissed = false,
 		--- See `buildDefaultPersisted` — runtime mirror of the persisted `WaitDocksUpgradeShip`
 		--- sub-step (`Dockman` / `CargoBuy` / `CloseModal`) so rejoin restores the right beam + pointer.
 		ftueDocksUpgradeSubStep = nil :: string?,
+		--- See `buildDefaultPersisted` — runtime mirror of the persisted FTUE rejoin
+		--- anchor. Read by `PlotService` / `FtueService` to override the default
+		--- ClaimPad teleport on the **first** character spawn after rejoin and on
+		--- in-session FTUE death-respawns.
+		ftueLastSpawn = nil :: { x: number, y: number, z: number, yaw: number }?,
 	}
 
 	local persisted = self:_loadPersistedProfile(userId)
@@ -2599,8 +2724,8 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 					--- Old bug: `ftueCompleted` was true while still on the Done modal — force modal to show.
 					if pFtue.ftueCompleted == true then
 						state.ftueCompleted = false
-					end
-				end
+			end
+		end
 			else
 				state.ftueCompleted = false
 			end
@@ -2622,6 +2747,17 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		(state :: any).ftueDoneScreenAcknowledged = (state.ftueCompleted == true and typeof((state :: any).ftueStep) ~= "string")
 	end
 
+	-- Robux-shop auto-open suppression (persisted). Legacy saves without the key
+	-- read as `nil`, which we treat as "not yet dismissed" so existing profiles
+	-- get the upsell on next login (intentional — they may not have seen the
+	-- Starter Pack yet). The flag flips to `true` on first successful Robux
+	-- purchase via `MarkRobuxShopAutoOpenDismissed`.
+	if (pFtue :: any).robuxShopAutoOpenDismissed == true then
+		(state :: any).robuxShopAutoOpenDismissed = true
+	else
+		(state :: any).robuxShopAutoOpenDismissed = false
+	end
+
 	-- Restore the persisted dock-ship sub-step (only valid while ftueStep ==
 	-- WaitDocksUpgradeShip; otherwise force-clear so a stale value can't bleed
 	-- through if the step was advanced from a save flush in between).
@@ -2635,6 +2771,29 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 			(state :: any).ftueDocksUpgradeSubStep = sub
 		else
 			(state :: any).ftueDocksUpgradeSubStep = nil
+		end
+	end
+
+	-- Restore the persisted FTUE rejoin anchor (only valid while the player is
+	-- still mid-FTUE; ignored once `ftueCompleted == true` so finished players
+	-- spawn at ClaimPad even if a stale snapshot somehow survived a flush).
+	do
+		local snap = (pFtue :: any).ftueLastSpawn
+		local mid = (state :: any).ftueCompleted ~= true and typeof((state :: any).ftueStep) == "string"
+		if mid and typeof(snap) == "table"
+			and typeof(snap.x) == "number"
+			and typeof(snap.y) == "number"
+			and typeof(snap.z) == "number"
+			and typeof(snap.yaw) == "number"
+		then
+			(state :: any).ftueLastSpawn = {
+				x = snap.x,
+				y = snap.y,
+				z = snap.z,
+				yaw = snap.yaw,
+			}
+		else
+			(state :: any).ftueLastSpawn = nil
 		end
 	end
 
@@ -2899,7 +3058,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 								local chunkIdResolved = chunk.chunkId
 								local tk = tileKeyResolved or tileKeyFromCell
 								state.activeDrills[drillId] = {
-									drillId = drillId,
+						drillId = drillId,
 									chunkId = chunkIdResolved,
 									tier = tier,
 									tileKey = tk,
@@ -2915,9 +3074,9 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 									depthMeters = depthMeters,
 									metersPerSecond = metersPerSecond,
 								}
-							end
-						end
-					end
+				end
+			end
+		end
 				end
 			end
 		end
@@ -3048,8 +3207,8 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 									}
 									state.activeDrillCount += 1
 									restored += 1
-								end
-							end
+			end
+		end
 						end
 					end
 				end
@@ -3067,7 +3226,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 	for aid, _ in pairs(state.activeDrills) do
 		if typeof(aid) == "number" then
 			state.nextDrillId = math.max(state.nextDrillId, aid + 1)
-		end
+	end
 	end
 
 	state.totalOil = sumTierMap(state.oilByTier)
@@ -3101,8 +3260,8 @@ end
 function OilStateService:_flushAndDropUser(userId: number)
 	if self._devSkipSaveOnNextDrop[userId] then
 		self._devSkipSaveOnNextDrop[userId] = nil
-		self._statesByUserId[userId] = nil
-		self._dirtyByUserId[userId] = nil
+	self._statesByUserId[userId] = nil
+	self._dirtyByUserId[userId] = nil
 		return
 	end
 	-- Always persist latest state when removing session data (PlayerRemoving / plot release),
@@ -3170,15 +3329,15 @@ function OilStateService:_saveUser(userId: number, force: boolean?, persistRegar
 		if attempt > 1 and self._dataStore then
 			DataStoreWriteGate.waitForWriteBudget(2.8)
 			task.wait(0.45)
-		end
+	end
 
-		local ok, err = pcall(function()
-			self._dataStore:SetAsync(key, payload)
-		end)
+	local ok, err = pcall(function()
+		self._dataStore:SetAsync(key, payload)
+	end)
 		lastErr = err
-		if ok then
+	if ok then
 			self._lastOilDataStoreSaveClock[userId] = os.clock()
-			self._dirtyByUserId[userId] = nil
+		self._dirtyByUserId[userId] = nil
 			return
 		end
 		if self._dataStore ~= nil and isDatastoreStudioAccessError(err) then
@@ -3247,6 +3406,7 @@ function OilStateService:_serializeState(state)
 	end
 	(persisted :: any).ftueCompleted = (state :: any).ftueCompleted == true
 	(persisted :: any).ftueDoneScreenAcknowledged = (state :: any).ftueDoneScreenAcknowledged == true
+	(persisted :: any).robuxShopAutoOpenDismissed = (state :: any).robuxShopAutoOpenDismissed == true
 	-- Only persist the dock-ship sub-step while we're actually in that leg.
 	-- Anywhere else it's nil and `_applyPersistedIntoState` re-clears anyway.
 	if (state :: any).ftueStep == FtueConfig.Step.WaitDocksUpgradeShip then
@@ -3258,6 +3418,21 @@ function OilStateService:_serializeState(state)
 		end
 	else
 		(persisted :: any).ftueDocksUpgradeSubStep = nil
+	end
+	-- FTUE rejoin anchor: only persist while still mid-FTUE so finished players
+	-- never carry a stale snapshot back into a fresh post-FTUE session.
+	do
+		local snap = (state :: any).ftueLastSpawn
+		if (state :: any).ftueCompleted ~= true and typeof(snap) == "table" then
+			(persisted :: any).ftueLastSpawn = {
+				x = snap.x,
+				y = snap.y,
+				z = snap.z,
+				yaw = snap.yaw,
+			}
+		else
+			(persisted :: any).ftueLastSpawn = nil
+		end
 	end
 	persisted.storageCapacity = math.max(1, floorPositive(state.storageCapacity))
 	persisted.oilByTier = copyTierMap(state.oilByTier)
@@ -3418,6 +3593,32 @@ end
 --- Idempotent — called by `MonetizationService` on a verified DevProduct
 --- receipt. Returns (didChange, errCode). Caller is responsible for
 --- `PushState`/auto-equip side effects so this stays a pure data mutation.
+--- Flips the persisted `robuxShopAutoOpenDismissed` flag to `true` so the
+--- post-login Robux Shop auto-open never fires again for this player.
+--- Idempotent: re-calling on an already-dismissed profile is a cheap no-op
+--- (no dirty-mark / re-push). Called from `MonetizationService` on:
+---   * `_processReceipt` after `_recordReceiptGranted` (DevProducts)
+---   * `PromptGamePassPurchaseFinished` when `wasPurchased == true` (GamePasses)
+--- Returns `true` if the flag was newly flipped this call (and a state push
+--- was queued), `false` otherwise (no state, or already dismissed).
+function OilStateService:MarkRobuxShopAutoOpenDismissed(userId: number): boolean
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false
+	end
+	if (state :: any).robuxShopAutoOpenDismissed == true then
+		return false
+	end
+	(state :: any).robuxShopAutoOpenDismissed = true
+	self:_markDirty(userId)
+	-- Push so any client-side listeners (currently none, but trivial future-proofing)
+	-- see the new value without waiting for the next snapshot trigger.
+	pcall(function()
+		self:PushState(userId)
+	end)
+	return true
+end
+
 function OilStateService:GrantShipSkin(userId: number, skinId: string): (boolean, string)
 	local state = self._statesByUserId[userId]
 	if not state then
@@ -3509,8 +3710,8 @@ function OilStateService:TryUpgradeShipCapacity(userId: number): (boolean, strin
 		end
 	end
 	if not ftueFree then
-		if not self:TrySpendCash(userId, cost) then
-			return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to upgrade capacity.", cost)
+	if not self:TrySpendCash(userId, cost) then
+		return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to upgrade capacity.", cost)
 		end
 	else
 		(state :: any).ftueFreeCargoCapacityUpgradeUsed = true

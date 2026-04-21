@@ -21,6 +21,7 @@ local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 local BoatCollisionContract = require(script.Parent.Parent.Utils.BoatCollisionContract)
 local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
 local ShipRig = require(Shared:WaitForChild("Utils"):WaitForChild("ShipRig"))
+local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
 local BoatDockService = {}
 
@@ -129,10 +130,32 @@ end
 
 export type BoatState = "idle" | "sailing" | "cooldown" | "swapping"
 
+--- Lazy-cached lookup for the `TeleportHomeApplied` `RemoteEvent`. Populated on first
+--- ship-teleport (well after `RemoteService:Init()` has built the `Remotes` folder), then
+--- reused for every subsequent fire so the hot path is a field read, not a folder lookup.
+--- See `RemoteNames.TeleportHomeApplied` doc block for why ship teleports need the snap.
+function BoatDockService:_getCameraSnapEvent(): RemoteEvent?
+	if self._cameraSnapEvent and self._cameraSnapEvent.Parent then
+		return self._cameraSnapEvent
+	end
+	if not self._remoteService then
+		return nil
+	end
+	local ok, ev = pcall(function()
+		return self._remoteService:GetEvent(RemoteNames.TeleportHomeApplied)
+	end)
+	if ok and ev then
+		self._cameraSnapEvent = ev
+		return ev
+	end
+	return nil
+end
+
 function BoatDockService:Init(remoteService, oilStateService)
 	self._remoteService = remoteService
 	self._oilStateService = oilStateService
 	self._connections = {} :: { RBXScriptConnection }
+	self._cameraSnapEvent = nil :: RemoteEvent?
 	self._slotsByIndex = {} :: { [number]: BasePart }
 	self._slotOwner = {} :: { [number]: number? }        -- slotIndex -> userId
 	self._slotByUser = {} :: { [number]: number? }       -- userId -> slotIndex
@@ -336,7 +359,19 @@ local function resolveBoatSupportStandCFrame(boat: Model, desiredCFrame: CFrame)
 	return CFrame.lookAt(snappedPos, snappedPos + desiredCFrame.LookVector)
 end
 
-local function teleportCharacterToBoatDeck(character: Model, boat: Model, targetCFrame: CFrame, logLabel: string)
+--- Optional `snapPlayer` + `snapEvent`: fired post-teleport with the **actual** support CFrame
+--- the character was placed at. Required because `PivotTo` doesn't re-align the default follow
+--- camera's yaw — without this the player ends up facing the back of their own head when they
+--- land on the deck. Same camera-snap protocol as the Home / Town / Warehouse teleports
+--- (`RemoteNames.TeleportHomeApplied` → `HudTeleportRouter.snapCameraBehindCharacter`).
+local function teleportCharacterToBoatDeck(
+	character: Model,
+	boat: Model,
+	targetCFrame: CFrame,
+	logLabel: string,
+	snapPlayer: Player?,
+	snapEvent: RemoteEvent?
+)
 	local seat = findSeatForBoat(boat)
 	local hum = character:FindFirstChildOfClass("Humanoid")
 	local seatWasDisabled = false
@@ -355,6 +390,14 @@ local function teleportCharacterToBoatDeck(character: Model, boat: Model, target
 
 	local supportCFrame = resolveBoatSupportStandCFrame(boat, targetCFrame)
 	CharacterTeleport.teleportWithUnseat(character, supportCFrame, logLabel)
+
+	if snapPlayer and snapEvent then
+		--- Wrap in pcall: a missing `Remotes` folder during a fresh boot or a player
+		--- leaving between resolve and fire shouldn't cancel the boat-side teardown.
+		pcall(function()
+			snapEvent:FireClient(snapPlayer, supportCFrame)
+		end)
+	end
 
 	if hum and seat then
 		task.delay(0.15, function()
@@ -912,9 +955,11 @@ end
 --- Owner teleport ---
 
 --- Teleport `caller` onto the DECK of `targetUserId`'s active voyage boat.
---- Does NOT re-seat — the target player owns the DeckSeat. Caller lands a few
---- studs above the seat and can walk around the deck. Returns `(false, err)`
---- if the target isn't actively sailing.
+--- Boats no longer use seats — `resolveOwnerStandCFrame` walks the rig anchors
+--- (deckAnchor → seat → barrelStackRoot) and we only fall back to a literal
+--- seat as a last resort. Caller lands standing on the deck. Returns
+--- `(false, err)` if the target isn't actively sailing or no anchor at all
+--- can be resolved.
 function BoatDockService:TeleportSpectatorToBoat(caller: Player, targetUserId: number): (boolean, string?)
 	if self._stateByUser[targetUserId] ~= "sailing" then
 		return false, "TARGET_NOT_SAILING"
@@ -923,27 +968,34 @@ function BoatDockService:TeleportSpectatorToBoat(caller: Player, targetUserId: n
 	if not boat then
 		return false, "TARGET_BOAT_MISSING"
 	end
-	local seat = findSeatForBoat(boat)
-	if not seat then
-		return false, "SEAT_MISSING"
-	end
 	local character = caller.Character
 	if not character then
 		return false, "NO_CHARACTER"
 	end
 	local standCFrame = resolveOwnerStandCFrame(boat)
 	if not standCFrame then
+		local seat = findSeatForBoat(boat)
+		if not seat then
+			return false, "DECK_ANCHOR_MISSING"
+		end
 		standCFrame = seat.CFrame + Vector3.new(4, 4, -5)
 	end
 	teleportCharacterToBoatDeck(
 		character,
 		boat,
 		standCFrame,
-		string.format("BoatDock:TeleportSpectatorToBoat target=%d", targetUserId)
+		string.format("BoatDock:TeleportSpectatorToBoat target=%d", targetUserId),
+		caller,
+		self:_getCameraSnapEvent()
 	)
 	return true, nil
 end
 
+--- Boats no longer have seats; this teleports the owner STANDING onto the
+--- deck. Name kept for compatibility (FtueService, OilShipmentService,
+--- HudTeleportRouter, etc. all call `TeleportOwnerToSeat`). Resolution
+--- order: `resolveOwnerStandCFrame` (deckAnchor → seat → barrelStackRoot) →
+--- literal seat fallback (only if a Tanker template still has one).
 function BoatDockService:TeleportOwnerToSeat(player: Player): (boolean, string?)
 	local boat = self._boatsByUser[player.UserId]
 	local st = self._stateByUser[player.UserId]
@@ -963,11 +1015,18 @@ function BoatDockService:TeleportOwnerToSeat(player: Player): (boolean, string?)
 	if not standCFrame then
 		local seat = findSeatForBoat(boat)
 		if not seat then
-			return false, "SEAT_MISSING"
+			return false, "DECK_ANCHOR_MISSING"
 		end
 		standCFrame = seat.CFrame + Vector3.new(4, 4, -5)
 	end
-	teleportCharacterToBoatDeck(character, boat, standCFrame, "BoatDock:TeleportOwnerToBoat")
+	teleportCharacterToBoatDeck(
+		character,
+		boat,
+		standCFrame,
+		"BoatDock:TeleportOwnerToBoat",
+		player,
+		self:_getCameraSnapEvent()
+	)
 	return true, nil
 end
 

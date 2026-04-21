@@ -465,6 +465,84 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 		end)
 	end
 
+	-- Cosmetic strait-event NPCs (Coast Guard / Pirate ships + officers / pirates spawned on the
+	-- client by `StraitWaypointWorldFx`) MUST NOT collide with the player or anything else. They
+	-- are visual props animated via `PivotTo`; any residual `CanCollide=true` on body parts would
+	-- physics-eject the player from the NPC's volume each step (observed: HRP being shoved
+	-- ~20 studs/s toward officers parked in inspection zones, even with per-frame `CanCollide=false`
+	-- sweeps, because the engine has at least one contact frame per Heartbeat to apply the eject).
+	--
+	-- IMPORTANT: `PhysicsService:RegisterCollisionGroup` and `:CollisionGroupSetCollidable` are
+	-- SERVER-only writes — they silently no-op on the client. Registering here from the server
+	-- causes Roblox to replicate the group + collidable matrix to every client, so when the
+	-- StraitWaypointWorldFx client code tags cloned NPC parts with this group, the engine
+	-- enforces the no-collide rule regardless of `CanCollide` state.
+	local STRAIT_FX_NPC_GROUP = "StraitWaypointFxNpc"
+	local function safeRegister(name: string)
+		pcall(function()
+			PhysicsService:RegisterCollisionGroup(name)
+		end)
+	end
+	-- Idempotent registers: BoatDockService may not have initialized yet, but
+	-- `CollisionGroupSetCollidable` requires both groups to exist.
+	safeRegister(STRAIT_FX_NPC_GROUP)
+	safeRegister("ShipmentShip")
+	safeRegister("MarinaDock")
+	safeRegister("MapDecor")
+	local function noCollidePair(other: string)
+		pcall(function()
+			PhysicsService:CollisionGroupSetCollidable(STRAIT_FX_NPC_GROUP, other, false)
+		end)
+	end
+	noCollidePair("Default")
+	noCollidePair("Players")
+	noCollidePair("ShipmentShip")
+	noCollidePair("MarinaDock")
+	noCollidePair("MapDecor")
+	noCollidePair(STRAIT_FX_NPC_GROUP)
+
+	-- Belt-and-suspenders against residual cosmetic-NPC pushes during a
+	-- strait event cinematic. With only the rule above, the player character
+	-- in `Default` should already be no-collide vs `StraitWaypointFxNpc`. In
+	-- practice (logged 2026-04-18 CG run), HRP velocity still spiked to
+	-- 16-24 studs/s in bursts every ~1s while officers were parked in
+	-- inspection zones near the player — i.e. *some* contact pair was still
+	-- being resolved each physics step (likely a cosmetic part that briefly
+	-- slipped the per-frame ghost sweep, or whose CollisionGroup write on
+	-- the client raced replication of `STRAIT_FX_NPC_GROUP` registration).
+	--
+	-- We add a dedicated `PLAYER_IN_STRAIT_EVENT_GROUP` group and during
+	-- the freeze (`_freezeShipForStraitEventCinematic`) the SERVER reassigns
+	-- the owner player's character body parts into it. Server writes to
+	-- `BasePart.CollisionGroup` are authoritative and replicate to every
+	-- client (including the local player simulating their own character),
+	-- so the no-collide rule is enforced at the engine level regardless of
+	-- whether the cosmetic-NPC parts are correctly tagged. The new group
+	-- collides with everything else by default (decks, world, other players)
+	-- so walking on the deck still works.
+	local PLAYER_IN_STRAIT_EVENT_GROUP = "PlayerInStraitEvent"
+	safeRegister(PLAYER_IN_STRAIT_EVENT_GROUP)
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(PLAYER_IN_STRAIT_EVENT_GROUP, STRAIT_FX_NPC_GROUP, false)
+	end)
+	self._playerInStraitEventGroup = PLAYER_IN_STRAIT_EVENT_GROUP
+
+	-- Verification: confirm registration + the critical no-collide pair so
+	-- we can tell from a log whether the engine has the rule before any
+	-- strait event fires. `pcall` because some Studio reload paths can race.
+	pcall(function()
+		local fxRegistered = PhysicsService:IsCollisionGroupRegistered(STRAIT_FX_NPC_GROUP)
+		local pieRegistered = PhysicsService:IsCollisionGroupRegistered(PLAYER_IN_STRAIT_EVENT_GROUP)
+		local fxVsDefault = PhysicsService:CollisionGroupsAreCollidable(STRAIT_FX_NPC_GROUP, "Default")
+		local pieVsFx = PhysicsService:CollisionGroupsAreCollidable(PLAYER_IN_STRAIT_EVENT_GROUP, STRAIT_FX_NPC_GROUP)
+		print(string.format(
+			"[OilShipmentService] CollisionGroups: %s registered=%s, %s registered=%s, fxVsDefault collidable=%s, pieVsFx collidable=%s",
+			STRAIT_FX_NPC_GROUP, tostring(fxRegistered),
+			PLAYER_IN_STRAIT_EVENT_GROUP, tostring(pieRegistered),
+			tostring(fxVsDefault), tostring(pieVsFx)
+		))
+	end)
+
 	-- Discover strait lane waypoints
 	self:_discoverLanes()
 end
@@ -703,6 +781,24 @@ function OilShipmentService:_queueDebugBoardingRetry(player: Player, shipmentId:
 	end)
 end
 
+--- Server → one-client camera-snap helper. Called after **every** server-driven teleport
+--- that changes the character's facing direction (Home / Town / Hire / Ship / Warehouse,
+--- and the voyage post-finish fallbacks). Without this signal the default follow camera
+--- keeps its previous yaw because `PivotTo` doesn't re-align it on a live character, so
+--- the player ends up staring at the back of their own head. `HudTeleportRouter` consumes
+--- `TeleportHomeApplied.OnClientEvent` and runs `snapCameraBehindCharacter(targetCFrame)`.
+---
+--- Wrapped in a pcall to harden against a missing `Remotes` folder during a fresh
+--- server boot (the snap is cosmetic — a missed fire is never gameplay-blocking).
+function OilShipmentService:_fireCameraSnap(player: Player, targetCFrame: CFrame)
+	if not (self._remoteService and player and player.Parent) then
+		return
+	end
+	pcall(function()
+		self._remoteService:GetEvent(RemoteNames.TeleportHomeApplied):FireClient(player, targetCFrame)
+	end)
+end
+
 function OilShipmentService:_handleTeleportHome(player: Player)
 	local character = player.Character
 	if not character then return end
@@ -717,10 +813,7 @@ function OilShipmentService:_handleTeleportHome(player: Player)
 		--- pad's LookVector.
 		local targetCFrame = claimPad.CFrame + Vector3.new(0, 5, 0)
 		CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportHome")
-		--- `PivotTo` rotates the character but does NOT re-align the default follow camera's
-		--- internal yaw — without this signal the camera ends up looking at the back of the
-		--- character's head. The client snaps its camera behind the character on receipt.
-		self._remoteService:GetEvent(RemoteNames.TeleportHomeApplied):FireClient(player, targetCFrame)
+		self:_fireCameraSnap(player, targetCFrame)
 	end
 end
 
@@ -766,8 +859,10 @@ function OilShipmentService:_handleTeleportToDocks(player: Player)
 	local cf = getDocksTeleportCFrame()
 	if cf then
 		-- Face away from the authored forward (e.g. into the shop) — 180° yaw in target-local space.
-		CharacterTeleport.teleportWithUnseat(character, cf * CFrame.Angles(0, math.pi, 0), "RequestTeleportToDocks")
+		local targetCFrame = cf * CFrame.Angles(0, math.pi, 0)
+		CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportToDocks")
 		notifyFtueIfTownLeg()
+		self:_fireCameraSnap(player, targetCFrame)
 		return
 	end
 
@@ -777,8 +872,13 @@ function OilShipmentService:_handleTeleportToDocks(player: Player)
 	end
 	local boatSpawn = plot:FindFirstChild("BoatSpawn")
 	if boatSpawn and boatSpawn:IsA("BasePart") then
-		CharacterTeleport.teleportWithUnseat(character, CFrame.new(boatSpawn.Position + Vector3.new(0, 5, 0)), "RequestTeleportToDocks:fallback")
+		--- Preserve the `BoatSpawn` rotation (was discarded by `CFrame.new(<position>)` —
+		--- same bug shape as the Home teleport). Use `CFrame.Rotation + Vector3` so the
+		--- LookVector is whatever the pad is authored to face, then lift Y.
+		local targetCFrame = boatSpawn.CFrame.Rotation + (boatSpawn.Position + Vector3.new(0, 5, 0))
+		CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportToDocks:fallback")
 		notifyFtueIfTownLeg()
+		self:_fireCameraSnap(player, targetCFrame)
 	end
 end
 
@@ -812,7 +912,11 @@ function OilShipmentService:_handleTeleportToHire(player: Player)
 		warn("[TeleportToHire] Workspace.HireTeleportTarget not found.")
 		return
 	end
-	CharacterTeleport.teleportWithUnseat(character, cf * CFrame.Angles(0, math.pi, 0), "RequestTeleportToHire")
+	-- Face away from the authored forward (180° yaw in target-local space) — the Hire NPC
+	-- is in front of the authored target, so flipping puts the player nose-to-nose with them.
+	local targetCFrame = cf * CFrame.Angles(0, math.pi, 0)
+	CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportToHire")
+	self:_fireCameraSnap(player, targetCFrame)
 end
 
 function OilShipmentService:Stop()
@@ -1433,7 +1537,11 @@ function OilShipmentService:_handleOwnerAfterSuccessfulShipmentFinish(boat: Inst
 		local plot = self._plotService:GetOwnedPlot(player.UserId)
 		local claimPad = plot and plot:FindFirstChild("ClaimPad")
 		if claimPad and claimPad:IsA("BasePart") then
-			CharacterTeleport.teleportWithUnseat(character, CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)), "ShipmentFinish:claimPad")
+			-- Preserve the pad's authored rotation (was discarded by `CFrame.new(<position>)` —
+			-- same bug shape as the Home / Town / Warehouse teleports). Lift Y by 5 in world.
+			local targetCFrame = claimPad.CFrame + Vector3.new(0, 5, 0)
+			CharacterTeleport.teleportWithUnseat(character, targetCFrame, "ShipmentFinish:claimPad")
+			self:_fireCameraSnap(player, targetCFrame)
 		end
 	end
 end
@@ -1480,11 +1588,14 @@ function OilShipmentService:_teleportGuestsHomeAfterShipmentFinish(boat: Instanc
 			continue
 		end
 
+		-- Preserve guest's claim-pad rotation (same bug shape as the Home teleport).
+		local targetCFrame = claimPad.CFrame + Vector3.new(0, 5, 0)
 		CharacterTeleport.teleportWithUnseat(
 			character,
-			CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)),
+			targetCFrame,
 			"ShipmentFinish:guestHome"
 		)
+		self:_fireCameraSnap(player, targetCFrame)
 	end
 end
 
@@ -1607,11 +1718,19 @@ function OilShipmentService:_unseatPlayersFromBoat(boat: Instance)
 					if not (newChar.Parent and claimPad.Parent) then
 						return
 					end
+					-- Preserve the pad's authored rotation across the post-destroy respawn so the
+					-- player lands facing the Delivery Man (was world-Z under the position-only
+					-- `CFrame.new`). NOTE: this fires from a `CharacterAdded` callback, which is
+					-- the same surface as `PlotService:_teleportCharacterToOwnedPlot` — the camera
+					-- snap may race the client UI bootstrap on extreme cases, but in the normal
+					-- destroy → respawn flow `HudTeleportRouter` is already up and the snap lands.
+					local targetCFrame = claimPad.CFrame + Vector3.new(0, 5, 0)
 					CharacterTeleport.teleportWithUnseat(
 						newChar,
-						CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)),
+						targetCFrame,
 						"ShipDestroy:RespawnToClaimPad"
 					)
+					self:_fireCameraSnap(player, targetCFrame)
 				end)
 			end)
 
@@ -2223,6 +2342,265 @@ function OilShipmentService:_maybeProcessForcedPirateHit(
 	return didTotalLoss
 end
 
+--- Pause a shipment ship for a cinematic strait event (CoastGuard inspection,
+--- PirateRaid boarding) WITHOUT yanking the player off the deck.
+---
+--- The naive "snap-anchor" approach (`rootPart.Anchored = true` mid-voyage)
+--- zeros the boat's `AssemblyLinearVelocity` instantly. The player character
+--- standing on the deck is a separate physics assembly though — it keeps the
+--- prior deck velocity and slides forward across the deck (reported as
+--- "dragged toward the front of the ship by an invisible force"). Letting
+--- `AlignPosition` brake the boat over a short window first gives the
+--- Humanoid floor-velocity tracker time to follow the deck to a stop, after
+--- which anchoring is safe. We also re-pin the AlignPosition target to the
+--- final root position so the unanchor moment doesn't yank the boat forward
+--- toward a now-stale target before `_updateShipPosition` resumes.
+---
+--- DIAGNOSTIC (April 2026): user reports a CONTINUOUS pull on their character
+--- during CG / PirateRaid events even though the boat is visibly anchored,
+--- and the pull is TOWARD the cosmetic NPC ship — not the bow. This is
+--- inconsistent with inertia. The brake-then-anchor logic below stays, but
+--- we additionally periodically snapshot the owner character's physics
+--- (HRP velocity, SeatPart, attached BodyMovers/Constraints, FloorMaterial)
+--- during the freeze so we can identify whatever is actually pulling them.
+--- Toggle via `Constants.StraitEventsDebug.LogFreezeCharacterSnapshot`.
+local FREEZE_BRAKE_SECONDS = 0.35
+local FREEZE_SNAPSHOT_INTERVAL_SECONDS = 0.5
+
+local function describePhysicsHazardsOn(inst: Instance, label: string): { string }
+	local lines: { string } = {}
+	local function add(s: string)
+		table.insert(lines, s)
+	end
+	local hrpVel: Vector3? = nil
+	local hrpFloorMat: Enum.Material? = nil
+	local seatPartName: string? = nil
+	local hrp: BasePart? = nil
+	for _, d in ipairs(inst:GetDescendants()) do
+		if d:IsA("BasePart") and d.Name == "HumanoidRootPart" then
+			hrp = d :: BasePart
+			hrpVel = (d :: BasePart).AssemblyLinearVelocity
+		end
+		if d:IsA("Humanoid") then
+			local h = d :: Humanoid
+			hrpFloorMat = h.FloorMaterial
+			if h.SeatPart then
+				seatPartName = h.SeatPart:GetFullName()
+			end
+		end
+	end
+	add(string.format(
+		"  [%s] HRP=%s vel=%s floor=%s seatPart=%s",
+		label,
+		hrp and hrp:GetFullName() or "nil",
+		hrpVel and string.format("(%.1f,%.1f,%.1f) |%.1f|", hrpVel.X, hrpVel.Y, hrpVel.Z, hrpVel.Magnitude) or "nil",
+		hrpFloorMat and tostring(hrpFloorMat.Name) or "nil",
+		seatPartName or "nil"
+	))
+	for _, d in ipairs(inst:GetDescendants()) do
+		if d:IsA("BodyMover") then
+			add(string.format("  [%s] BodyMover %s '%s' parent=%s", label, d.ClassName, d.Name, d.Parent and d.Parent:GetFullName() or "nil"))
+		elseif d:IsA("Constraint") then
+			-- Strip-and-flag movement / force-applying constraints (we keep welds + motors)
+			local cn = d.ClassName
+			if cn == "AlignPosition" or cn == "AlignOrientation"
+				or cn == "LinearVelocity" or cn == "AngularVelocity"
+				or cn == "VectorForce" or cn == "Torque" or cn == "LineForce"
+				or cn == "RopeConstraint" or cn == "SpringConstraint" or cn == "RodConstraint" then
+				add(string.format("  [%s] Constraint %s '%s' parent=%s", label, cn, d.Name, d.Parent and d.Parent:GetFullName() or "nil"))
+			end
+		elseif d:IsA("Weld") then
+			-- Legacy welds added at runtime are suspicious if they connect to something OUTSIDE the character.
+			local w = d :: Weld
+			local p0, p1 = w.Part0, w.Part1
+			if p0 and p1 then
+				local p0Outside = not p0:IsDescendantOf(inst)
+				local p1Outside = not p1:IsDescendantOf(inst)
+				if p0Outside or p1Outside then
+					add(string.format(
+						"  [%s] EXTERNAL WELD '%s' Part0=%s Part1=%s",
+						label,
+						d.Name,
+						p0 and p0:GetFullName() or "nil",
+						p1 and p1:GetFullName() or "nil"
+					))
+				end
+			end
+		end
+	end
+	return lines
+end
+
+--- Reassigns every `BasePart` under `char` to the supplied collision group,
+--- stamping the previous group on each part as an attribute so we can put
+--- it back exactly. Idempotent: a second call won't double-stamp the
+--- attribute, and `restorePlayerCharacterCollisionGroup` no-ops on parts
+--- without the stamp.
+---
+--- Server-side writes to `BasePart.CollisionGroup` are authoritative and
+--- replicate to all clients (including the client simulating its own
+--- character), so the no-collide rule we register in `Init` against the
+--- cosmetic-NPC group takes effect at the engine level — even if the
+--- client-side cosmetic group tagging in `StraitWaypointWorldFx`
+--- (`applyStraitNpcGhostParts`) misses a part on a given Heartbeat sweep.
+local PLAYER_PRIOR_GROUP_ATTR = "PriorCollisionGroupForStraitEvent"
+
+local function applyPlayerCharacterCollisionGroup(char: Model?, group: string)
+	if not char then return end
+	for _, d in ipairs(char:GetDescendants()) do
+		if d:IsA("BasePart") then
+			-- Don't re-stamp if already swapped (e.g. respawn mid-freeze
+			-- after we already stamped a new char).
+			if d:GetAttribute(PLAYER_PRIOR_GROUP_ATTR) == nil then
+				d:SetAttribute(PLAYER_PRIOR_GROUP_ATTR, d.CollisionGroup)
+			end
+			d.CollisionGroup = group
+		end
+	end
+end
+
+local function restorePlayerCharacterCollisionGroup(char: Model?)
+	if not char then return end
+	for _, d in ipairs(char:GetDescendants()) do
+		if d:IsA("BasePart") then
+			local prior = d:GetAttribute(PLAYER_PRIOR_GROUP_ATTR)
+			if typeof(prior) == "string" then
+				d.CollisionGroup = prior
+				d:SetAttribute(PLAYER_PRIOR_GROUP_ATTR, nil)
+			end
+		end
+	end
+end
+
+function OilShipmentService:_freezeShipForStraitEventCinematic(
+	shipmentId: string,
+	durationSec: number
+)
+	local shipState = self._activeShips[shipmentId]
+	local rootPart: BasePart? = shipState and shipState.root
+	local alignPos = shipState and shipState.alignPos
+	local wasAnchored = rootPart and rootPart.Anchored
+
+	-- Find the owner player + character (for diagnostic snapshots).
+	local ownerUserId = self._ownerUserIdByShipmentId and self._ownerUserIdByShipmentId[shipmentId]
+	if not ownerUserId then
+		for uid, sid in pairs(self._activeShipmentByOwner or {}) do
+			if sid == shipmentId then ownerUserId = uid; break end
+		end
+	end
+	local ownerPlayer: Player? = nil
+	if typeof(ownerUserId) == "number" then
+		ownerPlayer = Players:GetPlayerByUserId(ownerUserId)
+	end
+	local ownerChar: Model? = ownerPlayer and ownerPlayer.Character or nil
+
+	local dbg = Constants.StraitEventsDebug
+	local snapshotEnabled = dbg and dbg.LogFreezeCharacterSnapshot == true
+
+	if snapshotEnabled then
+		print(string.format(
+			"[FreezeShip] >>> ENTER shipment=%s owner=%s rootPos=%s rootVel=%s alreadyAnchored=%s",
+			tostring(shipmentId),
+			ownerPlayer and (ownerPlayer.Name .. "/" .. tostring(ownerUserId)) or "nil",
+			rootPart and string.format("(%.1f,%.1f,%.1f)", rootPart.Position.X, rootPart.Position.Y, rootPart.Position.Z) or "nil",
+			rootPart and string.format("(%.1f,%.1f,%.1f) |%.1f|", rootPart.AssemblyLinearVelocity.X, rootPart.AssemblyLinearVelocity.Y, rootPart.AssemblyLinearVelocity.Z, rootPart.AssemblyLinearVelocity.Magnitude) or "nil",
+			tostring(wasAnchored)
+		))
+		if ownerChar then
+			for _, l in ipairs(describePhysicsHazardsOn(ownerChar, "PRE-BRAKE")) do
+				print(l)
+			end
+		end
+	end
+
+	if rootPart and not wasAnchored then
+		if alignPos then
+			alignPos.Position = rootPart.Position
+		end
+		task.wait(FREEZE_BRAKE_SECONDS)
+	end
+
+	if rootPart then
+		rootPart.Anchored = true
+	end
+
+	-- Move the owner character into a collision group that is no-collide
+	-- with the cosmetic-NPC group (registered in `Init`). This is the
+	-- authoritative defense against residual pushes from cosmetic ships /
+	-- officers / pirates whose own collision-group tagging on the client
+	-- might race or fail. Re-resolve the character right before applying
+	-- in case the player respawned during the brake wait.
+	local pieGroup = self._playerInStraitEventGroup
+	ownerChar = ownerPlayer and ownerPlayer.Character or nil
+	if pieGroup and ownerChar then
+		applyPlayerCharacterCollisionGroup(ownerChar, pieGroup)
+	end
+	-- Handle respawn mid-cinematic: apply the group to the new character too.
+	-- We disconnect on exit so we don't leak across shipments.
+	local respawnConn: RBXScriptConnection? = nil
+	if pieGroup and ownerPlayer then
+		respawnConn = ownerPlayer.CharacterAdded:Connect(function(newChar)
+			applyPlayerCharacterCollisionGroup(newChar, pieGroup)
+		end)
+	end
+
+	if snapshotEnabled and ownerChar then
+		for _, l in ipairs(describePhysicsHazardsOn(ownerChar, "POST-ANCHOR")) do
+			print(l)
+		end
+	end
+
+	-- Periodic snapshot of the owner character during the cinematic hold.
+	-- Lets us see if anything attaches mid-event (e.g. seat capture, weld
+	-- from a sweeping NPC ship part, runtime BodyMover) that would explain
+	-- a continuous pull toward the cosmetic NPC ship.
+	local holdSec = math.max(0, durationSec - FREEZE_BRAKE_SECONDS)
+	if snapshotEnabled and ownerChar and holdSec > 0 then
+		local elapsed = 0
+		while elapsed < holdSec do
+			local step = math.min(FREEZE_SNAPSHOT_INTERVAL_SECONDS, holdSec - elapsed)
+			task.wait(step)
+			elapsed += step
+			-- Re-resolve character (may have respawned)
+			ownerChar = ownerPlayer and ownerPlayer.Character or nil
+			if ownerChar then
+				for _, l in ipairs(describePhysicsHazardsOn(ownerChar, string.format("HOLD t=%.1fs", elapsed))) do
+					print(l)
+				end
+			end
+		end
+	else
+		task.wait(holdSec)
+	end
+
+	if rootPart and not wasAnchored then
+		if alignPos then
+			alignPos.Position = rootPart.Position
+		end
+		rootPart.Anchored = false
+	end
+
+	-- Restore the player character to its prior collision group (typically
+	-- "Default"). Disconnect the respawn handler before restoring so a
+	-- post-cinematic respawn doesn't get re-tagged.
+	if respawnConn then
+		respawnConn:Disconnect()
+		respawnConn = nil
+	end
+	if ownerPlayer then
+		restorePlayerCharacterCollisionGroup(ownerPlayer.Character)
+	end
+
+	if snapshotEnabled then
+		print(string.format("[FreezeShip] <<< EXIT shipment=%s", tostring(shipmentId)))
+		if ownerPlayer and ownerPlayer.Character then
+			for _, l in ipairs(describePhysicsHazardsOn(ownerPlayer.Character, "POST-UNANCHOR")) do
+				print(l)
+			end
+		end
+	end
+end
+
 -- Returns true if shipment is a total loss (caller must cleanup boat and exit _runShipment).
 function OilShipmentService:_handleStraitWaypointTrigger(
 	shipment,
@@ -2566,18 +2944,11 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			print(string.format("  [StraitShipment DEBUG] COAST GUARD INSPECTION: side=%d, pausing %ds",
 				approachSide, cfg.SequenceDuration))
 		end
-		-- Freeze the boat during the event so it doesn't drift/tilt.
-		-- Root-unanchor after to restore physics-driven voyage.
-		local shipState = self._activeShips[shipment.shipmentId]
-		local rootPart = shipState and shipState.root
-		local wasAnchored = rootPart and rootPart.Anchored
-		if rootPart then
-			rootPart.Anchored = true
-		end
-		task.wait(cfg.SequenceDuration)
-		if rootPart and not wasAnchored then
-			rootPart.Anchored = false
-		end
+		-- Freeze the boat during the event so it doesn't drift/tilt. Brakes
+		-- via AlignPosition before anchoring so the player character on the
+		-- deck doesn't slide forward from inertia — see
+		-- `_freezeShipForStraitEventCinematic` doc-comment.
+		self:_freezeShipForStraitEventCinematic(shipment.shipmentId, cfg.SequenceDuration)
 		voyageClock.startTime += cfg.SequenceDuration
 		return false
 	end
@@ -2661,14 +3032,11 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 				barrelsStolen, approachSide, pc.SequenceDuration))
 		end
 
-		-- Pause ship for the full cinematic sequence. Anchor root so physics
-		-- doesn't drift/tilt it while we wait (same treatment as CG inspection).
-		local shipState = self._activeShips[shipment.shipmentId]
-		local rootPart = shipState and shipState.root
-		local wasAnchored = rootPart and rootPart.Anchored
-		if rootPart then rootPart.Anchored = true end
-		task.wait(pc.SequenceDuration)
-		if rootPart and not wasAnchored then rootPart.Anchored = false end
+		-- Pause ship for the full cinematic sequence. Brakes via AlignPosition
+		-- before anchoring so the player character on the deck doesn't slide
+		-- forward from inertia — see `_freezeShipForStraitEventCinematic`
+		-- doc-comment. Same treatment as CG inspection above.
+		self:_freezeShipForStraitEventCinematic(shipment.shipmentId, pc.SequenceDuration)
 		voyageClock.startTime += pc.SequenceDuration
 		return false
 	end

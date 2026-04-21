@@ -28,6 +28,35 @@ local LocalPlayer = Players.LocalPlayer
 local CAMERA_BEHIND_DISTANCE = 14
 local CAMERA_HEAD_OFFSET = Vector3.new(0, 2, 0)
 
+--- Resolve the **live** Humanoid to use as `Camera.CameraSubject`. We can NOT trust the
+--- existing `cam.CameraSubject` after a death-respawn because:
+---
+---   • `Players.CharacterAutoLoads = false` (set by `PlotService:Start()` so the server
+---     can manually `LoadCharacter()` only after a plot is assigned). With auto-loads
+---     off, Roblox's default PlayerModule does NOT automatically rebind the camera to
+---     the freshly-created character on respawn — `Camera.CameraSubject` keeps pointing
+---     at the **destroyed** corpse Humanoid (or whatever was set by the death-cam).
+---
+---   • If we then save that stale subject inside `snapCameraBehindCharacter`, set
+---     `Scriptable`, snap to home, and after 0.05s restore the stale subject + `Custom`,
+---     the engine's Custom camera tries to follow a destroyed Instance and falls back
+---     to its last good CFrame — which is the **death position under the kill plane**.
+---     That is the user-visible "1 frame at home, then camera reverts to death spot"
+---     bug we were chasing.
+---
+--- Always resolve from `LocalPlayer.Character.Humanoid` at restore time.
+local function getLiveHumanoid(): Humanoid?
+	local char = LocalPlayer.Character
+	if not char or not char.Parent then
+		return nil
+	end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hum and hum.Parent and hum.Health > 0 then
+		return hum
+	end
+	return nil
+end
+
 local function snapCameraBehindCharacter(targetCFrame: CFrame)
 	local cam = Workspace.CurrentCamera
 	if not cam then
@@ -45,7 +74,6 @@ local function snapCameraBehindCharacter(targetCFrame: CFrame)
 	end
 	local desiredPos = focal - look * CAMERA_BEHIND_DISTANCE + Vector3.new(0, 3, 0)
 
-	local subject = cam.CameraSubject
 	cam.CameraType = Enum.CameraType.Scriptable
 	cam.CFrame = CFrame.lookAt(desiredPos, focal)
 	cam.Focus = CFrame.new(focal)
@@ -57,10 +85,50 @@ local function snapCameraBehindCharacter(targetCFrame: CFrame)
 		if cam.Parent == nil then
 			return
 		end
-		cam.CameraSubject = subject
+		--- Resolve the LIVE humanoid here (not before the snap) — see `getLiveHumanoid`
+		--- comment. By the time this delay runs the new character/humanoid should be
+		--- replicated. If it still isn't, leave whatever is there; we'll re-bind in the
+		--- `CharacterAdded` watcher below.
+		local liveHum = getLiveHumanoid()
+		if liveHum then
+			cam.CameraSubject = liveHum
+		end
 		cam.CameraType = Enum.CameraType.Custom
 	end)
 end
+
+--- Camera-rebind on every respawn. Without this, a player who dies and respawns at
+--- their home claim pad ends up with a camera locked at the **death position** (see
+--- `getLiveHumanoid` comment). Press-Home / press-Town teleports recover via
+--- `snapCameraBehindCharacter` — but we want the camera to recover even if the player
+--- doesn't press anything.
+---
+--- Strategy: on `CharacterAdded`, wait for the new Humanoid + HRP to exist, then
+--- forcibly set `Camera.CameraSubject` to the new humanoid and `CameraType = Custom`.
+--- A small `task.delay(0.1)` lets the server-driven spawn teleport (PlotService home
+--- claim pad) settle so we don't snap while the HRP is still at world origin.
+local function rebindCameraToCharacter(character: Model)
+	local cam = Workspace.CurrentCamera
+	if not cam then
+		return
+	end
+	local hum = character:WaitForChild("Humanoid", 5)
+	if not hum or not hum:IsA("Humanoid") then
+		return
+	end
+	character:WaitForChild("HumanoidRootPart", 5)
+	task.wait(0.1)
+	if cam.Parent == nil or hum.Parent == nil then
+		return
+	end
+	cam.CameraSubject = hum
+	cam.CameraType = Enum.CameraType.Custom
+end
+
+if LocalPlayer.Character then
+	task.spawn(rebindCameraToCharacter, LocalPlayer.Character)
+end
+LocalPlayer.CharacterAdded:Connect(rebindCameraToCharacter)
 
 ClientRemotes.teleportHomeApplied.OnClientEvent:Connect(function(targetCFrame)
 	if typeof(targetCFrame) ~= "CFrame" then

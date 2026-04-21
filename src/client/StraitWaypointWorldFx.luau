@@ -12,8 +12,25 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 
---- Local cosmetic NPCs (Pirate / Coast Guard): must not shove the player. `Humanoid` resets
---- `CanCollide` on body parts; parts must also ignore `ShipmentShip` (deck) vs `Players` (character).
+--- Local cosmetic NPCs (Pirate / Coast Guard): must not shove the player. `Humanoid`
+--- on a freshly-parented model can re-enable `CanCollide` on body parts before our
+--- next ghost sweep, so we cannot rely on `CanCollide=false` alone — anchored
+--- collision still ejects unanchored characters from a part's volume per physics
+--- step, observed as a continuous "pull" toward officers parked nearby (HRP velocity
+--- spiked to ~20 studs/s every 0.5s sample even with per-Heartbeat sweeps).
+---
+--- The actual no-collide enforcement comes from the `StraitWaypointFxNpc` collision
+--- group + no-collide rules, REGISTERED ON THE SERVER in
+--- `OilShipmentService:Init`. Server-side `RegisterCollisionGroup` /
+--- `CollisionGroupSetCollidable` writes are the only ones that take effect — the
+--- engine then replicates the group + collidable matrix to every client. Tagging
+--- a part with `CollisionGroup = STRAIT_FX_NPC_GROUP` from the client (in
+--- `applyStraitNpcGhostParts` below) makes the engine refuse the collision
+--- regardless of `CanCollide` flips.
+---
+--- The `ensureStraitFxNpcCollisionGroup` call below is kept as a no-op safety net:
+--- on the client `RegisterCollisionGroup` silently fails (server-only), but the
+--- group has already been registered server-side at OilShipmentService init.
 local STRAIT_FX_NPC_GROUP = "StraitWaypointFxNpc"
 local straitFxNpcGroupReady = false
 
@@ -21,46 +38,22 @@ local function ensureStraitFxNpcCollisionGroup()
 	if straitFxNpcGroupReady then
 		return
 	end
+	-- These are SERVER-ONLY in modern Roblox; pcalls swallow the client-side
+	-- failure. The authoritative registration happens in
+	-- `OilShipmentService:Init` (replicates to clients automatically).
 	pcall(function()
 		PhysicsService:RegisterCollisionGroup(STRAIT_FX_NPC_GROUP)
 	end)
-	local function safeRegister(name: string)
-		pcall(function()
-			PhysicsService:RegisterCollisionGroup(name)
-		end)
-	end
 	local function noCollidePair(a: string, b: string)
 		pcall(function()
 			PhysicsService:CollisionGroupSetCollidable(a, b, false)
 		end)
 	end
-	-- Voyage hull + dock use custom groups; strait FX must not interact with them or the character.
-	safeRegister("Default")
-	safeRegister("Players")
-	safeRegister("ShipmentShip")
-	safeRegister("MarinaDock")
 	noCollidePair(STRAIT_FX_NPC_GROUP, "Default")
 	noCollidePair(STRAIT_FX_NPC_GROUP, "Players")
 	noCollidePair(STRAIT_FX_NPC_GROUP, "ShipmentShip")
 	noCollidePair(STRAIT_FX_NPC_GROUP, "MarinaDock")
 	noCollidePair(STRAIT_FX_NPC_GROUP, STRAIT_FX_NPC_GROUP)
-	pcall(function()
-		local list = (PhysicsService :: any):GetRegisteredCollisionGroups()
-		if typeof(list) ~= "table" then
-			return
-		end
-		for _, entry in ipairs(list) do
-			local n: string? = nil
-			if typeof(entry) == "table" then
-				n = (entry :: { name: string? }).name
-			elseif typeof(entry) == "string" then
-				n = entry
-			end
-			if typeof(n) == "string" and n ~= "" and n ~= STRAIT_FX_NPC_GROUP then
-				noCollidePair(STRAIT_FX_NPC_GROUP, n)
-			end
-		end
-	end)
 	straitFxNpcGroupReady = true
 end
 
@@ -274,7 +267,34 @@ local function stripRuntimeScripts(root: Instance)
 	end
 end
 
+--- One-time strip of legacy BodyMovers and active force/velocity constraints.
+--- NPC ship templates (e.g. `PirateShipNpc`) carry leftover `BodyVelocity`/`BodyGyro`/
+--- `BodyPosition` from their original self-driving NPC AI rig — useless for cosmetic
+--- playback and a latent risk if a part ever loses its `Anchored` flag. Movement-causing
+--- `Constraint` subclasses are stripped too; structural welds (`WeldConstraint`,
+--- `Weld`, `Motor6D`) and joints like `RopeConstraint` / `RodConstraint` are kept so
+--- ship hulls and rigs stay assembled.
+local function stripPhysicsActuators(root: Instance)
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("BodyMover") then
+			d:Destroy()
+		elseif d:IsA("LinearVelocity")
+			or d:IsA("AngularVelocity")
+			or d:IsA("VectorForce")
+			or d:IsA("Torque")
+			or d:IsA("LineForce")
+			or d:IsA("AlignPosition")
+			or d:IsA("AlignOrientation") then
+			d:Destroy()
+		end
+	end
+end
+
 --- Remove Humanoid (it reapplies CanCollide), ghost all parts, no collision with player or ship.
+--- `Seat` / `VehicleSeat` get `Disabled = true` because the engine has been observed to
+--- auto-sit a passing player Humanoid into a `Seat` even with `CanTouch = false`
+--- (e.g. `PirateShipNpc` has a `VehicleSeat` "Drive" and 2 `Seat`s — without this the
+--- player gets welded to the cosmetic ship as it sweeps past and dragged with it).
 local function applyStraitNpcGhostParts(root: Instance)
 	ensureStraitFxNpcCollisionGroup()
 	for _, d in ipairs(root:GetDescendants()) do
@@ -289,6 +309,9 @@ local function applyStraitNpcGhostParts(root: Instance)
 			d.CanQuery = false
 			d.CanTouch = false
 			d.Massless = true
+			if d:IsA("Seat") or d:IsA("VehicleSeat") then
+				(d :: Seat).Disabled = true
+			end
 			pcall(function()
 				d.CollisionGroup = STRAIT_FX_NPC_GROUP
 			end)
@@ -297,44 +320,114 @@ local function applyStraitNpcGhostParts(root: Instance)
 end
 
 --- Re-apply ghost for several seconds — templates / engine may re-enable collision after Parent changes.
+--- Sweep cadence kept tight (every Heartbeat ≈16ms): cosmetic NPC ships sweep
+--- in laterally at ~80 studs/s during the approach phase (`animateMove`), so
+--- a stale ghost window even of ~120ms can let an anchored-but-CanCollide-true
+--- part traverse ~10 studs through a player standing on the deck and push
+--- them sideways via collision resolution. Diagnostic data captured 2026-04-18
+--- (CoastGuard cinematic): player HRP velocity spiked to 18–25 studs/s exactly
+--- when the CG ship was mid-approach and again when officers ziplined onto the
+--- deck — both are moments when re-parented or animation-driven parts can
+--- briefly miss a wider-cadence sweep. Per-frame is safe (the sweep is just
+--- property writes on already-property-clean parts) and removes the race.
 local function sustainStraitNpcGhosts(roots: { Instance }, durationSec: number)
 	if #roots == 0 then
 		return
 	end
 	local t0 = os.clock()
-	local lastSweep = t0
 	local conn: RBXScriptConnection?
 	conn = RunService.Heartbeat:Connect(function()
-		local now = os.clock()
-		if now - t0 >= durationSec then
+		if os.clock() - t0 >= durationSec then
 			if conn then
 				conn:Disconnect()
 			end
 			return
 		end
-		if now - lastSweep >= 0.12 then
-			lastSweep = now
-			for _, r in ipairs(roots) do
-				if r.Parent ~= nil then
-					applyStraitNpcGhostParts(r)
-				end
+		for _, r in ipairs(roots) do
+			if r.Parent ~= nil then
+				applyStraitNpcGhostParts(r)
 			end
+		end
+	end)
+end
+
+--- Defensive velocity guard for the local player's character during a strait
+--- event cinematic where the player ship is server-anchored.
+---
+--- Even with `applyStraitNpcGhostParts` and `sustainStraitNpcGhosts` running,
+--- runtime captured pushes of 18–25 studs/s on the local HRP at moments
+--- corresponding to (a) the cosmetic CG / pirate ship's lateral approach
+--- sweep (`animateMove` PivotTo at ~80 studs/s) and (b) officers / pirates
+--- landing on the deck via the zipline animation. The exact source is some
+--- collision-enabled part on the cosmetic rig that briefly slips the ghost
+--- pass (re-parented or added by the animateMove rig motion). Rather than
+--- chase every possible offender, we treat the symptom on the client.
+---
+--- While the cinematic is on screen, the player's *expected* XZ velocity is
+--- their own walking velocity (`Humanoid.MoveDirection * WalkSpeed`), since
+--- the deck is anchored (platform velocity = 0). Any XZ velocity that
+--- significantly exceeds that is an external push. We snap it back to the
+--- walking expectation while preserving Y (gravity / jump unaffected). The
+--- player keeps full walking control.
+---
+--- Server-side write of `AssemblyLinearVelocity` would not work here:
+--- character physics is client-owned, so the write would not replicate.
+local PUSH_TOLERANCE_STUDS_PER_SEC = 6
+local function dampLocalPlayerCharacterDuringEvent(durationSec: number)
+	if durationSec <= 0 then
+		return
+	end
+	local t0 = os.clock()
+	local conn: RBXScriptConnection?
+	conn = RunService.Heartbeat:Connect(function()
+		if os.clock() - t0 >= durationSec then
+			if conn then
+				conn:Disconnect()
+			end
+			return
+		end
+		local lp = Players.LocalPlayer
+		local char = lp and lp.Character
+		if not char then
+			return
+		end
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		if not (hum and hrp and hrp:IsA("BasePart")) then
+			return
+		end
+		-- Skip while seated (a real seat weld owns the velocity entirely).
+		if hum.SeatPart then
+			return
+		end
+		local v = hrp.AssemblyLinearVelocity
+		local moveDir = hum.MoveDirection
+		local walkSpeed = hum.WalkSpeed
+		local expectedXZ = Vector3.new(moveDir.X * walkSpeed, 0, moveDir.Z * walkSpeed)
+		local actualXZ = Vector3.new(v.X, 0, v.Z)
+		if (actualXZ - expectedXZ).Magnitude > PUSH_TOLERANCE_STUDS_PER_SEC then
+			hrp.AssemblyLinearVelocity = Vector3.new(expectedXZ.X, v.Y, expectedXZ.Z)
 		end
 	end)
 end
 
 local function prepareStraitEventNpcInstance(root: Instance)
 	stripRuntimeScripts(root)
+	stripPhysicsActuators(root)
 	applyStraitNpcGhostParts(root)
 end
 
 local function prepareStraitFxClone(root: Instance)
+	stripPhysicsActuators(root)
 	for _, d in ipairs(root:GetDescendants()) do
 		if d:IsA("BasePart") then
 			d.Anchored = true
 			d.CanCollide = false
 			d.CanQuery = false
 			d.CanTouch = false
+			if d:IsA("Seat") or d:IsA("VehicleSeat") then
+				(d :: Seat).Disabled = true
+			end
 		end
 	end
 end
@@ -881,6 +974,7 @@ end
 
 local function prepareKinematicFx(root: Instance)
 	stripRuntimeScripts(root)
+	stripPhysicsActuators(root)
 	for _, d in ipairs(root:GetDescendants()) do
 		if d:IsA("BasePart") then
 			d.Anchored = true
@@ -888,6 +982,9 @@ local function prepareKinematicFx(root: Instance)
 			d.CanQuery = false
 			d.CanTouch = false
 			d.Massless = true
+			if d:IsA("Seat") or d:IsA("VehicleSeat") then
+				(d :: Seat).Disabled = true
+			end
 		end
 	end
 end
@@ -2836,6 +2933,10 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		return
 	end
 
+	-- PirateRaidConfig.SequenceDuration = 20s. +1s buffer covers the server
+	-- brake + unanchor tail. See `dampLocalPlayerCharacterDuringEvent`.
+	dampLocalPlayerCharacterDuringEvent(21)
+
 	task.spawn(function()
 		local playerBoat = findActiveShipmentBoatByShipmentId(shipmentId)
 		if not playerBoat then
@@ -3322,6 +3423,12 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 		warn("[StraitWaypointWorldFx] Missing CoastGuardShip or CoastGuard in ReplicatedStorage.Assets")
 		return
 	end
+
+	-- CoastGuardInspectionConfig.SequenceDuration = 16s (server pause window).
+	-- +1s buffer covers the small server brake + unanchor tail before normal
+	-- platform velocity resumes. See `dampLocalPlayerCharacterDuringEvent` for
+	-- why this exists (anchored cosmetic CG hull / officer landing pushes).
+	dampLocalPlayerCharacterDuringEvent(17)
 
 	task.spawn(function()
 		local playerBoat = findActiveShipmentBoatByShipmentId(shipmentId)

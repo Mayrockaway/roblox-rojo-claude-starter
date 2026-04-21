@@ -138,6 +138,33 @@ function PlotService:Start()
 	Players.CharacterAutoLoads = false
 	Players.RespawnTime = Constants.RespawnDelayAfterDeathSeconds
 
+	-- SpawnLocation guard: imported decor models (US aircraft carrier, OIL RIG,
+	-- and any future free-model dock/ship/island) frequently ship with their
+	-- own enabled `SpawnLocation` instances on their decks. Roblox's engine
+	-- auto-pivots a freshly-loaded character to the nearest enabled
+	-- SpawnLocation, which competes with our `_teleportCharacterToOwnedPlot`
+	-- and drops the player on a random carrier deck. The PlotService home
+	-- claim pad is the only intended spawn point; force-disable everything
+	-- else and watch for new decor added during the session.
+	local function disableSpawnLocation(inst: Instance)
+		if not inst:IsA("SpawnLocation") then
+			return
+		end
+		if not inst.Enabled then
+			return
+		end
+		inst.Enabled = false
+		local p = inst.Position
+		DevLog.log(string.format(
+			"[PlotService.SpawnGuard] Disabled SpawnLocation %s pos=(%.1f,%.1f,%.1f)",
+			inst:GetFullName(), p.X, p.Y, p.Z
+		))
+	end
+	for _, inst in ipairs(Workspace:GetDescendants()) do
+		disableSpawnLocation(inst)
+	end
+	table.insert(self._connections, Workspace.DescendantAdded:Connect(disableSpawnLocation))
+
 	table.insert(self._connections, Players.PlayerAdded:Connect(function(player)
 		self:_onPlayerAdded(player)
 	end))
@@ -663,8 +690,20 @@ function PlotService:_ensureCharacterAddedConnection(player: Player)
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
 		if humanoid then
 			humanoid.Died:Connect(function()
+				--- DIAG: capture death context (where they died) — use this to
+				--- correlate with KillZone hits, ship voyage flows, etc.
+				local diedHrp = character:FindFirstChild("HumanoidRootPart")
+				local diedPos = if diedHrp and diedHrp:IsA("BasePart") then diedHrp.Position else Vector3.zero
+				local seatPart = humanoid.SeatPart
+				DevLog.log(string.format(
+					"[PlotService.Died] %s died at pos=(%.1f,%.1f,%.1f) seatPart=%s state=%s",
+					player.Name, diedPos.X, diedPos.Y, diedPos.Z,
+					tostring(seatPart and seatPart:GetFullName() or "nil"),
+					tostring(humanoid:GetState())
+				))
 				task.wait(Constants.RespawnDelayAfterDeathSeconds)
 				if player.Parent then
+					DevLog.log(string.format("[PlotService.Died] %s LoadCharacter()", player.Name))
 					player:LoadCharacter()
 				end
 			end)
@@ -703,7 +742,6 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 	local hum = character:FindFirstChildOfClass("Humanoid")
 	local wasSitting = hum ~= nil and hum.SeatPart ~= nil
 	CharacterTeleport.unseatIfSitting(character)
-	DevLog.log(string.format("[teleport] path=PlotService:spawnClaim seated=%s", tostring(wasSitting)))
 
 	--- Preserve the ClaimPad's authored rotation so the character spawns facing whichever
 	--- way the pad is pointed (currently 180° → looking at the Delivery Man). Using
@@ -715,10 +753,27 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 		math.max(14, spawnPart.Position.Y + 8),
 		spawnPart.Position.Z
 	)
+
+	--- DO NOT add `SetNetworkOwner(nil)` here — see the matching comment in
+	--- `CharacterTeleport.teleportWithUnseat`. Stealing net ownership presents
+	--- as visible movement lag, ragdoll/Freefall pose on land, and the
+	--- character clipping into the floor while server-side gravity runs.
+
+	local prevPos = hrp.Position
+	local prevVel = hrp.AssemblyLinearVelocity
+
 	-- Set HRP CFrame directly — more reliable than PivotTo during character load.
 	hrp.CFrame = target
 	hrp.AssemblyLinearVelocity = Vector3.zero
 	hrp.AssemblyAngularVelocity = Vector3.zero
+
+	DevLog.log(string.format(
+		"[teleport] path=PlotService:spawnClaim seated=%s prevPos=(%.1f,%.1f,%.1f) prevVel=(%.1f,%.1f,%.1f) target=(%.1f,%.1f,%.1f)",
+		tostring(wasSitting),
+		prevPos.X, prevPos.Y, prevPos.Z,
+		prevVel.X, prevVel.Y, prevVel.Z,
+		target.X, target.Y, target.Z
+	))
 
 	--- Camera snap on spawn. Originally I assumed Roblox would auto-rotate the default
 	--- follow camera behind the new character on `CharacterAdded`, but in this game the
@@ -745,10 +800,39 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 	-- logic, humanoid state transitions) that can clobber the initial CFrame.
 	task.delay(0.3, function()
 		if hrp.Parent and character.Parent then
-			if (hrp.Position - target.Position).Magnitude > 10 then
+			local drift = (hrp.Position - target.Position).Magnitude
+			if drift > 10 then
+				DevLog.log(string.format(
+					"[PlotService.spawnClaim+0.3s] %s DRIFTED %.1f studs from target — re-teleporting (curPos=(%.1f,%.1f,%.1f) curVel=(%.1f,%.1f,%.1f))",
+					player.Name, drift,
+					hrp.Position.X, hrp.Position.Y, hrp.Position.Z,
+					hrp.AssemblyLinearVelocity.X, hrp.AssemblyLinearVelocity.Y, hrp.AssemblyLinearVelocity.Z
+				))
 				hrp.CFrame = target
 				hrp.AssemblyLinearVelocity = Vector3.zero
 			end
+		end
+	end)
+
+	--- DIAG: 1.2s post-spawn audit. If the character has drifted significantly
+	--- from the claim pad (kill-plane Y or large XZ distance), log it loudly so
+	--- the next death-loop repro tells us whether the server really thinks the
+	--- character is at the pad (= client-side visual issue) or the character
+	--- actually slid off / got pushed away (= a different service is moving it).
+	task.delay(1.2, function()
+		if not (hrp.Parent and character.Parent and player.Parent) then
+			return
+		end
+		local drift = (hrp.Position - target.Position).Magnitude
+		local belowMap = hrp.Position.Y < (Constants.KillZoneUnderMapCenterY + Constants.KillZoneUnderMapThicknessY)
+		if drift > 25 or belowMap then
+			DevLog.log(string.format(
+				"[PlotService.spawnClaim+1.2s] %s DRIFTED %.1f studs (belowKillZone=%s) — pos=(%.1f,%.1f,%.1f) vel=(%.1f,%.1f,%.1f) targetWasY=%.1f",
+				player.Name, drift, tostring(belowMap),
+				hrp.Position.X, hrp.Position.Y, hrp.Position.Z,
+				hrp.AssemblyLinearVelocity.X, hrp.AssemblyLinearVelocity.Y, hrp.AssemblyLinearVelocity.Z,
+				target.Position.Y
+			))
 		end
 	end)
 

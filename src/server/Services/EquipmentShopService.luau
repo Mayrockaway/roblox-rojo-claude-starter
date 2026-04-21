@@ -164,19 +164,31 @@ function EquipmentShopService:Start()
 	end)
 end
 
+--- Player-count is sampled at roll time (every `RefreshIntervalSeconds`), NOT
+--- on every join/leave — see chat 2026-04 "store capacity scaling" for the
+--- design call. Players who join mid-rotation shop against the snapshot taken
+--- at the start of the window and wait at most `RefreshIntervalSeconds` for
+--- the next roll to reflect them. Avoids disorienting mid-window stock churn
+--- for players already shopping.
 function EquipmentShopService:_rollShopStock()
-	local stock = EquipmentCatalog.rollShopStock(self._rotationRng)
+	local playerCount = #Players:GetPlayers()
+	local stock = EquipmentCatalog.rollShopStock(self._rotationRng, playerCount)
 	self._currentStock = stock
 	local interval = math.max(5, tonumber(EquipmentCatalog.ShopRotation.RefreshIntervalSeconds) or 180)
 	self._refreshEndsAt = workspace:GetServerTimeNow() + interval
-	self:_broadcastStock()
+	self:_broadcastStock("rotation")
 end
 
-function EquipmentShopService:_broadcastStock()
+--- `reason` is `"rotation"` only when called from `_rollShopStock` (the
+--- periodic stock refresh tick). Purchases re-broadcast to keep stock counts
+--- in sync but pass `nil` so the client doesn't show the
+--- `ShopRefreshNotification` gold banner on every buy.
+function EquipmentShopService:_broadcastStock(reason: string?)
 	local ev = self._remoteService:GetEvent(RemoteNames.EquipmentShopStockUpdate)
 	ev:FireAllClients({
 		stock = self._currentStock,
 		refreshEndsAt = self._refreshEndsAt,
+		reason = reason,
 	})
 end
 

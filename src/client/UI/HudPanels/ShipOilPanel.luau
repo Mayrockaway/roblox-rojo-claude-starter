@@ -509,10 +509,20 @@ local function refreshFooter()
 		shipCapacityLabel.Text = string.format("%d/%d Ship Capacity", load, cap)
 	end
 	if warehouseCapacityLabel then
+		-- Live "slots left" projection: warehouse cap minus what is already
+		-- stored minus the barrels the player has staged in this manifest.
+		-- Dispatched ship cargo ends up in the warehouse (see the
+		-- "Warehouse full! Reduce cargo before dispatch" guard further
+		-- below), so as the player nudges +/- on the steppers this number
+		-- ticks down to zero and gives them an at-a-glance budget without
+		-- mental math against `Stored / Cap`. Clamps at 0 so the label
+		-- never reads negative if a payload arrives mid-edit.
 		if hasWarehouseTotals then
-			warehouseCapacityLabel.Text = string.format("%d/%d Warehouse Storage", warehouseStoredTotal, warehouseCapTotal)
+			local staged = sumSelectedBarrels()
+			local remaining = math.max(0, warehouseCapTotal - warehouseStoredTotal - staged)
+			warehouseCapacityLabel.Text = string.format("%d Warehouse Storage Left", remaining)
 		else
-			warehouseCapacityLabel.Text = "—/— Warehouse Storage"
+			warehouseCapacityLabel.Text = "— Warehouse Storage Left"
 		end
 	end
 	maybeFireFtueDispatchPointerRefresh()

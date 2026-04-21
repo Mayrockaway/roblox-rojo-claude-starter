@@ -24,6 +24,15 @@ local NPC_PROMPT_NAMES: { [string]: boolean } = {
 	ManageShipPrompt = true,
 }
 
+--- Panels opened from inanimate vendor surfaces (terminals, kiosks, machines) that are NOT
+--- voiced NPCs. Prompts that target these panels via the `OpensPanel` attribute fall through
+--- the NPC-name allow list above and would otherwise hit the generic `OpensPanel` voice
+--- fallback at the bottom of `start()` — this set blocks that fallback so we don't play
+--- character barks for a desk/monitor interaction (e.g. warehouse `SellOilPrompt`).
+local SUPPRESSED_PANEL_NAMES: { [string]: boolean } = {
+	SellOilPanelGui = true,
+}
+
 local VOICE_IDS = {
 	"rbxassetid://89531954562344",
 	"rbxassetid://90371105771118",
@@ -82,7 +91,7 @@ function NpcProximityVoice.start()
 		--- vendor / NPC interaction — covers DrillShopMan (`ShopPanelGui`), Boatman (`ShipManagementPanelGui`),
 		--- and any future shop NPC without needing to add its prompt name above.
 		local opens = prompt:GetAttribute(OPENS_PANEL_ATTR)
-		if typeof(opens) == "string" and opens ~= "" then
+		if typeof(opens) == "string" and opens ~= "" and not SUPPRESSED_PANEL_NAMES[opens] then
 			playRandomVoice()
 		end
 	end)

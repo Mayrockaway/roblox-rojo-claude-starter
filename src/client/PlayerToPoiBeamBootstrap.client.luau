@@ -247,11 +247,29 @@ end
 player:GetAttributeChangedSignal(Constants.FtueStepAttribute):Connect(refresh)
 player:GetAttributeChangedSignal(Constants.FtueDocksUpgradeSubStepAttribute):Connect(refresh)
 player:GetAttributeChangedSignal(PLOT_ID_ATTRIBUTE):Connect(refresh)
--- **Rejoin / respawn:** re-resolve the rig and reattach all beams when the character (re)loads.
-player.CharacterAdded:Connect(function()
-	task.defer(refresh)
-end)
+
+--- **Rejoin / respawn:** re-resolve the rig and reattach all beams when the
+--- character (re)loads. We must wait for `HumanoidRootPart` before refreshing
+--- — `CharacterAdded` fires when the Character model is parented, but the
+--- HRP can be 1–2 frames behind (particularly with streaming or on rejoin).
+--- If `refresh()` runs too early, `attachAt` → `_tryWireBeamChannel` finds
+--- no HRP, destroys the visuals, and returns without scheduling a retry —
+--- so the FTUE beams visually vanish until the next attribute change kicks
+--- a refresh. Waiting on HRP makes every respawn rewire deterministically.
+local function refreshAfterCharacterReady(character: Model)
+	task.spawn(function()
+		local hrp = character:WaitForChild("HumanoidRootPart", 10)
+		if not hrp then
+			return
+		end
+		--- `task.defer` (not `task.wait(0)`) so we run after the current
+		--- replication batch, giving `_tryWireBeamChannel` a stable HRP.
+		task.defer(refresh)
+	end)
+end
+
+player.CharacterAdded:Connect(refreshAfterCharacterReady)
 if player.Character then
-	task.defer(refresh)
+	refreshAfterCharacterReady(player.Character)
 end
 task.defer(refresh)

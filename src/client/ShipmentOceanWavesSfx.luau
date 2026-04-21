@@ -10,6 +10,10 @@ local Workspace = game:GetService("Workspace")
 local ROLLOFF_MAX = 320
 local ROLLOFF_MIN = 8
 local EMITTER_SIZE = 48
+--- Multiplier on top of the authored `Assets.SFX.OceanWaves.Volume` (currently 0.55)
+--- so we can tune voyage loudness without touching the template (which is also
+--- used for any non-loop preview). 2.0 = double — bumped per playtest 2026-04.
+local VOLUME_SCALE = 2.0
 
 local player = Players.LocalPlayer
 
@@ -180,20 +184,18 @@ local function shouldHandleShipmentStarted(data: any): boolean
 		and tostring(boat:GetAttribute("ShipmentId") or "") == sid
 end
 
-local function playAfterLoaded(s: Sound)
-	task.defer(function()
-		if not s.Parent then
-			return
-		end
-		if not s.IsLoaded then
-			pcall(function()
-				s.Loaded:Wait()
-			end)
-		end
-		if s.Parent then
-			s:Play()
-		end
-	end)
+--- Just call :Play() — Roblox queues playback internally if the asset
+--- isn't ready yet. The previous `Sound.Loaded:Wait()` gate looked safe
+--- because we checked `IsLoaded == false` first, but `task.defer` yields
+--- a frame and the asset routinely finishes loading between the
+--- `IsLoaded` check and the `:Wait()` call. Once `IsLoaded == true`, the
+--- `Loaded` signal will not fire again, so `:Wait()` blocked forever and
+--- the voyage waves never started — see chat 2026-04 "ocean waves audio
+--- isn't playing on voyage".
+local function playSpatialLoop(s: Sound)
+	if s.Parent then
+		s:Play()
+	end
 end
 
 -- Same host strategy as DrillingSpatialSfx (parts can replicate after the Model).
@@ -243,12 +245,13 @@ local function attachLoopToBoat(boat: Model, shipmentId: string, template: Sound
 	s.Name = "ShipmentOceanWavesLoop"
 	s.Looped = true
 	s.Playing = false
+	s.Volume = template.Volume * VOLUME_SCALE
 	s.RollOffMode = Enum.RollOffMode.InverseTapered
 	s.RollOffMaxDistance = ROLLOFF_MAX
 	s.RollOffMinDistance = ROLLOFF_MIN
 	s.EmitterSize = EMITTER_SIZE
 	s.Parent = host
-	playAfterLoaded(s)
+	playSpatialLoop(s)
 	loopSound = s
 
 	boatDestroyConn = boat.Destroying:Connect(function()

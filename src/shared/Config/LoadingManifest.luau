@@ -121,9 +121,8 @@ local COMMON_STARTER_GUI_ENTRIES: { InstanceEntry } = {
 	{ service = "StarterGui", segments = { "ShipOilPanelGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "ShipManagementPanelGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "SelectShipPanelGui" }, includeDescendants = true, optional = true },
-	{ service = "StarterGui", segments = { "Settings" }, includeDescendants = true, optional = true },
+	{ service = "StarterGui", segments = { "SettingsPanelGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "FTUEDialogueGui" }, includeDescendants = true, optional = true },
-	{ service = "StarterGui", segments = { "FtueDialogueGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "OilPriceInfoPanelGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "StraitInfoPanelGui" }, includeDescendants = true, optional = true },
 }

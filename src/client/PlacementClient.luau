@@ -367,7 +367,11 @@ local function ensureGhost(): Model?
 	local bb = Instance.new("BillboardGui")
 	bb.Name = "GhostTimerGui"
 	bb.Adornee = timerAnchor
-	bb.Size = UDim2.new(0, 160, 0, 60)
+	-- Match the active-drill `TimerGui` sizing in `OilVisualService` so the
+	-- placement-preview "0m / Xm\nYs" text reads at the same on-screen size as
+	-- the live drill timer once placed. Previously 160x60, which after engine
+	-- distance scaling rendered almost-illegibly small on phone.
+	bb.Size = UDim2.new(0, 320, 0, 120)
 	bb.StudsOffsetWorldSpace = Vector3.new(0, 8, 0)
 	bb.AlwaysOnTop = true
 	bb.Enabled = false
@@ -381,7 +385,10 @@ local function ensureGhost(): Model?
 	lbl.TextColor3 = Color3.fromRGB(255, 230, 100)
 	lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
 	lbl.TextStrokeTransparency = 0
-	lbl.Font = Enum.Font.GothamBold
+	-- Match the live drill `TimerLabel` (and the rest of the world billboards
+	-- like the pump `HoloGui.Info`) so the placement preview reads with the
+	-- same font as the timer it becomes once the drill is placed.
+	lbl.Font = Enum.Font.LuckiestGuy
 	lbl.TextScaled = true
 	lbl.Text = ""
 	lbl.Parent = bb
@@ -553,7 +560,10 @@ local function ensureFocusBillboard()
 	end
 	focusBillboard = Instance.new("BillboardGui")
 	focusBillboard.Name = "ChunkFocus"
-	focusBillboard.Size = UDim2.fromOffset(170, 32)
+	-- Slightly larger pixel box. The BillboardGui is distance-scaled by the
+	-- engine, so a bigger offset = proportionally bigger label on every
+	-- device (phone / desktop / console) without needing per-platform code.
+	focusBillboard.Size = UDim2.fromOffset(220, 44)
 	focusBillboard.StudsOffset = Vector3.new(0, 4, 0)
 	focusBillboard.AlwaysOnTop = true
 	focusBillboard.Enabled = false
@@ -565,8 +575,23 @@ local function ensureFocusBillboard()
 	focusLabel.BackgroundColor3 = Color3.fromRGB(21, 27, 38)
 	focusLabel.TextColor3 = Color3.fromRGB(239, 239, 239)
 	focusLabel.Font = Enum.Font.Merriweather
-	focusLabel.TextSize = 12
+	-- TextScaled (no fixed TextSize) so the label fills the larger box and
+	-- scales cleanly with the BillboardGui. UITextSizeConstraint caps the
+	-- top end so close-up hover does not blow the text up to giant.
+	focusLabel.TextScaled = true
+	focusLabel.TextWrapped = false
+	focusLabel.TextTruncate = Enum.TextTruncate.None
 	focusLabel.Parent = focusBillboard
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0, 4)
+	pad.PaddingBottom = UDim.new(0, 4)
+	pad.PaddingLeft = UDim.new(0, 8)
+	pad.PaddingRight = UDim.new(0, 8)
+	pad.Parent = focusLabel
+	local sizeCap = Instance.new("UITextSizeConstraint")
+	sizeCap.MinTextSize = 10
+	sizeCap.MaxTextSize = 22
+	sizeCap.Parent = focusLabel
 end
 
 local function updateFocusUi()
@@ -608,11 +633,61 @@ local function updateFocusUi()
 			local tileData = chunk.tiles[targetName]
 			if tileData then
 				local tileName = tileData.tileName or "?"
-				tileInfoText = string.format(" | %s", tileName)
+				-- Suppress the redundant `| Bronze` segment when the tile's
+				-- own name is identical to the chunk biome (the common
+				-- "Bronze | Bronze — 0.010 bbl/sec" duplication). The HAS
+				-- OIL / NO OIL / bbl/sec suffixes still attach below.
+				if tileName ~= (chunk.biome or "?") then
+					tileInfoText = string.format(" | %s", tileName)
+				end
 				if tileData.revealed and tileData.hasOil == false then
 					tileInfoText = tileInfoText .. " <font color='rgb(240,70,70)'>— NO OIL</font>"
 				elseif tileData.revealed and tileData.hasOil == true then
 					tileInfoText = tileInfoText .. " <font color='rgb(80,230,120)'>— HAS OIL</font>"
+				end
+				-- For drilled tiles, also show the per-tile flow rate they
+				-- are contributing to the chunk's center pump. Mirrors the
+				-- summation in `OilVisualService:_syncDrills.getFlowRate`
+				-- (`def.barrelsPerSecond * pumpMult`) so the hover number
+				-- and the pump's hologram add up. Skip non-producing tiles
+				-- and the center tile (T33) — neither contributes.
+				if
+					tileData.drilled == true
+					and tileData.hasOil ~= false
+					and typeof(tileData.veinTypeId) == "string"
+					and targetName ~= "T33"
+				then
+					local okVc, VeinCrateConfig = pcall(function()
+						return require(_ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
+					end)
+					local okVg, VeinConfig = pcall(function()
+						return require(_ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("VeinConfig"))
+					end)
+					if okVc and okVg and VeinCrateConfig and VeinConfig then
+						local def = VeinCrateConfig.GetById(tileData.veinTypeId)
+						if def and not def.isUnlucky then
+							-- Resolve the chunk's center pump tier so the
+							-- displayed bbl/sec matches the multiplier the
+							-- pump applies (T1=1, T2=2, T3=4). Fall back to
+							-- T1 when no pump record is found yet.
+							local pumpMult = 1
+							local drillStateById = ClientPlotGrid.getDrillStateById and ClientPlotGrid.getDrillStateById() or {}
+							for _, d in pairs(drillStateById) do
+								if d.isCenterPump == true and d.chunkId == chunkId then
+									local pumpDef = VeinConfig.PumpUpgrades and VeinConfig.PumpUpgrades[d.tier]
+									if pumpDef and typeof(pumpDef.flowMult) == "number" then
+										pumpMult = pumpDef.flowMult
+									end
+									break
+								end
+							end
+							local rate = (def.barrelsPerSecond or 0) * pumpMult
+							if rate > 0 then
+								tileInfoText = tileInfoText
+									.. string.format(" <font color='rgb(120,200,255)'>— %.3f bbl/sec</font>", rate)
+							end
+						end
+					end
 				end
 			end
 		end

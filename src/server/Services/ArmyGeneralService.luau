@@ -340,7 +340,14 @@ function ArmyGeneralService:_handleAirstrike(player: Player, payload)
 		return
 	end
 
-	-- General airstrike = GUARANTEED HIT (instakill)
+	-- General airstrike = GUARANTEED HIT (instakill).
+	--- The branches below (log line, post-animation `if hit then ForceDestroyShipment`)
+	--- read a local `hit`. Without this it was nil → falsy → ship was never actually
+	--- destroyed and the victim's client got `outcome="hit"` (which hides the local
+	--- character via `Transparency = 1`) while the server kept them alive. End result:
+	--- "invisible alive player on a still-intact boat" until they slipped off and hit
+	--- the under-map kill plane.
+	local hit = true
 	local cfg = StraitEventCatalog.AirStrikeConfig
 	local rng = Random.new()
 

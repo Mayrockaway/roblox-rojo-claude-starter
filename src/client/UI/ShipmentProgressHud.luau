@@ -37,15 +37,42 @@ export type Packet = { [string]: any }
 
 type StatusText = TextLabel | TextButton
 
+--- Hint-line text color contract (strict — do NOT introduce gold/yellow
+--- shipment text here; gold is reserved for cross-system notifications like
+--- the equipment-shop refresh banner from `ShopRefreshNotification`):
+---   * `cruise`  — pure white. The default "Shipment safely in progress" tick.
+---                 Anything sailing-normal goes through this color; if you find
+---                 yourself painting cruise text any other color, that's a bug.
+---   * `low`     — orange. Used ONLY for genuinely low-tier hostile events
+---                 (coast guard inspection, low-severity strait waypoint).
+---                 Still a "bad thing happened" cue, just not loud-red.
+---   * `medium`  — red. Most hostile events: pirate raids, mid-tier strait
+---                 hits, storm/tornado defaults, missile small-hit.
+---   * `high`    — deep red. Catastrophic events: missile direct hit, mine
+---                 strike, US ship slap. Same family as `medium` but visibly
+---                 angrier so the player can tell "this is the bad one".
+---   * `success` — green. Voyage finished without total loss; written by
+---                 `ShipmentResolved` happy-path. Reused by `evaded` so a
+---                 missile miss reads in the same positive register.
+---   * `evaded`  — green. Currently aliased to `success` because both are
+---                 "good outcome" signals. Kept as a separate key so a future
+---                 designer can split (e.g. softer mint green) without
+---                 re-threading every call site.
+---   * `lost`    — red. Total-loss / failure path on `ShipmentResolved` and
+---                 `StraitWaypointEvent.totalLoss`.
+--- ProgressFill colors are cosmetic for the bar fill ONLY; never assigned to
+--- `TextColor3`. Keeping them in the same table for one-stop tuning.
 local COLORS = {
-	cruise = Color3.fromRGB(218, 228, 240),
-	low = Color3.fromRGB(230, 200, 70),
-	medium = Color3.fromRGB(255, 145, 55),
-	high = Color3.fromRGB(235, 65, 65),
+	cruise = Color3.fromRGB(255, 255, 255),
+	low = Color3.fromRGB(255, 150, 60),
+	medium = Color3.fromRGB(235, 65, 65),
+	high = Color3.fromRGB(210, 35, 35),
 	success = Color3.fromRGB(75, 200, 115),
-	warningLine = Color3.fromRGB(255, 200, 90),
-	lost = Color3.fromRGB(240, 70, 70),
-	-- ProgressFill: bright gold → warm amber (readable on water)
+	evaded = Color3.fromRGB(75, 200, 115),
+	lost = Color3.fromRGB(235, 65, 65),
+	-- ProgressFill: bright gold → warm amber (readable on water). Cosmetic
+	-- ONLY — never used for the Hint TextColor3 (gold there would conflict
+	-- with the equipment-shop refresh banner).
 	progressFillLeft = Color3.fromRGB(255, 232, 120),
 	progressFillRight = Color3.fromRGB(255, 155, 55),
 	progressFillSolid = Color3.fromRGB(255, 205, 85),
@@ -1063,7 +1090,14 @@ local function tryResolveOnce()
 	if line then
 		hintFxScale = ensureHintFxScale(line)
 		shakeBasePos = line.Position
-		baselineTextColor = line.TextColor3
+		-- Hard-code cruise white as the baseline rather than reading
+		-- `line.TextColor3`. If a panel rebuild fires `tryResolve` mid-banner
+		-- (e.g. `ShopRefreshNotification` painted gold a moment ago, then
+		-- `ShipmentProgressPanel` was destroyed/recreated by a Studio sync),
+		-- reading the live color would latch the banner's color as the
+		-- "neutral" cruise color and `restoreHintBaseline` would later
+		-- "restore" the line back to gold. Cruise is pure white, full stop.
+		baselineTextColor = COLORS.cruise
 		baselineRichText = line.RichText
 		if not activeShipmentId then
 			local t = line.Text
@@ -1171,13 +1205,21 @@ local function startCruiseDots()
 	-- typically lines up with the 5s fade hold, so cruise resumes naturally
 	-- once the lock expires.
 	if not HintLineState.isLocked() then
+		h.TextColor3 = COLORS.cruise
 		h.Text = CRUISE_TEXT .. "."
 	end
 	cruiseDotsThread = task.spawn(function()
 		while sid == cruiseDotsSession and h.Parent do
 			phase = (phase % 3) + 1
+			-- Re-assert cruise color every tick (not just on `startCruiseDots`).
+			-- Other writers (`setStatusLocked` from the equipment-shop refresh
+			-- banner, the contractor "your hit landed" alert, etc.) repaint
+			-- the line and the cruise loop must own its color back the moment
+			-- the lock window expires, otherwise cruise text inherits the
+			-- previous writer's color (the "everything looks gold" bug).
 			if not HintLineState.isLocked() then
 				local dots = string.rep(".", phase)
+				h.TextColor3 = COLORS.cruise
 				h.Text = CRUISE_TEXT .. dots
 			end
 			task.wait(0.42)
@@ -1350,6 +1392,45 @@ local function showHalted(severityRaw: string, holdSeconds: number)
 		haltProgressFreezeUntil = nil
 		haltFrozenFillAlpha = nil
 		stopShake()
+		stopPulseTween()
+		if hintFxScale then
+			hintFxScale.Scale = 1
+		end
+		tryResumeCruiseDots(resumeGen)
+	end)
+end
+
+--- Positive-outcome counterpart to `showHalted` — paints the Hint line green
+--- with the supplied evaded message (e.g. "Missile evaded!"), holds the bar
+--- frozen for `holdSeconds` so progress doesn't snap forward mid-cinematic,
+--- runs a gentle low-tier pulse (no shake — it's good news), then resumes
+--- cruise dots. Mirrors `showHalted`'s lock-respecting write so a higher
+--- priority message (contractor alert, shop refresh banner) still wins.
+local function showEvaded(message: string, holdSeconds: number)
+	local h = statusLine
+	if not (h and h.Parent) then
+		return
+	end
+	local hold = math.clamp(holdSeconds, 0.35, 120)
+	haltFrozenFillAlpha = ownerProgressFillAlpha()
+	haltProgressFreezeUntil = workspace:GetServerTimeNow() + hold
+	cancelAllHintFx()
+	h.RichText = false
+	if not HintLineState.isLocked() then
+		h.Text = message
+		h.TextColor3 = COLORS.evaded
+		HintLineState.markNonCruiseWritten()
+	end
+	startPulseLoop("low")
+
+	local resumeGen = haltGeneration
+	haltResumeThread = task.delay(hold, function()
+		haltResumeThread = nil
+		if resumeGen ~= haltGeneration then
+			return
+		end
+		haltProgressFreezeUntil = nil
+		haltFrozenFillAlpha = nil
 		stopPulseTween()
 		if hintFxScale then
 			hintFxScale.Scale = 1
@@ -1678,8 +1759,14 @@ function ShipmentProgressHud.onVisualPacket(kind: string, data: Packet, localPla
 			return
 		end
 		local outcome = tostring(data.outcome or "miss")
-		local sev = if outcome == "hit" then "High" elseif outcome == "smallHit" then "Medium" else "Low"
-		showHalted(sev, missileBarrageHintSeconds())
+		-- Miss = evaded → green positive cue, not an orange "Ship halted!".
+		-- Hit / smallHit still go through `showHalted` so red shake/pulse fires.
+		if outcome == "miss" then
+			showEvaded("Missile evaded!", missileBarrageHintSeconds())
+		else
+			local sev = if outcome == "hit" then "High" else "Medium"
+			showHalted(sev, missileBarrageHintSeconds())
+		end
 		return
 	end
 

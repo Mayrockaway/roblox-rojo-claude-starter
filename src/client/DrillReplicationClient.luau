@@ -114,8 +114,10 @@ function M.connect(deps: Deps)
 				name = veinType and string.upper(veinType.rarity) or "ROW POOL",
 				color = veinType and VeinCrateConfig.GetRarityTextColor(veinType.rarity) or Color3.fromRGB(255, 255, 255),
 			}
-			--- Billboard title after spin: show rarity only (not vein displayName e.g. "Clean Cache").
-			local rarityBillboardText = if veinType then veinType.rarity elseif veinResult.isDead then "Unlucky" else oddsText
+			-- Tile color flicker + oil burst (below) only. The post-spin
+			-- world-anchored `VeinRevealBillboard` (rarity title above the
+			-- tile) was removed at user request — it duplicated the lootbox
+			-- spinner result. Screen toast (`VeinToast`) still fires below.
 
 			-- Slot spin animation on the tile
 			-- Find tile part by searching owned plot sections
@@ -138,51 +140,13 @@ function M.connect(deps: Deps)
 			end
 
 			task.spawn(function()
-				-- Billboard above tile showing spinning results
-				local billboard = nil
-				local nameLabel = nil
-				local oddsLabel = nil
-				if tilePart then
-					billboard = Instance.new("BillboardGui")
-					billboard.Name = "VeinRevealBillboard"
-					billboard.Size = UDim2.fromOffset(300, 100)
-					billboard.StudsOffset = Vector3.new(0, 8, 0)
-					billboard.AlwaysOnTop = true
-					billboard.Adornee = tilePart
-					billboard.Parent = playerGui
-
-					nameLabel = Instance.new("TextLabel")
-					nameLabel.Size = UDim2.fromScale(1, 0.6)
-					nameLabel.Position = UDim2.fromScale(0, 0)
-					nameLabel.BackgroundTransparency = 1
-					nameLabel.Font = Enum.Font.LuckiestGuy
-					nameLabel.TextSize = 28
-					nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-					nameLabel.TextStrokeTransparency = 0
-					nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-					nameLabel.Text = ""
-					nameLabel.Parent = billboard
-
-					oddsLabel = Instance.new("TextLabel")
-					oddsLabel.Size = UDim2.fromScale(1, 0.4)
-					oddsLabel.Position = UDim2.fromScale(0, 0.6)
-					oddsLabel.BackgroundTransparency = 1
-					oddsLabel.Font = Enum.Font.LuckiestGuy
-					oddsLabel.TextSize = 22
-					oddsLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-					oddsLabel.TextStrokeTransparency = 0
-					oddsLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-					oddsLabel.Text = ""
-					oddsLabel.Parent = billboard
-				end
-
-				-- Spin through random combos for 3 seconds
+				-- Tile-color slot spin (3s). The world-anchored billboard
+				-- that used to label the spin was removed; only the visual
+				-- color flicker on the tile + final landed color remain.
 				local spinDur = 3
 				local spinT0 = os.clock()
 				local spinRng = Random.new(os.clock() * 1000)
-				local allStreams = VeinConfig.StreamOrder
 				local allOils = VeinConfig.OilOrder
-				local originalColor = tilePart and tilePart.Color or Color3.fromRGB(254, 224, 180)
 
 				while true do
 					local elapsed = os.clock() - spinT0
@@ -190,22 +154,11 @@ function M.connect(deps: Deps)
 					-- Ease: start fast, slow down
 					local progress = elapsed / spinDur
 					local interval = 0.06 + 0.4 * (progress * progress * progress)
-					-- Pick random combo to display
-					local randStream = allStreams[spinRng:NextInteger(1, #allStreams)]
 					local randOil = allOils[spinRng:NextInteger(1, #allOils)]
-					local streamDef = VeinConfig.Streams[randStream]
 					local oilDef = VeinConfig.OilTypes[randOil]
 
-					if tilePart then
+					if tilePart and oilDef then
 						tilePart.Color = oilDef.color
-					end
-					if nameLabel then
-						nameLabel.Text = oilDef.displayName .. " " .. streamDef.name
-						nameLabel.TextColor3 = streamDef.color
-					end
-					if oddsLabel then
-						local fakeProbInverse = spinRng:NextInteger(2, 5000)
-						oddsLabel.Text = "1/" .. tostring(fakeProbInverse)
 					end
 
 					task.wait(interval)
@@ -222,17 +175,6 @@ function M.connect(deps: Deps)
 							tilePart.Color = firstOil.color
 						end
 					end
-				end
-				if nameLabel then
-					nameLabel.Text = rarityBillboardText
-					nameLabel.TextColor3 = rarity.color
-					if rarity.name == "LEGENDARY" or rarity.name == "EPIC" then
-						nameLabel.TextSize = 34
-					end
-				end
-				if oddsLabel then
-					oddsLabel.Text = oddsText
-					oddsLabel.TextColor3 = rarity.color
 				end
 
 				-- Toast popup
@@ -287,10 +229,8 @@ function M.connect(deps: Deps)
 					end
 				end
 
-				-- Fade billboard + toast after 3s
-				task.wait(3)
-				if billboard then billboard:Destroy() end
-				task.wait(1)
+				-- Toast fade-out (billboard removed, see top of block)
+				task.wait(4)
 				if toast and toast.Parent then toast:Destroy() end
 			end)
 

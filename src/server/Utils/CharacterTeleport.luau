@@ -46,6 +46,18 @@ end
 --- One-shot unseat-then-pivot. All teleport handlers should prefer this over
 --- calling `unseatIfSitting` + `PivotTo` separately — a forgotten unseat is
 --- how the "seat drags across teleport" bug reappears.
+---
+--- Velocity reset: server-side `PivotTo` alone leaves any pre-existing
+--- linear/angular velocity in place, so a player falling fast (e.g. straight
+--- off a moving boat) keeps that downward velocity right after the teleport
+--- and starts falling again immediately. Zero both velocities here.
+---
+--- DO NOT add `SetNetworkOwner(nil)` here — it routes ALL of the player's
+--- subsequent physics input through the server while ownership is held, which
+--- presents as visible movement lag, ragdoll/Freefall pose on land, and the
+--- character clipping into the floor while gravity runs server-side. If the
+--- "1-frame teleport then revert" bug returns, fix it via a short Anchored
+--- pulse or a follow-up safety re-teleport — not by stealing net ownership.
 function CharacterTeleport.teleportWithUnseat(character: Model, cf: CFrame, logLabel: string?)
 	local hum = character:FindFirstChildOfClass("Humanoid")
 	local wasSitting = hum ~= nil and hum.SeatPart ~= nil
@@ -53,7 +65,15 @@ function CharacterTeleport.teleportWithUnseat(character: Model, cf: CFrame, logL
 		forceClearSeat(hum :: Humanoid)
 		task.wait(SETTLE_AFTER_UNSEAT_SECONDS)
 	end
+
 	character:PivotTo(cf)
+
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if hrp and hrp:IsA("BasePart") then
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		hrp.AssemblyAngularVelocity = Vector3.zero
+	end
+
 	if logLabel and logLabel ~= "" then
 		DevLog.log(string.format("[teleport] path=%s seated=%s", logLabel, tostring(wasSitting)))
 	end

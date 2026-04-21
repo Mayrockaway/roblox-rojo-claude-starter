@@ -50,6 +50,12 @@ local Constants = {
 		ForceAirStrike = false, -- debug: fire airstrike immediately
 		LogWaypointTriggers = false,
 		VerboseStraitWaypointLogsInStudio = true,
+		--- Diagnostic: when true, `OilShipmentService:_freezeShipForStraitEventCinematic`
+		--- prints the boat root velocity + the owner character's HRP velocity, SeatPart,
+		--- FloorMaterial, attached BodyMovers / movement Constraints, and any external
+		--- Welds before/during/after the cinematic freeze. Use to identify what is
+		--- pulling the player toward a cosmetic NPC ship.
+		LogFreezeCharacterSnapshot = true,
 	},
 
 	-- Replicated on shop `Tool` instances: stack size / uses in one slot (`EquipmentShopService`, hotbar UI).

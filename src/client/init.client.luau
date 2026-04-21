@@ -45,6 +45,7 @@ local StrategicStrikeClient = require(resolveClientModule(script, "StrategicStri
 local StraitMarketHudClient = require(resolveClientModule(script, "StraitMarketHudClient"))
 local ShipmentVisualClient = require(resolveClientModule(script, "ShipmentVisualClient"))
 local PirateHireClient = require(resolveClientModule(script, "PirateHireClient"))
+local ShopRefreshNotification = require(resolveClientModule(script, "ShopRefreshNotification"))
 local OilSnapshotClient = require(resolveClientModule(script, "OilSnapshotClient"))
 local ClientAudioPreferences = require(resolveClientModule(script, "ClientAudioPreferences"))
 ClientAudioPreferences.init()
@@ -398,6 +399,16 @@ PirateHireClient.connect({
 	pirateHitAlertEvent = pirateHitAlertEvent,
 })
 
+-- Gold "Equipment shop just refreshed!" hint on the shipment progress HUD
+-- whenever the rotating stock ticks over (server `EquipmentShopService`
+-- `_rollShopStock` → `EquipmentShopStockUpdate` with `reason = "rotation"`).
+-- Re-uses the same `setStatusLocked` lock + 5s fade window as the contractor
+-- gold alert above so the two notifications never clobber each other.
+ShopRefreshNotification.start({
+	setStatusLocked = ClientPlotGrid.setStatusLocked,
+	stockUpdateEvent = Remotes.equipmentShopStockUpdate :: RemoteEvent,
+})
+
 StrategicStrikeClient.connectArmyGeneralEarly({
 	player = player,
 	playerGui = playerGui,
@@ -612,8 +623,63 @@ local function startHudModalWiring()
 			warn("[Client] HUD wiring: HudPanelRouter ModuleScript missing under UI folder.")
 		return
 	end
-		local HudPanelRouter = require(routerMod) :: { start: (PlayerGui) -> () }
+		local HudPanelRouter = require(routerMod) :: {
+			start: (PlayerGui) -> (),
+			openScreen: (string) -> boolean,
+		}
 		HudPanelRouter.start(playerGui)
+
+		-- Post-login Robux Shop auto-open (Starter Pack upsell).
+		--
+		-- Open `RobuxShop` once per session for any player whose FTUE is
+		-- complete and who hasn't suppressed the upsell yet (suppression flips
+		-- on the first successful Robux purchase — DevProduct or GamePass —
+		-- via `MonetizationService` → `OilStateService:MarkRobuxShopAutoOpenDismissed`).
+		--
+		-- Why a fresh `InvokeServer()` instead of reading the snapshot already
+		-- captured at line ~830: this code runs INSIDE `startHudModalWiring`,
+		-- which is `task.defer`'d and may execute BEFORE the module-bottom
+		-- `OilSnapshotClient.invokeOilSnapshot` finishes (its yield is
+		-- intentional — see the comment at line ~664). Re-invoking here is
+		-- the only way to read the gating fields without a race. Retried in
+		-- a small loop so a transient `OilStateService` race (state not yet
+		-- built when `PlayerAdded` ran) doesn't permanently skip the upsell.
+		--
+		-- Why `openScreen` is retried separately: the `RobuxShop` ScreenGui is
+		-- a Studio-authored modal in `StarterGui` and may not have replicated
+		-- to `PlayerGui` by the time we try to open it. `openScreen` returns
+		-- `false` until the panel is bound; a short retry covers the streaming
+		-- gap on slow first-join.
+		task.spawn(function()
+			local snapshotState: any = nil
+			for _ = 1, 20 do
+				local ok, snap = pcall(function()
+					return requestOilSnapshot:InvokeServer()
+				end)
+				if ok and typeof(snap) == "table" and typeof((snap :: any).state) == "table" then
+					snapshotState = (snap :: any).state
+					break
+				end
+				task.wait(0.5)
+			end
+			if typeof(snapshotState) ~= "table" then
+				return
+			end
+			local ftueDone = (snapshotState :: any).ftueCompleted == true
+			local dismissed = (snapshotState :: any).robuxShopAutoOpenDismissed == true
+			if not ftueDone or dismissed then
+				return
+			end
+			-- Retry `openScreen` until the panel is bindable. Keep the window
+			-- bounded so we never spin forever if the ScreenGui is genuinely
+			-- absent (e.g. the Studio modal was deleted).
+			for _ = 1, 30 do
+				if HudPanelRouter.openScreen("RobuxShop") then
+					return
+				end
+				task.wait(0.25)
+			end
+		end)
 
 		-- 2x Earnings GamePass active-state chrome: pulses a rainbow stroke
 		-- around the HUD `EarningsGamepass` icon when the player owns the
@@ -859,7 +925,7 @@ mouse.Button1Down:Connect(function()
 	if UserInputService:GetLastInputType() == Enum.UserInputType.Touch then
 		return
 	end
-	tryPrimaryAction()
+		tryPrimaryAction()
 end)
 
 -- Touch (mobile / tablet) placement: tap-to-preview, tap-again-to-confirm.

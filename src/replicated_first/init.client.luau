@@ -39,7 +39,25 @@ pcall(function()
 	StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
 end)
 
+--- `Players.LocalPlayer` can be `nil` for a brief window when a script in
+--- `ReplicatedFirst` first runs (the LocalPlayer property is populated
+--- asynchronously, very early in client startup, on a separate signal). If we
+--- hit `LocalPlayer:WaitForChild("PlayerGui")` while `LocalPlayer` is still
+--- `nil`, the whole bootstrap throws `attempt to index nil with 'WaitForChild'`
+--- on its very first line, never reaches a single `print`, and the custom
+--- loading screen never gets parented to PlayerGui — the player just sees the
+--- default Roblox loader cut straight into the world. Wait deterministically
+--- before touching `LocalPlayer`. See playtest 2026-04 "loading screen not
+--- appearing" — Output had the parser warning at the bottom of this file but
+--- zero `[LoadingBootstrap]` runtime lines, which is exactly the signature of
+--- a crash before any print on this line.
 local player = Players.LocalPlayer
+if not player then
+	repeat
+		Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+		player = Players.LocalPlayer
+	until player ~= nil
+end
 local playerGui = player:WaitForChild("PlayerGui")
 
 local function buildFallbackScreen(): ScreenGui
@@ -599,7 +617,8 @@ end
 local hudWasSuppressedForFade = false
 if hudScreen and hudScreen:IsA("ScreenGui") then
 	hudWasSuppressedForFade = true
-	(hudScreen :: ScreenGui).Enabled = false
+	local hudScreenGui = hudScreen :: ScreenGui
+	hudScreenGui.Enabled = false
 end
 
 --- Watchdog: regardless of how the next ~1.5s plays out (fade tween, destroy,
@@ -612,9 +631,12 @@ if hudWasSuppressedForFade then
 		local hud = playerGui:FindFirstChild("HUD")
 			or (hudScreen and hudScreen.Parent ~= nil and hudScreen)
 			or nil
-		if hud and hud:IsA("ScreenGui") and (hud :: ScreenGui).Enabled == false then
-			warn("[LoadingBootstrap] HUD ScreenGui was still disabled 8s after fade — forcing Enabled=true (watchdog).")
-			(hud :: ScreenGui).Enabled = true
+		if hud and hud:IsA("ScreenGui") then
+			local hudGui = hud :: ScreenGui
+			if hudGui.Enabled == false then
+				warn("[LoadingBootstrap] HUD ScreenGui was still disabled 8s after fade — forcing Enabled=true (watchdog).")
+				hudGui.Enabled = true
+			end
 		end
 	end)
 end

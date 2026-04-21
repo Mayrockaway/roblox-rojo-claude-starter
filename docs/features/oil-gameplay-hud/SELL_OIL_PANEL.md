@@ -73,7 +73,7 @@ Horizontal **`UIListLayout`** (`SortOrder = LayoutOrder`, **`ItemLineAlignment =
 | `InfoColumn` | `TypeName` (TextLabel), `StoredLabel` (TextLabel) |
 | `RowSpacer` | Invisible flex slot; **do not** remove for layout |
 | `PriceLabel` | Current $/bbl (placeholder copy until wired) |
-| `Stepper` | `MinusButton`, `AmountLabel`, `PlusButton` |
+| `Stepper` | `MinusButton`, `AmountLabel`, `PlusButton`. The frame has its own `UICorner` and `UIStroke` to match the parent row's. **Roblox `ClipsDescendants` does not respect `UICorner`** (it only clips rectangular bounds) and giving the children their own `UICorner` looks visually inconsistent, so instead the `Stepper` carries a **`UIPadding` with `PaddingRight = (parent row UICorner radius, 10 px)`** — flat `PlusButton` ends exactly where the rounded curve begins. To avoid a **double border** showing the row's stroke and the stepper's stroke 8–10 px apart, the **row's `UIPadding.PaddingRight = 0`** (the `RowSpacer` flex absorbs the slack and pushes the `Stepper` flush with the row's right edge), and the **`Stepper.UICorner.CornerRadius` matches the row's `UICorner.CornerRadius` (10 px)** so the two strokes draw along the same curve and read as a single border. |
 
 **Tier mapping (code):** **Crude** row ↔ warehouse **`Crude`** only (one stepper). **`Refined`** / **`Premium`** on their rows. Server: **`OilMarketService:HandleSellWarehouseBarrels`** + **`WarehouseService:TryRemoveBarrelsByCounts`**.
 

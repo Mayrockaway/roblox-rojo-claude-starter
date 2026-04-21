@@ -7,6 +7,11 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
 local MonetizationCatalog = require(Shared:WaitForChild("Config"):WaitForChild("MonetizationCatalog"))
+-- Reuse the rarity color palette from the vein crate config so ship cards,
+-- crate cards, and any future loot UI all read the same color for the same
+-- rarity word ("Epic" purple, "Legendary" gold, etc.). Avoids drift from a
+-- second hand-rolled palette in this module.
+local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
 local ViewportShipFit = require(script.Parent.Parent.ViewportShipFit)
 local ShipViewportPreviewFactory = require(script.Parent.Parent.ShipViewportPreviewFactory)
 
@@ -104,6 +109,12 @@ function SelectShipPopulate.Apply(root: Instance, entry: SkinEntry, ctx: ApplyCo
 		local raw = entry.rarityDisplay
 		local rarityDisplay = if typeof(raw) == "string" and raw ~= "" then raw else nil
 		rarity.Text = if rarityDisplay then `Rarity: {rarityDisplay}` else "Rarity: —"
+		-- Tint the label to the rarity's text color (Common white, Uncommon
+		-- green, Rare blue, Epic purple, Legendary gold — see
+		-- `VeinCrateConfig.RarityStyles`). Falls back to Common white when
+		-- the skin def has no `rarityDisplay` so the label never reads as a
+		-- broken color on `"Rarity: —"`.
+		rarity.TextColor3 = VeinCrateConfig.GetRarityTextColor(rarityDisplay or "Common")
 	end
 
 	local owned: boolean = if ctx and typeof(ctx.owned) == "boolean" then ctx.owned else true
