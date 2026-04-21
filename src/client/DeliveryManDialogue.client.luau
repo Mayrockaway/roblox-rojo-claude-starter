@@ -30,7 +30,9 @@ local playerScripts = player:WaitForChild("PlayerScripts")
 local clientFolder = playerScripts:WaitForChild("Client", 30)
 local uiFolder = clientFolder and clientFolder:WaitForChild("UI", 10)
 local HudPanelRouter = uiFolder and require(uiFolder:WaitForChild("HudPanelRouter"))
-local MARKER_VISIBLE_DISTANCE = 180
+-- Ship Oil marker is visible from the entire beach/docks area and remains
+-- visible (but smaller) when on the strait or at the warehouse.
+local MARKER_VISIBLE_DISTANCE = 9999
 
 -- Floating "Ship Oil" marker — client-side only, on the player's own plot.
 -- Bobs gently above the DeliveryMan's head so the dispatch point is visible
@@ -83,7 +85,7 @@ task.spawn(function()
 				arrow.Position = UDim2.fromScale(0, 0.5)
 				arrow.BackgroundTransparency = 1
 				arrow.Font = Enum.Font.LuckiestGuy
-				arrow.TextSize = 52
+				arrow.TextScaled = true
 				arrow.Text = "▼"
 				arrow.TextColor3 = Color3.fromRGB(50, 220, 80)
 				arrow.TextTransparency = 0.4
@@ -97,7 +99,7 @@ task.spawn(function()
 				label.Position = UDim2.fromScale(0, 0)
 				label.BackgroundTransparency = 1
 				label.Font = Enum.Font.LuckiestGuy
-				label.TextSize = 32
+				label.TextScaled = true
 				label.Text = "Ship Oil"
 				label.TextColor3 = Color3.fromRGB(50, 220, 80)
 				label.TextTransparency = 0.4
@@ -115,7 +117,12 @@ task.spawn(function()
 	player:GetAttributeChangedSignal("PlotId"):Connect(tryCreateMarker)
 	task.delay(3, tryCreateMarker)
 
-	-- Bob animation via StudsOffset.
+	-- Bob animation + distance-aware scaling:
+	--   Close (< 20 studs):   1x base size
+	--   Beach/docks (20-150): scales UP to 2x so it's a landmark from the docks
+	--   Far (> 300, strait/warehouse): shrinks to 0.6x — still visible, just smaller
+	local MARKER_BASE_W = 200
+	local MARKER_BASE_H = 110
 	local t = 0
 	RunService.Heartbeat:Connect(function(dt)
 		t = t + dt
@@ -129,6 +136,25 @@ task.spawn(function()
 				inRange = (hrp.Position - markerHead.Position).Magnitude <= MARKER_VISIBLE_DISTANCE
 			end
 			markerGui.Enabled = inRange
+			if inRange then
+				local cam = Workspace.CurrentCamera
+				if cam and markerHead and markerHead.Parent then
+					local dist = (cam.CFrame.Position - markerHead.Position).Magnitude
+					local scale: number
+					if dist < 20 then
+						scale = 1.0
+					elseif dist < 150 then
+						-- Lerp from 1x → 2x across the beach/docks range
+						scale = 1.0 + (dist - 20) / (150 - 20)
+					elseif dist < 300 then
+						-- Lerp from 2x → 0.6x as you sail away
+						scale = 2.0 - 1.4 * (dist - 150) / (300 - 150)
+					else
+						scale = 0.6
+					end
+					markerGui.Size = UDim2.new(0, math.round(MARKER_BASE_W * scale), 0, math.round(MARKER_BASE_H * scale))
+				end
+			end
 		end
 	end)
 end)

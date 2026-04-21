@@ -117,8 +117,20 @@ function PlotResourceService:Start()
 	end))
 
 	snapshotFn.OnServerInvoke = function(player)
+		-- Wait for the player's oil state to be ready. On first join the
+		-- DataStore load may still be in flight when the client calls
+		-- RequestOilSnapshot, which previously returned nil and left the
+		-- client with $0 / no chunks. Poll up to 10s before giving up.
+		local clientState = self._oilStateService:GetStateForClient(player.UserId)
+		if not clientState then
+			for _ = 1, 40 do
+				task.wait(0.25)
+				clientState = self._oilStateService:GetStateForClient(player.UserId)
+				if clientState then break end
+			end
+		end
 		return {
-			state = self._oilStateService:GetStateForClient(player.UserId),
+			state = clientState,
 			config = {
 				drillPlacementCost = OilConfig.DrillPlacementCost,
 				drillMinSpacing = OilConfig.DrillMinSpacing,

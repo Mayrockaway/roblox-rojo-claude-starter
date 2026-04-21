@@ -127,11 +127,18 @@ local RemoteNames = {
 	-- display-only.
 	GamePassEffectsUpdate = "GamePassEffectsUpdate",
 
+	-- AutoShip: automatic oil dispatch loop (GamePass).
+	RequestSetAutoShip = "RequestSetAutoShip",
+	AutoShipStateUpdate = "AutoShipStateUpdate",
+
 	-- Per-plot oil tanks: three tubes (Crude/Refined/Premium) upgradable 1..10.
 	RequestUpgradeOilTank = "RequestUpgradeOilTank",
 
 	-- Dev-only: server-side diagnostic line shipped to all client consoles.
 	DevLog = "DevLog",
+
+	-- Dev-only: toggle all UI visibility for marketing footage capture.
+	DevHideUI = "DevHideUI",
 
 	-- FTUE (`FtueService` + `FtueDialogueController`).
 	RequestFtueAcknowledge = "RequestFtueAcknowledge",

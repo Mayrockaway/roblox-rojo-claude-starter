@@ -146,9 +146,19 @@ local function forEachActiveDrill(fn: (Instance) -> ())
 	end
 end
 
--- Update the text on every drill's static timer billboard
+-- Update the text on every drill's static timer billboard.
+-- Also scales the BillboardGui based on camera distance so it behaves like a
+-- fixed-size world object instead of a constant screen-pixel overlay.
+local TIMER_BASE_W = 180
+local TIMER_BASE_H = 70
+local TIMER_REF_DIST = 25 -- studs at which the billboard renders at full base size
+local TIMER_MIN_SCALE = 0.25
+local TIMER_MAX_SCALE = 1.0
+
 local function updateDrillTimers()
 	local now = workspace:GetServerTimeNow()
+	local cam = workspace.CurrentCamera
+	local camPos = cam and cam.CFrame.Position or Vector3.zero
 	for folder in pairs(_activeDrillsFolders) do
 		if folder.Parent then
 			for _, anchor in ipairs(folder:GetChildren()) do
@@ -170,6 +180,12 @@ local function updateDrillTimers()
 						else
 							lbl.Text = timeStr
 						end
+					end
+					-- Scale billboard to simulate world-space sizing.
+					if bb and bb:IsA("BillboardGui") then
+						local dist = (camPos - anchor.Position).Magnitude
+						local scale = math.clamp(TIMER_REF_DIST / math.max(dist, 1), TIMER_MIN_SCALE, TIMER_MAX_SCALE)
+						bb.Size = UDim2.new(0, math.round(TIMER_BASE_W * scale), 0, math.round(TIMER_BASE_H * scale))
 					end
 				end
 			end

@@ -692,6 +692,12 @@ local function startHudModalWiring()
 			EarningsGamepassController.start(playerGui)
 		end
 
+		local autoShipMod = uiFolder:FindFirstChild("AutoShipController")
+		if autoShipMod and autoShipMod:IsA("ModuleScript") then
+			local AutoShipController = require(autoShipMod) :: { start: (PlayerGui) -> () }
+			AutoShipController.start(playerGui)
+		end
+
 		local ppoMod = uiFolder:FindFirstChild("ProximityPanelOpener")
 		if ppoMod and ppoMod:IsA("ModuleScript") then
 			local ProximityPanelOpener = require(ppoMod) :: { start: () -> () }
@@ -886,7 +892,7 @@ local initialOk, initialSnapshot = OilSnapshotClient.invokeOilSnapshot(requestOi
 local hasInitialState = initialOk and OilSnapshotClient.applySnapshot(oilSnapshotDeps, initialSnapshot)
 if not hasInitialState then
 	task.spawn(function()
-		OilSnapshotClient.requestSnapshotWithRetry(oilSnapshotDeps, requestOilSnapshot, 10, 0.25)
+		OilSnapshotClient.requestSnapshotWithRetry(oilSnapshotDeps, requestOilSnapshot, 20, 0.5)
 	end)
 end
 

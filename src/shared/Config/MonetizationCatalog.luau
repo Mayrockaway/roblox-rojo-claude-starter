@@ -239,6 +239,16 @@ MonetizationCatalog.Items = {
 		category = "Boosts",
 		grant = { kind = "GamePassEffect", gamePassEffect = "DoubleEarnings" },
 	},
+	{
+		id = "gamepass.auto_ship",
+		productKind = "GamePass",
+		productId = 0, -- TODO: set real Roblox GamePass id from Creator Dashboard
+		robuxPrice = 499,
+		displayName = "AutoShip",
+		subtitle = "Permanent",
+		category = "Boosts",
+		grant = { kind = "GamePassEffect", gamePassEffect = "AutoShip" },
+	},
 
 	-- Consumables ----------------------------------------------------------
 	-- One-shot Robux dev products. `MonetizationService:_grantConsumable`

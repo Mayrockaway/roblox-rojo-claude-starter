@@ -84,6 +84,8 @@ export type ClientRemotes = {
 	monetizationResult: RemoteEvent,
 	requestMonetizationCatalog: RemoteFunction,
 	gamePassEffectsUpdate: RemoteEvent,
+	requestSetAutoShip: RemoteEvent,
+	autoShipStateUpdate: RemoteEvent,
 }
 
 local Remotes: ClientRemotes = {
@@ -151,11 +153,76 @@ local Remotes: ClientRemotes = {
 	--- and again whenever a GamePass prompt finishes with `wasPurchased = true`.
 	--- Consumed by `EarningsGamepassController` to drive the HUD active-state chrome.
 	gamePassEffectsUpdate = waitRemote(RemoteNames.GamePassEffectsUpdate) :: RemoteEvent,
+	requestSetAutoShip = waitRemote(RemoteNames.RequestSetAutoShip) :: RemoteEvent,
+	autoShipStateUpdate = waitRemote(RemoteNames.AutoShipStateUpdate) :: RemoteEvent,
 }
 
 local devLogEvent = waitRemote(RemoteNames.DevLog) :: RemoteEvent
 devLogEvent.OnClientEvent:Connect(function(msg: any)
 	print("[SRV] " .. tostring(msg))
 end)
+
+-- Dev-only: `/hideui` toggles ALL UI for marketing footage.
+-- Hides every ScreenGui in PlayerGui, every BillboardGui in Workspace,
+-- and all ProximityPrompts. Fires again to restore.
+do
+	local Players = game:GetService("Players")
+	local Workspace = game:GetService("Workspace")
+	local devHideUIEvent = waitRemote(RemoteNames.DevHideUI) :: RemoteEvent
+	local uiHidden = false
+	-- Stash original Enabled states so we can restore exactly.
+	local stashedScreenGuis: { [ScreenGui]: boolean } = {}
+	local stashedBillboards: { [BillboardGui]: boolean } = {}
+	local stashedPrompts: { [ProximityPrompt]: boolean } = {}
+
+	devHideUIEvent.OnClientEvent:Connect(function()
+		local playerGui = Players.LocalPlayer:FindFirstChildWhichIsA("PlayerGui")
+		if not playerGui then return end
+
+		uiHidden = not uiHidden
+
+		if uiHidden then
+			-- Hide: stash + disable
+			stashedScreenGuis = {}
+			stashedBillboards = {}
+			stashedPrompts = {}
+
+			for _, sg in ipairs(playerGui:GetChildren()) do
+				if sg:IsA("ScreenGui") then
+					stashedScreenGuis[sg] = sg.Enabled
+					sg.Enabled = false
+				end
+			end
+			for _, bb in ipairs(Workspace:GetDescendants()) do
+				if bb:IsA("BillboardGui") then
+					stashedBillboards[bb] = bb.Enabled
+					bb.Enabled = false
+				end
+			end
+			for _, pp in ipairs(Workspace:GetDescendants()) do
+				if pp:IsA("ProximityPrompt") then
+					stashedPrompts[pp] = pp.Enabled
+					pp.Enabled = false
+				end
+			end
+			print("[Dev] UI hidden for marketing footage. /hideui again to restore.")
+		else
+			-- Restore
+			for sg, wasEnabled in pairs(stashedScreenGuis) do
+				if sg and sg.Parent then sg.Enabled = wasEnabled end
+			end
+			for bb, wasEnabled in pairs(stashedBillboards) do
+				if bb and bb.Parent then bb.Enabled = wasEnabled end
+			end
+			for pp, wasEnabled in pairs(stashedPrompts) do
+				if pp and pp.Parent then pp.Enabled = wasEnabled end
+			end
+			stashedScreenGuis = {}
+			stashedBillboards = {}
+			stashedPrompts = {}
+			print("[Dev] UI restored.")
+		end
+	end)
+end
 
 return Remotes

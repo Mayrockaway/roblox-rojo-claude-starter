@@ -567,6 +567,10 @@ function OilShipmentService:SetSecurityPersonnelService(securityPersonnelService
 	self._securityPersonnelService = securityPersonnelService
 end
 
+function OilShipmentService:SetAutoShipService(autoShipService: any)
+	self._autoShipService = autoShipService
+end
+
 function OilShipmentService:_discoverLanes()
 	self._lanes = {}
 	local Workspace = game:GetService("Workspace")
@@ -1094,6 +1098,18 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 	end)
 end
 
+--- Server-initiated dispatch for AutoShipService. Uses the exact same
+--- validation and voyage code path as client-initiated `_handleDispatch`.
+--- Returns true if a shipment was successfully dispatched.
+function OilShipmentService:DispatchForAutoShip(player: Player, manifest: { [string]: number }): boolean
+	local state = self._oilStateService:GetState(player.UserId)
+	local before = state and (state.activeShipmentCount or 0) or 0
+	self:_handleDispatch(player, { manifest = manifest })
+	local stateAfter = self._oilStateService:GetState(player.UserId)
+	local after = stateAfter and (stateAfter.activeShipmentCount or 0) or 0
+	return after > before
+end
+
 function OilShipmentService:_runShipment(shipment)
 	local ownerUserId = shipment.ownerUserId
 	local plot = self._plotService:GetOwnedPlot(ownerUserId)
@@ -1201,11 +1217,15 @@ function OilShipmentService:_runShipment(shipment)
 	self:_loadBarrelsOnDeck(boat, shipment.manifest)
 
 	-- Auto-teleport owner onto the ship deck (Ship Oil click is a one-click dispatch).
-	local ownerPlayer = Players:GetPlayerByUserId(ownerUserId)
-	if ownerPlayer then
-		pcall(function()
-			self._boatDockService:TeleportOwnerToSeat(ownerPlayer)
-		end)
+	-- Skip when AutoShip is active — the player stays on their plot.
+	local autoShipActive = self._autoShipService and self._autoShipService:IsActive(ownerUserId)
+	if not autoShipActive then
+		local ownerPlayer = Players:GetPlayerByUserId(ownerUserId)
+		if ownerPlayer then
+			pcall(function()
+				self._boatDockService:TeleportOwnerToSeat(ownerPlayer)
+			end)
+		end
 	end
 	local boardConnection: RBXScriptConnection? = nil
 
@@ -1283,6 +1303,7 @@ function OilShipmentService:_runShipment(shipment)
 	local lastDt = 1 / 60
 	local lastProgressClock = os.clock()
 	local peakProgress = 0.0
+	local leadReachedEndClock: number? = nil
 
 	while true do
 		local dt = lastDt
@@ -1352,6 +1373,14 @@ function OilShipmentService:_runShipment(shipment)
 			local raisedPos = Vector3.new(currentPos.X, currentPos.Y, currentPos.Z)
 			self:_updateShipPosition(shipment.shipmentId, boat, raisedPos, flatDir)
 
+			-- Boost AlignPosition responsiveness in the final stretch so the
+			-- ship doesn't decelerate to a crawl from the exponential approach.
+			local remaining = totalPathLen - s_hull
+			local shipState = self._activeShips[shipment.shipmentId]
+			if shipState and shipState.alignPos and remaining < 80 then
+				shipState.alignPos.Responsiveness = 20
+			end
+
 			local prevArc = s_hull_prev
 			for _, slot in ipairs(triggerSlots) do
 				local laneN = slot.laneWaypointIndex
@@ -1404,6 +1433,20 @@ function OilShipmentService:_runShipment(shipment)
 
 		if not voyageAborted then
 			local arrived = s_hull >= totalPathLen - VOYAGE_COMPLETE_ARC_EPS_STUDS
+
+			-- Lead-carrot arrival: when s_lead has been at the path end for 3s
+			-- the boat is physically close enough even if the hull projection
+			-- hasn't crossed the 12-stud threshold. Safe: s_lead can only reach
+			-- the end when s_hull is within VOYAGE_MAX_LEAD_STUDS (55) studs.
+			if s_lead >= totalPathLen - 1 then
+				if not leadReachedEndClock then
+					leadReachedEndClock = os.clock()
+				end
+				if os.clock() - leadReachedEndClock > 3 then
+					arrived = true
+				end
+			end
+
 			local wallElapsed = workspace:GetServerTimeNow() - voyageWallStart
 			local hardWall = wallElapsed > voyageTime * VOYAGE_FAILSAFE_MAX_WALL_MULT
 			local stuckNoMove = (os.clock() - lastProgressClock) > VOYAGE_FAILSAFE_STUCK_SECONDS
@@ -3541,6 +3584,16 @@ function OilShipmentService:_teardownShip(shipmentId: string)
 	for _, conn in ipairs(state.connections) do
 		pcall(function() conn:Disconnect() end)
 	end
+	-- Explicitly destroy the physics constraints so parts don't drift between
+	-- teardown and the `_destroyBoat` call that follows. Without this, the
+	-- AlignPosition/AlignOrientation are still alive but the state table is
+	-- gone — if anything yields before Destroy, parts freeze in place.
+	pcall(function()
+		if state.alignPos then state.alignPos:Destroy() end
+	end)
+	pcall(function()
+		if state.alignOri then state.alignOri:Destroy() end
+	end)
 	self._activeShips[shipmentId] = nil
 end
 

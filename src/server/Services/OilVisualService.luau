@@ -717,15 +717,13 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			bb.Name = "TimerGui"
 			bb.Adornee = anchor
 			-- BillboardGui size is the *intrinsic* screen size before the engine
-			-- applies its distance / FOV scaling. The previous 160x60 made the
-			-- 2-line "Xm / Ym\nZs" text render at ~30 px per line at point-blank
-			-- and almost-illegibly small on phone / mid-range. Bumped to 320x120
-			-- so each line has ~60 px of vertical room before distance scaling.
-			-- Bigger box also means we lift `StudsOffsetWorldSpace.Y` so it does
-			-- not clip into the drill model.
-			bb.Size = UDim2.new(0, 320, 0, 120)
+			-- applies its distance / FOV scaling. 180x70 keeps the 2-line
+			-- "Xm / Ym\nZs" text legible while staying compact enough not to
+			-- dominate the viewport (previous 320x120 was too large for footage).
+			bb.Size = UDim2.new(0, 180, 0, 70)
 			bb.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
 			bb.AlwaysOnTop = true
+			bb.MaxDistance = 80
 			bb.Parent = anchor
 			local lbl = Instance.new("TextLabel")
 			lbl.Name = "TimerLabel"
@@ -794,13 +792,11 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			-- depth/timer billboard sizing without a server restart:
 			--   * strip stale TimerLabel UIPadding / UITextSizeConstraint that
 			--     an earlier code path added (those clamped TextScaled tiny).
-			--   * resize the BillboardGui itself if it was created at the older
-			--     160x60 — the new 320x120 box is what gives the 2-line text
-			--     enough headroom to read on phone after distance scaling.
+			--   * resize the BillboardGui itself to the compact 180x70 box.
 			local timerBb = anchor:FindFirstChild("TimerGui")
 			if timerBb and timerBb:IsA("BillboardGui") then
-				if timerBb.Size ~= UDim2.new(0, 320, 0, 120) then
-					timerBb.Size = UDim2.new(0, 320, 0, 120)
+				if timerBb.Size ~= UDim2.new(0, 180, 0, 70) then
+					timerBb.Size = UDim2.new(0, 180, 0, 70)
 				end
 				if timerBb.StudsOffsetWorldSpace ~= Vector3.new(0, 4, 0) then
 					timerBb.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)

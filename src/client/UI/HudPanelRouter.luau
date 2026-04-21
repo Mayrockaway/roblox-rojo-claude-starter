@@ -50,7 +50,7 @@ local BUTTON_TO_SCREEN: { [string]: string } = {
 -- *purchase prompt* still routes through the generic `ROBUX_PURCHASE_HUD_BUTTONS`
 -- wiring below). Empty by default; add names here if a HUD button needs only
 -- the lift treatment with no other behavior.
-local HOVER_ONLY_BUTTON_NAMES: { string } = {}
+local HOVER_ONLY_BUTTON_NAMES: { string } = { "AutoShipButton" }
 
 -- HUD buttons that fire `RequestPromptRobuxPurchase` directly (no modal).
 -- Keys = `GuiButton.Name`, values = `MonetizationCatalog` item id. The wiring

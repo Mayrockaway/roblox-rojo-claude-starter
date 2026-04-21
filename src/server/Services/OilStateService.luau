@@ -3366,23 +3366,45 @@ function OilStateService:_loadPersistedProfile(userId: number)
 		return nil
 	end
 
-	local ok, profileOrErr = pcall(function()
-		return self._dataStore:GetAsync(key)
-	end)
-	if ok and typeof(profileOrErr) == "table" then
-		return profileOrErr
-	end
-	if not ok and self._dataStore ~= nil and isDatastoreStudioAccessError(profileOrErr) then
-		if not self._dataStoreStudioFallbackWarned then
-			self._dataStoreStudioFallbackWarned = true
-			warn(
-				"[OilStateService] Studio cannot access DataStores (Game Settings → Security → Enable Studio Access to API Services). "
-					.. "Using in-session memory for oil profiles for this server run — no cross-session persistence in Studio until enabled."
-			)
+	local MAX_LOAD_RETRIES = 3
+	local RETRY_DELAY = 1
+	for attempt = 1, MAX_LOAD_RETRIES do
+		local ok, profileOrErr = pcall(function()
+			return self._dataStore:GetAsync(key)
+		end)
+		if ok and typeof(profileOrErr) == "table" then
+			return profileOrErr
 		end
-		self._dataStore = nil
-	elseif not ok then
-		warn(string.format("[OilStateService] Load failed for user %d: %s", userId, tostring(profileOrErr)))
+		-- Studio access error is permanent — stop retrying immediately.
+		if not ok and self._dataStore ~= nil and isDatastoreStudioAccessError(profileOrErr) then
+			if not self._dataStoreStudioFallbackWarned then
+				self._dataStoreStudioFallbackWarned = true
+				warn(
+					"[OilStateService] Studio cannot access DataStores (Game Settings → Security → Enable Studio Access to API Services). "
+						.. "Using in-session memory for oil profiles for this server run — no cross-session persistence in Studio until enabled."
+				)
+			end
+			self._dataStore = nil
+			return nil
+		end
+		-- Transient error (throttle, timeout, network): retry.
+		if not ok and attempt < MAX_LOAD_RETRIES then
+			warn(string.format(
+				"[OilStateService] Load attempt %d/%d failed for user %d: %s — retrying in %ds",
+				attempt, MAX_LOAD_RETRIES, userId, tostring(profileOrErr), RETRY_DELAY
+			))
+			task.wait(RETRY_DELAY)
+		elseif not ok then
+			warn(string.format(
+				"[OilStateService] Load failed for user %d after %d attempts: %s",
+				userId, MAX_LOAD_RETRIES, tostring(profileOrErr)
+			))
+		end
+		-- ok == true but profileOrErr is not a table (nil / non-table) means
+		-- the key doesn't exist yet (new player). No point retrying.
+		if ok then
+			break
+		end
 	end
 	return nil
 end

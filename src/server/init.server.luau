@@ -50,6 +50,7 @@ local FighterPlaneWaveService = require(serviceFolder:WaitForChild("FighterPlane
 local HitContractService = require(serviceFolder:WaitForChild("HitContractService"))
 local ArmyGeneralService = require(serviceFolder:WaitForChild("ArmyGeneralService"))
 local SecurityPersonnelService = require(serviceFolder:WaitForChild("SecurityPersonnelService"))
+local AutoShipService = require(serviceFolder:WaitForChild("AutoShipService"))
 local KillZoneService = require(serviceFolder:WaitForChild("KillZoneService"))
 local LeaderboardService = require(serviceFolder:WaitForChild("LeaderboardService"))
 
@@ -107,9 +108,11 @@ OilShipmentService:Init(RemoteService, OilStateService, PlotService, WarehouseSe
 HitContractService:Init(RemoteService, OilStateService, OilShipmentService)
 ArmyGeneralService:Init(RemoteService, OilStateService, OilShipmentService)
 SecurityPersonnelService:Init(OilStateService)
+AutoShipService:Init(RemoteService, OilStateService, WarehouseService, BoatDockService, OilShipmentService, MonetizationService)
 OilShipmentService:SetHitContractService(HitContractService)
 OilShipmentService:SetLeaderboardService(LeaderboardService)
 OilShipmentService:SetSecurityPersonnelService(SecurityPersonnelService)
+OilShipmentService:SetAutoShipService(AutoShipService)
 ChunkOwnershipService:Init(PlotService, OilStateService)
 WarehouseService:Init(RemoteService, OilStateService)
 OilMarketService:Init(RemoteService, StraitStateService, WarehouseService, OilStateService)
@@ -167,6 +170,7 @@ OilShipmentService:Start()
 HitContractService:Start()
 ArmyGeneralService:Start()
 SecurityPersonnelService:Start()
+AutoShipService:Start()
 ChunkOwnershipService:Start()
 WarehouseService:Start()
 OilMarketService:Start()
@@ -403,6 +407,36 @@ do
 				devWipePersistedForUser(p.UserId)
 				p:Kick("[Dev] Persisted data wiped — rejoin for a fresh profile.")
 			end
+		elseif cmd == "/hideui" then
+			-- Toggle all client-side UI for marketing footage capture.
+			local ev = RemoteService:GetEvent(RemoteNames.DevHideUI)
+			ev:FireClient(player)
+			print(string.format("[Dev] /hideui toggled for %s", player.Name))
+		elseif cmd == "/autoship" or cmd == "/autoship most" or cmd == "/autoship least" then
+			-- Dev-only: enable AutoShip bypassing GamePass ownership check.
+			-- Usage: /autoship most  (Most Valuable priority)
+			--        /autoship least (Least Valuable priority)
+			--        /autoship       (toggles off if active, or defaults to MostValuable)
+			local entry = AutoShipService._autoShipByUser[player.UserId]
+			if entry and entry.enabled and cmd == "/autoship" then
+				-- Toggle off
+				AutoShipService._autoShipByUser[player.UserId] = nil
+				AutoShipService._devBypassUsers[player.UserId] = nil
+				AutoShipService:_pushState(player.UserId)
+				print(string.format("[Dev] AutoShip disabled for %s", player.Name))
+			else
+				local priority = "MostValuable"
+				if cmd == "/autoship least" then priority = "LeastValuable" end
+				AutoShipService._devBypassUsers[player.UserId] = true
+				AutoShipService._autoShipByUser[player.UserId] = { enabled = true, priority = priority }
+				AutoShipService:_pushState(player.UserId)
+				print(string.format("[Dev] AutoShip enabled for %s (priority=%s, devBypass=true)", player.Name, priority))
+				if BoatDockService:IsIdle(player.UserId) then
+					task.defer(function()
+						AutoShipService:_tryAutoDispatch(player.UserId)
+					end)
+				end
+			end
 		else
 			local grantN = string.match(cmd, "^/giveall%s+(%d+)$")
 			if grantN then
@@ -437,6 +471,8 @@ do
 		"/giveall", "/testvein", "/givedrills",
 		"/straitopen", "/straitclose",
 		"/unlockboats", "/unlockallboats", "/giveallboats",
+		"/hideui",
+		"/autoship",
 	}
 	for _, alias in ipairs(DEV_COMMAND_ALIASES) do
 		local ok, err = pcall(function()

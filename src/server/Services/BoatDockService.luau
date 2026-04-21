@@ -162,6 +162,7 @@ function BoatDockService:Init(remoteService, oilStateService)
 	self._boatsByUser = {} :: { [number]: Model? }       -- userId -> current boat Model
 	self._stateByUser = {} :: { [number]: BoatState }
 	self._cooldownEnds = {} :: { [number]: number? }     -- userId -> os.clock() timestamp
+	self._onBoatBecameIdleCallback = nil :: ((userId: number) -> ())?
 
 	-- Collision: voyage hulls (`ShipmentShip` in OilShipmentService) ignore each other and ignore dock meshes.
 	pcall(function()
@@ -786,9 +787,32 @@ end
 function BoatDockService:_destroyBoat(userId: number)
 	local boat = self._boatsByUser[userId]
 	if boat then
-		pcall(function() boat:Destroy() end)
+		-- Explicitly destroy every descendant BasePart first, then the model.
+		-- Complex templates (e.g. Ducky with nested DanceFloor ManualWelds,
+		-- JetEngine sub-models, BoatGroundDUck UnionOperations) can leave
+		-- orphaned frozen parts if the top-level `Model:Destroy()` doesn't
+		-- fully propagate through deeply-nested weld chains. Belt-and-
+		-- suspenders: kill each part, then the model.
+		pcall(function()
+			for _, desc in ipairs(boat:GetDescendants()) do
+				if desc:IsA("BasePart") then
+					desc:Destroy()
+				end
+			end
+			boat:Destroy()
+		end)
 	end
 	self._boatsByUser[userId] = nil
+end
+
+function BoatDockService:SetOnBoatBecameIdleCallback(fn: (userId: number) -> ())
+	self._onBoatBecameIdleCallback = fn
+end
+
+function BoatDockService:_fireBoatBecameIdle(userId: number)
+	if self._onBoatBecameIdleCallback then
+		task.defer(self._onBoatBecameIdleCallback, userId)
+	end
 end
 
 function BoatDockService:_pushSnapshot(userId: number)
@@ -891,6 +915,7 @@ function BoatDockService:CheckinBoat(userId: number, opts: { destroyed: boolean?
 		end
 		self._slotOwner[slotIndex] = userId
 		self:_spawnIdleBoat(userId, slotIndex, self:_getSkinId(userId))
+		self:_fireBoatBecameIdle(userId)
 		return
 	end
 
@@ -916,6 +941,7 @@ function BoatDockService:CheckinBoat(userId: number, opts: { destroyed: boolean?
 		end
 		self._slotOwner[idx] = userId
 		self:_spawnIdleBoat(userId, idx, self:_getSkinId(userId))
+		self:_fireBoatBecameIdle(userId)
 	end)
 end
 

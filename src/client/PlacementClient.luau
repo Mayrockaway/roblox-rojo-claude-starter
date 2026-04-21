@@ -367,13 +367,13 @@ local function ensureGhost(): Model?
 	local bb = Instance.new("BillboardGui")
 	bb.Name = "GhostTimerGui"
 	bb.Adornee = timerAnchor
-	-- Match the active-drill `TimerGui` sizing in `OilVisualService` so the
-	-- placement-preview "0m / Xm\nYs" text reads at the same on-screen size as
-	-- the live drill timer once placed. Previously 160x60, which after engine
-	-- distance scaling rendered almost-illegibly small on phone.
-	bb.Size = UDim2.new(0, 320, 0, 120)
+	-- Match the active-drill `TimerGui` sizing in `OilVisualService` (180x70)
+	-- so the placement-preview text reads at the same on-screen size as the
+	-- live drill timer once placed.
+	bb.Size = UDim2.new(0, 180, 0, 70)
 	bb.StudsOffsetWorldSpace = Vector3.new(0, 8, 0)
 	bb.AlwaysOnTop = true
+	bb.MaxDistance = 80
 	bb.Enabled = false
 	bb.Parent = timerAnchor
 
