@@ -10,19 +10,42 @@ local OWN_PLOT_KPI_SHOW_DISTANCE = 180
 local UPDATE_INTERVAL = 0.2
 
 -- Both pump and tank billboards scale UP with camera distance so they stay
--- readable from across the plot. 1x at close range, up to 2x at the far edge.
+-- readable from across the plot. 1x at close range, up to ~1.3x at the far
+-- edge — the prior 2.0 ceiling overshot now that ResponsiveBillboard already
+-- gives larger viewports a bigger baseline `Size` (the two effects multiply).
 local SCALE_NEAR_DIST = 20   -- studs: 1x below this
-local SCALE_FAR_DIST  = 120  -- studs: 2x at this distance and beyond
+local SCALE_FAR_DIST  = 120  -- studs: SCALE_MAX at this distance and beyond
 local SCALE_MIN = 1.0
-local SCALE_MAX = 2.0
+local SCALE_MAX = 1.3
 
 local PlotKpiVisibility = {}
+
+local DISTANCE_SCALE_NAME = "PlotKpiDistanceScale"
 
 local started = false
 local accum = 0
 local managedBillboards: { [BillboardGui]: true } = {}
--- Store each billboard's original pixel size (captured on first tick).
-local originalSizes: { [BillboardGui]: { w: number, h: number } } = {}
+
+-- Distance scaling used to mutate `BillboardGui.Size` directly, but that
+-- now collides with `ResponsiveBillboard` (the cross-viewport rescaler also
+-- writes Size on viewport-change ticks). Driving distance through a
+-- `UIScale` child keeps the two systems orthogonal: ResponsiveBillboard owns
+-- `Size` (per-viewport baseline), this controller owns `UIScale.Scale`
+-- (per-camera-distance multiplier), and they multiply visually with no race.
+local function ensureDistanceScale(billboard: BillboardGui): UIScale
+	local existing = billboard:FindFirstChild(DISTANCE_SCALE_NAME)
+	if existing and existing:IsA("UIScale") then
+		return existing
+	end
+	if existing then
+		existing:Destroy()
+	end
+	local s = Instance.new("UIScale")
+	s.Name = DISTANCE_SCALE_NAME
+	s.Scale = 1
+	s.Parent = billboard
+	return s
+end
 
 local function getCharacterRoot(): BasePart?
 	local character = player.Character
@@ -101,32 +124,24 @@ local function refresh()
 	for billboard in pairs(managedBillboards) do
 		if billboard.Parent == nil then
 			managedBillboards[billboard] = nil
-			originalSizes[billboard] = nil
 		else
 			local enabled = shouldEnableBillboard(billboard, root)
 			if billboard.Enabled ~= enabled then
 				billboard.Enabled = enabled
 			end
 			-- Scale UP with camera distance: 1x close, lerp to 2x at plot edge.
+			-- Driven via a child `UIScale` (see `ensureDistanceScale`) instead
+			-- of mutating `Size`, so the responsive controller can keep
+			-- viewport-rescaling `Size` underneath us without a race.
 			if enabled and cam then
-				local orig = originalSizes[billboard]
-				if not orig then
-					local sz = billboard.Size
-					orig = { w = sz.X.Offset, h = sz.Y.Offset }
-					if orig.w > 0 and orig.h > 0 then
-						originalSizes[billboard] = orig
-					else
-						continue
-					end
-				end
 				local worldPos = getBillboardWorldPosition(billboard)
 				if worldPos then
 					local dist = (camPos - worldPos).Magnitude
 					local t = math.clamp((dist - SCALE_NEAR_DIST) / (SCALE_FAR_DIST - SCALE_NEAR_DIST), 0, 1)
 					local scale = SCALE_MIN + t * (SCALE_MAX - SCALE_MIN)
-					local newSize = UDim2.new(0, math.round(orig.w * scale), 0, math.round(orig.h * scale))
-					if billboard.Size ~= newSize then
-						billboard.Size = newSize
+					local s = ensureDistanceScale(billboard)
+					if math.abs(s.Scale - scale) > 0.005 then
+						s.Scale = scale
 					end
 				end
 			end

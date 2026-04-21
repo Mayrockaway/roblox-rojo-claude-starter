@@ -6,6 +6,7 @@ local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local OilTankConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilTankConfig"))
 local PlacementAnchor = require(Shared:WaitForChild("Utils"):WaitForChild("PlacementAnchor"))
+local ResponsiveBillboard = require(Shared:WaitForChild("Utils"):WaitForChild("ResponsiveBillboard"))
 local OilVisualService = {}
 local DRILL_HEIGHT_OFFSET = 0
 local OIL_REVEAL_SPRAY_SECONDS = 2.0
@@ -716,11 +717,14 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			local bb = Instance.new("BillboardGui")
 			bb.Name = "TimerGui"
 			bb.Adornee = anchor
-			-- BillboardGui size is the *intrinsic* screen size before the engine
-			-- applies its distance / FOV scaling. 180x70 keeps the 2-line
-			-- "Xm / Ym\nZs" text legible while staying compact enough not to
-			-- dominate the viewport (previous 320x120 was too large for footage).
-			bb.Size = UDim2.new(0, 180, 0, 70)
+			-- Design-target pixel size at the reference viewport (1366 wide).
+			-- The client controller (`ResponsiveBillboard`) rescales per-
+			-- viewport so phones, 1080p, and 4K all read at the same on-
+			-- screen proportion. History (pre-responsive): 320x120 → 180x70
+			-- → 140x54 — that tug-of-war goes away because the client now
+			-- shrinks 180x70 to ~135x53 on phone and grows it on big monitors
+			-- automatically.
+			ResponsiveBillboard.Mark(bb, 180, 70)
 			bb.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
 			bb.AlwaysOnTop = true
 			bb.MaxDistance = 80
@@ -795,9 +799,9 @@ function OilVisualService:_syncActiveDrills(_plot: Model, folder: Folder, active
 			--   * resize the BillboardGui itself to the compact 180x70 box.
 			local timerBb = anchor:FindFirstChild("TimerGui")
 			if timerBb and timerBb:IsA("BillboardGui") then
-				if timerBb.Size ~= UDim2.new(0, 180, 0, 70) then
-					timerBb.Size = UDim2.new(0, 180, 0, 70)
-				end
+				-- Tag legacy timer billboards so the client controller picks
+				-- them up. Don't set Size — client owns it.
+				ResponsiveBillboard.EnsureMarked(timerBb, 180, 70)
 				if timerBb.StudsOffsetWorldSpace ~= Vector3.new(0, 4, 0) then
 					timerBb.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
 				end
@@ -1390,7 +1394,13 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				holoPart.Parent = model
 				local billboard = Instance.new("BillboardGui")
 				billboard.Name = "HoloGui"
-				billboard.Size = UDim2.fromOffset(220, 56)
+				-- Design-target pixel size at the reference viewport (1366 wide).
+				-- `ResponsiveBillboard.Mark` stamps attributes + initial Size; the
+				-- client controller (`ResponsiveBillboard.StartClient` in the
+				-- client init) rescales per-viewport so phones, 1080p, and 4K all
+				-- read at the same on-screen proportion. Distance falloff stays
+				-- intact because Size is still in offset units.
+				ResponsiveBillboard.Mark(billboard, 220, 56)
 				billboard.StudsOffsetWorldSpace = Vector3.new(0, 0.2, 0)
 				billboard.AlwaysOnTop = true
 				billboard.LightInfluence = 0
@@ -1462,6 +1472,15 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 			end
 			-- Update hologram text + reposition
 			local holoGui = holoPart:FindFirstChild("HoloGui")
+			-- Live cleanup: stamp the responsive base size attributes on legacy
+			-- pump billboards from older code paths so the client controller
+			-- starts driving their Size on the next viewport tick. Do NOT set
+			-- Size here — the client now owns it (re-asserting Size from the
+			-- server every sync would clobber the client's per-viewport scale
+			-- every tick).
+			if holoGui and holoGui:IsA("BillboardGui") then
+				ResponsiveBillboard.EnsureMarked(holoGui, 220, 56)
+			end
 			-- Aggressive cull of duplicate / stale labels on the pump hologram:
 			--   * Older code path parented an `Info` label inside the inner
 			--     `Backdrop` Frame; the current path parents it directly to
@@ -2115,7 +2134,15 @@ function OilVisualService:_syncOilTanks(plot: Model, snapshot)
 
 				local bb = Instance.new("BillboardGui")
 				bb.Name = "HoloGui"
-				bb.Size = UDim2.fromOffset(200, 60)
+				-- Refinery storage label: design-target pixel size at the
+				-- reference viewport (1366 wide). `ResponsiveBillboard.Mark`
+				-- stamps attributes + initial Size; the client controller
+				-- (`ResponsiveBillboard.StartClient` in init.client) rescales
+				-- per-viewport so phones, 1080p, and 4K all read at the same
+				-- on-screen proportion. `PlotKpiVisibility` separately drives
+				-- distance scaling via a `UIScale` child so the two systems
+				-- stay orthogonal (Size = viewport, UIScale = camera distance).
+				ResponsiveBillboard.Mark(bb, 200, 60)
 				bb.AlwaysOnTop = false
 				bb.LightInfluence = 0
 				bb.Parent = holoPart
@@ -2132,6 +2159,15 @@ function OilVisualService:_syncOilTanks(plot: Model, snapshot)
 			end
 
 			local holoGui = holoPart:FindFirstChild("HoloGui")
+			-- Live cleanup: legacy tank holo billboards built before responsive
+			-- scaling was wired here have no base-size attributes, so the
+			-- client controller silently ignores them. Stamping is idempotent
+			-- (`EnsureMarked` only writes if absent) and intentionally does
+			-- NOT touch `Size` — the client owns Size after first viewport
+			-- tick; re-asserting it here would clobber the per-viewport rescale.
+			if holoGui and holoGui:IsA("BillboardGui") then
+				ResponsiveBillboard.EnsureMarked(holoGui, 200, 60)
+			end
 			local infoLabel = holoGui and holoGui:FindFirstChild("Info")
 			if infoLabel then
 				local currentAmt = math.floor(amount)

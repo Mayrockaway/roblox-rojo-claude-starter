@@ -71,10 +71,6 @@ local toolBySlot: { Tool? } = {}
 --- to invoke the helper (currently `rebuild` and `equipSlotIndex`).
 local equipOrToggleHotbarTool: (Player, Tool) -> ()
 
-local function prefersTouchHotbar(): boolean
-	return UserInputService.TouchEnabled
-end
-
 local function findHudScreen(playerGui: PlayerGui): ScreenGui?
 	local h = playerGui:FindFirstChild("HUD")
 	if h and h:IsA("ScreenGui") then
@@ -164,25 +160,50 @@ local function resolveHotbar(playerGui: PlayerGui): (Frame?, GuiObject?)
 	return strip :: Frame, template :: GuiObject
 end
 
-local function computeSlotSidePx(strip: Frame): number
-	local h = strip.AbsoluteSize.Y
-	if prefersTouchHotbar() then
-		h = math.max(h, 82)
+--- Read the slot template's **authored** pixel side. The template is authored
+--- (`scripts/mcp_author_equipment_hotbar.luau` / Studio) with
+--- `Size = UDim2.fromOffset(56, 56)` plus a `UIAspectRatioConstraint`, so on
+--- every device the slot must render at the **template** size — the same
+--- bottom strip should look identical proportions on phone, tablet, desktop.
+--- Earlier touch-only inflation (force min 82 / clamp 64–132) was making the
+--- mobile FTUE hotbar look ~2× the authored slot. Now we always trust the
+--- template: pure-offset Size → exact pixels; scale/hybrid Size → resolved
+--- `AbsoluteSize` once parented. Strip-derived heuristic is only a last-resort
+--- fallback when neither value has resolved (rare race on first replication).
+local function templateAuthoredSidePx(): number?
+	local template = slotTemplate
+	if not template then
+		return nil
 	end
+	local off = template.Size.Y.Offset
+	local sc = template.Size.Y.Scale
+	if sc == 0 and off > 4 then
+		return off
+	end
+	local abs = template.AbsoluteSize.Y
+	if abs > 4 then
+		return abs
+	end
+	if off > 4 then
+		return off
+	end
+	return nil
+end
+
+local function computeSlotSidePx(strip: Frame): number
+	local fromTpl = templateAuthoredSidePx()
+	if fromTpl then
+		return fromTpl
+	end
+	local h = strip.AbsoluteSize.Y
 	if h < 6 then
-		return if prefersTouchHotbar() then 72 else 56
+		return 56
 	end
 	local inset = math.max(4, math.floor(h * 0.08))
-	if prefersTouchHotbar() then
-		return math.clamp(h - inset, 64, 132)
-	end
 	return math.clamp(h - inset, 40, 120)
 end
 
 local function gapBetweenSlotsPx(strip: Frame): number
-	if prefersTouchHotbar() then
-		return math.max(8, math.floor(math.max(strip.AbsoluteSize.Y, 82) * 0.12))
-	end
 	return math.max(4, math.floor(strip.AbsoluteSize.Y * 0.08))
 end
 

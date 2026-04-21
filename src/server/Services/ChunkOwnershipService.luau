@@ -11,6 +11,26 @@ local ChunkOwnershipService = {}
 local FOG_COLOR = Color3.fromRGB(20, 20, 30)
 local FOG_TRANSPARENCY = 0.1
 
+--- How much locked-chunk tile colors are darkened relative to their
+--- per-row `groundType.color`. `0` = no darkening (legacy look — visually
+--- ambiguous, players couldn't tell at a glance which rows they didn't
+--- own yet), `1` = pure black. Tuned to leave enough hue that the ground
+--- type (Bronze / Silver / Gold etc.) is still recognizable from across
+--- the plot, while making the row obviously "off-limits" against an
+--- adjacent unlocked row painted with the full ground color.
+--- Mirrored in `darkenColor` below — bump that fn signature too if this
+--- becomes per-row.
+local LOCKED_TILE_DARKEN = 0.55
+
+--- Lerp `color` toward black by `factor` ([0..1]). Local helper so the
+--- locked-chunk paint path keeps the same idempotent setter pattern as
+--- the unlocked path (we still call `setPartColor`, just with the
+--- darkened value).
+local function darkenColor(color: Color3, factor: number): Color3
+	local t = math.clamp(factor, 0, 1)
+	return color:Lerp(Color3.fromRGB(0, 0, 0), t)
+end
+
 function ChunkOwnershipService:Init(plotService, oilStateService)
 	self._plotService = plotService
 	self._oilStateService = oilStateService
@@ -173,18 +193,24 @@ function ChunkOwnershipService:_applyChunkVisual(sectionModel: Model, chunk)
 		self:_syncObstacles(sectionModel, chunk)
 
 	elseif not chunk.unlocked then
-		-- LOCKED: show ground type color (no black fog), keep buy sign
+		-- LOCKED: show a DARKENED ground-type color so the row is
+		-- obviously not yet owned at a glance. We keep the same per-row
+		-- material + hue (so the player still knows "that's the Gold row I
+		-- need to grind toward"), just lerped toward black by
+		-- `LOCKED_TILE_DARKEN`. Buy sign stays visible — that's still the
+		-- only affordance for unlocking the chunk.
 		local VeinConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("VeinConfig"))
 		local groundType = VeinConfig.GroundByRow[chunk.row] or VeinConfig.GroundTypes.Bronze
+		local lockedColor = darkenColor(groundType.color, LOCKED_TILE_DARKEN)
 
 		if overlay and overlay:IsA("BasePart") then
 			setPartTransparency(overlay, 1) -- no overlay
 		end
-		-- Show tiles in ground type color (visible, not hidden)
+		-- Show tiles in darkened ground-type color (visible but obviously locked).
 		for _, child in ipairs(sectionModel:GetChildren()) do
 			if child:IsA("BasePart") and child.Name:match("^T%d%d$") then
 				setPartMaterial(child, groundType.material)
-				setPartColor(child, groundType.color)
+				setPartColor(child, lockedColor)
 			end
 		end
 		if sign then

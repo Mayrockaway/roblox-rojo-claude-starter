@@ -45,11 +45,40 @@ local function setGuiText(host: Instance?, text: string)
 	end
 end
 
+--- Returns true if `inst` is a descendant of (or *is*) the authored
+--- `SkipConfirmModal` subtree under the FTUE ScreenGui. Used by the
+--- title/body resolvers below so the modal's `Card.PromptLabel` /
+--- `Card.ButtonRow.*` can never hijack the dialogue panel's text targets.
+local function isUnderSkipConfirmModal(inst: Instance): boolean
+	local p: Instance? = inst
+	while p do
+		if p.Name == "SkipConfirmModal" then
+			return true
+		end
+		p = p.Parent
+	end
+	return false
+end
+
 local function resolveTextHost(name: string, root: Instance?): GuiObject?
 	if not root then
 		return nil
 	end
 	local node = root:FindFirstChild(name, true)
+	-- Skip anything that lives inside the authored SkipConfirmModal — it
+	-- has its own labels (`PromptLabel`, button text) which must not be
+	-- repurposed as the dialogue panel's Title/Body host.
+	while node and isUnderSkipConfirmModal(node) do
+		-- `FindFirstChild` is non-iterating, so re-scan but filtered.
+		node = nil
+		for _, d in ipairs(root:GetDescendants()) do
+			if d.Name == name and not isUnderSkipConfirmModal(d) then
+				node = d
+				break
+			end
+		end
+		break
+	end
 	if not node then
 		return nil
 	end
@@ -57,7 +86,13 @@ local function resolveTextHost(name: string, root: Instance?): GuiObject?
 		return node :: GuiObject
 	end
 	if node:IsA("GuiObject") then
-		local tl = node:FindFirstChildWhichIsA("TextLabel", true)
+		local tl: TextLabel? = nil
+		for _, d in ipairs(node:GetDescendants()) do
+			if d:IsA("TextLabel") and not isUnderSkipConfirmModal(d) then
+				tl = d
+				break
+			end
+		end
 		if tl then
 			return tl
 		end
@@ -93,20 +128,27 @@ local function resolveTextHostsFallback(root: Instance): (GuiObject?, GuiObject?
 	local function collect(container: Instance): { TextLabel }
 		local labels: { TextLabel } = {}
 		for _, d in ipairs(container:GetDescendants()) do
-			if d:IsA("TextLabel") and not isUnderGuiButton(d) then
+			-- Skip labels under buttons and labels that live inside the
+			-- authored SkipConfirmModal — the modal has its own prompt /
+			-- button text which must not be confused with the dialogue
+			-- panel's Title/Body labels.
+			if d:IsA("TextLabel") and not isUnderGuiButton(d) and not isUnderSkipConfirmModal(d) then
 				table.insert(labels, d)
 			end
 		end
 		return labels
 	end
 	for _, containerName in ipairs({ "Card", "Canvas", "Dialog", "Main", "Panel", "Container", "Content" }) do
-		local container = root:FindFirstChild(containerName, true)
-		if container then
-			local labels = collect(container)
-			if #labels >= 2 then
-				return labels[1], labels[2]
-			elseif #labels == 1 then
-				return labels[1], nil
+		-- Walk all matches by name (not just the first) so a same-named
+		-- container under SkipConfirmModal doesn't shadow the real one.
+		for _, container in ipairs(root:GetDescendants()) do
+			if container.Name == containerName and not isUnderSkipConfirmModal(container) then
+				local labels = collect(container)
+				if #labels >= 2 then
+					return labels[1], labels[2]
+				elseif #labels == 1 then
+					return labels[1], nil
+				end
 			end
 		end
 	end
@@ -155,6 +197,42 @@ local function applyFtuePortrait(screenGui: ScreenGui, step: string?)
 	(img :: ImageLabel).Image = id
 	img.Visible = true
 	(frame :: GuiObject).Visible = true
+end
+
+--- Authored centered confirm modal under `StarterGui.FTUEDialogueGui`
+--- (sibling to `Canvas`, so `hideNonPointersUnderCanvas` doesn't touch it).
+--- Authoring lives in Studio per `ui-architecture.mdc`; this helper just
+--- locates the authored instances so the controller can wire behavior.
+--- Authored layout (Studio source of truth):
+---   FTUEDialogueGui
+---     ├─ Canvas (existing)
+---     └─ SkipConfirmModal  (Frame, full-viewport dim, Visible=false)
+---          └─ Card (Frame, centered, aspect-ratio constrained)
+---               ├─ PromptLabel
+---               └─ ButtonRow
+---                    ├─ CancelButton
+---                    └─ YesButton
+local SKIP_CONFIRM_NAME = "SkipConfirmModal"
+
+local function findSkipConfirmModal(sg: ScreenGui): (Frame?, TextButton?, TextButton?)
+	local root = sg:FindFirstChild(SKIP_CONFIRM_NAME)
+	if not (root and root:IsA("Frame")) then
+		return nil, nil, nil
+	end
+	local card = root:FindFirstChild("Card", true)
+	if not (card and card:IsA("Frame")) then
+		return root :: Frame, nil, nil
+	end
+	local btnRow = card:FindFirstChild("ButtonRow", true)
+	if not (btnRow and btnRow:IsA("Frame")) then
+		return root :: Frame, nil, nil
+	end
+	local yes = btnRow:FindFirstChild("YesButton")
+	local cancel = btnRow:FindFirstChild("CancelButton")
+	if yes and yes:IsA("TextButton") and cancel and cancel:IsA("TextButton") then
+		return root :: Frame, yes :: TextButton, cancel :: TextButton
+	end
+	return root :: Frame, nil, nil
 end
 
 local function findDialogueScreenGui(playerGui: PlayerGui): ScreenGui?
@@ -508,6 +586,30 @@ function FtueDialogueController.start(
 	if skipBtn then
 		skipBtn.Active = true
 		skipBtn.Selectable = true
+		-- Locate the Studio-authored confirm modal (sibling of `Canvas`). If
+		-- it's missing for any reason, fall back to the original immediate
+		-- skip so we never wedge the FTUE.
+		local skipModal, modalYes, modalCancel = findSkipConfirmModal(sg)
+		local function hideModal()
+			if skipModal then
+				skipModal.Visible = false
+			end
+		end
+		local function commitSkip()
+			hideModal()
+			requestFtueSkip:FireServer()
+			sg.Enabled = false
+			hideNonPointersUnderCanvas(sg, false)
+		end
+		if modalYes then
+			modalYes.Activated:Connect(commitSkip)
+		end
+		if modalCancel then
+			modalCancel.Activated:Connect(hideModal)
+		end
+		if not (skipModal and modalYes and modalCancel) then
+			warn("[FTUE] SkipConfirmModal (Card.PromptLabel / Card.ButtonRow.YesButton / CancelButton) not found under " .. sg.Name .. " — skip button will fire immediately.")
+		end
 		wireButton(skipBtn, function()
 			local attr = player:GetAttribute(Constants.FtueStepAttribute)
 			if typeof(attr) == "string" and attr == FtueConfig.Step.Done then
@@ -518,9 +620,14 @@ function FtueDialogueController.start(
 				requestFtueAcknowledge:FireServer()
 				return
 			end
-			requestFtueSkip:FireServer()
-			sg.Enabled = false
-			hideNonPointersUnderCanvas(sg, false)
+			-- Mid-FTUE: show the authored "are you sure" modal. If the modal
+			-- isn't present (warned above), commit immediately so the player
+			-- isn't trapped.
+			if skipModal and modalYes and modalCancel then
+				skipModal.Visible = true
+			else
+				commitSkip()
+			end
 		end)
 	else
 		warn("[FTUE] No skip/close button found (SkipButton, CloseButton, …).")

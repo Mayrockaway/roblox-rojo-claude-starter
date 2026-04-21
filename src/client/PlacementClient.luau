@@ -28,6 +28,14 @@ export type InitParams = {
 	estimateRefundForTarget: (target: any) -> (number, Instance?),
 }
 
+-- ===================== shared utils =====================
+local ResponsiveBillboard = require(
+	game:GetService("ReplicatedStorage")
+		:WaitForChild("Shared")
+		:WaitForChild("Utils")
+		:WaitForChild("ResponsiveBillboard")
+)
+
 -- ===================== module table =====================
 local M = {}
 
@@ -367,10 +375,11 @@ local function ensureGhost(): Model?
 	local bb = Instance.new("BillboardGui")
 	bb.Name = "GhostTimerGui"
 	bb.Adornee = timerAnchor
-	-- Match the active-drill `TimerGui` sizing in `OilVisualService` (180x70)
-	-- so the placement-preview text reads at the same on-screen size as the
-	-- live drill timer once placed.
-	bb.Size = UDim2.new(0, 180, 0, 70)
+	-- Match the active-drill `TimerGui` design-target (180x70) so the
+	-- placement-preview text reads at the same on-screen size as the live
+	-- drill timer once placed. Sizing per-viewport is driven by
+	-- `ResponsiveBillboard`.
+	ResponsiveBillboard.Mark(bb, 180, 70)
 	bb.StudsOffsetWorldSpace = Vector3.new(0, 8, 0)
 	bb.AlwaysOnTop = true
 	bb.MaxDistance = 80
@@ -434,6 +443,45 @@ end
 
 local function getMobilePreviewHit(): MobilePreviewHit?
 	return mobilePreviewHit
+end
+
+--- Returns true if a touch at `touchScreenPos` would hit the live ghost
+--- preview model (or any of its descendant `BasePart`s). Used by the **mobile
+--- second-tap → confirm** path: the ghost normally has `CanQuery = false` so
+--- the raycast in `raycastTouchToChunk` passes through it and resolves the
+--- tile underneath — which means tapping on the green ghost itself often
+--- lands a few studs off the original tile (drill straddles a corner, touch
+--- isn't dead-center, etc.) and the handler re-locks instead of confirming.
+--- Cast a second ray with `CanQuery` flipped to `true` for the ghost parts
+--- only and report whether the ray actually hit the ghost — the touch handler
+--- treats a positive hit as "tap on locked preview = confirm placement".
+local function isTouchOverGhost(touchScreenPos: Vector2): boolean
+	if not (ghostDrill and ghostDrill.Parent) then
+		return false
+	end
+	local camera = _Workspace.CurrentCamera
+	if not camera then
+		return false
+	end
+	-- Snapshot + restore CanQuery on every BasePart in the ghost so the
+	-- temporary flip can never leak (errors above don't apply but be defensive).
+	local restored: { { part: BasePart, prev: boolean } } = {}
+	for _, d in ipairs(ghostDrill:GetDescendants()) do
+		if d:IsA("BasePart") then
+			table.insert(restored, { part = d, prev = d.CanQuery })
+			d.CanQuery = true
+		end
+	end
+	local ray = camera:ViewportPointToRay(touchScreenPos.X, touchScreenPos.Y, 0)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = { ghostDrill }
+	params.IgnoreWater = true
+	local result = _Workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
+	for _, r in ipairs(restored) do
+		r.part.CanQuery = r.prev
+	end
+	return result ~= nil and result.Instance ~= nil
 end
 
 local function setMobilePreviewHit(chunkId: string, hitPos: Vector3, tileName: string?)
@@ -556,14 +604,23 @@ end
 
 local function ensureFocusBillboard()
 	if focusBillboard and focusLabel and focusBillboard.Parent then
+		-- Sizing is driven by `ResponsiveBillboard` (the client controller
+		-- in init.client rescales tagged BillboardGuis on viewport change),
+		-- so no per-call size assertion is needed here.
 		return
 	end
 	focusBillboard = Instance.new("BillboardGui")
 	focusBillboard.Name = "ChunkFocus"
-	-- Slightly larger pixel box. The BillboardGui is distance-scaled by the
-	-- engine, so a bigger offset = proportionally bigger label on every
-	-- device (phone / desktop / console) without needing per-platform code.
-	focusBillboard.Size = UDim2.fromOffset(280, 56)
+	-- Design-target pixel size at the reference viewport (1366 wide). The
+	-- responsive controller shrinks for phones and grows for 4K so the
+	-- on-screen proportion is the same across devices. Distance falloff
+	-- stays intact (`Size` is still in offset units).
+	-- Base trimmed from 280×56 → 230×46 to dial down the tile hover label
+	-- footprint on mobile (the responsive controller's MIN_SCALE clamp meant
+	-- phones were already capped, so the effective shrink hits hardest there
+	-- — exactly what the request was — with only a slight reduction on
+	-- desktop / 4K.
+	ResponsiveBillboard.Mark(focusBillboard, 230, 46)
 	focusBillboard.StudsOffset = Vector3.new(0, 4.5, 0)
 	focusBillboard.AlwaysOnTop = true
 	focusBillboard.Enabled = false
@@ -589,8 +646,11 @@ local function ensureFocusBillboard()
 	pad.PaddingRight = UDim.new(0, 8)
 	pad.Parent = focusLabel
 	local sizeCap = Instance.new("UITextSizeConstraint")
-	sizeCap.MinTextSize = 18
-	sizeCap.MaxTextSize = 34
+	-- Generous ceiling: the responsive controller scales the box up on big
+	-- viewports, so a low MaxTextSize would leave 4K text underfilling the
+	-- larger box. MinTextSize keeps small-phone text legible.
+	sizeCap.MinTextSize = 14
+	sizeCap.MaxTextSize = 50
 	sizeCap.Parent = focusLabel
 end
 
@@ -801,5 +861,6 @@ M.getDesiredPlacementHit = getDesiredPlacementHit
 M.getMobilePreviewHit = getMobilePreviewHit
 M.setMobilePreviewHit = setMobilePreviewHit
 M.clearMobilePreview = clearMobilePreview
+M.isTouchOverGhost = isTouchOverGhost
 
 return M

@@ -8,6 +8,7 @@ local DevLog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("De
 local Constants = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Constants"))
 local RemoteNames = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Net"):WaitForChild("RemoteNames"))
 local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
+local ResponsiveBillboard = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Utils"):WaitForChild("ResponsiveBillboard"))
 
 --- Cached on first use. The `Remotes` folder is populated by `RemoteService:Init()` (runs in
 --- `init.server.luau` before `PlotService:Start()`), so by the time any spawn happens this
@@ -35,13 +36,23 @@ local UNCLAIMED_COLOR = Color3.fromRGB(105, 210, 120)
 local PLOT_OWNER_BILLBOARD_NAME = "PlotOwnerBillboard"
 -- Server-authored `BillboardGui` on workspace `ClaimPad`; replicates to every client.
 local PLOT_NAME_BILLBOARD_STUDS_OFFSET_Y = 54
--- `TextScaled` fills the 440x96 BillboardGui, and the BillboardGui itself is
--- distance-scaled by the engine, so the same on-screen proportion shows on
--- phone / desktop / console. The cap was previously `48` which clamped the
--- text to ~half the box vertically (looked tiny on small viewports); leave
--- generous headroom so 1-line text fills the box on every platform.
+-- `TextScaled` fills the BillboardGui, and the BillboardGui itself is
+-- distance-scaled by the engine. The `BillboardGui.Size` is set via
+-- `ResponsiveBillboard.Mark` (and the client controller rescales per-
+-- viewport), so 440x96 is the *design-target* pixel size at the reference
+-- viewport (1366 wide) — phones get a proportional shrink, 1080p / 4K get
+-- a proportional grow.
+local PLOT_NAME_BILLBOARD_BASE_W = 440
+local PLOT_NAME_BILLBOARD_BASE_H = 96
 local PLOT_NAME_TEXT_MAX_SIZE = 96
 local PLOT_NAME_TEXT_MIN_SIZE = 18
+-- Max camera distance (studs) at which the plot ownership plate renders.
+-- BillboardGui culls automatically beyond `MaxDistance`, so this acts as a
+-- proximity gate — players only see other players' plot plates when their
+-- camera is roughly "on or near" that plot, not from across the map.
+-- Plots span ~50-80 studs so 120 keeps the plate visible while you walk up
+-- to it but hides distant plates that would otherwise clutter the skyline.
+local PLOT_NAME_BILLBOARD_MAX_DISTANCE = 120
 local PREFERRED_PLOT_CLAIM_ORDER = { 3, 4, 5, 6, 2, 1, 7, 8 }
 
 local function getPlotId(plot: Instance): number
@@ -600,9 +611,9 @@ function PlotService:_updatePlotNameBillboard(plot: Model, ownerPlayer: Player?)
 		bb = Instance.new("BillboardGui")
 		bb.Name = PLOT_OWNER_BILLBOARD_NAME
 		bb.AlwaysOnTop = true
-		bb.Size = UDim2.new(0, 440, 0, 96)
+		ResponsiveBillboard.Mark(bb, PLOT_NAME_BILLBOARD_BASE_W, PLOT_NAME_BILLBOARD_BASE_H)
 		bb.StudsOffset = Vector3.new(0, PLOT_NAME_BILLBOARD_STUDS_OFFSET_Y, 0)
-		bb.MaxDistance = 380
+		bb.MaxDistance = PLOT_NAME_BILLBOARD_MAX_DISTANCE
 		bb.LightInfluence = 0
 		bb.Parent = anchor
 		local tl = Instance.new("TextLabel")
@@ -622,6 +633,16 @@ function PlotService:_updatePlotNameBillboard(plot: Model, ownerPlayer: Player?)
 	end
 	bb.Enabled = true
 	bb.StudsOffset = Vector3.new(0, PLOT_NAME_BILLBOARD_STUDS_OFFSET_Y, 0)
+	-- Live cleanup: legacy plates from older code paths may be missing the
+	-- responsive base-size attributes (`ResponsiveBillboard.EnsureMarked`
+	-- only stamps if absent — won't clobber a value already in place) and
+	-- may still have the old `MaxDistance = 380` (visible across the whole
+	-- map). Re-apply the proximity gate; the client controller picks up
+	-- the responsive Size on the next viewport tick.
+	ResponsiveBillboard.EnsureMarked(bb, PLOT_NAME_BILLBOARD_BASE_W, PLOT_NAME_BILLBOARD_BASE_H)
+	if bb.MaxDistance ~= PLOT_NAME_BILLBOARD_MAX_DISTANCE then
+		bb.MaxDistance = PLOT_NAME_BILLBOARD_MAX_DISTANCE
+	end
 	local tl = bb:FindFirstChild("PlotNameText", true)
 	if tl and tl:IsA("TextLabel") then
 		tl.Font = Enum.Font.Merriweather

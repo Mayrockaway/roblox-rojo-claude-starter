@@ -107,17 +107,12 @@ function M.connect(deps: Deps)
 				})
 			end
 
-			-- Find the tile Part in workspace by position
-			local displayName = veinType and veinType.displayName or VeinConfig.BuildDisplayName(veinResult)
-			local oddsText = "ROW POOL"
-			local rarity = {
-				name = veinType and string.upper(veinType.rarity) or "ROW POOL",
-				color = veinType and VeinCrateConfig.GetRarityTextColor(veinType.rarity) or Color3.fromRGB(255, 255, 255),
-			}
 			-- Tile color flicker + oil burst (below) only. The post-spin
 			-- world-anchored `VeinRevealBillboard` (rarity title above the
-			-- tile) was removed at user request — it duplicated the lootbox
-			-- spinner result. Screen toast (`VeinToast`) still fires below.
+			-- tile) and the screen `VeinToast` (rarity-colored "Double Cache
+			-- COMMON" banner) were both removed at user request — the lootbox
+			-- spinner already announces the tile name + rarity, so any
+			-- post-resolve banner here is redundant.
 
 			-- Slot spin animation on the tile
 			-- Find tile part by searching owned plot sections
@@ -177,28 +172,11 @@ function M.connect(deps: Deps)
 					end
 				end
 
-				-- Toast popup
-				local toast = Instance.new("ScreenGui")
-				toast.Name = "VeinToast"
-				toast.IgnoreGuiInset = true
-				toast.DisplayOrder = 100
-				toast.Parent = playerGui
-
-				local toastLabel = Instance.new("TextLabel")
-				toastLabel.Size = UDim2.new(0.6, 0, 0, 60)
-				toastLabel.Position = UDim2.new(0.2, 0, 0.15, 0)
-				toastLabel.BackgroundTransparency = 0.3
-				toastLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-				toastLabel.Font = Enum.Font.LuckiestGuy
-				toastLabel.TextSize = 30
-				toastLabel.TextColor3 = rarity.color
-				toastLabel.TextStrokeTransparency = 0
-				toastLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-				toastLabel.Text = displayName .. "  " .. (veinType and veinType.rarity or oddsText)
-				toastLabel.Parent = toast
-				local corner = Instance.new("UICorner")
-				corner.CornerRadius = UDim.new(0, 12)
-				corner.Parent = toastLabel
+				-- Screen toast (`VeinToast`) removed at user request — the
+				-- lootbox spinner already announces the tile name + rarity, so
+				-- the on-top "Double Cache COMMON" status banner that fired
+				-- here was redundant. Tile color flicker + landed color +
+				-- oil burst (below) remain.
 
 				-- Oil burst if not dead
 				if not veinResult.isDead and data.hasOil then
@@ -229,9 +207,6 @@ function M.connect(deps: Deps)
 					end
 				end
 
-				-- Toast fade-out (billboard removed, see top of block)
-				task.wait(4)
-				if toast and toast.Parent then toast:Destroy() end
 			end)
 
 		end

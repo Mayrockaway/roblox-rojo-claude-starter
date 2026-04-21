@@ -90,6 +90,11 @@ local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"
 local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
 local PlacementAnchor = require(Shared:WaitForChild("Utils"):WaitForChild("PlacementAnchor"))
 local PlotCellTileResolve = require(Shared:WaitForChild("Utils"):WaitForChild("PlotCellTileResolve"))
+local ResponsiveBillboard = require(Shared:WaitForChild("Utils"):WaitForChild("ResponsiveBillboard"))
+-- Boot the per-viewport BillboardGui rescaler. Idempotent and zero-arg —
+-- scans Workspace + PlayerGui for `BillboardGui`s tagged via
+-- `ResponsiveBillboard.Mark` and rebinds on `Camera.ViewportSize` change.
+ResponsiveBillboard.StartClient()
 
 type StraitWaypointFxModule = {
 	OnStraitWaypointPayload: (data: { [string]: any }) -> (),
@@ -985,6 +990,20 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		return
 	end
 	local touchPos = Vector2.new(input.Position.X, input.Position.Y)
+	-- Tap on the locked ghost itself = confirm. The ghost has CanQuery=false
+	-- so the normal raycast slips through it and resolves the tile underneath
+	-- — when the player isn't dead-center on the original tile (drill model
+	-- straddles a corner, finger lands on the visualization rather than the
+	-- terrain), the ray often hits a *neighbouring* tile and the handler
+	-- below would re-lock instead of placing. Detect a ghost-hit here first
+	-- and treat it as the confirm tap so "tap the green raycast" works the
+	-- same as "tap the same tile twice".
+	local prev = PlacementClient.getMobilePreviewHit()
+	if prev ~= nil and PlacementClient.isTouchOverGhost(touchPos) then
+		tryPrimaryAction()
+		PlacementClient.clearMobilePreview()
+		return
+	end
 	local chunkId, hitPos, tileName = PlacementClient.raycastTouchToChunk(touchPos)
 	if not (chunkId and hitPos) then
 		-- Tap landed off-grid (water, sky, locked overlay with no ChunkId);
@@ -993,7 +1012,6 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		PlacementClient.clearMobilePreview()
 		return
 	end
-	local prev = PlacementClient.getMobilePreviewHit()
 	local sameTile = prev ~= nil and prev.chunkId == chunkId and prev.tileName == tileName and tileName ~= nil
 	if sameTile then
 		-- Confirm: `tryPrimaryAction` reads `getDesiredPlacementHit()` which
