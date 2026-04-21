@@ -1887,6 +1887,16 @@ function OilShipmentService:_snapshotLostDeckBarrels(
 	return out
 end
 
+--- Hard cap on visible deck barrels regardless of how big the actual
+--- cargo manifest is. Decouples ship rig visuals from `ShipUpgradeConfig`
+--- cargo capacity so a fully maxed ship (`L10 = 500 barrels`) doesn't
+--- spawn a 500-barrel skyscraper that lags out nearby clients and clips
+--- through the deck silhouette. The deck still *represents* the manifest
+--- proportionally — tier slices below scale each tier's spawn count
+--- against this total — so a "mostly Premium" load still looks mostly
+--- Premium even when scaled down.
+local MAX_VISUAL_BARRELS_ON_DECK = 50
+
 function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 	local stackRoot = findBarrelStackRoot(boat)
 	if not stackRoot then return end
@@ -1924,12 +1934,56 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 
 	local barrelIndex = 0
 
+	-- Resolve per-tier visible counts. If the manifest already fits inside
+	-- `MAX_VISUAL_BARRELS_ON_DECK`, show every barrel 1:1. Otherwise scale
+	-- each tier proportionally so visual mix matches the manifest mix
+	-- (e.g. a 80% Premium / 20% Crude load stays 80/20 on deck), then
+	-- drop any rounding overshoot in `BARREL_LOSS_TIER_ORDER` order
+	-- (Crude → Refined → Premium) so the most-prestige barrels stay
+	-- visible if a count needs to be trimmed by 1.
+	local visualCountByTier: { [string]: number } = {}
+	local totalManifestBarrels = 0
 	for _, tier in ipairs(TIER_ORDER) do
-		local count = manifest[tier] or 0
+		totalManifestBarrels += manifest[tier] or 0
+	end
+	if totalManifestBarrels <= MAX_VISUAL_BARRELS_ON_DECK then
+		for _, tier in ipairs(TIER_ORDER) do
+			visualCountByTier[tier] = manifest[tier] or 0
+		end
+	else
+		local visualScale = MAX_VISUAL_BARRELS_ON_DECK / totalManifestBarrels
+		local visualTotal = 0
+		for _, tier in ipairs(TIER_ORDER) do
+			local raw = (manifest[tier] or 0) * visualScale
+			local rounded = math.floor(raw + 0.5)
+			visualCountByTier[tier] = rounded
+			visualTotal += rounded
+		end
+		local overshoot = visualTotal - MAX_VISUAL_BARRELS_ON_DECK
+		while overshoot > 0 do
+			local trimmedThisPass = false
+			for _, tier in ipairs(BARREL_LOSS_TIER_ORDER) do
+				if (visualCountByTier[tier] or 0) > 0 then
+					visualCountByTier[tier] -= 1
+					overshoot -= 1
+					trimmedThisPass = true
+					if overshoot <= 0 then
+						break
+					end
+				end
+			end
+			if not trimmedThisPass then
+				break
+			end
+		end
+	end
+
+	for _, tier in ipairs(TIER_ORDER) do
+		local count = visualCountByTier[tier] or 0
 		local templateName = tierTemplates[tier]
 		local template = templateName and assetsFolder:FindFirstChild(templateName)
 
-		for _ = 1, math.min(count, 10) do
+		for _ = 1, count do
 			local barrel
 			if template then
 				barrel = template:Clone()

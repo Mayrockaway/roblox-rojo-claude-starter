@@ -39,6 +39,21 @@ export type EquipmentRow = {
 --- Edit this list only. Keep `tierKey` as "T1"|"T2"|"T3" for active drills; T4-T6 are
 --- "Coming soon" placeholder tiles in the shop with `tierKey = nil` so they can't
 --- be placed/used until real Tool templates and gameplay tuning ship.
+---
+--- Drill pricing (`cashCost`) is **linear in `drillTimeDivisor` at $50 per
+--- m/s**, anchored on the Basic Drill ($50 / 1 m/s):
+---     T1 / 1     m/s →     $50
+---     T2 / 10    m/s →    $500
+---     T3 / 30    m/s →  $1 500
+---     T4 / 100   m/s →  $5 000
+---     T5 / 300   m/s → $15 000
+---     T6 / 1 000 m/s → $50 000
+--- Linear (vs. the previous mixed exponential / discount curve) means cost
+--- per meter is identical across all tiers — players pick the tier they
+--- can afford / want to flex, not the tier with the best $/m/s deal.
+--- Same number drives placement cost (`TryStartDrill`) since `shopPrice`
+--- is `nil` everywhere; if a designer ever wants the shop and placement
+--- to diverge, set `shopPrice` on that row.
 local ITEMS: { EquipmentRow } = {
 	{
 		id = "drill_t1",
@@ -62,7 +77,7 @@ local ITEMS: { EquipmentRow } = {
 		toolKind = "Drill",
 		tierKey = "T2",
 		displayName = "Standard Drill",
-		cashCost = 100,
+		cashCost = 500,
 		shopPrice = nil,
 		purchasable = true,
 		sortOrder = 3,
@@ -78,7 +93,7 @@ local ITEMS: { EquipmentRow } = {
 		toolKind = "Drill",
 		tierKey = "T3",
 		displayName = "Advanced Drill",
-		cashCost = 200,
+		cashCost = 1500,
 		shopPrice = nil,
 		purchasable = true,
 		sortOrder = 4,
@@ -100,7 +115,7 @@ local ITEMS: { EquipmentRow } = {
 		toolKind = "Drill",
 		tierKey = "T4",
 		displayName = "Sundae Driller",
-		cashCost = 12000,
+		cashCost = 5000,
 		shopPrice = nil,
 		purchasable = true,
 		sortOrder = 4.1,
@@ -116,7 +131,7 @@ local ITEMS: { EquipmentRow } = {
 		toolKind = "Drill",
 		tierKey = "T5",
 		displayName = "Glizzy Grinder",
-		cashCost = 35000,
+		cashCost = 15000,
 		shopPrice = nil,
 		purchasable = true,
 		sortOrder = 4.2,
@@ -132,7 +147,7 @@ local ITEMS: { EquipmentRow } = {
 		toolKind = "Drill",
 		tierKey = "T6",
 		displayName = "Ground Pounder",
-		cashCost = 100000,
+		cashCost = 50000,
 		shopPrice = nil,
 		purchasable = true,
 		sortOrder = 4.3,
@@ -166,6 +181,14 @@ export type ShopStockBand = {
 	--- that should NOT scale with population (e.g. mythic chase items where
 	--- "≤1 even on a full server" is the design intent).
 	perPlayer: number?,
+	--- Optional 0..1 gate rolled **before** the min/max band each refresh.
+	--- If `rng:NextNumber() > appearChance`, this item is skipped entirely
+	--- this rotation (stock = 0) — the band is never sampled. Use for
+	--- "rare even when it shows up" items where the min/max range alone
+	--- can't push the in-stock probability below 50% (a `[0,1]` band is
+	--- a flat coin flip and lowering `max` to 0 means never). Omit / nil
+	--- for items that should always roll the band normally.
+	appearChance: number?,
 }
 
 --- Rotating-shop knobs. Every `RefreshIntervalSeconds`, the server rolls a
@@ -179,13 +202,16 @@ export type ShopStockBand = {
 --- refresh so players never get stranded with no early-tier drill.
 ---
 --- Band tuning rationale (see chat 2026-04 "store capacity scaling"):
----   * T1/T2/T3 are cheap consumables ($50/$100/$200) — bands sized so a
+---   * T1/T2/T3 are cheap consumables ($50/$500/$1500) — bands sized so a
 ---     solo player buying everything they can afford never empties the rack
 ---     mid-window, and full lobbies see ~5-6 drills per player per rotation.
----   * T4 ($12k) is a real cash sink; rack caps stay low so wallet, not
+---   * T4 ($5k) is a real cash sink; rack caps stay low so wallet, not
 ---     stock, is the bottleneck.
----   * T5/T6 stay aspirational — T6 still ≤1 even at 8 players to preserve
----     the "wow it's actually here" moment.
+---   * T5/T6 stay aspirational. T5 still ≤1 in small lobbies (flat 50%
+---     per refresh on `[0,1]`). T6 layers an `appearChance = 0.20` gate
+---     on top of the band so it only shows up ~20% of refreshes (~once
+---     every 15 min on the 3-min cycle) instead of 50% — preserves the
+---     "wow it's actually here" mythic moment instead of normalizing it.
 local ShopRotation = {
 	RefreshIntervalSeconds = 180, -- 3 min
 	Bands = {
@@ -194,7 +220,7 @@ local ShopRotation = {
 		drill_t3   = { min = 2,  max = 3,  perPlayer = 0.5  } :: ShopStockBand,
 		drill_t4   = { min = 1,  max = 2,  perPlayer = 0.35 } :: ShopStockBand,
 		drill_t5   = { min = 0,  max = 1,  perPlayer = 0.20 } :: ShopStockBand,
-		drill_t6   = { min = 0,  max = 1,  perPlayer = 0.10 } :: ShopStockBand,
+		drill_t6   = { min = 0,  max = 1,  perPlayer = 0.10, appearChance = 0.20 } :: ShopStockBand,
 	} :: { [string]: ShopStockBand },
 	CoreFloor = {
 		drill_t1 = 3,
@@ -257,6 +283,20 @@ function EquipmentCatalog.rollShopStock(rng: Random, playerCount: number?): { [s
 	local pop = math.max(1, math.floor(tonumber(playerCount) or 1))
 	local out: { [string]: number } = {}
 	for id, band in pairs(ShopRotation.Bands) do
+		-- `appearChance` is rolled BEFORE the band and BEFORE `CoreFloor`,
+		-- so an item with `appearChance = 0.20` skips this rotation 80% of
+		-- the time even if `CoreFloor` would otherwise force ≥1. Intent:
+		-- "this item is rare even when it shows up at all" (e.g. mythic
+		-- chase drill). Guarded by `floor > 0` check below so designers
+		-- don't accidentally combine `appearChance` with a guaranteed
+		-- `CoreFloor` and get confusing behavior.
+		local appearChance = tonumber(band.appearChance)
+		if appearChance ~= nil and appearChance < 1 then
+			if appearChance <= 0 or rng:NextNumber() > appearChance then
+				out[id] = 0
+				continue
+			end
+		end
 		local extra = math.floor((tonumber(band.perPlayer) or 0) * pop)
 		local lo = math.max(0, math.floor(band.min) + extra)
 		local hi = math.max(lo, math.floor(band.max) + extra)

@@ -3962,12 +3962,14 @@ function StraitWaypointWorldFx.OnUSShipSlapPayload(data: { [string]: any })
 		local rootPos = bbCF.Position
 		local waterY = boatRoot.Position.Y
 
-		-- Play kraken SFX immediately (slam synced to 4.12s in the clip) — victim only
+		-- Play kraken SFX immediately (slam synced to 4.12s in the clip) — victim only.
+		-- Volume halved (1.5 -> 0.75) so the slam doesn't blow out the rest of the
+		-- sea-monster cinematic mix.
 		local krakenSfx: Sound? = nil
 		if isVictimClient then
 			local k = Instance.new("Sound")
 			k.SoundId = "rbxassetid://97968431643666"
-			k.Volume = 1.5
+			k.Volume = 0.75
 			k.Parent = Workspace.CurrentCamera
 			k:Play()
 			krakenSfx = k

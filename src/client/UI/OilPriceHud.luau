@@ -34,6 +34,23 @@ local COL_MID = Color3.fromRGB(224, 188, 72)
 local COL_BAD = Color3.fromRGB(205, 72, 72)
 local COL_UNKNOWN = Color3.fromRGB(150, 150, 155)
 
+-- Top-HUD mood background (`OilPricePanel.MoodBackground`) intentionally uses
+-- the **strait status palette** (open / choppy / closed → green / orange / red)
+-- instead of the per-row indicator palette above so the player reads the same
+-- color language across both panels at a glance. See `StraitStatusHud.luau`.
+local MOOD_BG_GOOD = Color3.fromRGB(72, 168, 118)
+local MOOD_BG_MID = Color3.fromRGB(218, 118, 38)
+local MOOD_BG_BAD = Color3.fromRGB(176, 18, 32)
+local MOOD_BG_UNKNOWN = Color3.fromRGB(60, 60, 64)
+
+-- Direction arrows on `Row.PriceIndicator.Arrow`. Studio authors the
+-- ImageLabel layout/size as a 1:1 fill of the existing placeholder; runtime
+-- only swaps `.Image` on price-tick. Keeping the asset IDs here (and not on
+-- the authored ImageLabel beyond a default) keeps the source-of-truth for
+-- "which way did the market move" in code where the up/down decision lives.
+local ARROW_IMG_UP = "rbxassetid://115035977128519"
+local ARROW_IMG_DOWN = "rbxassetid://100037273574272"
+
 local LEGACY_HISTORY_FOLDER = "_OilPriceHistoryTicks"
 
 local ANIM_SCALE_NAME = "OilPricePanelAnimScale"
@@ -42,6 +59,10 @@ local lastSnapshotBase: number? = nil
 local lastSnapshotStrait: string? = nil
 local lastStraitPulseAt = 0.0
 local activeScaleTween: Tween? = nil
+-- Persist the last direction icon shown so a quiet snapshot (price unchanged)
+-- doesn't blank the arrow back to a default — the icon stays at whichever way
+-- the market last moved until the next non-zero delta.
+local lastArrowImage: string? = nil
 
 local OilPriceHud = {}
 
@@ -184,35 +205,90 @@ local function moodColorFromBaseGlobal(base: number, gMin: number, gMax: number)
 	return moodFromNormalizedT(normalizedInBand(base, gMin, gMax))
 end
 
-local function applyPriceIndicatorTint(indicator: GuiObject, color: Color3)
-	if indicator:IsA("ImageLabel") then
-		indicator.ImageColor3 = color
-		return
-	elseif indicator:IsA("ImageButton") then
-		indicator.ImageColor3 = color
-		return
+-- Same band-band lookup as `moodColorFromBaseGlobal` but returns the strait-
+-- status palette so the panel **background** reads with the same green /
+-- orange / red language as the top-of-HUD strait status banner.
+local function moodBackgroundColorFromBaseGlobal(base: number, gMin: number, gMax: number): Color3
+	if base <= 0 then
+		return MOOD_BG_UNKNOWN
 	end
-	local img = indicator:FindFirstChildWhichIsA("ImageLabel", true)
-	if img then
-		img.ImageColor3 = color
+	local t = normalizedInBand(base, gMin, gMax)
+	if t >= 0.61 then
+		return MOOD_BG_GOOD
+	elseif t <= 0.39 then
+		return MOOD_BG_BAD
 	end
-	if indicator:IsA("Frame") then
-		indicator.BackgroundColor3 = color
-	elseif indicator:IsA("TextButton") then
-		indicator.BackgroundColor3 = color
+	return MOOD_BG_MID
+end
+
+local function applyMoodBackground(button: GuiButton, color: Color3)
+	-- Mood color lands on the **`OilPriceButton`** itself — Studio owns
+	-- everything else about the button (size, corner, stroke, padding,
+	-- the inner `PriceText` label); runtime only flips `BackgroundColor3`
+	-- to good / average / bad mood (per `ui-architecture` §6, "default
+	-- visuals + colors on dynamic elements" exception).
+	if button.BackgroundColor3 ~= color then
+		button.BackgroundColor3 = color
 	end
 end
 
-local function findOilPriceStrip(canvas: Frame): (TextLabel?, GuiObject?)
+local function findArrowLabel(indicator: GuiObject): ImageLabel?
+	-- Canonical Studio path is `Row.PriceIndicator.Arrow` (ImageLabel) —
+	-- author the layout/size in Studio so phone/desktop both fill the
+	-- placeholder identically. If `Arrow` is missing (legacy panel build),
+	-- the runtime simply skips the direction icon — no fallback creation,
+	-- so authoring drift surfaces visibly instead of silently fabricating
+	-- an off-spec icon (per `ui-architecture` §3 / §11).
+	local arrow = indicator:FindFirstChild("Arrow")
+	if arrow and arrow:IsA("ImageLabel") then
+		return arrow
+	end
+	return nil
+end
+
+--- Update the up/down arrow icon based on price delta. Equal price →
+--- preserve last-shown arrow so a quiet tick doesn't visually reset.
+--- First-ever snapshot (`prevBase == nil`) leaves whatever Studio authored.
+local function applyPriceArrow(indicator: GuiObject, base: number, prevBase: number?)
+	local arrow = findArrowLabel(indicator)
+	if not arrow then
+		return
+	end
+	if prevBase == nil then
+		-- Seed from the authored Image so the persisted "last shown" state
+		-- matches what the player currently sees (otherwise the next
+		-- equal-price tick would be tracked as "no last image").
+		lastArrowImage = arrow.Image
+		return
+	end
+	local desired: string?
+	if base > prevBase then
+		desired = ARROW_IMG_UP
+	elseif base < prevBase then
+		desired = ARROW_IMG_DOWN
+	else
+		desired = lastArrowImage
+	end
+	if desired and arrow.Image ~= desired then
+		arrow.Image = desired
+	end
+	if desired then
+		lastArrowImage = desired
+	end
+end
+
+local function findOilPriceStrip(canvas: Frame): (TextLabel?, GuiObject?, GuiButton?)
 	local topRow = canvas:FindFirstChild("TopRow")
 	local panel = topRow and topRow:FindFirstChild("OilPricePanel")
 	local row = panel and panel:FindFirstChild("Row")
 	if not (row and row:IsA("Instance")) then
-		return nil, nil
+		return nil, nil, nil
 	end
 	local btn = row:FindFirstChild("OilPriceButton")
 	local priceText: TextLabel? = nil
+	local btnObj: GuiButton? = nil
 	if btn and btn:IsA("GuiButton") then
+		btnObj = btn :: GuiButton
 		local pt = btn:FindFirstChild("PriceText")
 		if pt and pt:IsA("TextLabel") then
 			priceText = pt
@@ -223,7 +299,7 @@ local function findOilPriceStrip(canvas: Frame): (TextLabel?, GuiObject?)
 	if indicator and indicator:IsA("GuiObject") then
 		indObj = indicator :: GuiObject
 	end
-	return priceText, indObj
+	return priceText, indObj, btnObj
 end
 
 local function findPriceValueLabel(row: Instance): TextLabel?
@@ -326,7 +402,7 @@ function OilPriceHud.refresh(playerGui: PlayerGui, snapshot: MarketSnapshot)
 	if not canvas then
 		return
 	end
-	local priceText, indicator = findOilPriceStrip(canvas)
+	local priceText, indicator, oilPriceButton = findOilPriceStrip(canvas)
 	local panel = findOilPricePanel(canvas)
 	local prices = snapshot.prices
 	if typeof(prices) ~= "table" then
@@ -343,9 +419,23 @@ function OilPriceHud.refresh(playerGui: PlayerGui, snapshot: MarketSnapshot)
 	end
 	local gmin = tonumber(snapshot.globalBaseMin) or 8
 	local gmax = tonumber(snapshot.globalBaseMax) or 80
-	local mood = moodColorFromBaseGlobal(base, gmin, gmax)
+	if oilPriceButton then
+		-- Background mood (strait-status palette: green / orange / red)
+		-- lands directly on the `OilPriceButton` itself — gated on price
+		-- quality vs the **global** band, same band-rule as the per-row
+		-- Marker / PriceValue tints below — one read for the player
+		-- ("market is bad / average / good") regardless of which panel
+		-- they look at.
+		applyMoodBackground(oilPriceButton, moodBackgroundColorFromBaseGlobal(base, gmin, gmax))
+	end
 	if indicator then
-		applyPriceIndicatorTint(indicator, mood)
+		-- Direction icon (up / down arrow) is gated on the price **delta**
+		-- vs the previous snapshot. Equal-price tick keeps the last-shown
+		-- arrow so a quiet market doesn't visually flicker. Old behavior
+		-- here tinted the indicator dot to mood color — that role moved
+		-- to `MoodBackground` above so the indicator is now purely a
+		-- "which way did the market just move" cue.
+		applyPriceArrow(indicator, base, prevBase)
 	end
 	refreshInfoPanel(playerGui, snapshot)
 

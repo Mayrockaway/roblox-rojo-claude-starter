@@ -446,6 +446,26 @@ function WarehouseService:_hookWarehouseWoodSign(signPart: BasePart, userId: num
 	signPart.Massless = true
 	signPart:SetAttribute("WarehouseOwnerUserId", userId)
 
+	-- Defensive: same SurfaceGui-soaks-input bug as the oil tank sign — the
+	-- warehouse sign is cloned from the same `Minecraft Wood Sign` template
+	-- prototype, so it inherits whatever Active flag the template ships with.
+	-- See `OilTankService:_hookSignPart` for the full story; flipping here
+	-- keeps the warehouse sign clickable from the moment it's parented
+	-- regardless of template drift.
+	local signModel = signPart.Parent
+	if signModel and signModel:IsA("Model") then
+		for _, d in ipairs(signModel:GetDescendants()) do
+			if d:IsA("SurfaceGui") then
+				d.Active = false
+				for _, gui in ipairs(d:GetDescendants()) do
+					if gui:IsA("GuiObject") then
+						gui.Active = false
+					end
+				end
+			end
+		end
+	end
+
 	local click = signPart:FindFirstChild(WOOD_SIGN_CLICK_NAME)
 	if click and not click:IsA("ClickDetector") then
 		click:Destroy()
@@ -454,14 +474,16 @@ function WarehouseService:_hookWarehouseWoodSign(signPart: BasePart, userId: num
 	if not click then
 		local cd = Instance.new("ClickDetector")
 		cd.Name = WOOD_SIGN_CLICK_NAME
-		cd.MaxActivationDistance = 22
+		-- Match the oil-tank sign reach (28 vs the old 22) for consistent
+		-- mobile / wide-FOV ergonomics.
+		cd.MaxActivationDistance = 28
 		cd.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
 		cd.Parent = signPart
 		click = cd
 	end
 	if click and click:IsA("ClickDetector") then
 		click.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
-		click.MaxActivationDistance = math.max(22, click.MaxActivationDistance)
+		click.MaxActivationDistance = math.max(28, click.MaxActivationDistance)
 		table.insert(
 			self._connections,
 			click.MouseClick:Connect(function(player: Player)

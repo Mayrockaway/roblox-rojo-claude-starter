@@ -2245,12 +2245,14 @@ function OilVisualService:_syncOilTanks(plot: Model, snapshot)
 			if not signClick then
 				local cd = Instance.new("ClickDetector")
 				cd.Name = "TankUpgradeSignClick"
-				cd.MaxActivationDistance = 22
+				-- Match `OilTankService:_hookSignPart` — see the note there
+				-- on why 28 instead of 22 (mobile reach + FOV).
+				cd.MaxActivationDistance = 28
 				cd.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
 				cd.Parent = woodSignPart
 			elseif signClick:IsA("ClickDetector") then
 				signClick.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
-				signClick.MaxActivationDistance = math.max(22, signClick.MaxActivationDistance)
+				signClick.MaxActivationDistance = math.max(28, signClick.MaxActivationDistance)
 			end
 			local surfaceGui = woodSignPart:FindFirstChildOfClass("SurfaceGui")
 			if surfaceGui then

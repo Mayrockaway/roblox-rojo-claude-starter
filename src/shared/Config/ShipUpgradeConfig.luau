@@ -4,41 +4,57 @@
 
 local ShipUpgradeConfig = {}
 
--- Capacity tiers extended from 8 → 10 to match `WarehouseConfig.Tiers`
--- (also 10) so all three player-progression tracks (warehouse / ship cargo
--- / ship speed) have the same level cap. Top end tapers (cargo per level
--- shrinks at the cap) so each later level is a smaller bump in output but
--- a much bigger bump in cost — sink, not power-spike.
+-- Capacity tiers (10 levels, matches `WarehouseConfig.Tiers` and the speed
+-- track below so all three player-progression tracks share the same level
+-- cap). Cap rescaled so L10 = 500 barrels (was 68): a fully maxed warehouse
+-- stockpile (`WarehouseConfig.MaxSlots = 12 × 5 000 = 60 000` barrels)
+-- can now be moved in ~120 voyages instead of ~880, making maxed-warehouse
+-- + maxed-ship a genuinely playable late-game loop.
+--
+-- Per-level increments smoothly taper in proportion (L1→2 doubles cargo,
+-- L9→10 only adds 14%) so early upgrades feel impactful and late ones
+-- feel like prestige polish.
+--
+-- Note: visual barrel spawning on the deck is decoupled — the ship rig
+-- only ever spawns up to `_loadBarrelsOnDeck`'s MAX_VISUAL_BARRELS (50)
+-- regardless of how big the actual cargo number is, so a maxed ship still
+-- looks like a packed deck and not a 500-barrel skyscraper that lags out
+-- nearby clients.
 local CARGO_BY_CAPACITY_LEVEL: { number } = {
-	15,
-	24,
-	32,
+	20,
 	40,
-	46,
-	52,
-	56,
-	60,
-	64,
-	68,
+	70,
+	110,
+	160,
+	220,
+	290,
+	365,
+	440,
+	500,
 }
 
--- Curve shape: front-loaded relief, back-loaded grind. Early upgrades
--- (L1→4) are noticeably cheaper than the previous "~25% off" pass so a
--- fresh player gets a visible ship boost in the first few sells; mid-late
--- (L5+) ramps harder than before (~2x per tier) so the new top tiers
--- (L8→9, L9→10) become a real long-term cash sink instead of a casual
--- unlock. Crossover vs. previous curve is around L4→5 (≈ same cost), then
--- steeper. Total to fully max capacity: 137,200.
+-- Curve shape: front-loaded relief, back-loaded grind.
+--   L1–L3 are still cheap so a fresh player feels a visible ship boost
+--     in the first few sells.
+--   L4+ ramps ~2x per tier; the bigger cargo jumps at high tiers (e.g.
+--     L9→10 = +60 barrels) justify the steeper price tags.
+--   L9→10 is the prestige tier — meaningful cash sink, not a casual
+--     unlock. Combined with `WarehouseConfig` tier 9→10 (1 500 000 cash
+--     for the warehouse alone), maxed everything is a true long-haul.
+-- Totals: cumulative cash to reach L10 = 361,850 (top step alone:
+-- 200,000). Compare warehouse fully maxed at 2,358,650 — the maxed ship
+-- is ~15% of the maxed warehouse, which feels right since the warehouse
+-- is the bigger long-term goal.
 local CAPACITY_UPGRADE_COSTS: { number } = {
 	250,
-	500,
-	1100,
-	2300,
-	4800,
-	9500,
-	18500,
-	35000,
-	65000,
+	600,
+	1500,
+	3500,
+	8000,
+	18000,
+	40000,
+	90000,
+	200000,
 }
 
 -- Speed tiers also at 10 (matches capacity + warehouse). Gentle travel-time

@@ -153,6 +153,29 @@ function OilTankService:_hookSignPart(signPart: BasePart)
 	signPart.CanCollide = false
 	signPart.Anchored = true
 
+	-- Defensive: the authored template historically shipped with
+	-- `Sign.SurfaceGui.Active = true`, which causes the GUI face to soak
+	-- pointer events so the ClickDetector underneath never fires. The
+	-- template is now corrected, but we also flip it here at hook-time so
+	-- a fresh-claimed plot is clickable the moment its sign is parented
+	-- (instead of waiting for the next OilVisualService snapshot tick to
+	-- reach that plot — that wait was the "works for me, not for friend"
+	-- failure mode where the owner had stored oil and got a sync but the
+	-- friend's empty plot did not).
+	local signModel = signPart.Parent
+	if signModel and signModel:IsA("Model") then
+		for _, d in ipairs(signModel:GetDescendants()) do
+			if d:IsA("SurfaceGui") then
+				d.Active = false
+				for _, gui in ipairs(d:GetDescendants()) do
+					if gui:IsA("GuiObject") then
+						gui.Active = false
+					end
+				end
+			end
+		end
+	end
+
 	local click = signPart:FindFirstChild("TankUpgradeSignClick")
 	if click and not click:IsA("ClickDetector") then
 		click:Destroy()
@@ -161,14 +184,19 @@ function OilTankService:_hookSignPart(signPart: BasePart)
 	if not click then
 		local cd = Instance.new("ClickDetector")
 		cd.Name = "TankUpgradeSignClick"
-		cd.MaxActivationDistance = 22
+		-- 28 (was 22): friend reports of unreliable taps were partly the
+		-- SurfaceGui-soaks-input bug above and partly being just past the
+		-- old 22-stud reach on mobile / wider FOV. 28 stays well inside
+		-- "right next to the refinery" without making clicks land from
+		-- across the plot.
+		cd.MaxActivationDistance = 28
 		cd.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
 		cd.Parent = signPart
 		click = cd
 	end
 	if click and click:IsA("ClickDetector") then
 		click.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
-		click.MaxActivationDistance = math.max(22, click.MaxActivationDistance)
+		click.MaxActivationDistance = math.max(28, click.MaxActivationDistance)
 	end
 	if click and click:IsA("ClickDetector") and not self._hookedClickDetectors[click] then
 		self._hookedClickDetectors[click] = true

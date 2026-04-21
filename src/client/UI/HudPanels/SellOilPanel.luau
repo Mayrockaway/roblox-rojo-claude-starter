@@ -216,6 +216,10 @@ local warehouseStoredTotal = 0
 local warehouseCapTotal = 0
 local hasWarehouseTotals = false
 local sellButton: GuiButton? = nil
+local sellAllButton: GuiButton? = nil
+-- Shared debounce: both `SellConfirmButton` and `SellAllConfirmButton` hit the
+-- same `requestSellWarehouseBarrels` remote, so a single floor stops a quick
+-- toggle between the two from double-firing the server.
 local lastSellFire = 0.0
 
 --- Last values sent to FTUE pointer sequencing (debounced).
@@ -281,6 +285,14 @@ end
 
 local function sumSelectedSellBarrels(): number
 	return crudeBlendSelected() + (selected.Refined or 0) + (selected.Premium or 0)
+end
+
+local function sumWarehouseBarrelsAll(): number
+	local n = 0
+	for _, k in ipairs(TIER_KEYS) do
+		n += math.max(0, math.floor(warehouseBarrelsByTier[k] or 0))
+	end
+	return n
 end
 
 --- For `FtueUiPointers` during the **Sell** FTUE step.
@@ -475,6 +487,15 @@ local function refreshRowUi()
 		sellButton.Active = true
 		sellButton.AutoButtonColor = n > 0
 	end
+	if sellAllButton then
+		-- "SELL ALL" is gated on warehouse contents, not on the per-tier
+		-- selection, so a player can liquidate everything in one tap without
+		-- first ticking each row up to its stored amount. Visual dim mirrors
+		-- the regular Sell button so the two read as paired CTAs.
+		local total = sumWarehouseBarrelsAll()
+		sellAllButton.Active = true
+		sellAllButton.AutoButtonColor = total > 0
+	end
 	refreshWarehouseTitle()
 	maybeFireFtueSellPointerRefresh()
 end
@@ -523,6 +544,37 @@ local function trySell()
 	})
 end
 
+local function trySellAll()
+	-- Liquidate every barrel currently in the warehouse, ignoring per-row
+	-- selections. The server (`requestSellWarehouseBarrels` handler) already
+	-- clamps incoming counts to the player's actual stored amounts and is
+	-- the price-of-record, so the worst that can happen if our local
+	-- snapshot is mid-update (e.g. a payload arrived during this frame) is
+	-- the server sells slightly less than we asked for — never more, never
+	-- the wrong tier. After the sell resolves, `oilActionResult` zeros the
+	-- selections + closes the panel via the same path as the regular Sell
+	-- button, so there's no second cleanup pass needed here.
+	local h = math.max(0, math.floor(warehouseBarrelsByTier.Crude or 0))
+	local ls = math.max(0, math.floor(warehouseBarrelsByTier.Refined or 0))
+	local pr = math.max(0, math.floor(warehouseBarrelsByTier.Premium or 0))
+	if h + ls + pr <= 0 then
+		UiSfx.playUiDenied()
+		showErrorNotification("Warehouse is empty.", 4)
+		return
+	end
+	local now = os.clock()
+	if now - lastSellFire < 0.45 then
+		return
+	end
+	lastSellFire = now
+	UiSfx.playKaching()
+	ClientRemotes.requestSellWarehouseBarrels:FireServer({
+		Crude = h,
+		Refined = ls,
+		Premium = pr,
+	})
+end
+
 local function disconnectAll()
 	for _, c in ipairs(connections) do
 		c:Disconnect()
@@ -536,6 +588,7 @@ local function disconnectAll()
 	warehouseCapTotal = 0
 	hasWarehouseTotals = false
 	sellButton = nil
+	sellAllButton = nil
 	wiredScreen = nil
 	lastFtueSellPeekOpen = nil
 	lastFtueSellPeekBarrels = nil
@@ -592,6 +645,13 @@ local function wireSellOil(screen: ScreenGui, closePanel: (() -> ())?)
 		local btn = footer:FindFirstChild("SellConfirmButton", true)
 		if btn and btn:IsA("GuiButton") then
 			sellButton = btn
+		end
+		-- Studio-authored "SELL ALL" sibling of `SellConfirmButton`. Optional —
+		-- if a build of the panel doesn't have it yet we just skip wiring (no
+		-- warn) so legacy panels keep working with only the per-row Sell.
+		local btnAll = footer:FindFirstChild("SellAllConfirmButton", true)
+		if btnAll and btnAll:IsA("GuiButton") then
+			sellAllButton = btnAll
 		end
 	end
 
@@ -716,6 +776,9 @@ local function wireSellOil(screen: ScreenGui, closePanel: (() -> ())?)
 
 	if sellButton then
 		table.insert(connections, sellButton.Activated:Connect(trySell))
+	end
+	if sellAllButton then
+		table.insert(connections, sellAllButton.Activated:Connect(trySellAll))
 	end
 
 	table.insert(connections, ClientRemotes.warehouseStateUpdate.OnClientEvent:Connect(function(data: any)
