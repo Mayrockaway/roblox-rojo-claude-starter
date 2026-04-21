@@ -249,12 +249,17 @@ local function buildDefaultPersisted()
 		--- flushes — so a disconnect-mid-leg or in-session death drops the player
 		--- back where they were instead of the `ClaimPad`. Cleared the moment the
 		--- FTUE reaches `Done` (or is otherwise nil) so post-FTUE rejoins go to
-		--- `ClaimPad` as before. Stored as raw position + Y-axis yaw (radians) —
-		--- pitch / roll are intentionally dropped to avoid spawning the character
-		--- ragdolled. See `OilStateService:SetFtueLastSpawn` /
-		--- `:GetFtueLastSpawnCFrame` for read/write, and `FtueService` for the
-		--- step-change capture + character-spawn restore wiring.
-		ftueLastSpawn = nil :: { x: number, y: number, z: number, yaw: number }?,
+		--- `ClaimPad` as before. Stored as raw position + Y-axis yaw (radians)
+		--- + the player's `PlotId` at capture time. Pitch / roll are
+		--- intentionally dropped to avoid spawning the character ragdolled.
+		--- `plotId` is used by `GetFtueLastSpawnCFrame` to **reject** restores
+		--- that don't match the player's currently assigned plot — without this
+		--- check the player would be teleported into the previous plot's world
+		--- coordinates, which on rejoin is frequently another player's plot.
+		--- See `OilStateService:SetFtueLastSpawn` / `:GetFtueLastSpawnCFrame`
+		--- for read/write, and `FtueService` for the step-change capture +
+		--- character-spawn restore wiring.
+		ftueLastSpawn = nil :: { x: number, y: number, z: number, yaw: number, plotId: number? }?,
 	}
 end
 
@@ -694,7 +699,7 @@ end
 --- anchor (called on `Done`/cancel so post-FTUE rejoins go back to ClaimPad).
 --- Reads/writes are no-ops if the player has no loaded state — silently safe
 --- to call from `_setStep` even mid-load.
-function OilStateService:SetFtueLastSpawn(userId: number, cframe: CFrame?)
+function OilStateService:SetFtueLastSpawn(userId: number, cframe: CFrame?, plotId: number?)
 	local state = self._statesByUserId[userId]
 	if not state then
 		return
@@ -714,6 +719,7 @@ function OilStateService:SetFtueLastSpawn(userId: number, cframe: CFrame?)
 		y = pos.Y,
 		z = pos.Z,
 		yaw = yaw,
+		plotId = if typeof(plotId) == "number" and plotId > 0 then plotId else nil,
 	}
 	self:_markDirty(userId)
 end
@@ -723,7 +729,14 @@ end
 --- (`PlotService` / `FtueService`) use this to override the default ClaimPad
 --- teleport on the first character spawn after rejoin and on in-session FTUE
 --- death-respawns.
-function OilStateService:GetFtueLastSpawnCFrame(userId: number): CFrame?
+---
+--- `currentPlotId` (optional) — when provided, the snapshot is rejected
+--- (returns `nil`) if the saved snapshot was captured on a **different** plot.
+--- This prevents the rejoin restore from teleporting the player into world
+--- coordinates that now belong to another player's plot (the saved snapshot
+--- is in absolute world space, not plot-relative). Snapshots written before
+--- the `plotId` field existed (legacy) are accepted unconditionally.
+function OilStateService:GetFtueLastSpawnCFrame(userId: number, currentPlotId: number?): CFrame?
 	local state = self._statesByUserId[userId]
 	if not state then
 		return nil
@@ -735,14 +748,22 @@ function OilStateService:GetFtueLastSpawnCFrame(userId: number): CFrame?
 	if typeof(snap) ~= "table" then
 		return nil
 	end
+	if typeof(currentPlotId) == "number" and currentPlotId > 0 then
+		local snapPlotId = (snap :: any).plotId
+		if typeof(snapPlotId) == "number" and snapPlotId > 0 and snapPlotId ~= currentPlotId then
+			return nil
+		end
+	end
 	return CFrame.new(snap.x, snap.y, snap.z) * CFrame.fromEulerAnglesYXZ(0, snap.yaw, 0)
 end
 
---- Look up the player by `userId`, read their HumanoidRootPart `CFrame`, and
---- persist it as the FTUE rejoin anchor. No-op (and does **not** clear the
---- existing anchor) when the character / HRP isn't available — that way a
---- mid-respawn `PlayerRemoving` falls back to the previous step-change
---- snapshot rather than wiping it.
+--- Look up the player by `userId`, read their HumanoidRootPart `CFrame` +
+--- assigned `PlotId` attribute, and persist them as the FTUE rejoin anchor.
+--- No-op (and does **not** clear the existing anchor) when the character /
+--- HRP isn't available — that way a mid-respawn `PlayerRemoving` falls back
+--- to the previous step-change snapshot rather than wiping it. Captures the
+--- player's current `PlotId` so `GetFtueLastSpawnCFrame` can reject restores
+--- that would land the player on someone else's plot after a re-assignment.
 function OilStateService:CaptureFtueSpawnSnapshot(userId: number)
 	local player = Players:GetPlayerByUserId(userId)
 	if not player then
@@ -756,7 +777,9 @@ function OilStateService:CaptureFtueSpawnSnapshot(userId: number)
 	if not (hrp and hrp:IsA("BasePart")) then
 		return
 	end
-	self:SetFtueLastSpawn(userId, hrp.CFrame)
+	local plotIdAttr = player:GetAttribute("PlotId")
+	local plotId: number? = if typeof(plotIdAttr) == "number" and plotIdAttr > 0 then plotIdAttr else nil
+	self:SetFtueLastSpawn(userId, hrp.CFrame, plotId)
 end
 
 --- Persist the dock-ship sub-step so a player who quits mid-leg rejoins on the
@@ -2612,7 +2635,7 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		--- anchor. Read by `PlotService` / `FtueService` to override the default
 		--- ClaimPad teleport on the **first** character spawn after rejoin and on
 		--- in-session FTUE death-respawns.
-		ftueLastSpawn = nil :: { x: number, y: number, z: number, yaw: number }?,
+		ftueLastSpawn = nil :: { x: number, y: number, z: number, yaw: number, plotId: number? }?,
 	}
 
 	local persisted = self:_loadPersistedProfile(userId)
@@ -2847,6 +2870,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 				y = snap.y,
 				z = snap.z,
 				yaw = snap.yaw,
+				plotId = if typeof((snap :: any).plotId) == "number" and (snap :: any).plotId > 0 then (snap :: any).plotId else nil,
 			}
 		else
 			(state :: any).ftueLastSpawn = nil
@@ -3523,6 +3547,7 @@ function OilStateService:_serializeState(state)
 				y = snap.y,
 				z = snap.z,
 				yaw = snap.yaw,
+				plotId = if typeof((snap :: any).plotId) == "number" and (snap :: any).plotId > 0 then (snap :: any).plotId else nil,
 			}
 		else
 			(persisted :: any).ftueLastSpawn = nil

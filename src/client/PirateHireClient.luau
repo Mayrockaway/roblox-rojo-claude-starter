@@ -20,6 +20,10 @@ local UiSfx = require(script.Parent:WaitForChild("UiSfx")) :: {
 --- here (not bound through `HudPanelRouter`) so we must register its ScreenGui manually
 --- or the cursor stays locked-to-center when opened from first-person.
 local HudMousePolicy = require(script.Parent:WaitForChild("UI"):WaitForChild("HudMousePolicy"))
+--- Cross-platform UIScale for the runtime dialogue (520×420 offset root would
+--- otherwise overflow phone viewports). Same shared helper that scales the
+--- Army General dialogue + lootbox spinner; only ever shrinks below 1×.
+local ResponsiveScreenScale = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Utils"):WaitForChild("ResponsiveScreenScale"))
 
 export type PirateHireDeps = {
 	player: Player,
@@ -210,6 +214,10 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 		root.Position = UDim2.fromScale(0.68, 0.55)
 		root.Size = UDim2.fromOffset(520, 420)
 		root.Parent = screen
+		-- Mobile fit: shrink the dialogue (never grow above 1x) so a 520x420
+		-- root doesn't overflow phone viewports. Scale auto-rebinds on
+		-- viewport / camera changes and tears down with the screen.
+		ResponsiveScreenScale.Attach(root, 520, 420)
 		local layout = Instance.new("UIListLayout")
 		layout.FillDirection = Enum.FillDirection.Vertical
 		layout.HorizontalAlignment = Enum.HorizontalAlignment.Left

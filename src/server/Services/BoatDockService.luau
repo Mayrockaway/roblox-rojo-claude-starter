@@ -346,15 +346,29 @@ local function resolveBoatSupportStandCFrame(boat: Model, desiredCFrame: CFrame)
 		return desiredCFrame
 	end
 
-	local snappedPos = Vector3.new(desiredPos.X, result.Position.Y + 4, desiredPos.Z)
+	--- Clamp the snap to **never go BELOW** `desiredPos.Y`. The raycast is
+	--- only a refinement to push the stand position UP when something sits
+	--- on top of the rig-authored deck height (barrel stack, cabin step,
+	--- etc.). Roblox raycasts skip any part whose **interior the ray
+	--- originates inside** — when `desiredPos.Y` (already `DeckTopAnchor.Y +
+	--- 4`) sits inside the deck slab on a thick-deck skin, or the deck
+	--- barely overlaps `desiredPos.Y` after physics settle, the ray punches
+	--- through the deck and hits the **next collidable surface below**
+	--- (interior hull, ballast, ship floor under the deck). Snapping to
+	--- `that hit + 4` would drop the player **inside** / **under** the ship.
+	--- Trust `desiredPos.Y` as the lower bound — the rig anchor is the
+	--- authoritative stand height — and only let the support snap raise it.
+	local snapY = math.max(result.Position.Y + 4, desiredPos.Y)
+	local snappedPos = Vector3.new(desiredPos.X, snapY, desiredPos.Z)
 	if RunService:IsStudio() then
 		print(string.format(
-			"[BoatTeleportSupport] boat=%s support=%s hitY=%.2f targetY=%.2f snappedY=%.2f",
+			"[BoatTeleportSupport] boat=%s support=%s hitY=%.2f targetY=%.2f snappedY=%.2f%s",
 			boat:GetFullName(),
 			supportPart:GetFullName(),
 			result.Position.Y,
 			desiredPos.Y,
-			snappedPos.Y
+			snappedPos.Y,
+			if (result.Position.Y + 4) < desiredPos.Y then " [clamped-up-to-target]" else ""
 		))
 	end
 	return CFrame.lookAt(snappedPos, snappedPos + desiredCFrame.LookVector)

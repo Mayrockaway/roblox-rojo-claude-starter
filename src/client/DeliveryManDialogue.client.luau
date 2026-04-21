@@ -17,12 +17,21 @@
 -- bootstrap order assumptions.
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
+
+-- Responsive scaler (per-viewport `Size` rescale, shared across the game's
+-- runtime BillboardGuis — pump label, drill timer, plot owner plate, refinery
+-- tank holos, tile hover focus). The Ship Oil marker now opts in too so
+-- mobile gets a smaller pixel footprint; distance scaling below stays on a
+-- separate `UIScale` child so the two systems don't race over `Size`.
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local ResponsiveBillboard = require(Shared:WaitForChild("Utils"):WaitForChild("ResponsiveBillboard"))
 
 -- Resolve HudPanelRouter (same path the previous dialogue used for the "Ship
 -- Oil" choice — keeps panel-open behavior 1:1 with that branch).
@@ -72,7 +81,15 @@ task.spawn(function()
 
 				local bb = Instance.new("BillboardGui")
 				bb.Name = "ShipOilMarkerGui"
-				bb.Size = UDim2.fromOffset(200, 110)
+				-- Design-target pixel size at the reference viewport
+				-- (1366 wide). The shared client controller rescales this
+				-- per-viewport so phones, 1080p, and 4K all read at the same
+				-- on-screen proportion. Distance falloff (1.0× → 2.0× across
+				-- the docks → 0.6× from the strait) is applied below via a
+				-- `UIScale` child instead of mutating Size, so the two
+				-- systems stay orthogonal (Size = viewport, UIScale =
+				-- camera distance).
+				ResponsiveBillboard.Mark(bb, 200, 110)
 				bb.StudsOffset = Vector3.new(0, 10, 0)
 				bb.AlwaysOnTop = true
 				bb.LightInfluence = 0
@@ -121,8 +138,25 @@ task.spawn(function()
 	--   Close (< 20 studs):   1x base size
 	--   Beach/docks (20-150): scales UP to 2x so it's a landmark from the docks
 	--   Far (> 300, strait/warehouse): shrinks to 0.6x — still visible, just smaller
-	local MARKER_BASE_W = 200
-	local MARKER_BASE_H = 110
+	-- Distance scale is applied through a child `UIScale` so the responsive
+	-- controller (which writes `Size` per viewport) and this loop don't fight
+	-- over the same property. Final on-screen size = viewport-rescaled `Size`
+	-- × `UIScale.Scale`.
+	local DISTANCE_SCALE_NAME = "ShipOilDistanceScale"
+	local function ensureDistanceScale(billboard: BillboardGui): UIScale
+		local existing = billboard:FindFirstChild(DISTANCE_SCALE_NAME)
+		if existing and existing:IsA("UIScale") then
+			return existing
+		end
+		if existing then
+			existing:Destroy()
+		end
+		local s = Instance.new("UIScale")
+		s.Name = DISTANCE_SCALE_NAME
+		s.Scale = 1
+		s.Parent = billboard
+		return s
+	end
 	local t = 0
 	RunService.Heartbeat:Connect(function(dt)
 		t = t + dt
@@ -152,7 +186,10 @@ task.spawn(function()
 					else
 						scale = 0.6
 					end
-					markerGui.Size = UDim2.new(0, math.round(MARKER_BASE_W * scale), 0, math.round(MARKER_BASE_H * scale))
+					local s = ensureDistanceScale(markerGui)
+					if math.abs(s.Scale - scale) > 0.005 then
+						s.Scale = scale
+					end
 				end
 			end
 		end

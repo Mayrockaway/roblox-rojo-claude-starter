@@ -34,6 +34,13 @@ export type CatalogRow = {
 	--- Rotating-shop remaining count. `nil` = non-rotating / unlimited;
 	--- a number = "X left this rotation". Zero = sold out.
 	stock: number?,
+	--- Per-rotation **max** the server actually rolled against (the `hi` in
+	--- `EquipmentCatalog.computeShopStockMax`). When set, the UI renders
+	--- "stock / stockMax" using this value; without it we fall back to the
+	--- raw `band.max` from the catalog, which under-reports the cap on
+	--- multi-player servers (extra = floor(perPlayer * playerCount)) and
+	--- makes the rack appear to refresh "over the limit".
+	stockMax: number?,
 }
 
 export type Slot = { card: GuiObject, itemId: string }
@@ -216,9 +223,20 @@ local function applyRoles(
 			format = defaults and defaults.StockFormat or "%d / %d"
 		end
 		local current = if server and typeof(server.stock) == "number" then server.stock else nil
-		local maxRotation = maxStockFor(item.id)
+		-- Prefer the server-reported per-rotation cap (it includes the
+		-- per-player `extra` from `band.perPlayer`). Fall back to the raw
+		-- `band.max` only if the server didn't send one (older payload, or
+		-- non-rotating items routed through here for some reason).
+		local maxRotation: number? = if server and typeof(server.stockMax) == "number"
+			then server.stockMax
+			else maxStockFor(item.id)
 		if typeof(current) == "number" and typeof(maxRotation) == "number" then
-			stockLbl.Text = string.format(format, current, maxRotation)
+			-- Defensive clamp: if server stock somehow exceeds the cap (e.g.
+			-- cap shrinks between rotations while a buy is in flight), show
+			-- "max / max" instead of "13 / 8" so the label never lies the
+			-- other direction either.
+			local shown = math.min(current, maxRotation)
+			stockLbl.Text = string.format(format, shown, maxRotation)
 		elseif typeof(current) == "number" then
 			stockLbl.Text = tostring(current)
 		else

@@ -14,6 +14,11 @@ local Workspace = game:GetService("Workspace")
 --- stuck with `MouseBehavior = LockCenter` if they were in first-person when they
 --- triggered the dialog.
 local HudMousePolicy = require(script.Parent:WaitForChild("UI"):WaitForChild("HudMousePolicy"))
+--- Cross-platform UIScale for the runtime Army General dialogue (500×320
+--- offset root would otherwise overflow phone viewports). Same shared helper
+--- that scales the Pirate Hire dialogue + lootbox spinner; only ever shrinks
+--- below 1×.
+local ResponsiveScreenScale = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Utils"):WaitForChild("ResponsiveScreenScale"))
 
 export type StrategicStrikeDeps = {
 	player: Player,
@@ -333,6 +338,10 @@ function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDep
 		root.Position = UDim2.fromScale(0.68, 0.55)
 		root.Size = UDim2.fromOffset(500, 320)
 		root.Parent = screenGui
+		-- Mobile fit: shrink the dialogue (never grow above 1x) so a 500x320
+		-- root doesn't overflow phone viewports. Scale auto-rebinds on
+		-- viewport / camera changes and tears down with the screen.
+		ResponsiveScreenScale.Attach(root, 500, 320)
 
 		local layout = Instance.new("UIListLayout")
 		layout.FillDirection = Enum.FillDirection.Vertical

@@ -270,6 +270,31 @@ function EquipmentCatalog.rollShopStock(rng: Random, playerCount: number?): { [s
 	return out
 end
 
+--- Per-rotation **maximum** stock cap (the `hi` used when `rollShopStock` rolls
+--- this rotation). Mirrors the formula in `rollShopStock` but without the RNG,
+--- so the UI can show "X / hi" with the same `hi` the server actually rolled
+--- against. Without this, the shop label uses the raw `band.max` (e.g. `8`)
+--- while a full lobby's actual cap may be much higher (e.g. `8 + floor(1.25*4)
+--- = 13`), which makes the rack legitimately refresh to "13 / 8" — looks like
+--- a bug to the player. Same `playerCount` policy as `_rollShopStock`: sampled
+--- once per rotation, **not** updated on join/leave mid-window. Items not in
+--- `Bands` are omitted (callers treat "missing" as unlimited).
+function EquipmentCatalog.computeShopStockMax(playerCount: number?): { [string]: number }
+	local pop = math.max(1, math.floor(tonumber(playerCount) or 1))
+	local out: { [string]: number } = {}
+	for id, band in pairs(ShopRotation.Bands) do
+		local extra = math.floor((tonumber(band.perPlayer) or 0) * pop)
+		local lo = math.max(0, math.floor(band.min) + extra)
+		local hi = math.max(lo, math.floor(band.max) + extra)
+		local floor = ShopRotation.CoreFloor[id]
+		if typeof(floor) == "number" and floor > hi then
+			hi = floor
+		end
+		out[id] = hi
+	end
+	return out
+end
+
 function EquipmentCatalog.getAllRows(): { EquipmentRow }
 	return ITEMS
 end

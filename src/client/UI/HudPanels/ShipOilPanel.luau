@@ -200,6 +200,13 @@ local shipmentCostLabel: TextLabel? = nil
 local totalBarrelsLabel: TextLabel? = nil
 local shipCapacityLabel: TextLabel? = nil
 local warehouseCapacityLabel: TextLabel? = nil
+-- Authored default color of `WarehouseCapacityLabel`, captured the first time
+-- the label resolves so we can flip to red when the warehouse hits 0 slots
+-- left and restore the design color when capacity opens back up. Stored as
+-- a `Color3?` (nil until first bind) instead of hard-coding a fallback so
+-- restyling the panel in Studio keeps the off-red color consistent.
+local warehouseCapacityLabelDefaultColor: Color3? = nil
+local WAREHOUSE_FULL_TEXT_COLOR = Color3.fromRGB(255, 80, 80)
 local warehouseStoredTotal = 0
 local warehouseCapTotal = 0
 local hasWarehouseTotals = false
@@ -517,12 +524,27 @@ local function refreshFooter()
 		-- ticks down to zero and gives them an at-a-glance budget without
 		-- mental math against `Stored / Cap`. Clamps at 0 so the label
 		-- never reads negative if a payload arrives mid-edit.
+		--
+		-- Color flip: when staged + stored saturates the warehouse cap
+		-- (`remaining == 0`) the label turns red so the player sees at a
+		-- glance that the next +1 nudge would overflow on dispatch (the
+		-- "Warehouse full!" dispatch guard would then block them). The
+		-- design color is captured once on first resolve so restyling the
+		-- panel in Studio keeps the off-red default in sync.
 		if hasWarehouseTotals then
 			local staged = sumSelectedBarrels()
 			local remaining = math.max(0, warehouseCapTotal - warehouseStoredTotal - staged)
-			warehouseCapacityLabel.Text = string.format("%d Warehouse Storage Left", remaining)
+			warehouseCapacityLabel.Text = string.format("%d Warehouse Spots", remaining)
+			if remaining <= 0 and warehouseCapTotal > 0 then
+				warehouseCapacityLabel.TextColor3 = WAREHOUSE_FULL_TEXT_COLOR
+			elseif warehouseCapacityLabelDefaultColor then
+				warehouseCapacityLabel.TextColor3 = warehouseCapacityLabelDefaultColor
+			end
 		else
-			warehouseCapacityLabel.Text = "— Warehouse Storage Left"
+			warehouseCapacityLabel.Text = "— Warehouse Spots"
+			if warehouseCapacityLabelDefaultColor then
+				warehouseCapacityLabel.TextColor3 = warehouseCapacityLabelDefaultColor
+			end
 		end
 	end
 	maybeFireFtueDispatchPointerRefresh()
@@ -1160,6 +1182,14 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 	local whCap = cargoSection and cargoSection:FindFirstChild("WarehouseCapacityLabel", true)
 	if whCap and whCap:IsA("TextLabel") then
 		warehouseCapacityLabel = whCap
+		-- Snapshot the Studio-authored color the first time we bind so the
+		-- "warehouse full" red flip can restore the design color when capacity
+		-- opens back up. Captured once per panel-resolve; subsequent re-binds
+		-- keep the original snapshot so a previous red flash doesn't get
+		-- frozen as the new "default."
+		if warehouseCapacityLabelDefaultColor == nil then
+			warehouseCapacityLabelDefaultColor = whCap.TextColor3
+		end
 	end
 
 	if cargoRows and cargoRows:IsA("Instance") then

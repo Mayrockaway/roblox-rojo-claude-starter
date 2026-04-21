@@ -289,8 +289,14 @@ function ShipmentVisualClient.connect(deps: ShipmentVisualDeps, shipmentVisualEv
 			if not isOwner then
 				return
 			end
-			if data.eventId == "RoutinePaperwork" or data.eventId == "EngineRoomSmoke" then
+			--- Distinct voice file per minor event so the two minor-event slots
+			--- are audibly different (used to share `Paperwork`). The
+			--- `EngineRoomSmoke` Sound is authored via MCP at
+			--- `ReplicatedStorage.Assets.SFX.VoiceLines.EngineRoomSmoke`.
+			if data.eventId == "RoutinePaperwork" then
 				playEventSFX("Paperwork")
+			elseif data.eventId == "EngineRoomSmoke" then
+				playEventSFX("EngineRoomSmoke")
 			end
 			if data.totalLoss then
 				task.delay(4, function()

@@ -987,7 +987,15 @@ function FtueService:_onCharacterSpawnedDuringFtue(player: Player)
 		if not (oilState and typeof((oilState :: any).GetFtueLastSpawnCFrame) == "function") then
 			return
 		end
-		local target = (oilState :: any):GetFtueLastSpawnCFrame(player.UserId)
+		--- Pass the player's **currently assigned** PlotId so the restore is
+		--- rejected if the snapshot was captured on a different plot in a
+		--- prior session — without this guard the saved world coordinates can
+		--- land the player on someone else's plot after the server reassigns
+		--- them on rejoin (plots are not sticky to the same UserId across
+		--- server instances).
+		local plotIdAttr = player:GetAttribute("PlotId")
+		local currentPlotId: number? = if typeof(plotIdAttr) == "number" and plotIdAttr > 0 then plotIdAttr else nil
+		local target = (oilState :: any):GetFtueLastSpawnCFrame(player.UserId, currentPlotId)
 		if not target then
 			return
 		end

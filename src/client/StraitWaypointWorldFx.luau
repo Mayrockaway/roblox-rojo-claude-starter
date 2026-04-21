@@ -26,6 +26,30 @@ local function tryEnqueueVoice(key: string)
 	end
 end
 
+--- True when the local player is the owner of the shipment carrying this
+--- event (matches the gating used in `ShipmentVisualClient` for HUD lines).
+--- Visual cinematics still spawn for every client (the kraken / missile /
+--- pirate boat needs to be visible to spectators), but voice lines + 2D
+--- alarm bursts are owner-only — they're personal feedback, not public
+--- ambience, and previously stacked on every player whenever someone else
+--- got Pirates'd / Coastguard'd / Storm'd. Defensive against missing
+--- `LocalPlayer` (e.g. test harness) by treating "no local player" as "not
+--- owner" so audio simply doesn't fire.
+local function isLocalOwner(data: { [string]: any }): boolean
+	local lp = Players.LocalPlayer
+	if not lp then return false end
+	local owner = data and data.ownerUserId
+	return typeof(owner) == "number" and owner == lp.UserId
+end
+
+--- Owner-gated wrapper around `tryEnqueueVoice` — call sites should use this
+--- instead of `tryEnqueueVoice` so cosmetic FX are visible to spectators
+--- but voice lines stay personal to the affected player.
+local function tryEnqueueOwnerVoice(data: { [string]: any }, key: string)
+	if not isLocalOwner(data) then return end
+	tryEnqueueVoice(key)
+end
+
 --- Play a 2D one-shot Sound by asset id `count` times **serially** — the next
 --- play waits on `Sound.Ended` before starting, so the user hears `count`
 --- distinct hits back-to-back (no overlap). Used by the coastguard event for
@@ -700,9 +724,13 @@ end
 local ROUTINE_PAPERWORK_ID = "RoutinePaperwork"
 local ROUTINE_PAPERWORK_DECK_OFFSET = CFrame.new(0, 8, 0)
 -- After template + ParticleFxScale: bias toss upward, then let gravity/drag pull sheets down.
-local ROUTINE_PAPERWORK_SPEED_MUL = 1.22
-local ROUTINE_PAPERWORK_GRAVITY_MUL = 0.72 -- less negative Y acceleration = longer hang before fall
-local ROUTINE_PAPERWORK_SPREAD_MUL = 0.72 -- tighter cone around EmissionDirection (more "up" than sideways)
+--- Tuned to launch the burst noticeably higher than the previous pass: speed
+--- mul more than doubled and gravity damped further so a single emit reaches
+--- well above the deck before falling. Spread stays tight so the silhouette
+--- reads as a column shooting up rather than a ground spray.
+local ROUTINE_PAPERWORK_SPEED_MUL = 2.6
+local ROUTINE_PAPERWORK_GRAVITY_MUL = 0.5 -- less negative Y acceleration = longer hang before fall
+local ROUTINE_PAPERWORK_SPREAD_MUL = 0.55 -- tighter cone around EmissionDirection (more "up" than sideways)
 
 --- Same dock layout as `BoatDockService` / `ShipmentProgressHud`: **`dOCKS.Boats`** holds `ActiveShipmentBoat`.
 local function getDocksRootForActiveShipmentBoat(): Instance?
@@ -1807,7 +1835,9 @@ function StraitWaypointWorldFx.OnStraitWaypointPayload(data: { [string]: any })
 	--- the same reason — their `OnStormPayload` / `OnTornadoPayload` owns
 	--- the voice cue.
 	if id == "RoutinePaperwork" then
-		tryEnqueueVoice("Paperwork")
+		tryEnqueueOwnerVoice(data, "Paperwork")
+	elseif id == "EngineRoomSmoke" then
+		tryEnqueueOwnerVoice(data, "EngineRoomSmoke")
 	end
 	local fxScale = particleFxScaleFromPayload(data)
 
@@ -1840,7 +1870,7 @@ function StraitWaypointWorldFx.OnMissileStrikePayload(data: { [string]: any })
 	--- on dedup to swallow them.
 	local missileIndex = tonumber(data.missileIndex) or 1
 	if missileIndex == 1 then
-		tryEnqueueVoice("Missiles")
+		tryEnqueueOwnerVoice(data, "Missiles")
 	end
 
 	task.spawn(function()
@@ -2278,7 +2308,7 @@ end
 
 
 function StraitWaypointWorldFx.OnStormPayload(data: { [string]: any })
-	tryEnqueueVoice("Storm")
+	tryEnqueueOwnerVoice(data, "Storm")
 
 	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
 	local boat = if shipmentId ~= "" then findActiveShipmentBoatByShipmentId(shipmentId) else nil
@@ -2500,7 +2530,7 @@ function StraitWaypointWorldFx.OnStormPayload(data: { [string]: any })
 end
 
 function StraitWaypointWorldFx.OnTornadoPayload(data: { [string]: any })
-	tryEnqueueVoice("Tornado")
+	tryEnqueueOwnerVoice(data, "Tornado")
 
 	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
 	local center = vector3FromWorldPosition(data.worldPosition)
@@ -2696,7 +2726,7 @@ function StraitWaypointWorldFx.OnMineStrikePayload(data: { [string]: any })
 	local shipPos = vector3FromWorldPosition(data.worldPosition)
 	if not shipPos then return end
 
-	tryEnqueueVoice("Mines")
+	tryEnqueueOwnerVoice(data, "Mines")
 
 	local didHit = data.didHit == true
 	local riseSeconds = tonumber(data.riseSeconds) or 2.0
@@ -3012,7 +3042,7 @@ animateMove = function(obj, fromCF: CFrame, toCF: CFrame, duration: number, arcH
 end
 
 function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
-	tryEnqueueVoice("Pirates")
+	tryEnqueueOwnerVoice(data, "Pirates")
 
 	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
 	local barrelsStolen = math.max(0, tonumber(data.barrelsStolen) or 0)
@@ -3512,16 +3542,22 @@ end
 --- Coast guard alarm/horn burst — plays 3 times back-to-back (each waits for the
 --- previous to finish via `Sound.Ended:Wait()`) when the inspection event fires.
 --- The `Coastguard` voice line is enqueued in the burst's completion callback so
---- it plays AFTER the burst rather than overlapping. Plays globally for every
---- client — both burst and voice are part of the public event ambience.
+--- it plays AFTER the burst rather than overlapping. **Owner-only**: the
+--- burst is non-spatial 2D audio piped through `SoundService`; firing it for
+--- every client made spectators hear an alarm any time anyone got inspected.
+--- Visual cinematic (CG boat + officers) still spawns for everyone.
 local COASTGUARD_BURST_SOUND_ID = "rbxassetid://115844314196536"
 local COASTGUARD_BURST_COUNT = 3
-local COASTGUARD_BURST_VOLUME = 0.35
+--- Volume reduced to 25% of the previous 0.35 (-3/4) so the alarm sits under
+--- the voice line and doesn't blow out other ambient SFX.
+local COASTGUARD_BURST_VOLUME = 0.0875
 
 function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: any })
-	playSfxByIdRepeated(COASTGUARD_BURST_SOUND_ID, COASTGUARD_BURST_COUNT, COASTGUARD_BURST_VOLUME, function()
-		tryEnqueueVoice("Coastguard")
-	end)
+	if isLocalOwner(data) then
+		playSfxByIdRepeated(COASTGUARD_BURST_SOUND_ID, COASTGUARD_BURST_COUNT, COASTGUARD_BURST_VOLUME, function()
+			tryEnqueueVoice("Coastguard")
+		end)
+	end
 
 	local shipmentId   = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
 	local approachSide = tonumber(data.approachSide) or 1
@@ -3900,7 +3936,7 @@ function StraitWaypointWorldFx.OnUSShipSlapPayload(data: { [string]: any })
 	--- `findTemplate` returns nil for it and we silently skip. The day a
 	--- `SeaMonster` Sound lands under `Assets.SFX.VoiceLines`, this line
 	--- starts producing audio with zero further code changes.
-	tryEnqueueVoice("USShipSlap")
+	tryEnqueueOwnerVoice(data, "USShipSlap")
 
 	local shipmentId   = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
 

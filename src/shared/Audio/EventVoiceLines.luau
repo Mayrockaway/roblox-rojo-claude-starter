@@ -74,6 +74,12 @@ EventVoiceLines.Defs = {
 	Storm            = { key = "Storm",            soundName = "Storm",            priority = "Normal" },
 	Tornado          = { key = "Tornado",          soundName = "Tornado",          priority = "Normal" },
 	Paperwork        = { key = "Paperwork",        soundName = "Paperwork",        priority = "Normal" },
+	--- "Engine room smoke" generic StraitWaypoint event. Distinct voice file
+	--- from `Paperwork` so the two minor-event slots are audibly different
+	--- (previously both routed to `Paperwork`). Sound asset lives at
+	--- `ReplicatedStorage.Assets.SFX.VoiceLines.EngineRoomSmoke`
+	--- (`SoundId = rbxassetid://117439392997255`, authored via MCP).
+	EngineRoomSmoke  = { key = "EngineRoomSmoke",  soundName = "EngineRoomSmoke",  priority = "Normal" },
 
 	-- Low: nice-to-have; first to age out under load.
 	JoinGame         = { key = "JoinGame",         soundName = "JoinGame",         priority = "Low" },

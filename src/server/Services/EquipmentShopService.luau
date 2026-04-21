@@ -54,10 +54,14 @@ function EquipmentShopService:Init(remoteService, oilStateService, plotService)
 	-- Client sends a GUID per click; same id within 2 s is ignored.
 	self._recentRequestIds = {} :: { [number]: { [string]: number } }
 	-- Rotating-shop state. `_currentStock[itemId]` is the remaining count for
-	-- this rotation; nil means "not rotating → unlimited". `_refreshEndsAt` is
-	-- the Unix-ish timestamp when the next rotation fires (via `workspace:GetServerTimeNow()`
-	-- so clients can sync their countdown).
+	-- this rotation; nil means "not rotating → unlimited". `_currentStockMax`
+	-- is the per-rotation **cap** (the `hi` `rollShopStock` rolled against);
+	-- the UI uses this to render "X / hi" so the displayed limit matches the
+	-- actual cap (which scales with player count via `band.perPlayer`).
+	-- `_refreshEndsAt` is the Unix-ish timestamp when the next rotation fires
+	-- (via `workspace:GetServerTimeNow()` so clients can sync their countdown).
 	self._currentStock = {} :: { [string]: number }
+	self._currentStockMax = {} :: { [string]: number }
 	self._refreshEndsAt = 0.0
 	self._rotationRng = Random.new()
 end
@@ -173,7 +177,11 @@ end
 function EquipmentShopService:_rollShopStock()
 	local playerCount = #Players:GetPlayers()
 	local stock = EquipmentCatalog.rollShopStock(self._rotationRng, playerCount)
+	-- Sample max with the **same** playerCount used for `rollShopStock` so the
+	-- displayed cap matches the cap the RNG actually rolled against.
+	local stockMax = EquipmentCatalog.computeShopStockMax(playerCount)
 	self._currentStock = stock
+	self._currentStockMax = stockMax
 	local interval = math.max(5, tonumber(EquipmentCatalog.ShopRotation.RefreshIntervalSeconds) or 180)
 	self._refreshEndsAt = workspace:GetServerTimeNow() + interval
 	self:_broadcastStock("rotation")
@@ -187,6 +195,7 @@ function EquipmentShopService:_broadcastStock(reason: string?)
 	local ev = self._remoteService:GetEvent(RemoteNames.EquipmentShopStockUpdate)
 	ev:FireAllClients({
 		stock = self._currentStock,
+		stockMax = self._currentStockMax,
 		refreshEndsAt = self._refreshEndsAt,
 		reason = reason,
 	})
@@ -409,6 +418,10 @@ function EquipmentShopService:GetCatalogForClient(player: Player)
 			subtitle = item.subtitle,
 			available = available,
 			stock = if ftueFreeOverride then nil else stockCount, -- hide stock during FTUE freebie
+			-- Per-rotation cap (the `hi` `rollShopStock` rolled against). Mirrors
+			-- the FTUE override on `stock` so we don't render "X / 1" while the
+			-- freebie row hides its current count.
+			stockMax = if ftueFreeOverride then nil else self._currentStockMax[item.id],
 		})
 	end
 	return {

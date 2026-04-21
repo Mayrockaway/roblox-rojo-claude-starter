@@ -37,6 +37,10 @@ type CatalogItem = {
 	subtitle: string?,
 	available: boolean,
 	stock: number?,
+	--- Per-rotation cap the server actually rolled against (scales with player
+	--- count via `band.perPlayer`). Drives the "X / N" max in the UI; falls
+	--- back to `band.max` client-side if the server didn't send one.
+	stockMax: number?,
 }
 
 type CatalogPayload = {
@@ -94,6 +98,10 @@ local function catalogById(payload: CatalogPayload?): { [string]: EquipmentShopP
 			if typeof(it.stock) == "number" then
 				stock = math.max(0, math.floor(it.stock))
 			end
+			local stockMax: number? = nil
+			if typeof(it.stockMax) == "number" then
+				stockMax = math.max(0, math.floor(it.stockMax))
+			end
 			map[it.id] = {
 				id = it.id,
 				displayName = typeof(it.displayName) == "string" and it.displayName or it.id,
@@ -101,6 +109,7 @@ local function catalogById(payload: CatalogPayload?): { [string]: EquipmentShopP
 				available = avail,
 				subtitle = sub,
 				stock = stock,
+				stockMax = stockMax,
 			}
 		end
 	end

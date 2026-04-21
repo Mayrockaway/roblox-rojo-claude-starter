@@ -160,17 +160,21 @@ end
 
 function PlotResourceService:_handleBuyChunkRequest(player: Player, payload)
 	if not self:_allow(player.UserId, "buyChunk", 20, 10) then
-		self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many buy requests.")
+		self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many buy requests.", nil, "BuyChunk")
 		return
 	end
 
 	if typeof(payload) ~= "table" or typeof(payload.chunkId) ~= "string" then
-		self:_sendResult(player, false, "ERR_BAD_PAYLOAD", "Missing chunkId.")
+		self:_sendResult(player, false, "ERR_BAD_PAYLOAD", "Missing chunkId.", nil, "BuyChunk")
 		return
 	end
 
 	local ok, code, message = self._oilStateService:TryBuyChunk(player.UserId, payload.chunkId)
-	self:_sendResult(player, ok, code, message, { chunkId = payload.chunkId })
+	--- `action = "BuyChunk"` lets the central `oilActionResult` handler in
+	--- `init.client.luau` play `UiSfx.playKaching()` on success without having
+	--- to sniff `data.chunkId` (other action types may carry chunk-shaped data
+	--- in the future).
+	self:_sendResult(player, ok, code, message, { chunkId = payload.chunkId }, "BuyChunk")
 	if ok then
 		if self._chunkOwnershipService then
 			self._chunkOwnershipService:RefreshChunk(player.UserId, payload.chunkId)
