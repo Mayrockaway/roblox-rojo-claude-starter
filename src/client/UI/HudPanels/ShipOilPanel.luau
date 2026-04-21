@@ -914,6 +914,17 @@ local function wireRunUpgradeCard1(screen: ScreenGui, conns: { RBXScriptConnecti
 		return
 	end
 
+	-- Mirror Card2/Card3 policy: while a Studio-authored `ComingSoonOverlay`
+	-- is parented to the card, treat the product as unavailable. The overlay
+	-- already covers the full card (`Size (1,1)`, `ZIndex 30+`) and visually
+	-- blocks the BuyButton; this short-circuit also stops `Activated` from
+	-- firing the Robux prompt if input ever bleeds through. Removing the
+	-- overlay in Studio re-enables the wire on the next bind pass.
+	if card:FindFirstChild("ComingSoonOverlay") then
+		runUpgradeCard1Binding = nil
+		return
+	end
+
 	local titleLabel = card:FindFirstChild("TitleLabel", true)
 	local descLabel = card:FindFirstChild("DescriptionLabel", true)
 	local costPill = card:FindFirstChild("CostPill", true)
