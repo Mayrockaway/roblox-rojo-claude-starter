@@ -2854,20 +2854,21 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 
 		-- Travel direction: prefer FRONT_MARKER, fall back to velocity sample (same pattern as CoastGuard/USShip)
 		local bbCF0, _ = playerBoat:GetBoundingBox()
-		local rootPos = bbCF0.Position
+		local boatCenterPos = bbCF0.Position
+		local waterlinePart0 = playerBoat:FindFirstChild("WaterlineAnchor", true)
+		local rootPos = if waterlinePart0 and waterlinePart0:IsA("BasePart") then waterlinePart0.Position else boatCenterPos
 		local frontMarker = getBoatForwardMarker(playerBoat)
 		local fwd: Vector3
 		if frontMarker and frontMarker:IsA("BasePart") then
-			local dir = Vector3.new(frontMarker.Position.X - rootPos.X, 0, frontMarker.Position.Z - rootPos.Z)
+			local dir = Vector3.new(frontMarker.Position.X - boatCenterPos.X, 0, frontMarker.Position.Z - boatCenterPos.Z)
 			fwd = if dir.Magnitude > 0.5 then dir.Unit else Vector3.new(0, 0, -1)
 		else
 			task.wait(0.15)
 			local bbCF1, _ = playerBoat:GetBoundingBox()
-			local delta = Vector3.new(bbCF1.Position.X - rootPos.X, 0, bbCF1.Position.Z - rootPos.Z)
-			rootPos = bbCF1.Position
+			local delta = Vector3.new(bbCF1.Position.X - boatCenterPos.X, 0, bbCF1.Position.Z - boatCenterPos.Z)
+			boatCenterPos = bbCF1.Position
 			fwd = if delta.Magnitude > 0.005 then delta.Unit else Vector3.new(0, 0, -1)
 		end
-		rootPos = boatRoot.Position  -- rest of handler uses boatRoot.Position for spawn base
 		local sideSign = if approachSide >= 0 then 1 else -1
 		local perp = Vector3.new(-fwd.Z, 0, fwd.X) * sideSign
 		if pirateDebug then
@@ -2978,7 +2979,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		local RETURN_WINDOW = 1.25 -- overlap: last pirates return vs escape drive (was undefined)
 		local PIRATE_COUNT = 5
 		local PIRATE_SPACING = 1.5
-		local deckY = getBoatDeckY(playerBoat, boatRoot.Position.Y)
+		local deckY = getBoatDeckY(playerBoat, rootPos.Y)
 		-- Lift by NPC pivot-to-feet offset so pirates' feet land on deck (not buried).
 		local _, pirateSize = pirateNpcTemplate:GetBoundingBox()
 		local pirateLift = if pirateNpcTemplate:IsA("Model")
@@ -3045,8 +3046,9 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 			applyStraitNpcGhostParts(p.npc)
 		end
 
-		rootPos = boatRoot.Position
-		deckY = getBoatDeckY(playerBoat, boatRoot.Position.Y) + pirateLift
+		local waterlinePartLive = playerBoat:FindFirstChild("WaterlineAnchor", true)
+		rootPos = if waterlinePartLive and waterlinePartLive:IsA("BasePart") then waterlinePartLive.Position else boatRoot.Position
+		deckY = getBoatDeckY(playerBoat, rootPos.Y) + pirateLift
 		parkPos = Vector3.new(rootPos.X, rootPos.Y, rootPos.Z) + fwd * parkDist
 		pirateBoat:PivotTo(uprightLookAt(parkPos, rootPos))
 

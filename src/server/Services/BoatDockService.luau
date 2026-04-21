@@ -487,6 +487,48 @@ local function stripBoatBoardPrompt(root: Instance)
 	end
 end
 
+local function addPlayerFlag(root: Instance, ownerUserId: number, rig: any)
+	if not root:IsA("Model") then
+		return
+	end
+	local flag = ShipRig.FindBasePart(root, rig.playerFlagName) or ShipRig.FindBasePart(root, "PlayerFlag")
+	if not flag then
+		return
+	end
+
+	for _, existing in ipairs(flag:GetChildren()) do
+		if (existing:IsA("Decal") and existing.Name == "PlayerHead") or existing.Name == "FlagNameGui" then
+			existing:Destroy()
+		end
+	end
+
+	local thumbUrl = string.format("rbxthumb://type=AvatarHeadShot&id=%d&w=420&h=420", ownerUserId)
+	for _, face in ipairs({ Enum.NormalId.Front, Enum.NormalId.Back, Enum.NormalId.Left, Enum.NormalId.Right }) do
+		local decal = Instance.new("Decal")
+		decal.Name = "PlayerHead"
+		decal.Texture = thumbUrl
+		decal.Face = face
+		decal.Parent = flag
+	end
+
+	local nameGui = Instance.new("SurfaceGui")
+	nameGui.Name = "FlagNameGui"
+	nameGui.Face = Enum.NormalId.Front
+	nameGui.CanvasSize = Vector2.new(400, 100)
+	nameGui.Parent = flag
+
+	local player = Players:GetPlayerByUserId(ownerUserId)
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Size = UDim2.fromScale(1, 1)
+	nameLabel.Position = UDim2.fromScale(0, 0.7)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = player and player.Name or ("Player " .. ownerUserId)
+	nameLabel.TextColor3 = Color3.fromRGB(30, 30, 35)
+	nameLabel.Font = Enum.Font.GothamBlack
+	nameLabel.TextScaled = true
+	nameLabel.Parent = nameGui
+end
+
 function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinId: string): Model?
 	local slotPart = self._slotsByIndex[slotIndex]
 	if not slotPart then return nil end
@@ -683,6 +725,7 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 		neutralizeSeat(seat)
 	end
 	applyBoatCollisionContract(boat)
+	addPlayerFlag(boat, userId, rig)
 	logRemainingInvisibleBoatColliders(boat)
 	stripBoatBoardPrompt(boat)
 
@@ -912,6 +955,10 @@ function BoatDockService:TeleportOwnerToSeat(player: Player): (boolean, string?)
 	end
 	local character = player.Character
 	if not character then return false, "NO_CHARACTER" end
+	local hum = character:FindFirstChildOfClass("Humanoid")
+	if hum and (hum.Health <= 0 or hum:GetState() == Enum.HumanoidStateType.Dead) then
+		return false, "CHAR_DEAD"
+	end
 	local standCFrame = resolveOwnerStandCFrame(boat)
 	if not standCFrame then
 		local seat = findSeatForBoat(boat)

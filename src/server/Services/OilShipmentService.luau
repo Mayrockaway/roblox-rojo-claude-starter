@@ -666,6 +666,43 @@ function OilShipmentService:_handleTeleportToShip(player: Player, payload: any?)
 	end
 end
 
+local function isHumanoidDead(humanoid: Humanoid?): boolean
+	return humanoid == nil
+		or humanoid.Health <= 0
+		or humanoid:GetState() == Enum.HumanoidStateType.Dead
+end
+
+function OilShipmentService:_queueDebugBoardingRetry(player: Player, shipmentId: string, initialDelaySec: number?)
+	task.spawn(function()
+		if initialDelaySec and initialDelaySec > 0 then
+			task.wait(initialDelaySec)
+		end
+
+		local startingCharacter = player.Character
+		for _ = 1, 20 do
+			if not player.Parent then
+				return
+			end
+			if self._activeShipmentByOwner[player.UserId] ~= shipmentId then
+				return
+			end
+
+			local character = player.Character
+			if not character or character ~= startingCharacter then
+				return
+			end
+
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if humanoid and (humanoid.SeatPart or isHumanoidDead(humanoid)) then
+				return
+			end
+
+			self:_handleTeleportToShip(player)
+			task.wait(0.5)
+		end
+	end)
+end
+
 function OilShipmentService:_handleTeleportHome(player: Player)
 	local character = player.Character
 	if not character then return end
@@ -1509,64 +1546,84 @@ function OilShipmentService:_unseatPlayersFromBoat(boat: Instance)
 			end
 		end
 
-		-- Dismember the player: destroy all joints, fling every body part outward
-		-- PREVENT auto-respawn: keep health at max so Humanoid doesn't "die"
-		if hum then
-			hum.PlatformStand = true
-			hum.AutoRotate = false
-			hum.BreakJointsOnDeath = false
-			hum.RequiresNeck = false -- don't die when neck joint breaks
-			hum.Health = hum.MaxHealth -- keep alive
+		-- Keep the break-apart death effect, but do it on a cloned corpse so the live
+		-- player character doesn't get stranded in a broken replication/camera state.
+		local originalArchivable = character.Archivable
+		character.Archivable = true
+		local corpse = character:Clone()
+		character.Archivable = originalArchivable
+		corpse.Name = string.format("%s_ShipwreckCorpse", player.Name)
+		corpse:PivotTo(character:GetPivot())
+		corpse.Parent = workspace
+		Debris:AddItem(corpse, 8)
+
+		for _, inst in ipairs(corpse:GetDescendants()) do
+			if inst:IsA("Script") or inst:IsA("LocalScript") then
+				inst:Destroy()
+			elseif inst:IsA("Humanoid") then
+				inst:Destroy()
+			end
 		end
-		-- Destroy ALL joints so parts separate completely
-		for _, joint in ipairs(character:GetDescendants()) do
+
+		local rng = Random.new()
+		for _, joint in ipairs(corpse:GetDescendants()) do
 			if joint:IsA("Motor6D") or joint:IsA("Weld") or joint:IsA("WeldConstraint") or joint:IsA("BallSocketConstraint") then
 				joint:Destroy()
 			end
 		end
-		-- Fling every body part in a random direction (explosion dismemberment)
-		-- Keep HumanoidRootPart anchored so character doesn't fall into void and auto-respawn
-		local rng = Random.new()
-		local hrpPart = character:FindFirstChild("HumanoidRootPart")
-		for _, part in ipairs(character:GetDescendants()) do
+		for _, part in ipairs(corpse:GetDescendants()) do
 			if part:IsA("BasePart") then
-				if part == hrpPart then
-					-- Anchor HRP to prevent void death, make invisible
-					part.Anchored = true
-					part.Transparency = 1
-				else
-					part.Anchored = false
-					part.CanCollide = true
-					local bv = Instance.new("BodyVelocity")
-					local flingPower = self._nukeActive and 200 or 120
-					bv.Velocity = Vector3.new(
-						rng:NextNumber(-flingPower, flingPower),
-						rng:NextNumber(80, flingPower * 1.5),
-						rng:NextNumber(-flingPower, flingPower)
-					)
-					bv.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-					bv.P = 5000
-					bv.Parent = part
-					Debris:AddItem(bv, 1.5) -- push for 1.5 seconds so parts fly FAR
-				end
+				part.Anchored = false
+				part.CanCollide = true
+				local flingPower = self._nukeActive and 200 or 120
+				part.AssemblyLinearVelocity = Vector3.new(
+					rng:NextNumber(-flingPower, flingPower),
+					rng:NextNumber(80, flingPower * 1.5),
+					rng:NextNumber(-flingPower, flingPower)
+				)
+				part.AssemblyAngularVelocity = Vector3.new(
+					rng:NextNumber(-12, 12),
+					rng:NextNumber(-12, 12),
+					rng:NextNumber(-12, 12)
+				)
 			end
 		end
 
-		-- Delay then respawn at ClaimPad
-		-- Longer delay if a nuke is active so player can watch the mushroom cloud
-		local respawnDelay = self._nukeActive and 12 or 3.5
+		-- Immediately reload the real player character so they actually despawn/respawn.
+		-- The corpse clone above carries the break-apart visuals.
+		local respawnDelay = self._nukeActive and 3 or 0.5
 		task.delay(respawnDelay, function()
-			if player.Parent and claimPad.Parent then
-				player:LoadCharacter()
-				task.wait(0.5)
-				local newChar = player.Character
-				if newChar then
-					newChar:PivotTo(CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)))
-				end
+			if not (player.Parent and claimPad.Parent) then
+				return
 			end
+
+			local characterAddedConn: RBXScriptConnection? = nil
+			characterAddedConn = player.CharacterAdded:Connect(function(newChar)
+				if characterAddedConn then
+					characterAddedConn:Disconnect()
+					characterAddedConn = nil
+				end
+				task.defer(function()
+					if not (newChar.Parent and claimPad.Parent) then
+						return
+					end
+					CharacterTeleport.teleportWithUnseat(
+						newChar,
+						CFrame.new(claimPad.Position + Vector3.new(0, 5, 0)),
+						"ShipDestroy:RespawnToClaimPad"
+					)
+				end)
+			end)
+
+			player:LoadCharacter()
+			task.delay(5, function()
+				if characterAddedConn then
+					characterAddedConn:Disconnect()
+				end
+			end)
 		end)
 
-		DevLog.log(string.format("[ShipDestroy] dismembered %s, respawn in %.1fs (seated=%s onDeck=%s)",
+		DevLog.log(string.format("[ShipDestroy] spawned corpse clone + queued respawn for %s in %.1fs (seated=%s onDeck=%s)",
 			player.Name, respawnDelay, tostring(seatedOnBoat), tostring(onDeck)))
 		teleportedAny = true
 	end
@@ -1765,9 +1822,6 @@ function OilShipmentService:_addPlayerFlag(boat: Instance, ownerUserId: number)
 	-- No new parts created — the flag + pole are already positioned in the template by the user.
 	local flag = findPlayerFlagPart(boat)
 	if not flag then return end
-
-	-- Scale flag 3x (flag only, not pole)
-	flag.Size = flag.Size * 3
 
 	-- Player's head image on all side faces
 	local thumbUrl = string.format("rbxthumb://type=AvatarHeadShot&id=%d&w=420&h=420", ownerUserId)
@@ -3212,9 +3266,7 @@ function OilShipmentService:DebugDispatchMissile(player: Player)
 	end)
 
 	-- Teleport player to ship after a brief delay for it to spawn
-	task.delay(2, function()
-		self:_handleTeleportToShip(player)
-	end)
+	self:_queueDebugBoardingRetry(player, shipment.shipmentId, 2)
 end
 
 function OilShipmentService:DebugDispatchMine(player: Player)
@@ -3259,9 +3311,7 @@ function OilShipmentService:DebugDispatchMine(player: Player)
 		dbg.ForceMineStrike = prevForceMine
 	end)
 
-	task.delay(2, function()
-		self:_handleTeleportToShip(player)
-	end)
+	self:_queueDebugBoardingRetry(player, shipment.shipmentId, 2)
 end
 
 function OilShipmentService:DebugDispatchPirate(player: Player)
@@ -3306,20 +3356,7 @@ function OilShipmentService:DebugDispatchPirate(player: Player)
 		dbg.ForcePirateRaid = prevForcePirate
 	end)
 
-	task.spawn(function()
-		for _ = 1, 20 do
-			task.wait(0.5)
-			self:_handleTeleportToShip(player)
-			-- Check if player is now seated (teleport worked)
-			local char = player.Character
-			if char then
-				local hum = char:FindFirstChildOfClass("Humanoid")
-				if hum and hum.SeatPart then
-					return
-				end
-			end
-		end
-	end)
+	self:_queueDebugBoardingRetry(player, shipment.shipmentId)
 end
 
 function OilShipmentService:DebugDispatchStorm(player: Player)
@@ -3363,19 +3400,7 @@ function OilShipmentService:DebugDispatchStorm(player: Player)
 		dbg.ForceStorm = prevForceStorm
 	end)
 
-	task.spawn(function()
-		for _ = 1, 20 do
-			task.wait(0.5)
-			self:_handleTeleportToShip(player)
-			local char = player.Character
-			if char then
-				local hum = char:FindFirstChildOfClass("Humanoid")
-				if hum and hum.SeatPart then
-					return
-				end
-			end
-		end
-	end)
+	self:_queueDebugBoardingRetry(player, shipment.shipmentId)
 end
 
 function OilShipmentService:DebugDispatchTornado(player: Player)
@@ -3419,19 +3444,7 @@ function OilShipmentService:DebugDispatchTornado(player: Player)
 		dbg.ForceTornado = prevForceTornado
 	end)
 
-	task.spawn(function()
-		for _ = 1, 20 do
-			task.wait(0.5)
-			self:_handleTeleportToShip(player)
-			local char = player.Character
-			if char then
-				local hum = char:FindFirstChildOfClass("Humanoid")
-				if hum and hum.SeatPart then
-					return
-				end
-			end
-		end
-	end)
+	self:_queueDebugBoardingRetry(player, shipment.shipmentId)
 end
 
 function OilShipmentService:DebugDispatchCoastGuard(player: Player)
@@ -3475,19 +3488,7 @@ function OilShipmentService:DebugDispatchCoastGuard(player: Player)
 		dbg.ForceCoastGuardInspection = prevForceCoastGuard
 	end)
 
-	task.spawn(function()
-		for _ = 1, 20 do
-			task.wait(0.5)
-			self:_handleTeleportToShip(player)
-			local char = player.Character
-			if char then
-				local hum = char:FindFirstChildOfClass("Humanoid")
-				if hum and hum.SeatPart then
-					return
-				end
-			end
-		end
-	end)
+	self:_queueDebugBoardingRetry(player, shipment.shipmentId)
 end
 
 function OilShipmentService:DebugDispatchUSShipSlap(player: Player)
@@ -3531,19 +3532,7 @@ function OilShipmentService:DebugDispatchUSShipSlap(player: Player)
 		dbg.ForceUSShipSlap = prevForceSlap
 	end)
 
-	task.spawn(function()
-		for _ = 1, 20 do
-			task.wait(0.5)
-			self:_handleTeleportToShip(player)
-			local char = player.Character
-			if char then
-				local hum = char:FindFirstChildOfClass("Humanoid")
-				if hum and hum.SeatPart then
-					return
-				end
-			end
-		end
-	end)
+	self:_queueDebugBoardingRetry(player, shipment.shipmentId)
 end
 
 -- =================== PUBLIC HELPERS (for ArmyGeneralService) ===================
