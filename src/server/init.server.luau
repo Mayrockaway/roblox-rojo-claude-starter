@@ -93,10 +93,20 @@ end
 PerfService:Init()
 KillZoneService:Init()
 _G.Perf = PerfService   -- global hook so any service can call PerfService:OpenSpan/CloseSpan without wiring
-DevLog.SetBroadcaster(function(msg)
-	local ev = RemoteService:GetEvent(RemoteNames.DevLog)
-	ev:FireAllClients(msg)
-end)
+-- Studio-only: mirror server `DevLog.log(...)` to every connected client so
+-- the in-Studio Output for Client 1 surfaces server traces alongside client
+-- ones (avoids hopping between Studio processes during multi-player Test).
+-- Disabled in live builds because (a) players never read it — server logs
+-- already go to the place owner's Developer Console — and (b) we'd rather
+-- not pay a `FireAllClients` round-trip and serialize string per server log
+-- in production. `DevLog.log(...)` itself still calls `print(...)` either
+-- way, so server Output continues to work normally on the live shard.
+if RunService:IsStudio() then
+	DevLog.SetBroadcaster(function(msg)
+		local ev = RemoteService:GetEvent(RemoteNames.DevLog)
+		ev:FireAllClients(msg)
+	end)
+end
 TelemetryService:Init()
 LeaderboardService:Init()
 StraitStateService:Init(RemoteService, TelemetryService)
@@ -130,7 +140,11 @@ ArmyGeneralService:SetMonetizationService(MonetizationService)
 SecurityPersonnelService:SetMonetizationService(MonetizationService)
 EquipmentShopService:SetMonetizationService(MonetizationService)
 PlotResourceService:Init(RemoteService, OilStateService, PlotService, OilVisualService, OilShipmentService, ChunkOwnershipService)
-OilProductionService:Init(OilStateService)
+--- `RemoteService` second arg lets the production loop fire per-pump
+--- `pumpCollected` FX packets via `DrillProgressUpdate` for client-side
+--- spatial pump SFX. Optional in the service signature; passing it here
+--- keeps the wiring discoverable next to the other service Inits.
+OilProductionService:Init(OilStateService, RemoteService)
 DrillingService:Init(RemoteService, OilStateService)
 FtueService:Init(RemoteService, PlotService, OilStateService, EquipmentShopService, DrillingService, OilShipmentService, OilMarketService, WarehouseService)
 OilStateService:SetFtueService(FtueService)
@@ -399,6 +413,105 @@ do
 			print(string.format("[Dev] /strait%s by %s -> applied=%s", string.lower(state), player.Name, tostring(ok)))
 		elseif cmd == "/grant500" then
 			grantAllPlayersCash(500)
+		elseif cmd:sub(1, 9) == "/givecash" then
+			-- Targets a specific online player by username (case-insensitive
+			-- exact match, falling back to a prefix match so `/givecash sen
+			-- 1000` works without typing the full handle). Live-build safe:
+			-- the `isAuthorizedDev(player)` gate at the top of `onDebugChat`
+			-- already restricts every chat command to Studio OR the place
+			-- owner's `UserId == game.CreatorId` in production, so randoms
+			-- cannot fan cash to themselves or alts.
+			--
+			-- Usage: `/givecash <username> <amount>`
+			-- Behavior:
+			--   * Amount must be a positive integer; `OilStateService:AddCash`
+			--     uses `floorPositive` and silently no-ops on `<= 0` (we
+			--     reject up front so the operator gets feedback instead of a
+			--     phantom success line).
+			--   * Passes `skipMultiplier = true` so the dev grants exactly
+			--     the requested amount even if the target owns the
+			--     `DoubleEarnings` gamepass. Mirrors how Robux-purchased
+			--     cash bundles in `MonetizationService` skip the multiplier:
+			--     "topping up by N" should mean "wallet goes up by N".
+			--   * `:PushState` so the open HUD refreshes its cash label
+			--     without waiting for the next periodic push.
+			local args = cmd:sub(10):gsub("^%s+", "")
+			local nameArg, amountArg = args:match("^(%S+)%s+(%-?%d+)%s*$")
+			if not nameArg or not amountArg then
+				warn(string.format(
+					"[Dev] /givecash by %s: bad usage, expected '/givecash <username> <amount>'",
+					player.Name
+				))
+				return
+			end
+			local amount = tonumber(amountArg)
+			if not amount or amount <= 0 then
+				warn(string.format(
+					"[Dev] /givecash by %s: amount must be a positive integer (got '%s')",
+					player.Name, tostring(amountArg)
+				))
+				return
+			end
+			local nameLower = nameArg:lower()
+			local target: Player? = nil
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p.Name:lower() == nameLower then
+					target = p
+					break
+				end
+			end
+			if not target then
+				for _, p in ipairs(Players:GetPlayers()) do
+					if p.Name:lower():sub(1, #nameLower) == nameLower then
+						target = p
+						break
+					end
+				end
+			end
+			if not target then
+				warn(string.format(
+					"[Dev] /givecash by %s: no online player matches '%s'",
+					player.Name, nameArg
+				))
+				return
+			end
+			local ok, granted = OilStateService:AddCash(target.UserId, amount, { skipMultiplier = true })
+			if ok then
+				OilStateService:PushState(target.UserId)
+				print(string.format(
+					"[Dev] /givecash by %s -> %s +$%d (granted=%d)",
+					player.Name, target.Name, amount, granted
+				))
+			else
+				warn(string.format(
+					"[Dev] /givecash by %s: AddCash failed for %s (no oil state loaded?)",
+					player.Name, target.Name
+				))
+			end
+		elseif cmd == "/security" or cmd:sub(1, 10) == "/security " then
+			-- Dev-only: grant N stacks of the Security Personnel run-upgrade
+			-- to the calling player without going through Robux. Mirrors the
+			-- consumable handler `SecurityPersonnelService:SetMonetizationService`
+			-- registers, so the same downstream flow runs (state write +
+			-- `PushState`) and the open `ShipOilPanelGui` repaints its
+			-- description to "Security Personnel active on next run". Use to
+			-- QA the on-deck guard mount + `eventImmunity` short-circuit
+			-- without spending Robux while the DevProduct id is still 0.
+			-- Usage: `/security`     -> +1 stack
+			--        `/security 3`   -> +3 stacks (test stacking copy)
+			local arg = cmd:sub(11):gsub("^%s+", "")
+			local n = tonumber(arg) or 1
+			n = math.clamp(math.floor(n), 1, 99)
+			-- Use the OilStateService API directly rather than going through
+			-- `SecurityPersonnelService:SetMonetizationService`'s handler —
+			-- the handler is keyed off a Roblox receipt, not a chat command.
+			-- The consume path on dispatch (`TryConsumeForDispatch`) reads
+			-- the same `runUpgradeOwnedByItemId` slot so the grant is fully
+			-- equivalent to a Robux purchase from the player's perspective.
+			OilStateService:AddRunUpgradeOwned(player.UserId, "security_personnel", n)
+			OilStateService:PushState(player.UserId)
+			local owned = OilStateService:GetRunUpgradeOwned(player.UserId, "security_personnel") or 0
+			print(string.format("[Dev] /security %d -> %s now owns %d stack(s)", n, player.Name, owned))
 		elseif cmd == "/wipedata" or cmd == "/dev_wipeme" then
 			devWipePersistedForUser(player.UserId)
 			player:Kick("[Dev] Persisted data wiped — rejoin for a fresh profile.")
@@ -467,12 +580,13 @@ do
 		"/missile", "/mine", "/pirate", "/storm", "/tornado", "/coastguard", "/slap", "/nuke", "/airstrike",
 		"/fighterwave", "/fighters", "/fighterhere", "/jethere",
 		"/fighterretarget", "/jetretarget",
-		"/grant500", "/wipedata", "/dev_wipeme", "/wipealldata", "/dev_wipeall",
+		"/grant500", "/givecash", "/wipedata", "/dev_wipeme", "/wipealldata", "/dev_wipeall",
 		"/giveall", "/testvein", "/givedrills",
 		"/straitopen", "/straitclose",
 		"/unlockboats", "/unlockallboats", "/giveallboats",
 		"/hideui",
 		"/autoship",
+		"/security",
 	}
 	for _, alias in ipairs(DEV_COMMAND_ALIASES) do
 		local ok, err = pcall(function()

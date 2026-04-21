@@ -222,6 +222,21 @@ local function buildDefaultPersisted()
 		--- for GamePasses). Once true, the auto-open never fires again for this
 		--- profile, so a paying customer is not nagged on every login.
 		robuxShopAutoOpenDismissed = false,
+		--- Persisted per-profile set of `MonetizationCatalog` item ids that
+		--- were marketed as `oneTimePurchase = true` (e.g. the Featured
+		--- "Starter Pack" bundle) and have already been bought. Drives:
+		---   * `MonetizationService:_handlePromptRequest` — server-side
+		---     gate that rejects re-purchase clicks with `ERR_ALREADY_PURCHASED`
+		---     before opening the Roblox prompt.
+		---   * `MonetizationService:_processReceipt` — defensive replay
+		---     guard that marks the receipt granted but skips the bundle so
+		---     a stale Roblox re-deliver can't re-grant the cash + drills.
+		---   * `RobuxShopPanel` — hides the entire Featured row from the
+		---     snapshot once the buyer's flag is set.
+		--- Set semantics: keys are stable item ids, values are always `true`
+		--- (we never store `false`; absence == not purchased). Legacy saves
+		--- without the field load as `{}`.
+		purchasedOneTimeItemIds = {} :: { [string]: boolean },
 		--- Persisted **sub-step** within `WaitDocksUpgradeShip` so a player who quits
 		--- mid-leg (after talking to the dockman / mid-cargo-buy / about to close
 		--- the modal) resumes on the **same** dock ship beam + UI pointer they last
@@ -1243,6 +1258,24 @@ function OilStateService:GetStateForClient(userId: number)
 		--- flips it to `true` on the first successful Robux purchase via
 		--- `MonetizationService` → `OilStateService:MarkRobuxShopAutoOpenDismissed`.
 		robuxShopAutoOpenDismissed = (state :: any).robuxShopAutoOpenDismissed == true,
+		--- Per-profile one-time-purchase set (e.g. Featured Starter Pack).
+		--- Drives `RobuxShopPanel`'s decision to hide the entire Featured
+		--- row once the buyer's flag is set; without this snapshot field
+		--- the client would have to round-trip the server on every open
+		--- to know whether to render the card. Filtered down to plain
+		--- `{ [itemId] = true }` entries so the wire payload stays minimal.
+		purchasedOneTimeItemIds = (function()
+			local out: { [string]: boolean } = {}
+			local src = (state :: any).purchasedOneTimeItemIds
+			if typeof(src) == "table" then
+				for k, v in pairs(src) do
+					if typeof(k) == "string" and v == true then
+						out[k] = true
+					end
+				end
+			end
+			return out
+		end)(),
 		--- Per-itemId stack counts of single-use run-upgrades the player
 		--- currently owns. Drives the "x N" badge on `RunUpgradeCard*` in
 		--- `ShipOilPanelGui` and lets the panel disable / hide the buy CTA
@@ -2567,6 +2600,11 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		--- post-login auto-open suppression flag. Flips on the first
 		--- successful Robux purchase (see `MarkRobuxShopAutoOpenDismissed`).
 		robuxShopAutoOpenDismissed = false,
+		--- See `buildDefaultPersisted` — runtime mirror of the per-profile
+		--- one-time-purchase set. Empty for fresh / legacy profiles. Stays
+		--- in lockstep with the persisted column via
+		--- `_applyPersistedIntoState` / `_buildPersistedFromState`.
+		purchasedOneTimeItemIds = {} :: { [string]: boolean },
 		--- See `buildDefaultPersisted` — runtime mirror of the persisted `WaitDocksUpgradeShip`
 		--- sub-step (`Dockman` / `CargoBuy` / `CloseModal`) so rejoin restores the right beam + pointer.
 		ftueDocksUpgradeSubStep = nil :: string?,
@@ -2756,6 +2794,24 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		(state :: any).robuxShopAutoOpenDismissed = true
 	else
 		(state :: any).robuxShopAutoOpenDismissed = false
+	end
+
+	-- One-time-purchase set (e.g. Featured Starter Pack). Same legacy-save
+	-- handling as `robuxShopAutoOpenDismissed` above: missing key == empty
+	-- set, so existing profiles can still buy any one-time SKU on next login.
+	-- Only string keys with `true` values survive — defensive against a hand-
+	-- edited DataStore row leaking other types in.
+	do
+		local rawAny = (pFtue :: any).purchasedOneTimeItemIds
+		local out: { [string]: boolean } = {}
+		if typeof(rawAny) == "table" then
+			for k, v in pairs(rawAny) do
+				if typeof(k) == "string" and k ~= "" and v == true then
+					out[k] = true
+				end
+			end
+		end
+		(state :: any).purchasedOneTimeItemIds = out
 	end
 
 	-- Restore the persisted dock-ship sub-step (only valid while ftueStep ==
@@ -3429,6 +3485,22 @@ function OilStateService:_serializeState(state)
 	(persisted :: any).ftueCompleted = (state :: any).ftueCompleted == true
 	(persisted :: any).ftueDoneScreenAcknowledged = (state :: any).ftueDoneScreenAcknowledged == true
 	(persisted :: any).robuxShopAutoOpenDismissed = (state :: any).robuxShopAutoOpenDismissed == true
+	-- Mirror the per-profile one-time-purchase set verbatim. Only string
+	-- keys with `true` values are kept (matches the load-side filter in
+	-- `_applyPersistedIntoState`). `nil` / `false` values are skipped so
+	-- the persisted column stays compact.
+	do
+		local out: { [string]: boolean } = {}
+		local src = (state :: any).purchasedOneTimeItemIds
+		if typeof(src) == "table" then
+			for k, v in pairs(src) do
+				if typeof(k) == "string" and k ~= "" and v == true then
+					out[k] = true
+				end
+			end
+		end
+		(persisted :: any).purchasedOneTimeItemIds = out
+	end
 	-- Only persist the dock-ship sub-step while we're actually in that leg.
 	-- Anywhere else it's nil and `_applyPersistedIntoState` re-clears anyway.
 	if (state :: any).ftueStep == FtueConfig.Step.WaitDocksUpgradeShip then
@@ -3635,6 +3707,59 @@ function OilStateService:MarkRobuxShopAutoOpenDismissed(userId: number): boolean
 	self:_markDirty(userId)
 	-- Push so any client-side listeners (currently none, but trivial future-proofing)
 	-- see the new value without waiting for the next snapshot trigger.
+	pcall(function()
+		self:PushState(userId)
+	end)
+	return true
+end
+
+--- Returns `true` when the player has already purchased the given
+--- `MonetizationCatalog` item flagged with `oneTimePurchase = true`. Cheap
+--- in-memory lookup; does NOT touch DataStore. Returns `false` if the
+--- player's state isn't loaded (e.g. between PlayerAdded and the profile
+--- async-fetch completing) — callers should treat that as "not purchased"
+--- so a brand-new player with a slow load can still see the upsell card,
+--- and the server-side prompt gate in `MonetizationService` is the final
+--- word once state is hydrated.
+function OilStateService:HasPurchasedOneTimeItem(userId: number, itemId: string): boolean
+	if typeof(itemId) ~= "string" or itemId == "" then
+		return false
+	end
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false
+	end
+	local set = (state :: any).purchasedOneTimeItemIds
+	if typeof(set) ~= "table" then
+		return false
+	end
+	return set[itemId] == true
+end
+
+--- Idempotent flip-on-first-buy for `oneTimePurchase` items. Mirrors the
+--- shape of `MarkRobuxShopAutoOpenDismissed`: returns `true` only when the
+--- flag was newly set (caller can avoid double pushes). Always pushes the
+--- state on a fresh flip so the open `RobuxShopPanel` repaints/hides the
+--- Featured row immediately, without waiting for the next periodic snapshot.
+--- Called by `MonetizationService:_processReceipt` after `_applyGrant`.
+function OilStateService:MarkPurchasedOneTimeItem(userId: number, itemId: string): boolean
+	if typeof(itemId) ~= "string" or itemId == "" then
+		return false
+	end
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false
+	end
+	local set = (state :: any).purchasedOneTimeItemIds
+	if typeof(set) ~= "table" then
+		set = {}
+		(state :: any).purchasedOneTimeItemIds = set
+	end
+	if set[itemId] == true then
+		return false
+	end
+	set[itemId] = true
+	self:_markDirty(userId)
 	pcall(function()
 		self:PushState(userId)
 	end)

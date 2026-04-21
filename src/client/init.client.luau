@@ -51,6 +51,32 @@ local ClientAudioPreferences = require(resolveClientModule(script, "ClientAudioP
 ClientAudioPreferences.init()
 local NpcProximityVoice = require(resolveClientModule(script, "NpcProximityVoice"))
 NpcProximityVoice.start()
+-- Single-channel serial queue for the named event voice clips registered in
+-- `shared/Audio/EventVoiceLines` (Pirates / Coastguard / StraitClosed / etc.).
+-- Started after `ClientAudioPreferences.init()` above so the SFX-mute gate
+-- already reports correct state on the first `play(key)` call. Wiring lives
+-- in each event's existing client handler — see `StraitStatusChangeFx.trigger`
+-- for the worked example.
+local EventVoiceQueue = require(resolveClientModule(script, "EventVoiceQueue"))
+EventVoiceQueue.start()
+local EventVoiceLines = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Audio"):WaitForChild("EventVoiceLines"))
+-- One-shot welcome voice on bootstrap. Priority "Low" in the registry so it
+-- never blocks an actually-important alert (e.g. player joins as a missile
+-- barrage starts → JoinGame ages out, missile voice plays). Deferred + async
+-- because on a cold join `Assets.SFX.VoiceLines.JoinGame` may not have
+-- replicated yet when this script runs; the queue's `findTemplate` uses
+-- non-blocking `FindFirstChild`, so a synchronous `play()` here would hit
+-- the "missing template" silent-skip path. Block briefly for the asset, then
+-- enqueue.
+task.spawn(function()
+	local assets = ReplicatedStorage:WaitForChild("Assets", 15)
+	local sfx = assets and assets:WaitForChild("SFX", 15)
+	local voiceFolder = sfx and sfx:WaitForChild("VoiceLines", 15)
+	if voiceFolder then
+		voiceFolder:WaitForChild("JoinGame", 15)
+	end
+	EventVoiceQueue.play("JoinGame")
+end)
 local PlotKpiVisibility = require(resolveClientModule(script, "PlotKpiVisibility"))
 PlotKpiVisibility.start()
 local ClientPlotGrid = require(resolveClientModule(script, "ClientPlotGrid"))
@@ -1051,14 +1077,34 @@ task.defer(function()
 	end
 end)
 
--- Helper: play a one-shot SFX from Assets.SFX (non-positional, only for this client)
+--- Helper: play a one-shot SFX from `Assets.SFX` (non-positional, only for
+--- this client). Two routing rules:
+---   1. If `sfxName` matches a registered voice clip's `soundName` (see
+---      `shared/Audio/EventVoiceLines.Defs`), route through the serial
+---      `EventVoiceQueue` so it never overlaps another voice line. The
+---      `volume` argument is ignored in this path — voice volume is owned
+---      by the `SoundService.EventVoice` SoundGroup (one knob for all
+---      voice lines).
+---   2. Otherwise (non-voice SFX like `Upgrade`, `Kaching`, `SetSail`),
+---      fire-and-forget direct play. Lookup checks `Assets.SFX` first,
+---      then falls back to `Assets.SFX.VoiceLines` so any moved clip a
+---      stray caller asks for still resolves.
 local function playEventSFX(sfxName: string, volume: number?)
 	if not ClientAudioPreferences.isSfxEnabled() then
+		return
+	end
+	local voiceDef = EventVoiceLines.GetByName(sfxName)
+	if voiceDef then
+		EventVoiceQueue.play(voiceDef.key)
 		return
 	end
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	local sfxFolder = assets and assets:FindFirstChild("SFX")
 	local template = sfxFolder and sfxFolder:FindFirstChild(sfxName)
+	if not (template and template:IsA("Sound")) then
+		local voiceFolder = sfxFolder and sfxFolder:FindFirstChild("VoiceLines")
+		template = voiceFolder and voiceFolder:FindFirstChild(sfxName)
+	end
 	if not template or not template:IsA("Sound") then return end
 	local snd = template:Clone()
 	snd.Volume = volume or 0.7

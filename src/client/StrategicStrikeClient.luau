@@ -4,7 +4,16 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local SoundService = game:GetService("SoundService")
+local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
+
+--- `HudMousePolicy` runs the heartbeat that keeps the cursor free while any HUD modal /
+--- runtime dialog is open. The Army General menu is built ad-hoc here (not bound through
+--- `HudPanelRouter`), so we have to register its ScreenGui by hand or the player gets
+--- stuck with `MouseBehavior = LockCenter` if they were in first-person when they
+--- triggered the dialog.
+local HudMousePolicy = require(script.Parent:WaitForChild("UI"):WaitForChild("HudMousePolicy"))
 
 export type StrategicStrikeDeps = {
 	player: Player,
@@ -44,6 +53,215 @@ export type ArmyGeneralEarlyRemotes = {
 
 local StrategicStrikeClient = {}
 
+--- Rebind `Camera.CameraSubject` to the player's live humanoid and restore Custom mode.
+--- Mirrors `HudTeleportRouter.rebindCameraToCharacter` — needed at the end of every nuke /
+--- airstrike death-cam because `Players.CharacterAutoLoads = false` (set by `PlotService`)
+--- means the default PlayerModule does NOT auto-rebind the camera on respawn. If we just
+--- flip `CameraType = Custom` without re-pointing `CameraSubject` at the freshly-spawned
+--- humanoid, the camera stays locked on the **destroyed** corpse → user sees the
+--- "camera stuck at death position" bug we already fixed for kill-plane deaths.
+local function rebindCameraToLiveCharacter(camera: Camera, plr: Player)
+	if not camera or not camera.Parent then
+		return
+	end
+	local function tryBind()
+		local char = plr.Character
+		if not (char and char.Parent) then
+			return false
+		end
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if hum and hum.Parent and hum.Health > 0 then
+			camera.CameraSubject = hum
+			camera.CameraType = Enum.CameraType.Custom
+			return true
+		end
+		return false
+	end
+	if tryBind() then
+		return
+	end
+	--- New character may not be replicated yet (the Scriptable→Custom flip happens the
+	--- frame `CharacterAdded` fires; HRP/Humanoid sometimes arrive a tick or two later).
+	--- Retry briefly so we don't fall through to "Custom + dead Subject".
+	task.spawn(function()
+		for _ = 1, 20 do
+			task.wait(0.1)
+			if camera.Parent == nil then
+				return
+			end
+			if tryBind() then
+				return
+			end
+		end
+	end)
+end
+
+-- ============================================================================
+-- Nuke audio ducking (client-only)
+-- ============================================================================
+-- During the nuke countdown + detonation animation, every sound that is NOT
+-- routed through the `EventVoice` SoundGroup is faded to 0 so the siren,
+-- "NUKE INCOMING" voice, and explosion read clearly. Sounds get restored to
+-- their original Volume after the animation window. We can't just lower
+-- `SoundService.Volume` (no such property) and only one SoundGroup
+-- (`EventVoice`) is currently authored, so we snapshot per-`Sound` instances.
+--
+-- Failsafe: if no detonation event arrives (server crash, player teleported
+-- out, etc.) the duck self-restores after `NUKE_DUCK_HARD_FAILSAFE_SECONDS`
+-- so the player never gets stuck in silence.
+
+local NUKE_DUCK_FADE_OUT_SECONDS = 0.5
+local NUKE_DUCK_FADE_IN_SECONDS = 1.0
+--- Time after `nukeDetonateEvent` arrives before we start fading the rest of
+--- the soundtrack back in. Tuned to the visible end of the cloud animation
+--- (cloud is visible for 5s and then fades out over 4s in the detonation
+--- handler below); keep them in sync if either side changes.
+local NUKE_DETONATION_RESTORE_DELAY = 8
+local NUKE_DUCK_HARD_FAILSAFE_SECONDS = 35
+
+type DuckState = {
+	active: boolean,
+	snapshots: { [Sound]: number },
+	activeTweens: { [Sound]: Tween },
+	listenerConns: { RBXScriptConnection },
+	failsafe: thread?,
+	pendingRestore: thread?,
+}
+
+local NukeAudioDuck: DuckState = {
+	active = false,
+	snapshots = {},
+	activeTweens = {},
+	listenerConns = {},
+	failsafe = nil,
+	pendingRestore = nil,
+}
+
+local function isVoiceChannelSound(snd: Sound): boolean
+	-- `EventVoiceQueue` parents cloned voice clips into
+	-- `Workspace.CurrentCamera.NukeVoice` (or similar) and assigns them the
+	-- `EventVoice` SoundGroup; that group's volume is the one carrier we must
+	-- never duck or the warning literally goes silent.
+	local g = snd.SoundGroup
+	return g ~= nil and g.Name == "EventVoice"
+end
+
+local restoreNukeAudioDuck
+
+local function duckSingleSound(snd: Sound)
+	if isVoiceChannelSound(snd) then return end
+	if NukeAudioDuck.snapshots[snd] then return end
+	NukeAudioDuck.snapshots[snd] = snd.Volume
+	local existing = NukeAudioDuck.activeTweens[snd]
+	if existing then
+		pcall(function() existing:Cancel() end)
+	end
+	local ok, tween = pcall(function()
+		return TweenService:Create(snd, TweenInfo.new(NUKE_DUCK_FADE_OUT_SECONDS), { Volume = 0 })
+	end)
+	if ok and tween then
+		NukeAudioDuck.activeTweens[snd] = tween
+		tween:Play()
+	end
+	-- Drop snapshot on destroy so we don't leak references and don't try to
+	-- restore Volume on a sound that already left the data model.
+	snd.AncestryChanged:Connect(function(_, parent)
+		if parent == nil then
+			NukeAudioDuck.snapshots[snd] = nil
+			NukeAudioDuck.activeTweens[snd] = nil
+		end
+	end)
+end
+
+local function snapshotAndDuckAllSounds()
+	for _, root in ipairs({ Workspace, SoundService }) do
+		for _, d in ipairs(root:GetDescendants()) do
+			if d:IsA("Sound") then
+				duckSingleSound(d)
+			end
+		end
+	end
+end
+
+local function startNukeAudioDuck()
+	if NukeAudioDuck.active then
+		-- Already ducked — cancel any pending restore so consecutive nukes
+		-- (rare but possible) extend the duck window instead of fighting it.
+		if NukeAudioDuck.pendingRestore then
+			task.cancel(NukeAudioDuck.pendingRestore)
+			NukeAudioDuck.pendingRestore = nil
+		end
+		return
+	end
+	NukeAudioDuck.active = true
+	snapshotAndDuckAllSounds()
+
+	-- Listen for new sounds spawned during the window so the explosion's
+	-- own ad-hoc Sound clones (not on `EventVoice`) get muted too.
+	table.insert(NukeAudioDuck.listenerConns, Workspace.DescendantAdded:Connect(function(d)
+		if NukeAudioDuck.active and d:IsA("Sound") then
+			duckSingleSound(d)
+		end
+	end))
+	table.insert(NukeAudioDuck.listenerConns, SoundService.DescendantAdded:Connect(function(d)
+		if NukeAudioDuck.active and d:IsA("Sound") then
+			duckSingleSound(d)
+		end
+	end))
+
+	if NukeAudioDuck.failsafe then
+		task.cancel(NukeAudioDuck.failsafe)
+	end
+	NukeAudioDuck.failsafe = task.delay(NUKE_DUCK_HARD_FAILSAFE_SECONDS, function()
+		if NukeAudioDuck.active then
+			restoreNukeAudioDuck()
+		end
+	end)
+end
+
+restoreNukeAudioDuck = function()
+	if not NukeAudioDuck.active then return end
+	NukeAudioDuck.active = false
+	for _, conn in ipairs(NukeAudioDuck.listenerConns) do
+		conn:Disconnect()
+	end
+	NukeAudioDuck.listenerConns = {}
+	if NukeAudioDuck.failsafe then
+		task.cancel(NukeAudioDuck.failsafe)
+		NukeAudioDuck.failsafe = nil
+	end
+	for snd, origVol in pairs(NukeAudioDuck.snapshots) do
+		local existing = NukeAudioDuck.activeTweens[snd]
+		if existing then
+			pcall(function() existing:Cancel() end)
+		end
+		if snd.Parent then
+			local ok, tween = pcall(function()
+				return TweenService:Create(snd, TweenInfo.new(NUKE_DUCK_FADE_IN_SECONDS), { Volume = origVol })
+			end)
+			if ok and tween then
+				tween:Play()
+			else
+				-- Tween couldn't be built (sound mid-destroy) — set directly so
+				-- a surviving handle isn't left silent.
+				pcall(function() snd.Volume = origVol end)
+			end
+		end
+	end
+	table.clear(NukeAudioDuck.snapshots)
+	table.clear(NukeAudioDuck.activeTweens)
+end
+
+local function scheduleNukeAudioRestore(delaySeconds: number)
+	if NukeAudioDuck.pendingRestore then
+		task.cancel(NukeAudioDuck.pendingRestore)
+	end
+	NukeAudioDuck.pendingRestore = task.delay(delaySeconds, function()
+		NukeAudioDuck.pendingRestore = nil
+		restoreNukeAudioDuck()
+	end)
+end
+
 --- Subscribe to `ArmyGeneralOpen` / result as soon as `setStatus` exists (same race as Pirate Hire).
 function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDeps, remotes: ArmyGeneralEarlyRemotes)
 	local player = deps.player
@@ -75,8 +293,19 @@ function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDep
 		screenGui.IgnoreGuiInset = true
 		screenGui.DisplayOrder = 60
 		screenGui.Parent = playerGui
+		HudMousePolicy.RegisterScreenGui(screenGui)
 
-		-- Auto-close when walking away
+		-- Auto-close when walking away. The radius MUST be larger than the
+		-- server-side `ArmyGeneralPrompt.MaxActivationDistance` (20 studs in
+		-- `ArmyGeneralService:_hookArmyGeneral`) plus a small hysteresis,
+		-- otherwise a player who triggers the prompt at distance D in the
+		-- band `closeRadius < D <= promptRadius` opens the dialogue and has
+		-- it destroyed on the very next Heartbeat (~16 ms later) before the
+		-- frame ever paints — the bug the player sees as "prompt fires but
+		-- nothing happens unless I'm standing on the General". Hysteresis
+		-- also avoids flicker if the player straddles the boundary while
+		-- moving. Keep this value in sync if the prompt distance changes.
+		local AUTO_CLOSE_RADIUS_STUDS = 28 -- prompt = 20, +8 stud hysteresis
 		local generalModel = Workspace:FindFirstChild("Army General", true)
 		local autoCloseConn
 		autoCloseConn = RunService.Heartbeat:Connect(function()
@@ -87,7 +316,7 @@ function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDep
 			local char = player.Character
 			local hrp = char and char:FindFirstChild("HumanoidRootPart")
 			if hrp and generalModel then
-				if (hrp.Position - generalModel:GetPivot().Position).Magnitude > 12 then
+				if (hrp.Position - generalModel:GetPivot().Position).Magnitude > AUTO_CLOSE_RADIUS_STUDS then
 					screenGui:Destroy()
 					if autoCloseConn then autoCloseConn:Disconnect() end
 				end
@@ -269,9 +498,29 @@ function StrategicStrikeClient.connect(deps: StrategicStrikeDeps, remotes: Strat
 	local airStrikeEvent = remotes.airStrikeEvent
 
 	-- =================== NUKE COUNTDOWN ===================
+	-- Asset id of the gold radioactive shield used by the `Launch Nuke` HUD
+	-- button (`StarterGui.HUD.Canvas.NukeDevProduct.Image`). Reused here so
+	-- the warning banner reads as the same product the buyer just clicked.
+	-- Discovered live via `search_objects`; if the button image is ever
+	-- swapped, update both this constant and the StarterGui ImageButton
+	-- (or pull this dynamically from `PlayerGui.HUD.Canvas.NukeDevProduct`
+	-- if we want a single source of truth — left static for now to avoid
+	-- coupling the warning UI to a HUD-instance lookup that would no-op
+	-- silently if the HUD wasn't ready yet).
+	local NUKE_ICON_ASSET = "rbxassetid://93749201232015"
+
 	nukeCountdownEvent.OnClientEvent:Connect(function(data)
 		if typeof(data) ~= "table" then return end
 		local detonateAt = tonumber(data.detonateAt) or 0
+		local launchedBy = if typeof(data.launchedBy) == "string" and data.launchedBy ~= ""
+			then data.launchedBy
+			else "Someone"
+
+		-- Duck the rest of the soundtrack BEFORE we kick off the siren so the
+		-- nuke voice line + warning are unobstructed. Restore is scheduled
+		-- inside `nukeDetonateEvent` (or by the hard failsafe if no detonate
+		-- arrives). See the `NukeAudioDuck` block at the top of this module.
+		startNukeAudioDuck()
 
 		-- Play nuke SFX for ALL players immediately — audio is 12+ seconds long
 		-- 0-2s: siren/buildup (nuke symbol shown, no countdown yet)
@@ -280,75 +529,157 @@ function StrategicStrikeClient.connect(deps: StrategicStrikeDeps, remotes: Strat
 		playEventSFX("TacNuke", 1.0)
 
 		task.spawn(function()
-			-- Full-screen countdown overlay
+			-- Full-screen countdown overlay. Sized entirely with `UDim2.fromScale`
+			-- + `UIAspectRatioConstraint` + `TextScaled` so the banner reads
+			-- the same on phone, tablet, desktop, and console — no fixed
+			-- offset values that would shrink relative to the viewport on
+			-- small devices. See `ui-scaling-responsive.mdc` /
+			-- `docs/UI_SCALING_AUTHORING.md`. Banner is intentionally larger
+			-- than the previous version (icon ~18% of viewport, warning text
+			-- scaled with a generous max). `IgnoreGuiInset = true` so the
+			-- top-bar does not shift the layout when the player has the
+			-- chat / leaderboard visible.
 			local screenGui = Instance.new("ScreenGui")
 			screenGui.Name = "NukeCountdown"
 			screenGui.DisplayOrder = 100
 			screenGui.ResetOnSpawn = false
+			screenGui.IgnoreGuiInset = true
 			screenGui.Parent = playerGui
 
-			-- No dark overlay — keep the game visible during countdown
-
-			-- Nuke symbol
-			local symbol = Instance.new("TextLabel")
-			symbol.Size = UDim2.fromOffset(120, 120)
-			symbol.Position = UDim2.new(0.5, -60, 0.3, -60)
+			-- Nuke icon — same gold shield as the `Launch Nuke` HUD button.
+			-- Square via aspect-ratio constraint, height-driven on portrait
+			-- phones so it never gets crushed wider than tall.
+			local symbol = Instance.new("ImageLabel")
+			symbol.Name = "NukeIcon"
+			symbol.AnchorPoint = Vector2.new(0.5, 0.5)
+			symbol.Position = UDim2.fromScale(0.5, 0.22)
+			symbol.Size = UDim2.fromScale(0.18, 0.18)
 			symbol.BackgroundTransparency = 1
-			symbol.Text = "\xe2\x98\xa2" -- ☢
-			symbol.TextColor3 = Color3.fromRGB(255, 50, 50)
-			symbol.TextSize = 80
-			symbol.Font = Enum.Font.Merriweather
+			symbol.Image = NUKE_ICON_ASSET
+			symbol.ImageColor3 = Color3.fromRGB(255, 255, 255)
+			symbol.ScaleType = Enum.ScaleType.Fit
 			symbol.Parent = screenGui
 
-			-- Warning text
+			local symbolAspect = Instance.new("UIAspectRatioConstraint")
+			symbolAspect.AspectRatio = 1
+			symbolAspect.AspectType = Enum.AspectType.FitWithinMaxSize
+			symbolAspect.DominantAxis = Enum.DominantAxis.Height
+			symbolAspect.Parent = symbol
+
+			-- "NUKE INCOMING" — `TextScaled` with a `UITextSizeConstraint` to
+			-- cap the headline on ultra-wide so the line doesn't become
+			-- absurdly tall.
 			local warning = Instance.new("TextLabel")
-			warning.Size = UDim2.new(0.8, 0, 0, 40)
-			warning.Position = UDim2.new(0.1, 0, 0.45, 0)
+			warning.Name = "WarningTitle"
+			warning.AnchorPoint = Vector2.new(0.5, 0.5)
+			warning.Position = UDim2.fromScale(0.5, 0.42)
+			warning.Size = UDim2.fromScale(0.72, 0.085)
 			warning.BackgroundTransparency = 1
 			warning.Text = "NUKE INCOMING"
-			warning.TextColor3 = Color3.fromRGB(255, 50, 50)
-			warning.TextSize = 40
+			-- Slightly darkened red (was 255,50,50). Bright reds bloom out
+			-- against sky/ocean and cost legibility — this still flashes hot
+			-- but keeps glyph definition.
+			warning.TextColor3 = Color3.fromRGB(200, 30, 30)
+			warning.TextScaled = true
 			warning.Font = Enum.Font.Merriweather
 			warning.TextStrokeTransparency = 0
 			warning.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 			warning.Parent = screenGui
 
+			local warningCap = Instance.new("UITextSizeConstraint")
+			warningCap.MinTextSize = 18
+			warningCap.MaxTextSize = 96
+			warningCap.Parent = warning
+
+			-- "Launched by <player name>" — server already includes
+			-- `launchedBy` on `NukeCountdownEvent` (see
+			-- `ArmyGeneralService:_executeNuke`). Falls back to "Someone" if
+			-- the field is missing so an old client/server combo still reads.
+			local launcherLabel = Instance.new("TextLabel")
+			launcherLabel.Name = "LaunchedBy"
+			launcherLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+			launcherLabel.Position = UDim2.fromScale(0.5, 0.49)
+			launcherLabel.Size = UDim2.fromScale(0.6, 0.045)
+			launcherLabel.BackgroundTransparency = 1
+			launcherLabel.Text = string.format("Launched by %s", launchedBy)
+			-- Darker gold than the icon's mid-tones so the label reads as
+			-- separate text instead of bleeding into the shield (was 255,230,140).
+			launcherLabel.TextColor3 = Color3.fromRGB(215, 185, 90)
+			launcherLabel.TextScaled = true
+			-- NOTE: `Enum.Font.MerriweatherBold` does NOT exist — only the
+			-- regular `Merriweather` font is in the legacy `Enum.Font` set.
+			-- Using a non-existent enum here previously raised inside the
+			-- `task.spawn`, halting subtitle/countdown creation and the
+			-- destroy at the end of the countdown loop (banner got stuck).
+			-- The gold color already differentiates this line; if we want
+			-- true bold, switch to `FontFace` + `Font.fromEnum(... Bold)`.
+			launcherLabel.Font = Enum.Font.Merriweather
+			launcherLabel.TextStrokeTransparency = 0
+			launcherLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+			launcherLabel.Parent = screenGui
+
+			local launcherCap = Instance.new("UITextSizeConstraint")
+			launcherCap.MinTextSize = 14
+			launcherCap.MaxTextSize = 40
+			launcherCap.Parent = launcherLabel
+
 			local subtext = Instance.new("TextLabel")
-			subtext.Size = UDim2.new(0.8, 0, 0, 24)
-			subtext.Position = UDim2.new(0.1, 0, 0.52, 0)
+			subtext.Name = "Subtext"
+			subtext.AnchorPoint = Vector2.new(0.5, 0.5)
+			subtext.Position = UDim2.fromScale(0.5, 0.55)
+			subtext.Size = UDim2.fromScale(0.85, 0.05)
 			subtext.BackgroundTransparency = 1
 			subtext.Text = "ALL BOATS ON STRAIT AT RISK OF DESTRUCTION"
-			subtext.TextColor3 = Color3.fromRGB(255, 200, 100)
-			subtext.TextSize = 18
+			-- Darker burnt-orange than before (was 255,200,100); pairs with a
+			-- fully opaque stroke for legibility on bright skies.
+			subtext.TextColor3 = Color3.fromRGB(215, 155, 60)
+			subtext.TextScaled = true
 			subtext.Font = Enum.Font.Merriweather
-			subtext.TextStrokeTransparency = 0.3
+			subtext.TextStrokeTransparency = 0
+			subtext.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 			subtext.Parent = screenGui
 
+			local subtextCap = Instance.new("UITextSizeConstraint")
+			subtextCap.MinTextSize = 12
+			subtextCap.MaxTextSize = 32
+			subtextCap.Parent = subtext
+
 			local countdown = Instance.new("TextLabel")
-			countdown.Size = UDim2.new(0.5, 0, 0, 80)
-			countdown.Position = UDim2.new(0.25, 0, 0.6, 0)
+			countdown.Name = "Countdown"
+			countdown.AnchorPoint = Vector2.new(0.5, 0.5)
+			countdown.Position = UDim2.fromScale(0.5, 0.66)
+			countdown.Size = UDim2.fromScale(0.35, 0.14)
 			countdown.BackgroundTransparency = 1
 			countdown.Text = ""
-			countdown.TextColor3 = Color3.fromRGB(255, 255, 255)
-			countdown.TextSize = 72
+			-- Slightly dimmed white so the digits don't bloom out against
+			-- bright sky/water backgrounds (was 255,255,255).
+			countdown.TextColor3 = Color3.fromRGB(230, 230, 230)
+			countdown.TextScaled = true
 			countdown.Font = Enum.Font.Merriweather
 			countdown.TextStrokeTransparency = 0
+			countdown.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 			countdown.Visible = false
-			countdown.Text = ""
 			countdown.Parent = screenGui
+
+			local countdownCap = Instance.new("UITextSizeConstraint")
+			countdownCap.MinTextSize = 36
+			countdownCap.MaxTextSize = 160
+			countdownCap.Parent = countdown
 
 			-- First 2 seconds: just nuke symbol + audio playing, no countdown visible
 			task.delay(2, function()
 				if countdown.Parent then countdown.Visible = true end
 			end)
 
-			-- Flash warning text red/white
+			-- Flash warning text red/white. Both colors are slightly darker
+			-- than the original (255,50,50 / 255,255,255) so the heading
+			-- doesn't bloom into a hot blob on bright skies.
 			task.spawn(function()
 				while screenGui.Parent do
-					warning.TextColor3 = Color3.fromRGB(255, 50, 50)
+					warning.TextColor3 = Color3.fromRGB(200, 30, 30)
 					task.wait(0.3)
 					if not screenGui.Parent then break end
-					warning.TextColor3 = Color3.fromRGB(255, 255, 255)
+					warning.TextColor3 = Color3.fromRGB(225, 225, 225)
 					task.wait(0.3)
 				end
 			end)
@@ -367,6 +698,15 @@ function StrategicStrikeClient.connect(deps: StrategicStrikeDeps, remotes: Strat
 	-- =================== NUKE DETONATION ===================
 	nukeDetonateEvent.OnClientEvent:Connect(function(data)
 		if typeof(data) ~= "table" then return end
+
+		-- Schedule the rest-of-game audio fade-back-in. We wait until the
+		-- mushroom-cloud animation is visibly winding down (see
+		-- `NUKE_DETONATION_RESTORE_DELAY` at top of module) so music/SFX
+		-- don't pop back in over the explosion. Safe to call every detonate
+		-- because `scheduleNukeAudioRestore` cancels any prior pending
+		-- restore. If the duck wasn't started (rare race / missing
+		-- countdown event) the restore is a no-op.
+		scheduleNukeAudioRestore(NUKE_DETONATION_RESTORE_DELAY)
 
 		-- IMMEDIATELY clone the player's head BEFORE the server dismembers the character
 		local nukeHeadClone = nil
@@ -585,13 +925,29 @@ function StrategicStrikeClient.connect(deps: StrategicStrikeDeps, remotes: Strat
 						-- Lock camera
 						camera.CameraType = Enum.CameraType.Scriptable
 						local flyDur = 7
+						--- Hold the death-cam this many seconds **past respawn** before handing
+						--- the camera back to the live character. Respawn pipeline is fixed at
+						--- `Constants.RespawnDelayAfterDeathSeconds = 1.5s`, so without a hold
+						--- the cinematic gets cut to ~1.5–2s when `CharacterAdded` fires. With
+						--- the hold, total visible duration is ~`1.5s + EXTRA_HOLD_AFTER_RESPAWN`.
+						--- Capped above by `flyDur` so we never run longer than the head's
+						--- arc-completion budget.
+						local EXTRA_HOLD_AFTER_RESPAWN = 1.5
 						local nukeCamDone = false
 
 						local respawnConn
 						respawnConn = player.CharacterAdded:Connect(function()
-							nukeCamDone = true
-							camera.CameraType = Enum.CameraType.Custom
+							--- Don't end the cinematic immediately — defer the camera handoff so
+							--- the head-fly arc gets to finish. The new character is alive in
+							--- workspace during this hold; we're just delaying when control
+							--- returns. `rebindCameraToLiveCharacter` retries internally so it
+							--- still binds the live humanoid no matter when we call it.
 							if respawnConn then respawnConn:Disconnect() end
+							task.delay(EXTRA_HOLD_AFTER_RESPAWN, function()
+								if not player.Parent then return end
+								nukeCamDone = true
+								rebindCameraToLiveCharacter(camera, player)
+							end)
 						end)
 
 						local tt0 = os.clock()
@@ -613,7 +969,7 @@ function StrategicStrikeClient.connect(deps: StrategicStrikeDeps, remotes: Strat
 						end
 
 						if not nukeCamDone then
-							camera.CameraType = Enum.CameraType.Custom
+							rebindCameraToLiveCharacter(camera, player)
 						end
 						if respawnConn then respawnConn:Disconnect() end
 					end)
@@ -959,7 +1315,7 @@ function StrategicStrikeClient.connect(deps: StrategicStrikeDeps, remotes: Strat
 								local rConn
 								rConn = player.CharacterAdded:Connect(function()
 									camDone = true
-									airCam.CameraType = Enum.CameraType.Custom
+									rebindCameraToLiveCharacter(airCam, player)
 									if rConn then rConn:Disconnect() end
 								end)
 
@@ -977,7 +1333,7 @@ function StrategicStrikeClient.connect(deps: StrategicStrikeDeps, remotes: Strat
 								end
 
 								if not camDone then
-									airCam.CameraType = Enum.CameraType.Custom
+									rebindCameraToLiveCharacter(airCam, player)
 								end
 								if rConn then rConn:Disconnect() end
 								Debris:AddItem(flyHead, 1)

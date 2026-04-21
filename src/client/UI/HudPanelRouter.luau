@@ -24,6 +24,7 @@ local ShipOilPanel = require(script.Parent.HudPanels.ShipOilPanel)
 local StraitControlPanel = require(script.Parent.HudPanels.StraitControlPanel)
 local SettingsPanel = require(script.Parent.HudPanels.SettingsPanel)
 local StraitInfoPanel = require(script.Parent.HudPanels.StraitInfoPanel)
+local HudMousePolicy = require(script.Parent.HudMousePolicy)
 local HudPanelTypes = require(script.Parent.HudPanelTypes)
 local HudTriggerHover = require(script.Parent.HudTriggerHover)
 
@@ -104,6 +105,9 @@ local function bindPanelForScreen(playerGui: PlayerGui, screenName: string): Hud
 	if ctrl then
 		controllersByScreen[screenName] = ctrl
 		table.insert(controllersList, ctrl)
+		--- Mouse-unlock-while-open policy: see `HudMousePolicy.luau`. Without this any HUD modal
+		--- opened from first-person leaves the cursor locked to camera-look so BUY / X are dead.
+		HudMousePolicy.RegisterController(ctrl)
 	end
 	return ctrl
 end
@@ -137,6 +141,9 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 		return
 	end
 	print("[Client] HudPanelRouter: start() — waiting for HUD + modal ScreenGuis (HUD buttons optional)…")
+	--- Idempotent — safe to call before any controllers are registered; the
+	--- per-frame tick is a no-op until at least one panel reports `IsOpen() == true`.
+	HudMousePolicy.Start()
 
 	task.spawn(function()
 		local needButtons = expectedButtonCount()

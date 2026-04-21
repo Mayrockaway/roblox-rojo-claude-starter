@@ -22,6 +22,11 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilmanConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilmanConfig"))
 local StepperHold = require(script.Parent.Parent:WaitForChild("StepperHold"))
 local getClientRemotes = require(script.Parent.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
+--- Register both runtime ScreenGuis (`OilmanDialogueGui`, `OilmanSellGui`) with
+--- `HudMousePolicy` so the cursor frees from `LockCenter` while either is open.
+--- Without this the dialogue is unclickable when the player triggers the prompt
+--- from first-person zoom (e.g. right after a respawn from a death cam).
+local HudMousePolicy = require(script.Parent.Parent:WaitForChild("HudMousePolicy"))
 
 local SCREEN_NAME_SELL = "OilmanSellGui"
 local SCREEN_NAME_DIALOGUE = "OilmanDialogueGui"
@@ -100,6 +105,7 @@ local function buildDialogueScreen(): ScreenGui
 	screen.IgnoreGuiInset = true
 	screen.DisplayOrder = 60
 	screen.Enabled = false
+	HudMousePolicy.RegisterScreenGui(screen)
 
 	local root = Instance.new("Frame")
 	root.Name = "Root"
@@ -209,6 +215,7 @@ local function buildSellScreen(): ScreenGui
 	screen.IgnoreGuiInset = true
 	screen.DisplayOrder = 55
 	screen.Enabled = false
+	HudMousePolicy.RegisterScreenGui(screen)
 
 	local backdrop = Instance.new("TextButton")
 	backdrop.Name = "Backdrop"

@@ -1196,6 +1196,24 @@ function OilShipmentService:_runShipment(shipment)
 	-- Add player flag to the ship
 	self:_addPlayerFlag(boat, ownerUserId)
 
+	-- If this voyage was armed with the Security Personnel run-upgrade
+	-- (`TryConsumeForDispatch` set `eventImmunity = true` back in
+	-- `_handleDispatch`), spawn the visual guard on the boat's authored
+	-- `NPC_POSITION` anchor. The guard is the player-facing confirmation
+	-- that immunity is live this run; the actual event short-circuit is
+	-- driven entirely by the `eventImmunity` flag the strait waypoint
+	-- handler already reads (see line ~2666 / 1330). Mounting *after*
+	-- `_addPlayerFlag` keeps the SP outside `_setupShip`'s welding pass
+	-- (it's anchored, not welded) and leaves a clean parent (`boat`) so
+	-- `BoatDockService:_destroyBoat` cleans it up automatically when the
+	-- voyage ends — `_teardownShip` below also calls `UnmountForShipment`
+	-- explicitly to drop the per-frame heartbeat before the destroy.
+	if (shipment :: any).eventImmunity == true and self._securityPersonnelService then
+		pcall(function()
+			self._securityPersonnelService:MountForShipment(shipment.shipmentId, boat)
+		end)
+	end
+
 	local dockHoldBeforeVoyage = 1.2
 	local tNow = workspace:GetServerTimeNow()
 	local shipLabel = ShipSkinCatalog.GetSkin(shipment.shipSkinId).displayName
@@ -3579,6 +3597,16 @@ end
 -- Drops this shipment's voyage state (constraint refs, connections). Does NOT destroy the
 -- boat model — BoatDockService:CheckinBoat is responsible for the model + cooldown lifecycle.
 function OilShipmentService:_teardownShip(shipmentId: string)
+	-- Drop the per-frame Heartbeat that tracks the Security Personnel
+	-- guard to the moving hull. Safe to call when no mount exists (the
+	-- service no-ops). MUST run before `BoatDockService:CheckinBoat`
+	-- destroys the boat, otherwise the heartbeat spends one frame
+	-- referencing a destroyed `boat.Parent` before bailing itself.
+	if self._securityPersonnelService then
+		pcall(function()
+			self._securityPersonnelService:UnmountForShipment(shipmentId)
+		end)
+	end
 	local state = self._activeShips[shipmentId]
 	if not state then return end
 	for _, conn in ipairs(state.connections) do

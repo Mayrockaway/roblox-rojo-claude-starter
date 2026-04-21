@@ -94,6 +94,25 @@ export type MonetizationItem = {
 	--- After a successful receipt, automatically equip the granted item if
 	--- the kind supports it (e.g. ships → `SetShipSkinId`).
 	equipOnGrant: boolean?,
+	--- When `true`, this item is marketed as a one-time-only purchase
+	--- (e.g. Featured "Starter Pack" bundles). Behavior:
+	---   * `MonetizationService:_handlePromptRequest` rejects the click with
+	---     `ERR_ALREADY_PURCHASED` instead of opening the Roblox prompt
+	---     (defense in depth — UI should also hide the row, but the server
+	---     gate is what actually prevents a double-charge if the client
+	---     hides the card on stale state).
+	---   * `MonetizationService:_processReceipt` flips the persisted
+	---     `OilStateService.purchasedOneTimeItemIds[id]` flag once the grant
+	---     applies, so the client snapshot can hide the row immediately.
+	---   * Defensive replay guard in `_processReceipt`: if Roblox re-delivers
+	---     a receipt for an already-purchased one-time item, the receipt is
+	---     marked granted (so Roblox stops retrying) and the grant is
+	---     **skipped** — re-running the bundle would re-deliver currency /
+	---     equipment that aren't idempotent. Same caveat applies as
+	---     `MonetizationGrant.bundle`: this means a stale receipt can land
+	---     without granting anything; fine for a true one-time SKU.
+	--- Leave `nil` for normal repeat-buyable items (default).
+	oneTimePurchase: boolean?,
 	grant: MonetizationGrant,
 }
 
@@ -179,9 +198,20 @@ MonetizationCatalog.Items = {
 	-- each sub-grant logs its own failure and the receipt is marked granted
 	-- so Roblox doesn't retry and re-deliver the parts that did succeed.
 	-- Ship sub-grant `equipOnGrant = true` keeps the visible "you bought a
-	-- new ship!" beat for first-time buyers; if the player already owns it,
+	-- new ship!" beat for first-time buyers; if the player already owns it
+	-- (e.g. they bought just the Pirate ship before grabbing the bundle),
 	-- `_grantShip` short-circuits via `OK_ALREADY_OWNED` and the rest of the
-	-- bundle still applies (idempotent re-buy semantics for the cash + drills).
+	-- bundle (cash + drills) still applies on that single first-buy.
+	--
+	-- `oneTimePurchase = true`: per-player limit of 1. After the receipt
+	-- grants, `MonetizationService` flips
+	-- `OilStateService.purchasedOneTimeItemIds["starter_pack"]` and:
+	--   * the prompt path rejects future clicks with `ERR_ALREADY_PURCHASED`,
+	--   * `RobuxShopPanel` hides the entire Featured row from the snapshot,
+	--   * a Roblox receipt-replay (rare, but possible across server
+	--     restarts) is marked granted but skips the grant so the player
+	--     does NOT re-receive the cash + drills.
+	-- See `MonetizationItem.oneTimePurchase` doc for the full contract.
 	{
 		id = "starter_pack",
 		productKind = "DevProduct",
@@ -190,6 +220,7 @@ MonetizationCatalog.Items = {
 		displayName = "Starter Pack",
 		subtitle = "Pirate Ship + $5,000 + 2x Glizzy Grinder",
 		category = "Featured",
+		oneTimePurchase = true,
 		grant = {
 			kind = "Bundle",
 			bundle = {
@@ -232,18 +263,33 @@ MonetizationCatalog.Items = {
 	{
 		id = "gamepass.double_earnings",
 		productKind = "GamePass",
-		productId = 0,
-		robuxPrice = 299,
+		productId = 1805656447,
+		robuxPrice = 349,
 		displayName = "2x Earnings",
 		subtitle = "Permanent",
 		category = "Boosts",
 		grant = { kind = "GamePassEffect", gamePassEffect = "DoubleEarnings" },
 	},
+	-- AutoShip GamePass. `gamePassEffect = "AutoShip"` — keep stable; the
+	-- server checks ownership via `MonetizationService:HasGamePassEffect(
+	-- player, "AutoShip")` from `AutoShipService:_onSetAutoShip` and
+	-- `_tryAutoDispatch`, and the HUD chrome
+	-- (`AutoShipController.refreshChrome`) lights the rainbow stroke off
+	-- the same effect map. R$299 matches the in-game pricing the HUD
+	-- shows; the Roblox Creator Dashboard owns the actual charged price
+	-- on the GamePass — keep them in sync.
+	--
+	-- TODO(monetization): set `productId` to the real Roblox GamePass id
+	-- (https://create.roblox.com → your experience → Monetization → Passes
+	-- → "AutoShip" → copy the URL id). Until then `MonetizationService`
+	-- returns `ERR_PRODUCT_NOT_CONFIGURED` on click and `HasGamePassEffect`
+	-- returns false (so the auto-dispatch loop won't engage and the HUD
+	-- chrome stays inactive — safe placeholder).
 	{
 		id = "gamepass.auto_ship",
 		productKind = "GamePass",
-		productId = 0, -- TODO: set real Roblox GamePass id from Creator Dashboard
-		robuxPrice = 499,
+		productId = 1801587146,
+		robuxPrice = 299,
 		displayName = "AutoShip",
 		subtitle = "Permanent",
 		category = "Boosts",
@@ -329,10 +375,10 @@ MonetizationCatalog.Items = {
 	{
 		id = "consumable.security_personnel_x1",
 		productKind = "DevProduct",
-		productId = 0,
+		productId = 3579486599,
 		robuxPrice = 49,
 		displayName = "Security Personnel",
-		subtitle = "Protects your next shipment",
+		subtitle = "Protects your ship from all events on next run",
 		category = "RunUpgrades",
 		grant = { kind = "Consumable", consumable = { id = "security_personnel", quantity = 1 } },
 	},
@@ -459,6 +505,7 @@ export type MonetizationItemForClient = {
 	grantKind: MonetizationGrantKind,
 	grantSkinId: string?,
 	isBuyable: boolean,
+	oneTimePurchase: boolean?,
 }
 
 function MonetizationCatalog.ListForClient(): { MonetizationItemForClient }
@@ -477,6 +524,7 @@ function MonetizationCatalog.ListForClient(): { MonetizationItemForClient }
 			grantKind = item.grant.kind,
 			grantSkinId = item.grant.skinId,
 			isBuyable = MonetizationCatalog.IsBuyable(item),
+			oneTimePurchase = item.oneTimePurchase == true,
 		})
 	end
 	return list

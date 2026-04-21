@@ -563,8 +563,8 @@ local function ensureFocusBillboard()
 	-- Slightly larger pixel box. The BillboardGui is distance-scaled by the
 	-- engine, so a bigger offset = proportionally bigger label on every
 	-- device (phone / desktop / console) without needing per-platform code.
-	focusBillboard.Size = UDim2.fromOffset(220, 44)
-	focusBillboard.StudsOffset = Vector3.new(0, 4, 0)
+	focusBillboard.Size = UDim2.fromOffset(280, 56)
+	focusBillboard.StudsOffset = Vector3.new(0, 4.5, 0)
 	focusBillboard.AlwaysOnTop = true
 	focusBillboard.Enabled = false
 	focusBillboard.Parent = playerGui
@@ -574,7 +574,7 @@ local function ensureFocusBillboard()
 	focusLabel.BackgroundTransparency = 0.2
 	focusLabel.BackgroundColor3 = Color3.fromRGB(21, 27, 38)
 	focusLabel.TextColor3 = Color3.fromRGB(239, 239, 239)
-	focusLabel.Font = Enum.Font.Merriweather
+	focusLabel.Font = Enum.Font.LuckiestGuy
 	-- TextScaled (no fixed TextSize) so the label fills the larger box and
 	-- scales cleanly with the BillboardGui. UITextSizeConstraint caps the
 	-- top end so close-up hover does not blow the text up to giant.
@@ -589,8 +589,8 @@ local function ensureFocusBillboard()
 	pad.PaddingRight = UDim.new(0, 8)
 	pad.Parent = focusLabel
 	local sizeCap = Instance.new("UITextSizeConstraint")
-	sizeCap.MinTextSize = 10
-	sizeCap.MaxTextSize = 22
+	sizeCap.MinTextSize = 18
+	sizeCap.MaxTextSize = 34
 	sizeCap.Parent = focusLabel
 end
 

@@ -55,7 +55,11 @@ local Constants = {
 		--- FloorMaterial, attached BodyMovers / movement Constraints, and any external
 		--- Welds before/during/after the cinematic freeze. Use to identify what is
 		--- pulling the player toward a cosmetic NPC ship.
-		LogFreezeCharacterSnapshot = true,
+		--- Off for public builds: per-Heartbeat snapshots over a ~17–21s
+		--- cinematic produce hundreds of lines per event per player and
+		--- bury anything actionable in server Output. Flip back on locally
+		--- only when re-investigating a strait-event physics regression.
+		LogFreezeCharacterSnapshot = false,
 	},
 
 	-- Replicated on shop `Tool` instances: stack size / uses in one slot (`EquipmentShopService`, hotbar UI).

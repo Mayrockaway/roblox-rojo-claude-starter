@@ -9,8 +9,75 @@ local Debris = game:GetService("Debris")
 local PhysicsService = game:GetService("PhysicsService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local SoundService = game:GetService("SoundService")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
+
+--- Serial event-voice queue (`Pirates`, `Storm`, `Coastguard`, …). Lazy
+--- require so a load-order surprise never takes the cinematic FX down with
+--- it — voice line is purely additive. Same shape used in
+--- `src/client/UI/StraitStatusChangeFx.luau` for the Strait status flips.
+local function tryEnqueueVoice(key: string)
+	local ok, mod = pcall(function()
+		return require(script.Parent:WaitForChild("EventVoiceQueue", 5)) :: any
+	end)
+	if ok and mod then
+		mod.play(key)
+	end
+end
+
+--- Play a 2D one-shot Sound by asset id `count` times **serially** — the next
+--- play waits on `Sound.Ended` before starting, so the user hears `count`
+--- distinct hits back-to-back (no overlap). Used by the coastguard event for
+--- the alarm/horn burst that fires before the `Coastguard` voice line.
+---
+--- `onComplete` (optional) runs after the final hit's `.Ended` — callers use
+--- this to chain a follow-up (e.g. enqueue the voice line) so the voice plays
+--- AFTER the burst rather than overlapping with it. Always invoked, even when
+--- SFX is muted, so chained logic still progresses (with `count = 0` it fires
+--- immediately on the same frame).
+---
+--- Lazy-requires `ClientAudioPreferences` (mirrors `tryEnqueueVoice`) so a
+--- load-order surprise can't break the cinematic, and skips audio entirely
+--- when the player has SFX muted. Parented to `SoundService` for non-positional
+--- 2D playback (everyone within audible range hears it equally).
+local function playSfxByIdRepeated(soundId: string, count: number, volume: number?, onComplete: (() -> ())?)
+	local sfxOk = true
+	pcall(function()
+		local prefs = require(script.Parent:WaitForChild("ClientAudioPreferences", 5)) :: any
+		if prefs and typeof(prefs.isSfxEnabled) == "function" then
+			sfxOk = prefs.isSfxEnabled() == true
+		end
+	end)
+	local plays = math.max(0, math.floor(count))
+	if not sfxOk or plays == 0 then
+		--- Fire `onComplete` immediately when there's nothing to play so chained
+		--- logic (the voice line, here) still runs. `task.spawn` keeps the call
+		--- async-equivalent to the audio path.
+		if onComplete then task.spawn(onComplete) end
+		return
+	end
+	task.spawn(function()
+		for _ = 1, plays do
+			local snd = Instance.new("Sound")
+			snd.Name = "EventSfxBurst"
+			snd.SoundId = soundId
+			snd.Volume = volume or 0.7
+			snd.Looped = false
+			snd.Parent = SoundService
+			snd:Play()
+			--- `.Ended:Wait()` is bounded internally by Roblox's stream timeout, so a
+			--- never-loaded asset can't hang the loop forever. Hard-cap with a 6s
+			--- delay-destroy on each instance as a safety net.
+			task.delay(6, function()
+				if snd.Parent then snd:Destroy() end
+			end)
+			snd.Ended:Wait()
+			if snd.Parent then snd:Destroy() end
+		end
+		if onComplete then onComplete() end
+	end)
+end
 
 --- Local cosmetic NPCs (Pirate / Coast Guard): must not shove the player. `Humanoid`
 --- on a freshly-parented model can re-enable `CanCollide` on body parts before our
@@ -1731,6 +1798,17 @@ function StraitWaypointWorldFx.OnStraitWaypointPayload(data: { [string]: any })
 	if id == "Storm" or id == "Tornado" then
 		return
 	end
+
+	--- Voice cue for the generic strait waypoint events that don't get their
+	--- own bespoke payload (e.g. `RoutinePaperwork`). The big cinematic
+	--- events (`MissileStrike`, `MineStrike`, `PirateRaid`, etc.) come in on
+	--- their dedicated `On<Event>Payload` handlers below and enqueue their
+	--- own voice clip there. `Storm` / `Tornado` early-returned above for
+	--- the same reason — their `OnStormPayload` / `OnTornadoPayload` owns
+	--- the voice cue.
+	if id == "RoutinePaperwork" then
+		tryEnqueueVoice("Paperwork")
+	end
 	local fxScale = particleFxScaleFromPayload(data)
 
 	local custom = EVENT_FX[id]
@@ -1752,6 +1830,18 @@ function StraitWaypointWorldFx.OnMissileStrikePayload(data: { [string]: any })
 	local outcome = if typeof(data.outcome) == "string" then data.outcome else "miss"
 	local flightSeconds = tonumber(data.flightSeconds) or 2.5
 	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
+
+	--- One voice cue per missile barrage, not per missile. Server fires
+	--- `MissileStrikeEvent` once per missile (4× per barrage by default —
+	--- see `Catalog.MissileConfig.MissileCount`); `missileIndex == 1` marks
+	--- the first one, so we only enqueue the "missile incoming" voice
+	--- there. The queue's per-key dedup would catch a duplicate too, but
+	--- gating on the index is cheaper than letting all 4 collide and rely
+	--- on dedup to swallow them.
+	local missileIndex = tonumber(data.missileIndex) or 1
+	if missileIndex == 1 then
+		tryEnqueueVoice("Missiles")
+	end
 
 	task.spawn(function()
 		local assets = ReplicatedStorage:FindFirstChild("Assets")
@@ -2188,6 +2278,8 @@ end
 
 
 function StraitWaypointWorldFx.OnStormPayload(data: { [string]: any })
+	tryEnqueueVoice("Storm")
+
 	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
 	local boat = if shipmentId ~= "" then findActiveShipmentBoatByShipmentId(shipmentId) else nil
 	local hull = if boat then getBoatAttachmentPart(boat) else nil
@@ -2408,6 +2500,8 @@ function StraitWaypointWorldFx.OnStormPayload(data: { [string]: any })
 end
 
 function StraitWaypointWorldFx.OnTornadoPayload(data: { [string]: any })
+	tryEnqueueVoice("Tornado")
+
 	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
 	local center = vector3FromWorldPosition(data.worldPosition)
 	local payloadPivot = vector3FromWorldPosition(data.shipPivotPosition)
@@ -2601,6 +2695,8 @@ end
 function StraitWaypointWorldFx.OnMineStrikePayload(data: { [string]: any })
 	local shipPos = vector3FromWorldPosition(data.worldPosition)
 	if not shipPos then return end
+
+	tryEnqueueVoice("Mines")
 
 	local didHit = data.didHit == true
 	local riseSeconds = tonumber(data.riseSeconds) or 2.0
@@ -2916,6 +3012,8 @@ animateMove = function(obj, fromCF: CFrame, toCF: CFrame, duration: number, arcH
 end
 
 function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
+	tryEnqueueVoice("Pirates")
+
 	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
 	local barrelsStolen = math.max(0, tonumber(data.barrelsStolen) or 0)
 	local approachSide = tonumber(data.approachSide) or 1
@@ -3411,7 +3509,20 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 	end)
 end
 
+--- Coast guard alarm/horn burst — plays 3 times back-to-back (each waits for the
+--- previous to finish via `Sound.Ended:Wait()`) when the inspection event fires.
+--- The `Coastguard` voice line is enqueued in the burst's completion callback so
+--- it plays AFTER the burst rather than overlapping. Plays globally for every
+--- client — both burst and voice are part of the public event ambience.
+local COASTGUARD_BURST_SOUND_ID = "rbxassetid://115844314196536"
+local COASTGUARD_BURST_COUNT = 3
+local COASTGUARD_BURST_VOLUME = 0.35
+
 function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: any })
+	playSfxByIdRepeated(COASTGUARD_BURST_SOUND_ID, COASTGUARD_BURST_COUNT, COASTGUARD_BURST_VOLUME, function()
+		tryEnqueueVoice("Coastguard")
+	end)
+
 	local shipmentId   = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
 	local approachSide = tonumber(data.approachSide) or 1
 
@@ -3784,6 +3895,13 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 end
 
 function StraitWaypointWorldFx.OnUSShipSlapPayload(data: { [string]: any })
+	--- Catalog row id is `USShipSlap`; player-facing displayName is "Sea
+	--- Monster". The voice asset hasn't been uploaded yet — the queue's
+	--- `findTemplate` returns nil for it and we silently skip. The day a
+	--- `SeaMonster` Sound lands under `Assets.SFX.VoiceLines`, this line
+	--- starts producing audio with zero further code changes.
+	tryEnqueueVoice("USShipSlap")
+
 	local shipmentId   = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
 
 	local assets = ReplicatedStorage:FindFirstChild("Assets")

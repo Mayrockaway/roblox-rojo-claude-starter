@@ -1654,11 +1654,45 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 				local nextTier, cost = VeinConfigVis.GetUpgradeCost(drill.tier, gt2)
 				local existingUpg = model:FindFirstChild("UpgradePrompt")
 				if nextTier and cost then
+					-- Build descriptive prompt text: show current tier, what the upgrade
+					-- changes (relative flow multiplier), and the cost. Keeps the two
+					-- ProximityPrompt text slots (ObjectText / ActionText) populated with
+					-- player-facing detail rather than raw tier ids.
+					local currentDef = VeinConfigVis.PumpUpgrades and VeinConfigVis.PumpUpgrades[drill.tier]
+					local nextDef = VeinConfigVis.PumpUpgrades and VeinConfigVis.PumpUpgrades[nextTier]
+					local currentName = (currentDef and currentDef.displayName) or drill.tier or "Pump"
+					local nextName = (nextDef and nextDef.displayName) or nextTier
+					local curMult = (currentDef and currentDef.flowMult) or 1
+					local nextMult = (nextDef and nextDef.flowMult) or curMult
+					local relMult = (curMult > 0) and (nextMult / curMult) or nextMult
+					local function formatCostWithCommas(n: number): string
+						local s = tostring(math.floor(n))
+						local out = s
+						while true do
+							local replaced
+							out, replaced = string.gsub(out, "^(-?%d+)(%d%d%d)", "%1,%2")
+							if replaced == 0 then break end
+						end
+						return out
+					end
+					local function formatMult(m: number): string
+						if math.abs(m - math.floor(m)) < 0.05 then
+							return string.format("%dx", math.floor(m + 0.5))
+						end
+						return string.format("%.1fx", m)
+					end
+					local objectText = string.format("Center Pump · %s", currentName)
+					local actionText = string.format(
+						"Upgrade to %s: %s Flow Rate · $%s",
+						nextName,
+						formatMult(relMult),
+						formatCostWithCommas(cost)
+					)
 					if not existingUpg then
 						local upgPrompt = Instance.new("ProximityPrompt")
 						upgPrompt.Name = "UpgradePrompt"
-						upgPrompt.ActionText = string.format("Upgrade to %s ($%d)", nextTier, cost)
-						upgPrompt.ObjectText = "Center Pump"
+						upgPrompt.ObjectText = objectText
+						upgPrompt.ActionText = actionText
 						upgPrompt.KeyboardKeyCode = Enum.KeyCode.E
 						upgPrompt.MaxActivationDistance = 10
 						upgPrompt.RequiresLineOfSight = false
@@ -1674,8 +1708,9 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 							end
 						end)
 					else
-						-- Update text in case tier changed
-						existingUpg.ActionText = string.format("Upgrade to %s ($%d)", nextTier, cost)
+						-- Update both lines in case tier or biome changed.
+						existingUpg.ObjectText = objectText
+						existingUpg.ActionText = actionText
 					end
 				elseif existingUpg then
 					-- Max tier, remove prompt

@@ -16,6 +16,10 @@ local HitContractConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitF
 local UiSfx = require(script.Parent:WaitForChild("UiSfx")) :: {
 	playPirateHitContract: () -> (),
 }
+--- See note in `StrategicStrikeClient.luau` — the Pirate Broker dialog is built ad-hoc
+--- here (not bound through `HudPanelRouter`) so we must register its ScreenGui manually
+--- or the cursor stays locked-to-center when opened from first-person.
+local HudMousePolicy = require(script.Parent:WaitForChild("UI"):WaitForChild("HudMousePolicy"))
 
 export type PirateHireDeps = {
 	player: Player,
@@ -179,6 +183,7 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 		screen.IgnoreGuiInset = true
 		screen.DisplayOrder = 60
 		screen.Parent = playerGui
+		HudMousePolicy.RegisterScreenGui(screen)
 		uiState.screen = screen
 
 		local pirateAnchor = resolvePirateBrokerAnchor()

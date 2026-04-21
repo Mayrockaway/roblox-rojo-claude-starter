@@ -9,6 +9,10 @@ local playerGui = player:WaitForChild("PlayerGui")
 local clientFolder = player:WaitForChild("PlayerScripts"):WaitForChild("Client")
 local getClientRemotes = require(clientFolder:WaitForChild("GetClientRemotes")) :: () -> any
 local ClientRemotes = getClientRemotes()
+--- Free the cursor from `LockCenter` while this dialogue is open. See
+--- `src/client/UI/HudMousePolicy.luau` — required for any runtime-built dialog whose
+--- ScreenGui isn't bound through `HudPanelRouter`.
+local HudMousePolicy = require(clientFolder:WaitForChild("UI"):WaitForChild("HudMousePolicy"))
 local oilmanSellRemote = ClientRemotes.requestOilmanSell
 local oilStateUpdate = ClientRemotes.oilStateUpdate
 
@@ -115,6 +119,7 @@ local function openOilmanGui()
 	screen.IgnoreGuiInset = true
 	screen.DisplayOrder = 60
 	screen.Parent = playerGui
+	HudMousePolicy.RegisterScreenGui(screen)
 
 	-- Auto-close when walking away or pressing E
 	local oilmanModel = Workspace:FindFirstChild("Oilman")

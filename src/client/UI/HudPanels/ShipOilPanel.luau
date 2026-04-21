@@ -877,13 +877,20 @@ local function formatRunUpgradeDescription(ownedCount: number): string
 		return ""
 	end
 	local base = runUpgradeCard1Binding.baseDescription
-	if ownedCount > 0 then
-		-- "Ready" emphasises the upgrade is armed; the count makes stacking
-		-- legible without a second badge UI element. Keeps the description
-		-- short enough that `TextScaled` doesn't shrink unreadably on phones.
-		return string.format("Ready ×%d  •  %s", ownedCount, base)
+	if ownedCount <= 0 then
+		return base
 	end
-	return base
+	-- Armed state: explicitly tell the player the guard is on the next
+	-- shipment. Mirrors the visible signal — when this run dispatches,
+	-- `OilShipmentService:_runShipment` calls
+	-- `SecurityPersonnelService:MountForShipment`, which drops the cloned
+	-- `Assets.SecurityPersonnel` rig onto the boat's `NPC_POSITION` anchor.
+	-- Stacking shows the queue length so the player can tell at a glance
+	-- whether they're set for one more dispatch or several.
+	if ownedCount == 1 then
+		return "Security Personnel active on next run"
+	end
+	return string.format("Security Personnel active on next ×%d runs", ownedCount)
 end
 
 local function refreshRunUpgradeCard1(ownedCount: number)
@@ -966,7 +973,7 @@ local function wireRunUpgradeCard1(screen: ScreenGui, conns: { RBXScriptConnecti
 	titleLabel.Text = (typeof(item.displayName) == "string" and item.displayName) or titleLabel.Text
 	local baseDescription = if typeof(item.subtitle) == "string" and item.subtitle ~= ""
 		then item.subtitle
-		else "Protects your next shipment"
+		else "Protects your ship from all events on next run"
 
 	if costLabel and costLabel:IsA("TextLabel") then
 		local price = item.robuxPrice

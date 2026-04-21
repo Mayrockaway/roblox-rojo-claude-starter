@@ -26,6 +26,30 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Debris = game:GetService("Debris")
 
+--- Single-channel serial queue for the named event voice clips
+--- (`Pirates`, `StraitClosed`, `Coastguard`, …). Lives at
+--- `StarterPlayerScripts.Client.EventVoiceQueue` (mounted by
+--- `default.project.json` `StarterPlayer.StarterPlayerScripts.Client → src/client`).
+--- Required lazily inside `trigger` so the require error doesn't take the
+--- whole strait status banner down if the queue module hasn't synced yet.
+local function tryRequireEventVoiceQueue()
+	local ok, mod = pcall(function()
+		local clientFolder = script.Parent.Parent
+		return require(clientFolder:WaitForChild("EventVoiceQueue", 5)) :: any
+	end)
+	if ok then return mod end
+	return nil
+end
+
+--- Strait state → registered voice key in `shared/Audio/EventVoiceLines`.
+--- Kept tiny and local so a future copy-rename doesn't drag the whole queue
+--- registry into a UI module.
+local STATE_VOICE_KEY: { [string]: string } = {
+	Open = "StraitOpen",
+	Closed = "StraitClosed",
+	Restricted = "StraitRestricted",
+}
+
 
 
 local StraitStatusChangeFx = {}
@@ -548,6 +572,20 @@ function StraitStatusChangeFx.trigger(playerGui: PlayerGui, newState: string, cu
 	horn:Play()
 
 	Debris:AddItem(horn, 6)
+
+	--- Voice line for the new state ("Strait is now open / closed / restricted").
+	--- Goes through the serial `EventVoiceQueue` so it never overlaps with a
+	--- voice fired from a concurrent gameplay event (e.g. a Pirate raid
+	--- spawning on the same trigger). The horn above is a non-voice SFX and
+	--- intentionally NOT routed through the queue — the queue only serializes
+	--- voice clips per the design.
+	local voiceKey = STATE_VOICE_KEY[newState]
+	if voiceKey then
+		local queue = tryRequireEventVoiceQueue()
+		if queue then
+			queue.play(voiceKey)
+		end
+	end
 
 
 

@@ -36,7 +36,7 @@ type GatedEntry = {
 --   WaitShipment          → + TopRow, ShipmentProgressPanel
 --   WaitDocksShipUpgrade  → + Buttons, RobuxShop
 --   Done                  → + StraitControlCta, EarningsGamepass,
---                            NukeDevProduct (rest of HUD)
+--                            NukeDevProduct, AutoShipButton (rest of HUD)
 --
 -- ShipmentProgressPanel reveals at WaitShipment so the player sees the
 -- voyage progress bar / status text for their first dispatched ship —
@@ -57,6 +57,11 @@ local CHILD_REVEAL: { GatedEntry } = {
 	{ path = "StraitControlCta", revealAt = FtueConfig.Step.Done },
 	{ path = "EarningsGamepass", revealAt = FtueConfig.Step.Done },
 	{ path = "NukeDevProduct", revealAt = FtueConfig.Step.Done },
+	-- AutoShipButton is a GamePass CTA (same family as EarningsGamepass) — gated to
+	-- `Done` so it doesn't appear during the FTUE reveal stages and overload the
+	-- new player. Once FTUE completes, `AutoShipController` resumes its normal
+	-- ownership-driven `Visible` behavior under the post-FTUE all-visible lock.
+	{ path = "AutoShipButton", revealAt = FtueConfig.Step.Done },
 }
 
 -- Build step-id → ordinal index from `FtueConfig.Order`. `Done` is treated as

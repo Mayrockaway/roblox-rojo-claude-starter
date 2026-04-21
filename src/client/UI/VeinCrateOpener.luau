@@ -6,11 +6,15 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SoundService = game:GetService("SoundService")
 local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
 
 local ClientAudioPreferences = require(script.Parent.Parent:WaitForChild("ClientAudioPreferences"))
+--- Register the crate-opening ScreenGui with `HudMousePolicy` so the Skip button is
+--- clickable when the crate triggers from first-person zoom.
+local HudMousePolicy = require(script.Parent:WaitForChild("HudMousePolicy"))
 
 --- Per-card tick (one play each time a card crosses the center pointer — naturally syncs with the
 --- cubic ease-out: fast at the start, slowing toward the winner). Resolve plays once on snap.
@@ -327,6 +331,7 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 	gui.DisplayOrder = 200
 	gui.ResetOnSpawn = false
 	gui.Parent = playerGui
+	HudMousePolicy.RegisterScreenGui(gui)
 
 	-- ── Dark overlay ──
 	local overlay = Instance.new("Frame")
@@ -346,6 +351,50 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 	centerFrame.Position = UDim2.new(0.5, 0, 0.45, 0)
 	centerFrame.BackgroundTransparency = 1
 	centerFrame.Parent = overlay
+
+	-- ── Responsive scaling (Option B fit-to-viewport) ──
+	-- The whole shell (title, pointer, 60-card strip, skip/next button) is
+	-- authored in fixed pixel offsets totalling roughly `STRIP_WIDTH + 100`
+	-- × `CENTER_TOTAL_H` ≈ 1580 × 544. On a phone the viewport can be 600
+	-- px wide and the strip overflows ~2.5×, breaking the entire reveal.
+	-- A `UIScale` on `centerFrame` is a render-time uniform multiplier:
+	-- it shrinks every child proportionally without touching layout math
+	-- or input hit-testing, so the existing spin tween, ratchet tick math
+	-- (`(-x + STRIP_WIDTH/2) / PITCH`), and click handlers all keep
+	-- working unchanged. Reference box = the actual `centerFrame` size; we
+	-- target ~92 % viewport utilization on the limiting axis and never
+	-- scale above 1 (desktop / large monitors keep the authored size).
+	-- Re-bound on `ViewportSize` change so device-rotation / window-resize
+	-- / Studio device emulator re-fit live without reopening the crate.
+	local crateScale = Instance.new("UIScale")
+	crateScale.Name = "ResponsiveScale"
+	crateScale.Parent = centerFrame
+	local REF_W = STRIP_WIDTH + 100
+	local REF_H = CENTER_TOTAL_H
+	local FIT_FRACTION = 0.92
+	local function applyResponsiveScale()
+		local cam = Workspace.CurrentCamera
+		if not cam then return end
+		local vp = cam.ViewportSize
+		if vp.X <= 0 or vp.Y <= 0 then return end
+		local sx = (vp.X * FIT_FRACTION) / REF_W
+		local sy = (vp.Y * FIT_FRACTION) / REF_H
+		crateScale.Scale = math.min(1, math.min(sx, sy))
+	end
+	applyResponsiveScale()
+	local viewportConn: RBXScriptConnection? = nil
+	local cam0 = Workspace.CurrentCamera
+	if cam0 then
+		viewportConn = cam0:GetPropertyChangedSignal("ViewportSize"):Connect(applyResponsiveScale)
+	end
+	-- Detach the camera signal when the crate GUI tears down, so the
+	-- viewport listener does not outlive the UI it was driving.
+	gui.AncestryChanged:Connect(function(_, parent)
+		if parent == nil and viewportConn then
+			viewportConn:Disconnect()
+			viewportConn = nil
+		end
+	end)
 
 	-- ── Title ──
 	local title = Instance.new("TextLabel")

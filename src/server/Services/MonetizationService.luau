@@ -236,6 +236,22 @@ function MonetizationService:_handlePromptRequest(player: Player, payload: any)
 		return
 	end
 
+	-- One-time-purchase gate. Authoritative server-side check so the player
+	-- cannot re-buy a Featured/Limited bundle even if their client UI is
+	-- stale (e.g. snapshot hadn't landed yet, or the Studio author tree
+	-- doesn't hide the row). The actual flag flip happens in
+	-- `_processReceipt` once the receipt is verified — see the
+	-- `MonetizationItem.oneTimePurchase` doc for the full contract. We do
+	-- this AFTER `IsValidProductId` so an item still being authored
+	-- (`productId = 0`) reports the more useful "Coming soon" code first.
+	if item.oneTimePurchase == true and self._oilStateService
+		and typeof(self._oilStateService.HasPurchasedOneTimeItem) == "function"
+		and self._oilStateService:HasPurchasedOneTimeItem(player.UserId, item.id)
+	then
+		self:_sendResult(player, false, "ERR_ALREADY_PURCHASED", "You already own this one-time bundle.", { itemId = item.id })
+		return
+	end
+
 	local ok, err = pcall(function()
 		if item.productKind == "GamePass" then
 			MarketplaceService:PromptGamePassPurchase(player, item.productId)
@@ -333,6 +349,29 @@ function MonetizationService:_processReceipt(receiptInfo)
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 
+	-- Defensive replay-skip for `oneTimePurchase` items. Roblox can
+	-- re-deliver a receipt across server restarts (or if our DataStore
+	-- record-write hiccuped previously). For one-time bundles we must NOT
+	-- re-run the bundle: ship sub-grant is idempotent (`OK_ALREADY_OWNED`),
+	-- but `Currency` and `Equipment` aren't — re-granting would silently
+	-- top up the player's wallet + drill stack on every retry. Mark the
+	-- receipt granted so Roblox stops retrying; skip the grant body. The
+	-- player keeps what they got the first time. The pre-prompt gate in
+	-- `_handlePromptRequest` is what prevents the buyer from being charged
+	-- a second time in the first place; this is just belt-and-braces for
+	-- the rare cross-session retry window.
+	if item.oneTimePurchase == true and self._oilStateService
+		and typeof(self._oilStateService.HasPurchasedOneTimeItem) == "function"
+		and self._oilStateService:HasPurchasedOneTimeItem(userId, item.id)
+	then
+		self:_recordReceiptGranted(userId, purchaseId)
+		DevLog.log(string.format(
+			"[Monetization] Skipped re-grant of one-time item %s for user %d (replay; flag already set).",
+			item.id, userId
+		))
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+
 	local granted, err = self:_applyGrant(userId, item)
 	if not granted then
 		warn(string.format("[MonetizationService] Grant failed for %s (user=%d): %s", item.id, userId, tostring(err)))
@@ -341,6 +380,21 @@ function MonetizationService:_processReceipt(receiptInfo)
 
 	self:_recordReceiptGranted(userId, purchaseId)
 	DevLog.log(string.format("[Monetization] Granted %s to user %d.", item.id, userId))
+
+	-- One-time-purchase post-grant flip. Persists immediately so the next
+	-- prompt click hits `ERR_ALREADY_PURCHASED` and the next snapshot push
+	-- (triggered inside `MarkPurchasedOneTimeItem`) repaints the open
+	-- `RobuxShopPanel` to hide the Featured row without a rejoin. pcall'd
+	-- because a state mutation failure must not block reporting the
+	-- purchase as granted to the client (Roblox would re-deliver and we'd
+	-- now hit the replay-skip branch above and lose the cash + drills).
+	if item.oneTimePurchase == true and self._oilStateService
+		and typeof(self._oilStateService.MarkPurchasedOneTimeItem) == "function"
+	then
+		pcall(function()
+			self._oilStateService:MarkPurchasedOneTimeItem(userId, item.id)
+		end)
+	end
 
 	-- Suppress the post-login Robux Shop auto-open for this player from now
 	-- on. They've spent Robux at least once, so re-prompting the upsell on

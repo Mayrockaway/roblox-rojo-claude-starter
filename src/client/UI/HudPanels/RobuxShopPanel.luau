@@ -42,8 +42,15 @@ local SHIP_SLOT_TO_ITEM_ID: { [string]: string } = {
 --- `Canvas.Container.Main.Container.Featured.Tab.EquipBest` (Studio author
 --- named the Buy button "EquipBest" — kept as-is so the wiring matches the
 --- live tree). The card grants a Bundle (Pirate ship + $5k cash + 2x Glizzy
---- Grinder drills) so it stays re-buyable: the ship sub-grant is idempotent
---- via `OK_ALREADY_OWNED`, and the cash + drills accumulate per buy.
+--- Grinder drills) and is marketed as a one-time-only purchase
+--- (`MonetizationCatalog.starter_pack.oneTimePurchase = true`):
+---   * Server flips `OilStateService.purchasedOneTimeItemIds[id] = true`
+---     on the verified receipt.
+---   * The client snapshot's `purchasedOneTimeItemIds` set drives
+---     `repaintFeatured()` below to hide the entire `Featured` frame.
+---   * Click handler short-circuits in case a stale UI state slips through;
+---     the server's `_handlePromptRequest` rejects with `ERR_ALREADY_PURCHASED`
+---     anyway, so a double-charge is impossible even if hide fails.
 local STARTER_PACK_ITEM_ID = "starter_pack"
 
 local RobuxShopPanel = {}
@@ -51,8 +58,13 @@ local RobuxShopPanel = {}
 local wiredScreen: ScreenGui? = nil
 local connections: { RBXScriptConnection } = {}
 local ownedSkinSet: { [string]: boolean } = { DefaultTanker = true }
+local purchasedOneTimeSet: { [string]: boolean } = {}
 local lastPromptFireByItemId: { [string]: number } = {}
 local cardRefs: { { slotName: string, itemId: string, buy: ImageButton, label: TextLabel? } } = {}
+--- Captured during `wireRobuxShop` so `repaintFeatured` can flip Visible on
+--- the whole Featured row without re-walking the tree on every snapshot.
+local featuredRoot: Instance? = nil
+local featuredBuyRef: ImageButton? = nil
 
 local function disconnectAll()
 	for _, c in ipairs(connections) do
@@ -61,6 +73,9 @@ local function disconnectAll()
 	table.clear(connections)
 	table.clear(cardRefs)
 	table.clear(lastPromptFireByItemId)
+	table.clear(purchasedOneTimeSet)
+	featuredRoot = nil
+	featuredBuyRef = nil
 	wiredScreen = nil
 end
 
@@ -121,10 +136,55 @@ local function repaintCard(card: { slotName: string, itemId: string, buy: ImageB
 	end
 end
 
+--- Hide the entire Featured row when the player has already bought the
+--- one-time bundle, otherwise show it. We toggle `Visible` on the
+--- `Featured` Frame itself (not just the Buy button) because the artist
+--- intent is "this card disappears, the panel reflows around it" — UIList
+--- layout siblings collapse the empty slot automatically. The Buy button
+--- is also disabled defensively so a still-visible click during a UI
+--- reflow race can't fire `requestPromptRobuxPurchase`.
+local function repaintFeatured()
+	local owned = purchasedOneTimeSet[STARTER_PACK_ITEM_ID] == true
+	if featuredRoot and (featuredRoot:IsA("GuiObject")) then
+		(featuredRoot :: GuiObject).Visible = not owned
+	end
+	if featuredBuyRef then
+		featuredBuyRef.Active = not owned
+		featuredBuyRef.AutoButtonColor = not owned
+	end
+end
+
 local function repaintAllCards()
 	for _, card in ipairs(cardRefs) do
 		repaintCard(card)
 	end
+	repaintFeatured()
+end
+
+local function readOwnedShipSkins(st: any): { [string]: boolean }
+	local nextOwned: { [string]: boolean } = { DefaultTanker = true }
+	local newOwned = (st :: any).ownedShipSkinIds
+	if typeof(newOwned) == "table" then
+		for skinId, isOwned in pairs(newOwned) do
+			if typeof(skinId) == "string" and isOwned == true then
+				nextOwned[skinId] = true
+			end
+		end
+	end
+	return nextOwned
+end
+
+local function readPurchasedOneTime(st: any): { [string]: boolean }
+	local out: { [string]: boolean } = {}
+	local raw = (st :: any).purchasedOneTimeItemIds
+	if typeof(raw) == "table" then
+		for itemId, isPurchased in pairs(raw) do
+			if typeof(itemId) == "string" and isPurchased == true then
+				out[itemId] = true
+			end
+		end
+	end
+	return out
 end
 
 local function snapshotInitialOwnership(remotes: any)
@@ -138,17 +198,8 @@ local function snapshotInitialOwnership(remotes: any)
 	if typeof(st) ~= "table" then
 		return
 	end
-	local newOwned = (st :: any).ownedShipSkinIds
-	if typeof(newOwned) ~= "table" then
-		return
-	end
-	local nextOwned: { [string]: boolean } = { DefaultTanker = true }
-	for skinId, isOwned in pairs(newOwned) do
-		if typeof(skinId) == "string" and isOwned == true then
-			nextOwned[skinId] = true
-		end
-	end
-	ownedSkinSet = nextOwned
+	ownedSkinSet = readOwnedShipSkins(st)
+	purchasedOneTimeSet = readPurchasedOneTime(st)
 end
 
 local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
@@ -213,6 +264,17 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 	end
 	local starterBuy = findFeaturedBuy()
 	if starterBuy then
+		featuredBuyRef = starterBuy
+		-- Walk up to the `Featured` Frame so `repaintFeatured` can hide the
+		-- entire row (label, art, Buy button, padding) on a successful
+		-- one-time purchase. We climb until we find the ancestor literally
+		-- named `Featured`; if the artist re-parents the card later this
+		-- still works as long as the wrapper keeps that name.
+		local cursor: Instance? = starterBuy.Parent
+		while cursor and cursor.Name ~= "Featured" do
+			cursor = cursor.Parent
+		end
+		featuredRoot = cursor
 		starterBuy.Active = true
 		starterBuy.AutoButtonColor = true
 		local starterLabel = findBuyLabel(starterBuy)
@@ -223,6 +285,13 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 			end
 		end
 		table.insert(connections, starterBuy.Activated:Connect(function()
+			-- Defensive: server-side `_handlePromptRequest` is the
+			-- authoritative gate (`ERR_ALREADY_PURCHASED`), but bailing
+			-- here avoids a needless network round-trip when our snapshot
+			-- already shows the buyer owns the bundle.
+			if purchasedOneTimeSet[STARTER_PACK_ITEM_ID] == true then
+				return
+			end
 			local now = os.clock()
 			local last = lastPromptFireByItemId[STARTER_PACK_ITEM_ID] or 0
 			if now - last < 0.6 then
@@ -239,22 +308,17 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 	repaintAllCards()
 
 	-- Re-paint when ownership changes server-side (e.g. successful Robux receipt
-	-- → `OilStateService:GrantShipSkin` → push). Cheap; we only touch labels.
+	-- → `OilStateService:GrantShipSkin` → push). Cheap; we only touch labels
+	-- and the Featured row's Visible. We re-read both `ownedShipSkinIds` and
+	-- `purchasedOneTimeItemIds` on every snapshot because either can change
+	-- as a side-effect of a single receipt (e.g. Starter Pack flips both the
+	-- Pirate ship + the one-time set in one push).
 	table.insert(connections, remotes.oilStateUpdate.OnClientEvent:Connect(function(snap: any)
 		if typeof(snap) ~= "table" then
 			return
 		end
-		local newOwned = (snap :: any).ownedShipSkinIds
-		if typeof(newOwned) ~= "table" then
-			return
-		end
-		local nextOwned: { [string]: boolean } = { DefaultTanker = true }
-		for skinId, isOwned in pairs(newOwned) do
-			if typeof(skinId) == "string" and isOwned == true then
-				nextOwned[skinId] = true
-			end
-		end
-		ownedSkinSet = nextOwned
+		ownedSkinSet = readOwnedShipSkins(snap)
+		purchasedOneTimeSet = readPurchasedOneTime(snap)
 		repaintAllCards()
 	end))
 
@@ -275,6 +339,14 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 			warn(string.format("[RobuxShopPanel] %s — MarketplaceService prompt failed; user may retry.", itemId))
 		elseif code == "ERR_UNKNOWN_ITEM" then
 			warn(string.format("[RobuxShopPanel] %s — itemId not found in MonetizationCatalog. Check SHIP_SLOT_TO_ITEM_ID mapping.", itemId))
+		elseif code == "ERR_ALREADY_PURCHASED" then
+			-- Snapshot was stale (e.g. clicked between receipt-grant and
+			-- the OilStateUpdate landing). Pull a fresh snapshot to flip
+			-- the Featured row off without waiting for the next push.
+			task.spawn(function()
+				snapshotInitialOwnership(remotes)
+				repaintAllCards()
+			end)
 		end
 	end))
 end

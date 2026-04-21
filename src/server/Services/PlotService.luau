@@ -3,6 +3,7 @@
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local DevLog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("DevLog"))
 local Constants = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Constants"))
 local RemoteNames = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Net"):WaitForChild("RemoteNames"))
@@ -796,20 +797,47 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 		snapEvent:FireClient(player, target)
 	end
 
-	-- One safety re-teleport 0.3s later: absorbs character-load settle (default-spawn
-	-- logic, humanoid state transitions) that can clobber the initial CFrame.
-	task.delay(0.3, function()
-		if hrp.Parent and character.Parent then
+	--- Engine spawn-pivot race window. After our `CharacterAdded` teleport the engine's own
+	--- spawn pipeline runs its default pivot 1-2 frames later and slams the character to
+	--- `(0, 103, 0)` (the "no SpawnLocation" fallback — we disabled all SpawnLocations in
+	--- `Start()` so imported decor models can't hijack spawn). A single `task.delay(0.3, …)`
+	--- safety re-teleport corrected the position but left a visible ~300ms flash of the
+	--- character suspended over world origin.
+	---
+	--- Tight poll instead: check on `Heartbeat` for at most ~150ms (~9 frames at 60Hz).
+	--- Re-snap **only** when the engine actually drifts us (≥10 studs) and bail the moment
+	--- we see two consecutive "stable" frames. The 1-frame visible drift (~16ms) is
+	--- imperceptible, but the loop still terminates fast enough that we don't repeat the
+	--- multi-respawn stutter the longer hold loop caused before.
+	task.spawn(function()
+		local stableFrames = 0
+		local maxFrames = 9
+		local logged = false
+		for _ = 1, maxFrames do
+			RunService.Heartbeat:Wait()
+			if not (hrp.Parent and character.Parent and player.Parent) then
+				return
+			end
 			local drift = (hrp.Position - target.Position).Magnitude
 			if drift > 10 then
-				DevLog.log(string.format(
-					"[PlotService.spawnClaim+0.3s] %s DRIFTED %.1f studs from target — re-teleporting (curPos=(%.1f,%.1f,%.1f) curVel=(%.1f,%.1f,%.1f))",
-					player.Name, drift,
-					hrp.Position.X, hrp.Position.Y, hrp.Position.Z,
-					hrp.AssemblyLinearVelocity.X, hrp.AssemblyLinearVelocity.Y, hrp.AssemblyLinearVelocity.Z
-				))
+				if not logged then
+					logged = true
+					DevLog.log(string.format(
+						"[PlotService.spawnClaim+poll] %s DRIFTED %.1f studs from target — re-teleporting (curPos=(%.1f,%.1f,%.1f) curVel=(%.1f,%.1f,%.1f))",
+						player.Name, drift,
+						hrp.Position.X, hrp.Position.Y, hrp.Position.Z,
+						hrp.AssemblyLinearVelocity.X, hrp.AssemblyLinearVelocity.Y, hrp.AssemblyLinearVelocity.Z
+					))
+				end
 				hrp.CFrame = target
 				hrp.AssemblyLinearVelocity = Vector3.zero
+				hrp.AssemblyAngularVelocity = Vector3.zero
+				stableFrames = 0
+			else
+				stableFrames += 1
+				if stableFrames >= 2 then
+					return
+				end
 			end
 		end
 	end)
