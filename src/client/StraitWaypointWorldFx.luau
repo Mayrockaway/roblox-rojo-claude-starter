@@ -456,20 +456,49 @@ end
 ---
 --- While the cinematic is on screen, the player's *expected* XZ velocity is
 --- their own walking velocity (`Humanoid.MoveDirection * WalkSpeed`), since
---- the deck is anchored (platform velocity = 0). Any XZ velocity that
---- significantly exceeds that is an external push. We snap it back to the
---- walking expectation while preserving Y (gravity / jump unaffected). The
---- player keeps full walking control.
+--- the deck is anchored (platform velocity = 0) for the bulk of the freeze.
+--- Any XZ velocity that significantly exceeds that is an external push. We
+--- snap it back to the walking expectation while preserving Y (gravity /
+--- jump unaffected). The player keeps full walking control.
+---
+--- Moving-floor stand-down (resume tail): once the freeze ends and the
+--- player's own boat un-anchors (covered by the `+1s` tail buffer the
+--- callers pass), the Humanoid floor-velocity tracker takes over and
+--- carries the player along with the deck. Writing HRP velocity ourselves
+--- in that regime DOUBLE-COUNTS the platform contribution: the engine's
+--- floor mechanic adds the deck's velocity to the character every physics
+--- step, and our write also includes it, so the character ends up moving
+--- forward across the deck at roughly 2× the boat's velocity (visible as a
+--- brief "running toward the front of the boat" sprint). Workaround: short
+--- downward raycast every frame; if the floor under the player has any
+--- meaningful velocity, BAIL OUT entirely and let the engine drive things.
+--- The server-side resume ramp in `OilShipmentService` keeps that floor
+--- velocity small at the start of resume, so the engine has no trouble
+--- following the deck without our help.
 ---
 --- Server-side write of `AssemblyLinearVelocity` would not work here:
 --- character physics is client-owned, so the write would not replicate.
 local PUSH_TOLERANCE_STUDS_PER_SEC = 6
+--- HRP is roughly 2 studs above the floor while standing; 6 studs gives
+--- comfortable clearance for boat decks with raised lips, ramps, ladders,
+--- and the small bobbing the WaterlineAnchor introduces, without reaching
+--- so far that we'd pick up the seabed when the player is mid-air.
+local FLOOR_RAYCAST_DOWN_STUDS = 6
+--- Treat anything above this as "the floor is moving — let the engine
+--- handle platform tracking." Picked low enough to catch the very first
+--- frames of the post-unanchor ramp (where the boat is barely moving) and
+--- high enough that small physics jitter on a "stationary" anchored part
+--- doesn't false-positive us out of the damper.
+local PLATFORM_MOVING_THRESHOLD_STUDS_PER_SEC = 0.5
 local function dampLocalPlayerCharacterDuringEvent(durationSec: number)
 	if durationSec <= 0 then
 		return
 	end
 	local t0 = os.clock()
 	local conn: RBXScriptConnection?
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParams.IgnoreWater = true
 	conn = RunService.Heartbeat:Connect(function()
 		if os.clock() - t0 >= durationSec then
 			if conn then
@@ -491,6 +520,25 @@ local function dampLocalPlayerCharacterDuringEvent(durationSec: number)
 		if hum.SeatPart then
 			return
 		end
+
+		--- Probe the floor under the player. If it's moving, defer to the
+		--- engine's floor mechanic; see doc-block above for why writing HRP
+		--- velocity ourselves in that case manifests as the player sliding
+		--- toward the bow at ~2× the boat's velocity.
+		raycastParams.FilterDescendantsInstances = { char }
+		local hit = workspace:Raycast(
+			hrp.Position,
+			Vector3.new(0, -FLOOR_RAYCAST_DOWN_STUDS, 0),
+			raycastParams
+		)
+		if hit and hit.Instance then
+			local pv = hit.Instance.AssemblyLinearVelocity
+			local platformXZ = Vector3.new(pv.X, 0, pv.Z)
+			if platformXZ.Magnitude > PLATFORM_MOVING_THRESHOLD_STUDS_PER_SEC then
+				return
+			end
+		end
+
 		local v = hrp.AssemblyLinearVelocity
 		local moveDir = hum.MoveDirection
 		local walkSpeed = hum.WalkSpeed

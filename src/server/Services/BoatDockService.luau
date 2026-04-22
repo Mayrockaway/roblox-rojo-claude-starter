@@ -38,6 +38,10 @@ local MARINA_DOCK_GROUP = "MarinaDock"
 --- `Workspace.Map.MapDecor` props (buoys, etc.): voyage hulls (`ShipmentShip`) ignore them; characters still collide.
 local MAP_DECOR_GROUP = "MapDecor"
 
+--- Idle / docked-boat hull group. `IdleBoat ↔ everything-relevant = false`.
+--- See `BoatCollisionContract` doc block for the full pair matrix.
+local IDLE_BOAT_GROUP = BoatCollisionContract.IdleGroup
+
 local function getDocksRoot(): Instance?
 	return Workspace:FindFirstChild("dOCKS")
 		or Workspace:FindFirstChild("Docks")
@@ -75,6 +79,69 @@ local function applyMapDecorVersusShipmentShipRules()
 	end)
 	pcall(function()
 		PhysicsService:CollisionGroupSetCollidable(MAP_DECOR_GROUP, "Players", true)
+	end)
+end
+
+--- Register `IdleBoat` and turn off every collision pair that could let a
+--- parked / docked boat shove a character or another boat. See the doc
+--- block in `BoatCollisionContract` for rationale on each pair.
+---
+--- Idempotent: safe to call from both `BoatDockService:Init` and
+--- `OilShipmentService:Init` (whichever runs first registers; the other
+--- just re-asserts the matrix). Pair writes that reference a group not
+--- yet registered (e.g. `PlayerInStraitEvent` registered in
+--- `OilShipmentService:Init`) are wrapped in `pcall` so a startup-order
+--- race never breaks the dock spawner.
+local function applyIdleBoatCollisionRules()
+	pcall(function()
+		PhysicsService:RegisterCollisionGroup(IDLE_BOAT_GROUP)
+	end)
+	pcall(function()
+		PhysicsService:RegisterCollisionGroup("ShipmentShip")
+	end)
+	pcall(function()
+		PhysicsService:RegisterCollisionGroup(MARINA_DOCK_GROUP)
+	end)
+	pcall(function()
+		PhysicsService:RegisterCollisionGroup(MAP_DECOR_GROUP)
+	end)
+	-- Characters clip through docked boats — keeps the owner from being
+	-- shoulder-checked off their own voyage boat as it sails past a
+	-- docked neighbor (the gameplay reason for splitting the group at all).
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(IDLE_BOAT_GROUP, "Default", false)
+	end)
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(IDLE_BOAT_GROUP, "Players", false)
+	end)
+	-- Voyage hulls clip through docked boats (the "massive hangups" path).
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(IDLE_BOAT_GROUP, "ShipmentShip", false)
+	end)
+	-- Parked boats never push each other.
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(IDLE_BOAT_GROUP, IDLE_BOAT_GROUP, false)
+	end)
+	-- Pier / world decor: docked boats already sit on / next to these and
+	-- shouldn't fight the static geometry.
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(IDLE_BOAT_GROUP, MARINA_DOCK_GROUP, false)
+	end)
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(IDLE_BOAT_GROUP, MAP_DECOR_GROUP, false)
+	end)
+	-- Strait-event flow temporarily reassigns the owner character into
+	-- `PlayerInStraitEvent` (registered by `OilShipmentService:Init`). Mirror
+	-- the no-collide rule so a freeze cinematic that ends near the dock
+	-- doesn't suddenly re-collide the player with a parked hull.
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(IDLE_BOAT_GROUP, "PlayerInStraitEvent", false)
+	end)
+	-- Cosmetic strait-event NPCs (Coast Guard / Pirate ships, officers)
+	-- already no-collide with the world; cover the docked-boat case too
+	-- so a returning voyage cinematic near the dock doesn't snag.
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(IDLE_BOAT_GROUP, "StraitWaypointFxNpc", false)
 	end)
 end
 
@@ -173,6 +240,12 @@ function BoatDockService:Init(remoteService, oilStateService)
 	end)
 	applyMarinaDockCollisionRules()
 	applyMapDecorVersusShipmentShipRules()
+	-- Idle / docked boats live in their own group so they no-collide with
+	-- characters, voyage hulls, and each other. See doc block in
+	-- `BoatCollisionContract` for the full pair matrix and the gameplay
+	-- reason ("don't knock the owner off their own boat as it sails past
+	-- a docked neighbor; don't let voyage hulls hang on parked boats").
+	applyIdleBoatCollisionRules()
 	local docksRoot = getDocksRoot()
 	if docksRoot then
 		self:_tagMarinaDockParts(docksRoot)
@@ -571,12 +644,17 @@ local function neutralizeSeat(seat: Seat)
 	seat:SetAttribute("SeatGameplayDisabled", true)
 end
 
--- Boat-wide collision contract (helper neutralization + ShipmentShip tagging)
--- now lives in `BoatCollisionContract`. Both this service (idle dock spawn)
--- and `OilShipmentService._setupShip` (voyage hull) MUST funnel through
--- `BoatCollisionContract.Apply` so the universal rule stays consistent.
-local function applyBoatCollisionContract(root: Instance)
-	BoatCollisionContract.Apply(root)
+-- Boat-wide collision contract (helper neutralization + collision-group tagging)
+-- now lives in `BoatCollisionContract`. Both this service (idle dock spawn,
+-- checkout re-tag) and `OilShipmentService._setupShip` (voyage hull) MUST
+-- funnel through `BoatCollisionContract.Apply` so the universal rule stays
+-- consistent.
+--
+-- `mode` selects the group:
+--   * "idle"   → `IdleBoat`     (parked / docked; no collide with chars / voyages / each other)
+--   * "voyage" → `ShipmentShip` (active voyage; characters can stand on the deck)
+local function applyBoatCollisionContract(root: Instance, mode: BoatCollisionContract.ApplyMode)
+	BoatCollisionContract.Apply(root, mode)
 end
 
 local function logRemainingInvisibleBoatColliders(root: Instance)
@@ -859,7 +937,10 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 	if seat then
 		neutralizeSeat(seat)
 	end
-	applyBoatCollisionContract(boat)
+	-- Idle dock spawn: tag every part `IdleBoat` so characters and voyage
+	-- hulls clip through the parked boat. Re-tagged to `ShipmentShip` in
+	-- `CheckoutBoat` (and again, idempotently, in `OilShipmentService:_setupShip`).
+	applyBoatCollisionContract(boat, "idle")
 	addPlayerFlag(boat, userId, rig)
 	logRemainingInvisibleBoatColliders(boat)
 	stripBoatBoardPrompt(boat)
@@ -964,10 +1045,13 @@ function BoatDockService:CheckoutBoat(userId: number, shipmentId: string): (Mode
 	boat:SetAttribute("IsIdleBob", false)   -- stop client bob
 	boat.Name = "ActiveShipmentBoat"
 	boat:SetAttribute("ShipmentId", shipmentId)
-	-- Idempotent — the idle spawn already applied this; reapplying covers the
-	-- (rare) case where some controller poked CanCollide between spawn and
-	-- checkout. `_setupShip` below will also re-apply after un-anchoring.
-	applyBoatCollisionContract(boat)
+	-- Re-tag from `IdleBoat` (set in `_spawnIdleBoat`) to `ShipmentShip`
+	-- now that this hull is becoming a voyage boat — the owner needs to
+	-- be able to stand on the deck. `_setupShip` below also re-applies
+	-- after un-anchoring (idempotent), and that pass also covers any
+	-- (rare) case where a controller poked CanCollide between spawn
+	-- and checkout.
+	applyBoatCollisionContract(boat, "voyage")
 	logRemainingInvisibleBoatColliders(boat)
 	stripBoatBoardPrompt(boat)
 	self:_pushSnapshot(userId)

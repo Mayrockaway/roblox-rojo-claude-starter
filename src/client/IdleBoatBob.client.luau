@@ -1,7 +1,13 @@
 --!strict
 -- IdleBoatBob: gently rocks any Model tagged with attribute `IsIdleBob = true`
--- sitting under workspace.dOCKS.Boats. Runs fully client-side — no network cost.
--- When the attribute clears (CheckoutBoat) or the boat is destroyed, the loop stops.
+-- sitting under (currently) `workspace.Map.MapDecor.dOCKS.Boats`. Runs fully
+-- client-side — no network cost. When the attribute clears (CheckoutBoat)
+-- or the boat is destroyed, the loop stops.
+--
+-- Resolution mirrors the server's `BoatDockService.getDocksRoot`: try the
+-- legacy direct-child names first (in case authoring moves the folder
+-- back under Workspace), then fall back to a recursive descendant search
+-- (which is how it currently lives at `Workspace.Map.MapDecor.dOCKS`).
 
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
@@ -85,10 +91,39 @@ local function watchBoats(folder: Instance)
 	folder.ChildAdded:Connect(considerInstance)
 end
 
+--- Try the cheap direct-child names first, then a single recursive
+--- descendant search. Returns nil if nothing matched.
+local function findDocksNow(): Instance?
+	return Workspace:FindFirstChild("dOCKS")
+		or Workspace:FindFirstChild("Docks")
+		or Workspace:FindFirstChild("DOCKS")
+		or Workspace:FindFirstChild("dOCKS", true) -- e.g. Workspace.Map.MapDecor.dOCKS
+		or Workspace:FindFirstChild("Docks", true)
+		or Workspace:FindFirstChild("DOCKS", true)
+end
+
+--- Poll `findDocksNow` for up to `timeoutSeconds`. Polling (vs `WaitForChild`)
+--- because `WaitForChild` doesn't accept recursive lookups, and the folder
+--- has been re-parented under `Map.MapDecor` so a direct-child wait would
+--- never resolve.
+local function waitForDocks(timeoutSeconds: number): Instance?
+	local deadline = os.clock() + timeoutSeconds
+	while true do
+		local docks = findDocksNow()
+		if docks then
+			return docks
+		end
+		if os.clock() >= deadline then
+			return nil
+		end
+		task.wait(0.5)
+	end
+end
+
 local function waitForBoatsFolder()
-	local docks = Workspace:WaitForChild("dOCKS", 30) or Workspace:WaitForChild("Docks", 2)
+	local docks = waitForDocks(30)
 	if not docks then
-		warn("[IdleBoatBob] workspace.dOCKS not found after 30s; boats will not rock.")
+		warn("[IdleBoatBob] dOCKS folder not found in workspace after 30s; boats will not rock.")
 		return
 	end
 	local boats = docks:FindFirstChild("Boats")

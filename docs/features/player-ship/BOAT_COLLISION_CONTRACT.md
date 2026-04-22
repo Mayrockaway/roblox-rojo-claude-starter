@@ -1,24 +1,52 @@
 # Boat collision contract
 
 **Module:** `src/server/Utils/BoatCollisionContract.luau`
-**Call sites (must funnel through `.Apply`):**
-- `BoatDockService:_spawnIdleBoat` (idle dock spawn)
-- `BoatDockService:CheckoutBoat` (idle → voyage handoff, idempotent reapply)
-- `OilShipmentService:_setupShip` (voyage hull rigid assembly)
-- `OilShipmentService:_loadBarrelsOnDeck` (cargo barrels — tags `ShipmentShip` only; barrels keep `CanCollide = true` so players walk on stacked cargo)
+**Call sites (must funnel through `.Apply(boat, mode)`):**
+- `BoatDockService:_spawnIdleBoat` (idle dock spawn) → `mode = "idle"` (`IdleBoat`)
+- `BoatDockService:CheckoutBoat` (idle → voyage handoff, re-tag) → `mode = "voyage"` (`ShipmentShip`)
+- `OilShipmentService:_setupShip` (voyage hull rigid assembly, idempotent) → `mode = "voyage"` (`ShipmentShip`)
+- `OilShipmentService:_loadBarrelsOnDeck` (cargo barrels — tags `ShipmentShip` only via `BoatCollisionContract.CollisionGroup`; barrels keep `CanCollide = true` so players walk on stacked cargo)
 
 ## Universal rule
 
-> Boats must not collide with random objects or other boats while on the strait, but humanoids must be able to collide with boats.
+> Voyage boats must not collide with random objects, other boats, or docked
+> boats while on the strait. Humanoids must be able to stand on the voyage
+> boat they own — but not on docked boats, so a parked hull never knocks the
+> owner off their own voyage as it sails past.
 
-This is realised by tagging every BasePart in a boat clone (idle or voyage, hull or cargo) with `CollisionGroup = "ShipmentShip"` and relying on the engine pair rules:
+This is realised by tagging every BasePart in a boat clone with one of two collision groups depending on lifecycle:
+
+- **`IdleBoat`** — parked / docked at a `dOCKS` slot (anchored, no constraints).
+- **`ShipmentShip`** — active voyage hull (un-anchored, welded rigid assembly) + cargo barrels.
+
+The engine pair-rule matrix is registered idempotently in both `BoatDockService:Init` (`applyIdleBoatCollisionRules` + `applyMarinaDockCollisionRules` + `applyMapDecorVersusShipmentShipRules`) and `OilShipmentService:Init` (group registration block) so init order between the two services never leaves the matrix half-built.
+
+### Voyage hull (`ShipmentShip`) pairs
 
 | Pair | Collide? | Set in |
 |---|---|---|
 | `ShipmentShip` ↔ `Default` (characters) | yes | implicit (default-true between groups) |
-| `ShipmentShip` ↔ `ShipmentShip` | **no** | `OilShipmentService._setupShip` (group registration block) |
+| `ShipmentShip` ↔ `Players` | yes | implicit |
+| `ShipmentShip` ↔ `ShipmentShip` | **no** | `OilShipmentService:Init` |
+| `ShipmentShip` ↔ `IdleBoat` | **no** | `BoatDockService.applyIdleBoatCollisionRules` |
 | `ShipmentShip` ↔ `MarinaDock` (pier) | **no** | `BoatDockService.applyMarinaDockCollisionRules` |
 | `ShipmentShip` ↔ `MapDecor` (buoys, world props) | **no** | `BoatDockService.applyMapDecorVersusShipmentShipRules` |
+| `ShipmentShip` ↔ `StraitWaypointFxNpc` (cosmetic NPCs) | **no** | `OilShipmentService:Init` |
+
+### Idle / docked hull (`IdleBoat`) pairs (all no-collide)
+
+| Pair | Collide? | Reason |
+|---|---|---|
+| `IdleBoat` ↔ `Default` (characters) | **no** | Players walk THROUGH docked boats so a parked hull never shoulder-checks the owner off their own voyage as it sails past / re-docks |
+| `IdleBoat` ↔ `Players` | **no** | Same as above (legacy "Players" group) |
+| `IdleBoat` ↔ `ShipmentShip` (voyage hulls) | **no** | Voyage boats clip cleanly through parked boats — fixes the "massive hangups" bug |
+| `IdleBoat` ↔ `IdleBoat` | **no** | Parked boats never push each other |
+| `IdleBoat` ↔ `MarinaDock` | **no** | Docked hulls sit on / next to pier; no fight with static geometry |
+| `IdleBoat` ↔ `MapDecor` | **no** | Same as above for buoys / props |
+| `IdleBoat` ↔ `PlayerInStraitEvent` (strait-event reassigned char) | **no** | Mirrors the `Default ↔ IdleBoat = false` rule for the temporary group |
+| `IdleBoat` ↔ `StraitWaypointFxNpc` | **no** | Cinematic NPCs don't snag on parked boats |
+
+> Trade-off: players cannot walk onto a parked boat from the pier. The dispatch flow auto-teleports the owner onto the deck (`BoatDockService:TeleportOwnerToSeat`), so this is invisible in the normal gameplay loop.
 
 ## Authored `CanCollide` is the source of truth
 
@@ -45,7 +73,7 @@ Any BasePart that satisfies `BoatCollisionContract.IsNonCollidableBoatHelperPart
 1. Author hull / deck / detail parts with `CanCollide` set per the artist's intent — the spawner will respect it.
 2. Avoid Block-shape `Part` instances wrapping a `SpecialMesh` / `CylinderMesh` for visible geometry (the "Ducky duck-body" anti-pattern). Either use a `MeshPart` (collision matches the visible mesh) or set `Part.Shape` to match the visible silhouette. If neither is possible AND nothing needs to land on it, set `CanCollide = false` on the wrapper Part — the visual still renders.
 3. If you intentionally need an invisible collider (hidden ramp, ride-on platform), set the BasePart attribute `AllowInvisibleCollision = true` so helper detection skips it.
-4. Do **not** introduce a new force-`CanCollide = true` loop in any service — call `BoatCollisionContract.Apply(boat)` instead, after any structural changes (un-anchor, weld, etc.).
+4. Do **not** introduce a new force-`CanCollide = true` loop in any service — call `BoatCollisionContract.Apply(boat, mode)` instead (with `mode = "idle"` for parked spawns, `"voyage"` for active voyage hulls), after any structural changes (un-anchor, weld, etc.).
 
 ## Anchor placement gotcha (rig authoring)
 

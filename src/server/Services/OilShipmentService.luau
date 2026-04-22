@@ -489,6 +489,7 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 	safeRegister("ShipmentShip")
 	safeRegister("MarinaDock")
 	safeRegister("MapDecor")
+	safeRegister(BoatCollisionContract.IdleGroup)
 	local function noCollidePair(other: string)
 		pcall(function()
 			PhysicsService:CollisionGroupSetCollidable(STRAIT_FX_NPC_GROUP, other, false)
@@ -497,6 +498,7 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 	noCollidePair("Default")
 	noCollidePair("Players")
 	noCollidePair("ShipmentShip")
+	noCollidePair(BoatCollisionContract.IdleGroup)
 	noCollidePair("MarinaDock")
 	noCollidePair("MapDecor")
 	noCollidePair(STRAIT_FX_NPC_GROUP)
@@ -525,6 +527,17 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 	pcall(function()
 		PhysicsService:CollisionGroupSetCollidable(PLAYER_IN_STRAIT_EVENT_GROUP, STRAIT_FX_NPC_GROUP, false)
 	end)
+	-- Mirror the regular `Default ↔ IdleBoat = false` rule for the temporary
+	-- strait-event character group. Without this, an event freeze that ends
+	-- with the player near the dock would suddenly re-collide them with a
+	-- parked hull (the docked boat would be the only thing in
+	-- `IdleBoat` they'd touch). `BoatDockService:Init` also writes this
+	-- pair (via `applyIdleBoatCollisionRules`); we re-assert here in case
+	-- this Init runs before BoatDockService and `PLAYER_IN_STRAIT_EVENT_GROUP`
+	-- wasn't yet registered when that earlier write happened.
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(PLAYER_IN_STRAIT_EVENT_GROUP, BoatCollisionContract.IdleGroup, false)
+	end)
 	self._playerInStraitEventGroup = PLAYER_IN_STRAIT_EVENT_GROUP
 
 	-- Verification: confirm registration + the critical no-collide pair so
@@ -533,13 +546,18 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 	pcall(function()
 		local fxRegistered = PhysicsService:IsCollisionGroupRegistered(STRAIT_FX_NPC_GROUP)
 		local pieRegistered = PhysicsService:IsCollisionGroupRegistered(PLAYER_IN_STRAIT_EVENT_GROUP)
+		local idleRegistered = PhysicsService:IsCollisionGroupRegistered(BoatCollisionContract.IdleGroup)
 		local fxVsDefault = PhysicsService:CollisionGroupsAreCollidable(STRAIT_FX_NPC_GROUP, "Default")
 		local pieVsFx = PhysicsService:CollisionGroupsAreCollidable(PLAYER_IN_STRAIT_EVENT_GROUP, STRAIT_FX_NPC_GROUP)
+		local idleVsDefault = PhysicsService:CollisionGroupsAreCollidable(BoatCollisionContract.IdleGroup, "Default")
+		local idleVsShipmentShip = PhysicsService:CollisionGroupsAreCollidable(BoatCollisionContract.IdleGroup, "ShipmentShip")
 		print(string.format(
-			"[OilShipmentService] CollisionGroups: %s registered=%s, %s registered=%s, fxVsDefault collidable=%s, pieVsFx collidable=%s",
+			"[OilShipmentService] CollisionGroups: %s registered=%s, %s registered=%s, %s registered=%s, fxVsDefault collidable=%s, pieVsFx collidable=%s, idleVsDefault collidable=%s, idleVsShipmentShip collidable=%s",
 			STRAIT_FX_NPC_GROUP, tostring(fxRegistered),
 			PLAYER_IN_STRAIT_EVENT_GROUP, tostring(pieRegistered),
-			tostring(fxVsDefault), tostring(pieVsFx)
+			BoatCollisionContract.IdleGroup, tostring(idleRegistered),
+			tostring(fxVsDefault), tostring(pieVsFx),
+			tostring(idleVsDefault), tostring(idleVsShipmentShip)
 		))
 	end)
 
@@ -2498,6 +2516,22 @@ end
 local FREEZE_BRAKE_SECONDS = 0.35
 local FREEZE_SNAPSHOT_INTERVAL_SECONDS = 0.5
 
+--- After the cinematic freeze ends and the boat un-anchors, eases
+--- `alignPos.Position` from the boat's current resting position out to the
+--- voyage path target over this window. Without the ramp, the next
+--- `_updateShipPosition` call snaps the AlignPosition target straight to
+--- `s_lead` (often 30-60 studs ahead, since the lead carrot keeps creeping
+--- during the time-shifted voyage clock). With Responsiveness=8 and
+--- MaxVelocity=200, the boat blasts from 0 to cruise speed inside a single
+--- physics step. The player's character (a separate physics assembly
+--- standing on the deck) doesn't accelerate with it: the Humanoid
+--- floor-velocity tracker only copies platform velocity into HRP on the
+--- *next* simulation step, so for ~1-2 frames the deck slides forward
+--- underneath the player and they end up shoved toward the stern. Ramping
+--- `alignPos.Position` lets the boat accelerate gradually so the floor
+--- mechanic can follow without dropping the player.
+local FREEZE_RESUME_RAMP_SECONDS = 1.0
+
 local function describePhysicsHazardsOn(inst: Instance, label: string): { string }
 	local lines: { string } = {}
 	local function add(s: string)
@@ -2709,6 +2743,16 @@ function OilShipmentService:_freezeShipForStraitEventCinematic(
 			alignPos.Position = rootPart.Position
 		end
 		rootPart.Anchored = false
+		--- Stamp the resume-ramp window so `_updateShipPosition` eases the
+		--- AlignPosition target out from the boat's current resting position
+		--- instead of snapping straight to the voyage `s_lead`. See
+		--- `FREEZE_RESUME_RAMP_SECONDS` doc-comment for why this prevents
+		--- the player from being slid toward the stern at resume.
+		local shipState = self._activeShips[shipmentId]
+		if shipState then
+			shipState.resumeRampStartClock = os.clock()
+			shipState.resumeRampStartPos = rootPart.Position
+		end
 	end
 
 	-- Restore the player character to its prior collision group (typically
@@ -3465,9 +3509,14 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 	end
 
 	-- Universal boat-collision rule: helpers neutralized (invisible, no collision),
-	-- every other BasePart tagged `ShipmentShip` so it ignores other ships,
-	-- MarinaDock pier, and MapDecor props, while still colliding with characters.
-	BoatCollisionContract.Apply(boatModel)
+	-- every other BasePart tagged `ShipmentShip` (voyage hull) so it ignores
+	-- other ships, docked boats (`IdleBoat`), MarinaDock pier, and MapDecor
+	-- props, while still colliding with characters (`Default`) — the owner
+	-- needs to stand on the deck. `BoatDockService:CheckoutBoat` already
+	-- re-tagged from `IdleBoat` → `ShipmentShip`; this pass is idempotent
+	-- and covers any descendants added between checkout and now (e.g. the
+	-- newly-built `ShipAtt` Attachment, though attachments aren't tagged).
+	BoatCollisionContract.Apply(boatModel, "voyage")
 
 	-- 3. Server authority — prevents client from fighting for physics ownership
 	pcall(function()
@@ -3633,7 +3682,32 @@ function OilShipmentService:_updateShipPosition(shipmentId: string, boatModel: M
 	-- with the path water Y.
 	local wlOffset = state.waterlineToRootY or 0
 	local correctedTarget = Vector3.new(targetPosition.X, targetPosition.Y - wlOffset, targetPosition.Z)
-	state.alignPos.Position = correctedTarget
+
+	--- Resume-ramp ease: while we're inside the post-freeze window, lerp
+	--- `alignPos.Position` from the boat's resting position out to the real
+	--- voyage target so the boat accelerates gradually instead of jumping
+	--- to cruise speed in one physics step. See `FREEZE_RESUME_RAMP_SECONDS`
+	--- doc-comment in this file for why this exists. The ramp is cleared
+	--- once it completes so the normal target-tracking behavior resumes.
+	local rampStart = state.resumeRampStartClock
+	if rampStart then
+		local elapsed = os.clock() - rampStart
+		if elapsed < FREEZE_RESUME_RAMP_SECONDS then
+			local startPos = state.resumeRampStartPos or state.root.Position
+			local t = math.clamp(elapsed / FREEZE_RESUME_RAMP_SECONDS, 0, 1)
+			--- Smoothstep keeps the early frames especially gentle (where
+			--- the floor-velocity tracker most needs to catch up) and then
+			--- accelerates into the full target.
+			local smooth = t * t * (3 - 2 * t)
+			state.alignPos.Position = startPos:Lerp(correctedTarget, smooth)
+		else
+			state.alignPos.Position = correctedTarget
+			state.resumeRampStartClock = nil
+			state.resumeRampStartPos = nil
+		end
+	else
+		state.alignPos.Position = correctedTarget
+	end
 	state.alignOri.CFrame = CFrame.Angles(0, yawDelta, 0) * state.baseRotation
 
 	-- Throttled diagnostic: 1 log/sec showing movement forensics.
