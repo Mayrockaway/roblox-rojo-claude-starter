@@ -92,10 +92,43 @@ local started = false
 local controllersByScreen: { [string]: HudPanelTypes.HudPanelController? } = {}
 local controllersList: { HudPanelTypes.HudPanelController } = {}
 
+--- A cached controller is stale when its bound `ScreenGui` is no longer
+--- parented to the live `PlayerGui` — this happens when the modal had
+--- `ResetOnSpawn = true` and the player died: the engine destroys the old
+--- clone and re-clones a fresh `ScreenGui` from `StarterGui`, but the
+--- closures inside the controller (`Open` / `Close` / `IsOpen`) still point
+--- at the destroyed instance. `Open()` then writes `Enabled = true` to a
+--- dead instance and the panel never appears (repro: open Ship Management
+--- via the dockman prompt after dying once). The fix is to detect the
+--- orphan here and re-run the binder against the fresh `ScreenGui` instead
+--- of returning the dead controller. Cheap (one parent check on each
+--- `openScreen`) and keeps the cache when the screen is healthy.
+local function isControllerStale(ctrl: HudPanelTypes.HudPanelController, playerGui: PlayerGui): boolean
+	local sg = (ctrl :: any).ScreenGui
+	if typeof(sg) ~= "Instance" then
+		return true
+	end
+	return sg.Parent ~= playerGui
+end
+
+local function dropStaleController(ctrl: HudPanelTypes.HudPanelController, screenName: string)
+	controllersByScreen[screenName] = nil
+	for i, c in ipairs(controllersList) do
+		if c == ctrl then
+			table.remove(controllersList, i)
+			break
+		end
+	end
+	HudMousePolicy.UnregisterController(ctrl)
+end
+
 local function bindPanelForScreen(playerGui: PlayerGui, screenName: string): HudPanelTypes.HudPanelController?
 	local existing = controllersByScreen[screenName]
 	if existing then
-		return existing
+		if not isControllerStale(existing, playerGui) then
+			return existing
+		end
+		dropStaleController(existing, screenName)
 	end
 	local binder = SCREEN_BIND[screenName]
 	if not binder then
@@ -199,7 +232,7 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 			local closeAllExcept = closeAllExceptCtrl
 			local byScreen = controllersByScreen
 
-			local function wireTrigger(btn: GuiButton, ctrl: HudPanelTypes.HudPanelController)
+			local function wireTrigger(btn: GuiButton, screenName: string)
 				-- Coming-soon gate: when the button has a `ComingSoonOverlay`
 				-- child the press path stays disabled entirely (no click, no
 				-- hover lift). Mirrors the ShipOilPanel run-upgrade-card
@@ -238,6 +271,15 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 					task.defer(function()
 						armed = false
 					end)
+					-- Always resolve the **current** controller for `screenName`.
+					-- `bindPanelForScreen` rebinds when a `ResetOnSpawn = true`
+					-- death wiped the prior `ScreenGui` — capturing `ctrl` in
+					-- this closure once would silently keep operating on the
+					-- destroyed instance and the press would no-op.
+					local ctrl = bindPanelForScreen(playerGui, screenName)
+					if not ctrl then
+						return
+					end
 					if ctrl.IsOpen() then
 						ctrl.Close()
 						return
@@ -368,7 +410,12 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 				if not ctrl then
 					continue
 				end
-				wireTrigger(btn, ctrl)
+				-- `ctrl` is only used here as a "panel exists" gate so we
+				-- don't wire a button before its `ScreenGui` has streamed in.
+				-- The press handler re-resolves the live controller per click
+				-- via `bindPanelForScreen` so death-time `ResetOnSpawn` rebinds
+				-- are picked up automatically.
+				wireTrigger(btn, screenName)
 				wiredButton[buttonName] = true
 			end
 

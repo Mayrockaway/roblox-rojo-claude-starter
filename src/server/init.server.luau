@@ -25,6 +25,15 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 RemoteService:Init()
 
+-- Bootstrap Shared.Telemetry (server-authoritative analytics pipeline). The
+-- module installs its `Players.PlayerAdded` / `Players.PlayerRemoving` /
+-- `game:BindToClose` lifecycle hooks on first `require`, then iterates the
+-- already-present players. Required here (early, side-effect only) so the
+-- hooks are live before the first PlayerAdded fires; the returned table is
+-- consumed by service code that wants to call `Telemetry.Track(...)` etc.
+-- See `docs/features/telemetry/SPEC.md` §13 PR 3 / §9.1.
+require(Shared:WaitForChild("Telemetry"))
+
 local TelemetryService = require(serviceFolder:WaitForChild("TelemetryService"))
 local StraitStateService = require(serviceFolder:WaitForChild("StraitStateService"))
 local PlotService = require(serviceFolder:WaitForChild("PlotService"))

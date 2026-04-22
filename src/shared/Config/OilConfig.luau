@@ -63,10 +63,17 @@ local OilConfig = {
 
 	-- Colors for the oil spray VFX over drilled tiles (now used between drill
 	-- completion and the center pump's pickup tick).
+	---
+	--- Refined intentionally matches the neon-green Refined palette used by
+	--- `Barrel_Refined`, the L-Shaped pipes / `Tier2` ring on the
+	--- `OilTanksTemplate`, and `OilTankConfig.OilColors.Refined`. Premium is
+	--- intentionally left as the legacy light-purple here (the per-tile arc
+	--- tube system tints Premium with a separate rainbow shimmer overlay
+	--- that only reads correctly with this lighter base).
 	OilSprayColors = {
 		Crude     = Color3.fromRGB(30, 30, 30),
-		Refined     = Color3.fromRGB(240, 200, 70),
-		Premium = Color3.fromRGB(180, 80, 255),
+		Refined   = Color3.fromRGB(0, 255, 0),
+		Premium   = Color3.fromRGB(180, 80, 255),
 	},
 
 	DrillBufferCapacity = 20, -- per tier, per drill

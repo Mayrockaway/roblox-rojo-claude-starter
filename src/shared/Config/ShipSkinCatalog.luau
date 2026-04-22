@@ -56,8 +56,43 @@ local DEFAULT_RIG: RigDef = {
 
 local TEMPLATE_RIG_OVERRIDES: { [string]: RigOverride } = {
 	-- Per-template placement semantics. Override these when a hull does not match Tanker defaults.
+	---
+	--- Tanker uses an authored `DeckAnchor` Attachment on the foredeck
+	--- (parented to the hull `Union`, sibling of `DeckTopAnchor`,
+	--- `WorldPosition ≈ (15, 24.62, 1.56)` in template-local space — 10
+	--- studs forward of the cabin's front wall on the open foredeck
+	--- platform). `BoatDockService.resolveOwnerStandCFrame` picks
+	--- `DeckAnchor` first in its `(deckAnchor → seat → barrelStackRoot)`
+	--- chain, so the owner teleport lands on the foredeck instead of
+	--- inside the cabin. `DeckSeat` is intentionally LEFT IN PLACE for
+	--- other systems (`StraitWaypointWorldFx.raycastBoatDeckY`'s seat
+	--- fallback, calibration tooling, etc.) — the new `DeckAnchor` is
+	--- 16.56 studs from the seat, which is well past the sidestep
+	--- guard's 6-stud trigger, so the seat is never consulted at runtime.
+	---
+	--- Both `standForwardOffset` and `standRightOffset` are zeroed so the
+	--- player lands EXACTLY at the `DeckAnchor` XZ. The earlier in-cabin
+	--- landing (with the default `(-5, +4)` offsets pointing at the seat)
+	--- placed the player's HRP at `X≈31.58`, which is precisely the X-edge
+	--- of the cabin ceiling slab at Y=33.88-34.50 (the slab spans
+	--- X=25.31 to X=31.56). The player's head Y≈35 intersected that slab
+	--- volume, and Roblox's overlap resolution ejected the character
+	--- forward — the "pushed forward out of the room" symptom. The
+	--- foredeck spot has open sky above (verified via column raycast),
+	--- so no ejection.
+	---
+	--- Final landing (verified end-to-end on the template):
+	---   `(X=15, Y=34.38, Z=1.56)` — feet ≈ Y=31.88 on the foredeck
+	---   platform (`Part @ Y=26.38`, `size=18.75 × 0.625 × 18.75`).
+	---
+	--- Other ship rigs (Raft, PirateShip, Ducky, Whale) intentionally
+	--- inherit the `(-5, +4)` defaults from `DEFAULT_RIG` — they have
+	--- different hull layouts and DO NOT have a custom `DeckAnchor` yet,
+	--- so the seat-sidestep path is still authoritative for them.
 	Tanker = {
 		deckYOffsetFallback = 15,
+		standForwardOffset = 0,
+		standRightOffset = 0,
 	},
 	Raft = {
 		deckYOffsetFallback = 15,

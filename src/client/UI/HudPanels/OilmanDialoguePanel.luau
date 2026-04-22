@@ -842,9 +842,14 @@ function OilmanDialoguePanel.bind(playerGui: PlayerGui)
 			refreshRow(tier)
 			refreshTotal()
 		end
+		-- ±10 / Max already step in big chunks; disable the burst-multiplier
+		-- ramp so a long hold doesn't fire the inner callback 50× and slam
+		-- past the cap. ±1 keeps acceleration on (the whole point of the
+		-- "steppers should increase faster" request was for the per-barrel
+		-- buttons specifically).
 		StepperHold.bind(steppers:FindFirstChild("Step_-10") :: GuiButton, function()
 			adjust(-10)
-		end, stepperHoldConns)
+		end, stepperHoldConns, { accelerate = false })
 		StepperHold.bind(steppers:FindFirstChild("Step_-1") :: GuiButton, function()
 			adjust(-1)
 		end, stepperHoldConns)
@@ -853,12 +858,12 @@ function OilmanDialoguePanel.bind(playerGui: PlayerGui)
 		end, stepperHoldConns)
 		StepperHold.bind(steppers:FindFirstChild("Step_+10") :: GuiButton, function()
 			adjust(10)
-		end, stepperHoldConns)
+		end, stepperHoldConns, { accelerate = false })
 		StepperHold.bind(steppers:FindFirstChild("Step_Max") :: GuiButton, function()
 			tierValue[tier] = tierMax[tier] or 0
 			refreshRow(tier)
 			refreshTotal()
-		end, stepperHoldConns)
+		end, stepperHoldConns, { accelerate = false })
 	end
 
 	maxAllBtn.Activated:Connect(function()

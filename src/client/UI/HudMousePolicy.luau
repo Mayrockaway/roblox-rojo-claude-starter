@@ -46,6 +46,17 @@ local overriding = false
 
 local function anyPanelOpen(): boolean
 	for _, ctrl in ipairs(controllers) do
+		--- Skip controllers whose ScreenGui was destroyed / re-cloned (e.g.
+		--- `ResetOnSpawn = true` death respawn): `screen.Enabled` on a
+		--- destroyed instance still reads cleanly and could return `true`,
+		--- which would freeze the cursor unlock policy in the "open" state
+		--- forever. `Parent == nil` is the orphan signal — `HudPanelRouter`
+		--- rebinds these and registers the fresh controller so this entry
+		--- becomes inert.
+		local sg = (ctrl :: any).ScreenGui
+		if typeof(sg) == "Instance" and sg.Parent == nil then
+			continue
+		end
 		--- `IsOpen` is `() -> boolean` reading `ScreenGui.Enabled`. Wrap in pcall in case
 		--- a controller's ScreenGui was destroyed (orphan teardown during respawn).
 		local ok, open = pcall(ctrl.IsOpen)
@@ -131,6 +142,23 @@ function HudMousePolicy.RegisterController(ctrl: HudPanelTypes.HudPanelControlle
 		end
 	end
 	table.insert(controllers, ctrl)
+end
+
+--- Drop a controller that's been replaced (e.g. `ResetOnSpawn = true` torn
+--- down its ScreenGui and `HudPanelRouter` re-bound a fresh one). The
+--- destroyed-screen guard in `anyPanelOpen` already makes this a hygiene fix
+--- rather than a correctness fix, but explicit removal keeps the watch list
+--- bounded across many deaths.
+function HudMousePolicy.UnregisterController(ctrl: HudPanelTypes.HudPanelController?)
+	if not ctrl then
+		return
+	end
+	for i, existing in ipairs(controllers) do
+		if existing == ctrl then
+			table.remove(controllers, i)
+			return
+		end
+	end
 end
 
 --- Add a raw runtime-built `ScreenGui` for the policy to watch. Use this for dialogs that

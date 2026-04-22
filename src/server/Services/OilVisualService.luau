@@ -1026,10 +1026,18 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 		local startPos = Vector3.new(tilePart.Position.X, tileTopY, tilePart.Position.Z) + baseOffset
 		local endPos = getCenterPumpEndpoint(_plot, sectionModel, centerTile, snapshot.drills or {}, info.chunk.chunkId)
 		local oilType = oilTypeOverride or info.tile.oilType or "Crude"
+		--- Per-tier base color for the arc tube segments running from each
+		--- drilled tile to the center pump. Refined was intentionally
+		--- re-tinted neon green to match the Refined palette across barrels,
+		--- pipes, and tank liquid (`Barrel_Refined` / `OilTanksTemplate`
+		--- pipes / `OilTankConfig.OilColors.Refined`). Premium is left at
+		--- the legacy red base because the `isRainbow` flag layered on top
+		--- only reads correctly against a warm base — flipping Premium to a
+		--- flat purple here removes the shimmer effect's contrast.
 		local tubeColor = Color3.fromRGB(60, 50, 35)
 		local isRainbow = false
 		if oilType == "Refined" or oilType == "GoodOil" then
-			tubeColor = Color3.fromRGB(255, 200, 50)
+			tubeColor = Color3.fromRGB(0, 255, 0)
 		elseif oilType == "Premium" or oilType == "GoldOil" then
 			isRainbow = true
 			tubeColor = Color3.fromRGB(255, 100, 100)
@@ -1335,11 +1343,17 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 			if justCreated or isConnected then
 				print("[PumpFill] drillId=" .. tostring(drill.drillId) .. " tileOilType=" .. tostring(drill.tileOilType) .. " resolved=" .. oilType .. " connected=" .. tostring(isConnected))
 			end
+			--- Pump glass fill colors are intentionally identical to
+			--- `OilTankConfig.OilColors` so the visual palette stays
+			--- coherent across the whole oil pipeline (pump glass → pipes
+			--- → tank liquid → barrels). If you change one of these,
+			--- update `OilTankConfig.OilColors` (and the authored pipe /
+			--- barrel parts via MCP) at the same time.
 			local fillColor
 			if oilType == "Refined" then
-				fillColor = Color3.fromRGB(240, 200, 70)
+				fillColor = Color3.fromRGB(0, 255, 0)
 			elseif oilType == "Premium" then
-				fillColor = Color3.fromRGB(180, 80, 255)
+				fillColor = Color3.fromRGB(170, 0, 170)
 			else
 				fillColor = Color3.fromRGB(30, 30, 30)
 			end
@@ -2257,8 +2271,18 @@ function OilVisualService:_syncOilTanks(plot: Model, snapshot)
 			local surfaceGui = woodSignPart:FindFirstChildOfClass("SurfaceGui")
 			if surfaceGui then
 				-- Let ClickDetector handle click; sign text does not need GUI input.
+				-- We also flip every GuiObject inside `Active = false` because a
+				-- single child label with `Active = true` will soak the
+				-- click and the ClickDetector under the part never fires —
+				-- that's the "friend can't upgrade refinery sign" repro
+				-- (mirrors the same defense in `OilTankService:_hookSignPart`).
 				surfaceGui.Enabled = true
 				surfaceGui.Active = false
+				for _, guiDesc in ipairs(surfaceGui:GetDescendants()) do
+					if guiDesc:IsA("GuiObject") and guiDesc.Active then
+						guiDesc.Active = false
+					end
+				end
 				local signLabel = surfaceGui:FindFirstChild("SIGN")
 				if not (signLabel and signLabel:IsA("TextLabel")) then
 					for _, ui in ipairs(surfaceGui:GetDescendants()) do

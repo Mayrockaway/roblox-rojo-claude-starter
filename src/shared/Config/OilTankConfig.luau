@@ -32,10 +32,18 @@ local OilTankConfig = {
 		Premium = "PremiumTube",
 	},
 
+	--- Liquid fill colors for the per-plot OilTanks (the `liquid` BasePart
+	--- inside each tube). `OilVisualService:_syncOilTanks` reads this table
+	--- every frame, so updating it here is sufficient for live tanks.
+	---
+	--- These colors are kept in sync with the authored barrel assets in
+	--- `ReplicatedStorage.Assets.Barrel_<Tier>` and the L-Shaped pipe
+	--- segments inside `OilTanksTemplate.<Tier>Tube` so that barrel → pipe
+	--- → tank fluid reads as a single coherent palette per oil tier.
 	OilColors = {
 		Crude = Color3.fromRGB(30, 30, 30),
-		Refined = Color3.fromRGB(240, 200, 70),
-		Premium = Color3.fromRGB(180, 80, 255),
+		Refined = Color3.fromRGB(0, 255, 0),
+		Premium = Color3.fromRGB(170, 0, 170),
 	},
 }
 
