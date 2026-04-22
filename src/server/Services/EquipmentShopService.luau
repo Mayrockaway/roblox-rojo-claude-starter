@@ -18,6 +18,7 @@ local EquipmentShopConfig = require(Shared:WaitForChild("Config"):WaitForChild("
 local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
 local ErrorCodes = require(Shared:WaitForChild("Net"):WaitForChild("ErrorCodes"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local STACK_ATTR = Constants.EquipmentStackCountAttribute
 
@@ -184,6 +185,19 @@ function EquipmentShopService:_rollShopStock()
 	self._currentStockMax = stockMax
 	local interval = math.max(5, tonumber(EquipmentCatalog.ShopRotation.RefreshIntervalSeconds) or 180)
 	self._refreshEndsAt = workspace:GetServerTimeNow() + interval
+	-- Telemetry §6.4 `equipment_shop_rotated` (server-scoped — pass nil
+	-- player). `rotationId` is the server time as an integer so we can
+	-- correlate per-player purchases against a specific rotation slice.
+	pcall(function()
+		local itemsInStock = 0
+		for _ in pairs(stock) do
+			itemsInStock += 1
+		end
+		Telemetry.Track(nil, "equipment_shop_rotated", {
+			rotationId = math.floor(workspace:GetServerTimeNow()),
+			itemsInStock = itemsInStock,
+		})
+	end)
 	self:_broadcastStock("rotation")
 end
 
@@ -439,6 +453,22 @@ function EquipmentShopService:_sendOilAction(player: Player, ok: boolean, code: 
 		message = message,
 		data = data,
 	})
+	-- Telemetry §6.4 `equipment_purchase_failed` (`error` GA category).
+	-- Every `_sendOilAction(false, ...)` in this file is a
+	-- `_handlePurchase` reject (this service only routes purchase
+	-- requests through `OilActionResult`), so it's safe to fire from
+	-- the helper without extra context plumbing. Success path
+	-- (`ok = true`) is handled separately by `equipment_purchased`.
+	if ok ~= true then
+		pcall(function()
+			local itemId = if typeof(data) == "table" then data.itemId else nil
+			Telemetry.Track(player, "equipment_purchase_failed", {
+				itemId = itemId,
+				code = code,
+				message = message,
+			})
+		end)
+	end
 end
 
 function EquipmentShopService:_handlePurchase(player: Player, payload: any)
@@ -587,6 +617,20 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 	if RunService:IsStudio() then
 		print("[EquipmentShopService] bought ", qty, "×", item.displayName, " for ", player.Name, " ($", totalCost, ")")
 	end
+	-- Telemetry §6.4 `equipment_purchased` (Sink). Fires after stock
+	-- reservation, cash spend, inventory grant, and FTUE flag stamp
+	-- so a refund path (backpack-not-ready early return above) does
+	-- not produce a false-positive purchase row. `totalCost` is the
+	-- actual cash debit (FTUE freebie units are excluded by `paidQty`).
+	pcall(function()
+		Telemetry.Economy(player, "Sink", totalCost, "cash", "equipment_purchased", { kind = "equipment", id = item.id })
+		Telemetry.Track(player, "equipment_purchased", {
+			itemId = item.id,
+			price = totalCost,
+			stackCount = qty,
+			ftueFreeOverride = ftueFreeQty > 0,
+		})
+	end)
 	self:_sendOilAction(player, true, ErrorCodes.Ok, string.format("Bought %d × %s.", qty, item.displayName), {
 		itemId = item.id,
 		quantity = qty,

@@ -7,6 +7,7 @@ local Workspace = game:GetService("Workspace")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local HitContractConfig = require(Shared:WaitForChild("Config"):WaitForChild("HitContractConfig"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 -- Re-bound for call-site readability; authoritative tuning lives in `HitContractConfig`.
 local HIT_COST_CASH = HitContractConfig.Cost
@@ -150,6 +151,22 @@ function HitContractService:TryCreateHit(contractorUserId: number, victimUserId:
 	self._contractsByVictim[victimUserId] = contract
 	self._contractsById[contractId] = contract
 
+	-- Telemetry §6.5 `pirate_hire_created` (Sink — only when paid, not
+	-- when consuming a free-replacement token). Fires after the contract
+	-- row is committed so a `QueueOrInjectForActiveShipment` failure
+	-- still records the attempt that took the player's cash.
+	pcall(function()
+		if not usedFreeToken then
+			Telemetry.Economy(contractor, "Sink", HIT_COST_CASH, "cash", "pirate_hire", { kind = "pirate_hire", id = "hire" })
+		end
+		Telemetry.Track(contractor, "pirate_hire_created", {
+			contractId = contractId,
+			victimUserId = victimUserId,
+			cost = if usedFreeToken then 0 else HIT_COST_CASH,
+			usedFreeToken = usedFreeToken,
+		})
+	end)
+
 	local queued, queueState, shipmentId = self:QueueOrInjectForActiveShipment(victimUserId, contractId)
 	if queued then
 		contract.state = "attached"
@@ -222,6 +239,18 @@ function HitContractService:MarkContractExecuted(contractId: string)
 	if self._contractsByVictim[c.victimUserId] == c then
 		self._contractsByVictim[c.victimUserId] = nil
 	end
+	-- Telemetry §6.5 `pirate_hire_executed`. Per-victim impact rows
+	-- (`shipment_pirate_hit` / `_payout`) live in `OilShipmentService`
+	-- once the raid actually lands; this row marks the contract
+	-- lifecycle close.
+	pcall(function()
+		local contractor = Players:GetPlayerByUserId(c.contractorUserId)
+		Telemetry.Track(contractor, "pirate_hire_executed", {
+			contractId = contractId,
+			victimUserId = c.victimUserId,
+			shipmentId = c.shipmentId,
+		})
+	end)
 end
 
 function HitContractService:RefundContract(contractId: string, reason: string)
@@ -233,6 +262,17 @@ function HitContractService:RefundContract(contractId: string, reason: string)
 	if self._contractsByVictim[c.victimUserId] == c then
 		self._contractsByVictim[c.victimUserId] = nil
 	end
+	-- Telemetry §6.5 `pirate_hire_refunded`. Fires on contract teardown
+	-- before the refund token grant so we capture every refund regardless
+	-- of whether the token landed (e.g. contractor disconnected mid-frame).
+	pcall(function()
+		local contractor = Players:GetPlayerByUserId(c.contractorUserId)
+		Telemetry.Track(contractor, "pirate_hire_refunded", {
+			contractId = contractId,
+			victimUserId = c.victimUserId,
+			reason = reason,
+		})
+	end)
 	self:GrantRefundToken(c.contractorUserId, reason)
 end
 

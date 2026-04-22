@@ -18,6 +18,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
 local ShipUpgradeConfig = require(Shared:WaitForChild("Config"):WaitForChild("ShipUpgradeConfig"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local TIER_MOST_VALUABLE = { "Premium", "Refined", "Crude" }
 local TIER_LEAST_VALUABLE = { "Crude", "Refined", "Premium" }
@@ -121,6 +122,16 @@ function AutoShipService:_onSetAutoShip(player: Player, payload: any)
 	self._autoShipByUser[userId] = { enabled = true, priority = priority }
 	self:_pushState(userId)
 	print(string.format("[AutoShip] %s enabled AutoShip (priority=%s)", player.Name, priority))
+	-- Telemetry §6.7 `auto_ship_engaged`. Fires only when the toggle
+	-- transitions to `enabled = true` AND the gamepass / dev-bypass
+	-- gates pass, so we don't log a row for a denied-without-gamepass
+	-- click.
+	pcall(function()
+		Telemetry.Track(player, "auto_ship_engaged", {
+			priority = priority,
+			devBypass = self._devBypassUsers[userId] == true,
+		})
+	end)
 
 	-- Immediate dispatch if boat is already idle
 	if self._boatDockService:IsIdle(userId) then
@@ -206,6 +217,15 @@ function AutoShipService:_tryAutoDispatch(userId: number)
 	local whCap = self._warehouseService:GetCapacity(userId)
 	local whTotal = self._warehouseService:GetTotalBarrels(userId)
 	if whTotal >= whCap then
+		-- Telemetry §6.7 `auto_ship_skipped` (warehouse full). Fired
+		-- before `_stopAutoShip` because the latter clears the entry
+		-- and we still want the skip-reason row keyed to the player.
+		pcall(function()
+			Telemetry.Track(player, "auto_ship_skipped", {
+				reason = "WAREHOUSE_FULL",
+				priority = entry.priority,
+			})
+		end)
 		self:_stopAutoShip(userId, "WAREHOUSE_FULL")
 		return
 	end
@@ -213,6 +233,12 @@ function AutoShipService:_tryAutoDispatch(userId: number)
 	-- Build manifest
 	local manifest = self:_buildAutoManifest(userId, entry.priority)
 	if not manifest then
+		pcall(function()
+			Telemetry.Track(player, "auto_ship_skipped", {
+				reason = "NO_OIL",
+				priority = entry.priority,
+			})
+		end)
 		self:_stopAutoShip(userId, "NO_OIL")
 		return
 	end
@@ -220,9 +246,30 @@ function AutoShipService:_tryAutoDispatch(userId: number)
 	-- Dispatch through the normal code path
 	local ok = self._oilShipmentService:DispatchForAutoShip(player, manifest)
 	if not ok then
+		pcall(function()
+			Telemetry.Track(player, "auto_ship_skipped", {
+				reason = "DISPATCH_FAILED",
+				priority = entry.priority,
+			})
+		end)
 		self:_stopAutoShip(userId, "DISPATCH_FAILED")
 		return
 	end
+
+	-- Telemetry §6.7 `auto_ship_dispatched`. Fired only after
+	-- `DispatchForAutoShip` returns true so we don't double-log a
+	-- shipment that the dispatch path itself rejected.
+	pcall(function()
+		local barrels = 0
+		for _, count in pairs(manifest) do
+			barrels += count
+		end
+		Telemetry.Track(player, "auto_ship_dispatched", {
+			priority = entry.priority,
+			barrels = barrels,
+			manifest = manifest,
+		})
+	end)
 
 	print(string.format("[AutoShip] Auto-dispatched for %s (priority=%s)", player.Name, entry.priority))
 end

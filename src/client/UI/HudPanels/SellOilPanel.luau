@@ -23,6 +23,14 @@ local UiSfx = require(script.Parent.Parent.Parent:WaitForChild("UiSfx")) :: {
 local getClientRemotes = require(script.Parent.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
 local ClientRemotes = getClientRemotes()
 
+--- Read-only client mirror of the server's active global events. Used
+--- here to (a) multiply displayed `$/bbl` + subtotals by the active
+--- `CashMultiplier` (so the player sees the actual cash they'll be
+--- credited on sell) and (b) drive the gold tint + grow/shrink pulse on
+--- every `PriceLabel` while the boost is live. Server (`OilStateService:AddCash`)
+--- remains the only place that applies the multiplier to credited cash.
+local GlobalEventClientState = require(script.Parent.Parent:WaitForChild("GlobalEventClientState"))
+
 local SCREEN_NAME = "SellOilPanelGui"
 
 type RowUiConfig = { kind: "crude" } | { kind: "tier", tier: string }
@@ -115,6 +123,17 @@ type RowBinding = {
 	minus: GuiButton,
 	plus: GuiButton,
 	subtotalRight: TextLabel?,
+
+	--- Cached at bind time so we can restore the Studio-authored color
+	--- when a `CashMultiplier` event ends. Re-captured every wire so a
+	--- live Studio edit while the panel is closed picks up cleanly.
+	priceOriginalColor: Color3,
+	subtotalOriginalColor: Color3?,
+	--- Looped `TextColor3` tweens that flash gold ↔ original while the
+	--- boost is live. Cancelled + nil'd on boost end / panel close.
+	priceTween: Tween?,
+	subtotalTween: Tween?,
+	priceBoostActive: boolean,
 }
 
 local function rowDisplayTitle(bind: RowBinding): string?
@@ -333,12 +352,29 @@ local function clampSelectionsToInventory()
 	clampCrudeSelectionToWarehouse()
 end
 
+--- Product of all currently-active `CashMultiplier` events (1 when no
+--- boost is live). Mirrors `OilStateService:AddCash`'s server-side math
+--- on a per-display basis so what the player reads on the panel matches
+--- the cash they get credited on a sell. We deliberately do NOT fold in
+--- the `DoubleEarnings` GamePass here — that's invisible to the panel
+--- in the rest of the codebase too, so we keep parity (panel = "what
+--- the market pays right now", not "what your account multipliers
+--- compound to").
+local function cashEventMultiplier(): number
+	local mul = GlobalEventClientState.GetCashMultiplier()
+	if mul <= 0 then
+		return 1
+	end
+	return mul
+end
+
 local function crudeDisplayPriceText(): string
 	local pH = pricesByTier.Crude or 0
 	if pH <= 0 then
 		return "$—/bbl"
 	end
-	return string.format("$%d/bbl", pH)
+	local boosted = math.floor(pH * cashEventMultiplier() + 0.5)
+	return string.format("$%d/bbl", boosted)
 end
 
 local function rowPriceText(bind: RowBinding): string
@@ -349,17 +385,19 @@ local function rowPriceText(bind: RowBinding): string
 		if p <= 0 then
 			return "$—/bbl"
 		end
-		return string.format("$%d/bbl", p)
+		local boosted = math.floor(p * cashEventMultiplier() + 0.5)
+		return string.format("$%d/bbl", boosted)
 	end
 	return "$—/bbl"
 end
 
 local function subtotalDollarsForRow(bind: RowBinding): number
+	local mul = cashEventMultiplier()
 	if bind.kind == "crude" then
-		return (selected.Crude or 0) * (pricesByTier.Crude or 0)
+		return math.floor((selected.Crude or 0) * (pricesByTier.Crude or 0) * mul + 0.5)
 	elseif bind.kind == "tier" and bind.tier then
 		local t = bind.tier
-		return (selected[t] or 0) * (pricesByTier[t] or 0)
+		return math.floor((selected[t] or 0) * (pricesByTier[t] or 0) * mul + 0.5)
 	end
 	return 0
 end
@@ -452,10 +490,73 @@ local function refreshWarehouseTitle()
 	end
 end
 
+--- Cash Frenzy emphasis: when the panel-side multiplier is > 1, flash
+--- every `PriceLabel` (and matching subtotal RightText) between gold
+--- and its Studio-authored color so the boost reads as live without
+--- moving the row geometry. Looped Sine `TextColor3` tween — no
+--- UIScale, no layout shift, just chrome flicker. Idempotent — safe
+--- to call every refresh.
+local PRICE_BOOST_GOLD = Color3.fromRGB(255, 213, 99)
+local PRICE_BOOST_PULSE_TIME = 0.55
+
+--- Reusable tween info: -1 repeats = forever, reverse = bounce back to
+--- the start `Color3` so we read as gold ↔ original instead of "snap to
+--- gold then fade back to original".
+local PRICE_BOOST_TWEEN_INFO = TweenInfo.new(
+	PRICE_BOOST_PULSE_TIME,
+	Enum.EasingStyle.Sine,
+	Enum.EasingDirection.InOut,
+	-1,
+	true
+)
+
+local function applyPriceBoostStyling(bind: RowBinding)
+	local boosted = cashEventMultiplier() > 1
+	if boosted then
+		if bind.priceBoostActive then
+			return -- tween already running on the original-color base
+		end
+		-- Tween starts at the current TextColor3 (cached original) and
+		-- targets gold; reverse + loop produces the gold↔original flash.
+		bind.priceLabel.TextColor3 = bind.priceOriginalColor
+		local labelTween = TweenService:Create(bind.priceLabel, PRICE_BOOST_TWEEN_INFO, {
+			TextColor3 = PRICE_BOOST_GOLD,
+		})
+		labelTween:Play()
+		bind.priceTween = labelTween
+
+		if bind.subtotalRight and bind.subtotalOriginalColor then
+			bind.subtotalRight.TextColor3 = bind.subtotalOriginalColor
+			local subTween = TweenService:Create(bind.subtotalRight, PRICE_BOOST_TWEEN_INFO, {
+				TextColor3 = PRICE_BOOST_GOLD,
+			})
+			subTween:Play()
+			bind.subtotalTween = subTween
+		end
+
+		bind.priceBoostActive = true
+	else
+		if bind.priceTween then
+			bind.priceTween:Cancel()
+			bind.priceTween = nil
+		end
+		if bind.subtotalTween then
+			bind.subtotalTween:Cancel()
+			bind.subtotalTween = nil
+		end
+		bind.priceLabel.TextColor3 = bind.priceOriginalColor
+		if bind.subtotalRight and bind.subtotalOriginalColor then
+			bind.subtotalRight.TextColor3 = bind.subtotalOriginalColor
+		end
+		bind.priceBoostActive = false
+	end
+end
+
 local function refreshRowUi()
 	clampSelectionsToInventory()
 	for _, bind in ipairs(rowBindings) do
 		bind.priceLabel.Text = rowPriceText(bind)
+		applyPriceBoostStyling(bind)
 		if bind.kind == "crude" then
 			local inv = maxCrudeWarehouseBarrels()
 			bind.storedLabel.Text = string.format("Stored: %d barrels", inv)
@@ -580,6 +681,26 @@ local function disconnectAll()
 		c:Disconnect()
 	end
 	table.clear(connections)
+	-- Stop any in-flight Cash Frenzy color flash tweens before we drop
+	-- the bindings, otherwise the tween keeps mutating an orphaned
+	-- TextLabel reference until GC and a fresh wire could double up.
+	for _, bind in ipairs(rowBindings) do
+		if bind.priceTween then
+			bind.priceTween:Cancel()
+			bind.priceTween = nil
+		end
+		if bind.subtotalTween then
+			bind.subtotalTween:Cancel()
+			bind.subtotalTween = nil
+		end
+		if bind.priceLabel and bind.priceLabel.Parent then
+			bind.priceLabel.TextColor3 = bind.priceOriginalColor
+		end
+		if bind.subtotalRight and bind.subtotalRight.Parent and bind.subtotalOriginalColor then
+			bind.subtotalRight.TextColor3 = bind.subtotalOriginalColor
+		end
+		bind.priceBoostActive = false
+	end
 	table.clear(rowBindings)
 	table.clear(sellAmountTextBoxTier)
 	totalProfitLabel = nil
@@ -713,6 +834,7 @@ local function wireSellOil(screen: ScreenGui, closePanel: (() -> ())?)
 				sellAmountTextBoxTier[amt :: TextBox] = tierForAmount
 			end
 			local dataTier = dataTierForRowConfig(cfg)
+			local subtotalRightLabel = findSubtotalRight(totalsPanel, dataTier)
 			local bind: RowBinding = {
 				kind = cfg.kind,
 				tier = if cfg.kind == "tier" then cfg.tier else nil,
@@ -723,7 +845,15 @@ local function wireSellOil(screen: ScreenGui, closePanel: (() -> ())?)
 				amountField = amountField,
 				minus = minus :: GuiButton,
 				plus = plus :: GuiButton,
-				subtotalRight = findSubtotalRight(totalsPanel, dataTier),
+				subtotalRight = subtotalRightLabel,
+				-- Snapshot Studio-authored colors so we can restore on
+				-- boost end without dragging in another module-level
+				-- "original colors" map.
+				priceOriginalColor = (priceLabel :: TextLabel).TextColor3,
+				subtotalOriginalColor = if subtotalRightLabel then subtotalRightLabel.TextColor3 else nil,
+				priceTween = nil,
+				subtotalTween = nil,
+				priceBoostActive = false,
 			}
 			table.insert(rowBindings, bind)
 			if cfg.kind == "crude" then
@@ -792,6 +922,16 @@ local function wireSellOil(screen: ScreenGui, closePanel: (() -> ())?)
 		if mergePricesFromMarketSnapshot(data) then
 			refreshRowUi()
 		end
+	end))
+
+	-- Re-render whenever a global event starts/ends. We bind to the
+	-- shared client state's `Changed` (one source of truth) instead of
+	-- opening our own remote connection. Calling `refreshRowUi`
+	-- recomputes both the displayed `$/bbl` text (multiplier-applied)
+	-- and the boost styling (gold tint + UIScale pulse).
+	GlobalEventClientState.start() -- idempotent guard, in case panel binds before init.client
+	table.insert(connections, GlobalEventClientState.Changed:Connect(function()
+		refreshRowUi()
 	end))
 
 	table.insert(connections, ClientRemotes.oilActionResult.OnClientEvent:Connect(function(payload: any)

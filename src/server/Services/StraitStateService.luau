@@ -11,12 +11,12 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local StraitConfig = require(Shared:WaitForChild("Config"):WaitForChild("StraitConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local StraitStateService = {}
 
-function StraitStateService:Init(remoteService, telemetryService)
+function StraitStateService:Init(remoteService)
 	self._remoteService = remoteService
-	self._telemetryService = telemetryService
 	self._rng = Random.new()
 	self._running = false
 	self._connections = {}
@@ -33,6 +33,7 @@ function StraitStateService:Init(remoteService, telemetryService)
 	self._forceLock = nil :: { state: string, untilTimestamp: number, byUserId: number?, byName: string?, version: number }?
 	self._forceLockSeq = 0
 	self._isLeader = false
+	self._lastEmittedState = nil :: string?
 	self._useCloudSync = not RunService:IsStudio()
 
 	if self._useCloudSync then
@@ -65,7 +66,7 @@ function StraitStateService:_forceStraitOpenAtLaunch()
 	end
 	self._version = maxVer + 1
 	self._nextRollAt = workspace:GetServerTimeNow() + self:_sampleRollDelaySeconds()
-	self:_publishState()
+	self:_publishState("force_lock")
 	self:_broadcast()
 end
 
@@ -191,16 +192,14 @@ function StraitStateService:ForceStateForDuration(state: string, seconds: number
 	self._version += 1
 	-- Defer next organic roll until after the lock expires.
 	self._nextRollAt = math.max(self._nextRollAt, untilTs)
-	self:_publishState()
+	self:_publishState("force_lock")
 	self:_broadcast()
-	if self._telemetryService then
-		self._telemetryService:Track("strait_force_lock", {
-			state = state,
-			byUserId = byPlayer and byPlayer.UserId or nil,
-			durationSeconds = seconds,
-			untilTimestamp = untilTs,
-		})
-	end
+	Telemetry.Track(byPlayer, "strait_force_lock", {
+		state = state,
+		byUserId = byPlayer and byPlayer.UserId or nil,
+		durationSeconds = seconds,
+		untilTimestamp = untilTs,
+	})
 	return true
 end
 
@@ -252,7 +251,7 @@ function StraitStateService:_leaderTick()
 	if lock and now < lock.untilTimestamp then
 		self._state = lock.state
 		self._nextRollAt = lock.untilTimestamp
-		self:_publishState()
+		self:_publishState("force_lock")
 		self:_broadcast()
 		return
 	end
@@ -264,7 +263,7 @@ function StraitStateService:_leaderTick()
 		-- broadcast lands rather than waiting for the next roll.
 		self._version += 1
 		self._nextRollAt = now + self:_sampleRollDelaySeconds()
-		self:_publishState()
+		self:_publishState("organic_roll")
 		self:_broadcast()
 	end
 
@@ -273,14 +272,14 @@ function StraitStateService:_leaderTick()
 		self._nextRollAt = now + self:_sampleRollDelaySeconds()
 		if changed then
 			self._version += 1
-			self:_publishState()
+			self:_publishState("organic_roll")
 			self:_broadcast()
 		end
 		-- Silent reroll when `changed == false` — same bracket, no announcement.
 	end
 end
 
-function StraitStateService:_publishState()
+function StraitStateService:_publishState(cause: string?)
 	if self._stateMap ~= nil then
 		local payload = self:GetSnapshot()
 		pcall(function()
@@ -291,6 +290,19 @@ function StraitStateService:_publishState()
 		pcall(function()
 			MessagingService:PublishAsync(Constants.StraitMessagingTopic, self:GetSnapshot())
 		end)
+	end
+	-- SPEC §6.5: emit `strait_state_changed` only when the published state
+	-- actually differs from the last emit. `_publishState` runs on every
+	-- broadcast (lock-holds re-publish the same value), so we de-dup here
+	-- so the analytics row counts real transitions, not refresh ticks.
+	if self._state ~= self._lastEmittedState then
+		local previous = self._lastEmittedState
+		self._lastEmittedState = self._state
+		Telemetry.Track(nil, "strait_state_changed", {
+			previous = previous,
+			next = self._state,
+			cause = cause or "organic_roll",
+		})
 	end
 end
 
@@ -353,6 +365,11 @@ function StraitStateService:_applySnapshot(snapshot)
 	self._state = state
 	self._version = snapshot.version
 	self._nextRollAt = tonumber(snapshot.nextRollAt) or (workspace:GetServerTimeNow() + self:_sampleRollDelaySeconds())
+	-- Keep `_lastEmittedState` in sync on followers so when this server
+	-- later becomes leader and calls `_publishState` it doesn't fire a
+	-- bogus `nil -> X` `strait_state_changed` row for a transition the
+	-- previous leader already emitted.
+	self._lastEmittedState = self._state
 
 	-- Prefer the new generalised `forceLock` envelope; fall back to the
 	-- legacy `forcedClosedUntil` so a freshly-deployed server can still ingest
@@ -396,10 +413,45 @@ end
 --- Roll a new bracket. Returns `true` if the result differs from the previous
 --- state, `false` if the roll landed on the same bracket (in which case
 --- callers should skip version bump / broadcast so the UI stays quiet).
+---
+--- Picker is weighted by `StraitConfig.StateWeights` (Open-leaning by
+--- default — see config doc). States listed in `StateOrder` without a
+--- weight default to `1`, which gives backward-compatible uniform
+--- behavior for any future state added without an accompanying weight
+--- entry. We iterate `StateOrder` (not `pairs(StateWeights)`) so the
+--- pick order is stable and any unweighted states still participate.
 function StraitStateService:_rollState(): boolean
 	local order = StraitConfig.StateOrder
-	local idx = self._rng:NextInteger(1, #order)
-	local newState = order[idx]
+	local weights = StraitConfig.StateWeights or {}
+
+	local total = 0
+	for _, state in ipairs(order) do
+		local w = tonumber(weights[state]) or 1
+		if w > 0 then
+			total += w
+		end
+	end
+	if total <= 0 then
+		-- Defensive: every state weight is zero / negative. Fall back to
+		-- uniform so the rotation never deadlocks the strait.
+		total = #order
+	end
+
+	local roll = self._rng:NextNumber(0, total)
+	local cursor = 0
+	local newState: string = order[#order] -- safety fallback for FP drift
+	for _, state in ipairs(order) do
+		local w = tonumber(weights[state]) or 1
+		if w <= 0 then
+			continue
+		end
+		cursor += w
+		if roll <= cursor then
+			newState = state
+			break
+		end
+	end
+
 	if newState == self._state then
 		return false
 	end
@@ -445,7 +497,7 @@ function StraitStateService:_applyDevEngineState(engineState: string)
 	self._state = engineState
 	self._version += 1
 	self._nextRollAt = workspace:GetServerTimeNow() + Constants.StraitDevStateHoldSeconds
-	self:_publishState()
+	self:_publishState("force_lock")
 	self:_broadcast()
 	if RunService:IsStudio() or Constants.StraitDevUiEnabled then
 		print(string.format("[StraitStateService] Dev UI → engine state %s (auto-roll delayed %ds)", engineState, Constants.StraitDevStateHoldSeconds))

@@ -8,10 +8,48 @@ local PricingConfig = require(Shared:WaitForChild("Config"):WaitForChild("Pricin
 local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local OIL_TYPES = { "Crude", "Refined", "Premium" }
 
 local OilMarketService = {}
+
+-- Per-server first-sale gate. `Telemetry.SetSession`/`SessionGet` were not
+-- shipped in PR 3, so this service tracks first-* idempotency locally.
+local _firstSaleByUserId: { [number]: boolean } = {}
+
+local function _emitOilSold(player: Player, payload: {
+	itemSku: string,
+	cashGained: number,
+	barrelsByTier: { [string]: number },
+	currentPrices: { [string]: number },
+	straitEngineState: string?,
+	marketTrend: string?,
+})
+	-- Wrap in pcall so a Telemetry bug can never block a sell handler
+	-- mid-payout.
+	pcall(function()
+		Telemetry.Economy(
+			player,
+			"Source",
+			payload.cashGained,
+			"cash",
+			"oil_sold",
+			payload.itemSku
+		)
+		Telemetry.Track(player, "oil_sold", {
+			barrelsByTier = payload.barrelsByTier,
+			cashGained = payload.cashGained,
+			currentPrices = payload.currentPrices,
+			straitEngineState = payload.straitEngineState,
+			marketTrend = payload.marketTrend,
+		})
+		if not _firstSaleByUserId[player.UserId] then
+			_firstSaleByUserId[player.UserId] = true
+			Telemetry.Funnel(player, "first_run", 4, "first_sale")
+		end
+	end)
+end
 
 function OilMarketService:Init(remoteService, straitStateService, warehouseService, oilStateService)
 	self._remoteService = remoteService
@@ -209,6 +247,17 @@ function OilMarketService:HandleSellType(userId: number, oilType: string)
 	local _ok, actualPayout = self._oilStateService:AddCash(userId, payout)
 	self._oilStateService:PushState(userId)
 
+	if actualPayout > 0 then
+		_emitOilSold(player, {
+			itemSku = oilType,
+			cashGained = actualPayout,
+			barrelsByTier = { [oilType] = barrelCount },
+			currentPrices = self:GetCurrentPrices(),
+			straitEngineState = self._currentStraitState,
+			marketTrend = self:_computeTrend(),
+		})
+	end
+
 	if self._ftueService and FtueConfig.Enabled and actualPayout > 0 then
 		(self._ftueService :: any):OnFtueWarehouseSaleSuccess(userId, actualPayout)
 	end
@@ -273,6 +322,17 @@ function OilMarketService:HandleSellWarehouseBarrels(userId: number, payload: an
 	local _ok, actualPayout = self._oilStateService:AddCash(userId, totalPayout)
 	self._oilStateService:PushState(userId)
 
+	if actualPayout > 0 then
+		_emitOilSold(player, {
+			itemSku = "mixed",
+			cashGained = actualPayout,
+			barrelsByTier = removals,
+			currentPrices = self:GetCurrentPrices(),
+			straitEngineState = self._currentStraitState,
+			marketTrend = self:_computeTrend(),
+		})
+	end
+
 	if self._ftueService and FtueConfig.Enabled and actualPayout > 0 then
 		(self._ftueService :: any):OnFtueWarehouseSaleSuccess(userId, actualPayout)
 	end
@@ -309,6 +369,17 @@ function OilMarketService:HandleSellAll(userId: number)
 	-- FTUE callback reflect what was actually credited.
 	local _ok, actualPayout = self._oilStateService:AddCash(userId, totalPayout)
 	self._oilStateService:PushState(userId)
+
+	if actualPayout > 0 then
+		_emitOilSold(player, {
+			itemSku = "mixed",
+			cashGained = actualPayout,
+			barrelsByTier = allBarrels,
+			currentPrices = self:GetCurrentPrices(),
+			straitEngineState = self._currentStraitState,
+			marketTrend = self:_computeTrend(),
+		})
+	end
 
 	if self._ftueService and FtueConfig.Enabled and actualPayout > 0 then
 		(self._ftueService :: any):OnFtueWarehouseSaleSuccess(userId, actualPayout)

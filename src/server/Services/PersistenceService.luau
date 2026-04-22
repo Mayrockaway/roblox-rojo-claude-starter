@@ -8,6 +8,7 @@ local RunService = game:GetService("RunService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local UpgradeConfig = require(Shared:WaitForChild("Config"):WaitForChild("UpgradeConfig"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local PersistenceService = {}
 
@@ -41,8 +42,7 @@ local function defaultProfile()
 	}
 end
 
-function PersistenceService:Init(telemetryService)
-	self._telemetryService = telemetryService
+function PersistenceService:Init()
 	self._store = nil
 	self._cache = {}
 	self._dirty = {}
@@ -95,7 +95,7 @@ function PersistenceService:LoadProfile(userId: number)
 		if ok and typeof(valueOrErr) == "table" then
 			profile = valueOrErr
 		elseif not ok then
-			self._telemetryService:Track("profile_load_failed", {
+			Telemetry.Track(nil, "profile_load_failed", {
 				userId = userId,
 				error = tostring(valueOrErr),
 			})
@@ -148,7 +148,7 @@ function PersistenceService:FlushUser(userId: number)
 	if ok then
 		self._dirty[key] = nil
 	else
-		self._telemetryService:Track("profile_save_failed", {
+		Telemetry.Track(nil, "profile_save_failed", {
 			userId = userId,
 			error = tostring(saveErr),
 		})

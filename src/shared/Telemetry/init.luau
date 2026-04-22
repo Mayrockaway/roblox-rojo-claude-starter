@@ -103,7 +103,6 @@ local IS_SERVER = RunService:IsServer()
 local PLACE_VERSION = game.PlaceVersion
 
 local RING_BUFFER_MAX = 100
-local SESSION_ID_LENGTH = 16
 
 -- One drop-summary per minute per (player, reason). 60s in os.clock units.
 local DROP_SUMMARY_INTERVAL_SECONDS = 60
@@ -146,9 +145,12 @@ local _bootstrapped = false
 --==============================================================================
 
 local function _generateSessionId(): string
-	-- 16 hex chars is plenty of entropy for a single server's lifetime.
-	local guid = HttpService:GenerateGUID(false):gsub("-", "")
-	return string.sub(guid, 1, SESSION_ID_LENGTH)
+	-- Lowercase, hyphenated UUID. GameAnalytics REST v2 validates `session_id`
+	-- against the regex `^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`
+	-- and rejects the entire event with HTTP 400 if it doesn't match. Roblox
+	-- AnalyticsService accepts any string for `funnelSessionId`, so the same
+	-- value can safely be reused as both backends' session id.
+	return string.lower(HttpService:GenerateGUID(false))
 end
 
 local function _resolveEventDef(eventName: string): EventDefinition

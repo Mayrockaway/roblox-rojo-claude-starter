@@ -8,13 +8,24 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Constants = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Constants"))
 local DevLog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("DevLog"))
+local Telemetry = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Telemetry"))
 
 local KillZoneService = {}
+
+-- SPEC §6.3 / §13 PR 6 — `player_died` fires from BOTH this service
+-- (`cause = "killzone"`) and a `Humanoid.Died` listener wired below
+-- (`cause = "unknown"` for falls / lava / future hazards). Kill zones
+-- already kill the humanoid, so without dedup we'd fire the event twice
+-- per kill-zone death. The first emit stamps a Humanoid attribute
+-- `TelemetryDeathEmitted`; the `Humanoid.Died` listener early-returns
+-- when the flag is set.
+local DEATH_EMIT_ATTR = "TelemetryDeathEmitted"
 
 function KillZoneService:Init()
 	self._running = false
 	self._touchConn = nil :: RBXScriptConnection?
 	self._folder = nil :: Folder?
+	self._connections = {} :: { RBXScriptConnection }
 end
 
 function KillZoneService:Start()
@@ -75,8 +86,61 @@ function KillZoneService:Start()
 			player.Name, pos.X, pos.Y, pos.Z, vel.X, vel.Y, vel.Z,
 			tostring(hum.SeatPart and hum.SeatPart:GetFullName() or "nil")
 		))
+		-- Telemetry §6.3 `player_died` (kill-zone path). Stamp the
+		-- Humanoid attribute BEFORE setting Health=0 so the
+		-- `Humanoid.Died` listener (which fires synchronously from the
+		-- health write below in the same frame) sees the flag and skips.
+		if not hum:GetAttribute(DEATH_EMIT_ATTR) then
+			hum:SetAttribute(DEATH_EMIT_ATTR, true)
+			pcall(function()
+				Telemetry.Track(player, "player_died", {
+					cause = "killzone",
+					position = { x = pos.X, y = pos.Y, z = pos.Z },
+				})
+			end)
+		end
 		hum.Health = 0
 	end)
+
+	-- Catch-all `Humanoid.Died` listener for non-kill-zone deaths (falls,
+	-- lava, future hazards). Each character gets its own connection
+	-- attached on `CharacterAdded`; the dedup attribute prevents a
+	-- double-emit when KillZoneService already fired above.
+	local function bindCharacter(player: Player, character: Model)
+		local hum = character:FindFirstChildOfClass("Humanoid")
+			or character:WaitForChild("Humanoid", 5)
+		if not hum or not hum:IsA("Humanoid") then
+			return
+		end
+		hum.Died:Connect(function()
+			if hum:GetAttribute(DEATH_EMIT_ATTR) then
+				return
+			end
+			hum:SetAttribute(DEATH_EMIT_ATTR, true)
+			local hrp = character:FindFirstChild("HumanoidRootPart")
+			local pos = if hrp and hrp:IsA("BasePart") then hrp.Position else Vector3.zero
+			pcall(function()
+				Telemetry.Track(player, "player_died", {
+					cause = "unknown",
+					position = { x = pos.X, y = pos.Y, z = pos.Z },
+				})
+			end)
+		end)
+	end
+
+	local function bindPlayer(player: Player)
+		table.insert(self._connections, player.CharacterAdded:Connect(function(character)
+			bindCharacter(player, character)
+		end))
+		if player.Character then
+			task.spawn(bindCharacter, player, player.Character)
+		end
+	end
+
+	table.insert(self._connections, Players.PlayerAdded:Connect(bindPlayer))
+	for _, p in ipairs(Players:GetPlayers()) do
+		bindPlayer(p)
+	end
 end
 
 function KillZoneService:Stop()
@@ -88,6 +152,12 @@ function KillZoneService:Stop()
 	if self._folder then
 		self._folder:Destroy()
 		self._folder = nil
+	end
+	if self._connections then
+		for _, c in ipairs(self._connections) do
+			c:Disconnect()
+		end
+		self._connections = {}
 	end
 end
 

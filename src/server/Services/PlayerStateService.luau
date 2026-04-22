@@ -34,10 +34,9 @@ local function floorPositive(value: number): number
 	return math.max(0, math.floor(value))
 end
 
-function PlayerStateService:Init(remoteService, persistenceService, telemetryService)
+function PlayerStateService:Init(remoteService, persistenceService)
 	self._remoteService = remoteService
 	self._persistenceService = persistenceService
-	self._telemetryService = telemetryService
 	self._rng = Random.new()
 	self._statesByUserId = {}
 	self._playersByUserId = {}
@@ -366,10 +365,9 @@ function PlayerStateService:_onPlayerAdded(player: Player)
 	self._statesByUserId[player.UserId] = state
 	self._playersByUserId[player.UserId] = player
 	self:_pushState(player.UserId)
-	self._telemetryService:Track("player_state_loaded", {
-		userId = player.UserId,
-		activeShipmentCount = state.activeShipmentCount,
-	})
+	-- `player_state_loaded` was a placeholder log; `Shared.Telemetry`
+	-- already fires `session_start` for every join (SPEC §6.1) which
+	-- covers the same "player joined and state is live" signal.
 end
 
 function PlayerStateService:_onPlayerRemoving(player: Player)

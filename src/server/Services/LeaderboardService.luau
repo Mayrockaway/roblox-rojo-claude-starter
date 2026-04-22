@@ -1,22 +1,25 @@
 --!strict
--- Docks strait leaderboard: **author the UI in Studio** under `Workspace.DocksLeaderboard` (see hierarchy
--- below). This service only **binds** to TextLabels and updates text / row tint. Alternates every 15s
+-- Docks strait leaderboard: **author the UI in Studio** anywhere under `Workspace`. The board is
+-- looked up by SurfaceGui name (`StraitLeaderboardGui`) on a `BasePart` parent — it does NOT have
+-- to live at `Workspace.DocksLeaderboard.Board` anymore. Putting it under `Workspace.Map.…` is fine.
+-- This service only **binds** to TextLabels and updates text / row tint. Alternates every 15s
 -- between **this server session** and **global** OrderedDataStore ranks (crossings + barrels delivered).
 --
--- Required hierarchy (names matter):
---   Workspace.DocksLeaderboard (Folder)
---     Board (BasePart) — face for the SurfaceGui
---       StraitLeaderboardGui (SurfaceGui) — set Adornee = Board, Face = Front, PixelsPerStud as you like
---         Root (Frame) — full size, transparent or styled in Studio
---           Mode (TextLabel) — server sets "THIS SERVER · SESSION" / "GLOBAL · ALL SERVERS"
---           Timer (TextLabel) — server sets countdown to next view switch
---           CrossingsCol (Frame)
---             Row_1 … Row_8 (TextLabel) — one line per rank (server fills text + highlight)
---           BarrelsCol (Frame)
---             Row_1 … Row_8 (TextLabel)
+-- Required hierarchy (names matter — these are looked up by exact name):
+--   <any BasePart anywhere under Workspace, conventionally Map.DocksLeaderboard.Board>
+--     StraitLeaderboardGui (SurfaceGui) — Face = Front, PixelsPerStud as you like
+--                                         Adornee is auto-set to the parent part on bind
+--       Root (Frame) — full size, transparent or styled in Studio
+--         Mode (TextLabel) — server sets "THIS SERVER · SESSION" / "GLOBAL · ALL SERVERS"
+--         Timer (TextLabel) — server sets countdown to next view switch
+--         CrossingsCol (Frame)
+--           Row_1 … Row_8 (TextLabel) — one line per rank (server fills text + highlight)
+--         BarrelsCol (Frame)
+--           Row_1 … Row_8 (TextLabel)
 --
--- Rojo: `DocksLeaderboard` is an empty Folder with `$ignoreUnknownInstances` — build the above in Studio
--- and Save; sync will not strip your authored instances.
+-- Rojo: `Workspace.DocksLeaderboard` is an empty Folder with `$ignoreUnknownInstances` retained for
+-- legacy authoring; the new bind by SurfaceGui name lets the user move the board freely without
+-- changing the project file.
 
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
@@ -71,18 +74,34 @@ function LeaderboardService:_tryBindBoard(): boolean
 	self._modeLabel = nil
 	self._timerLabel = nil
 
-	local folder = Workspace:FindFirstChild("DocksLeaderboard")
-	if not folder then
+	-- Find the leaderboard SurfaceGui anywhere under Workspace by its
+	-- (unique) name. The header originally promised `Workspace.DocksLeaderboard.Board`
+	-- as a top-level folder, but in practice the user moves the board into
+	-- `Workspace.Map.DocksLeaderboard.Board` (and other future map slices)
+	-- and a top-level `FindFirstChild` returned the empty Rojo placeholder
+	-- folder instead. Searching by `StraitLeaderboardGui` SurfaceGui name
+	-- works regardless of where the board ends up parented as long as it's
+	-- a descendant of `Workspace`. We pick the first valid SurfaceGui whose
+	-- parent is a `BasePart` (i.e. an actual sign/board) to avoid binding
+	-- to a stale prefab in a Folder.
+	local sg: SurfaceGui? = nil
+	for _, d in ipairs(Workspace:GetDescendants()) do
+		if d:IsA("SurfaceGui") and d.Name == GUI_NAME then
+			local p = d.Parent
+			if typeof(p) == "Instance" and p:IsA("BasePart") then
+				sg = d
+				break
+			end
+		end
+	end
+	if not sg then
 		return false
 	end
-	local board = folder:FindFirstChild("Board")
-	if not board or not board:IsA("BasePart") then
-		return false
+	local board = sg.Parent :: BasePart
+	if sg.Adornee == nil then
+		sg.Adornee = board
 	end
-	local sg = board:FindFirstChild(GUI_NAME)
-	if not sg or not sg:IsA("SurfaceGui") then
-		return false
-	end
+
 	local root = sg:FindFirstChild(ROOT_NAME)
 	if not root or not root:IsA("GuiObject") then
 		return false

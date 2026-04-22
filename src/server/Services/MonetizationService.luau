@@ -30,8 +30,13 @@ local MonetizationCatalog = require(Shared:WaitForChild("Config"):WaitForChild("
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local Constants = require(Shared:WaitForChild("Constants"))
 local DevLog = require(Shared:WaitForChild("DevLog"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local MonetizationService = {}
+
+-- Per-server first-purchase gate. `Telemetry.SetSession`/`SessionGet` were
+-- not shipped in PR 3, so this service tracks first-* idempotency locally.
+local _firstPurchaseByUserId: { [number]: boolean } = {}
 
 --- DataStore key namespace for receipt idempotency. Bumping the version
 --- string forces a resync (e.g. if we change the receipt envelope shape).
@@ -119,6 +124,35 @@ function MonetizationService:Start()
 		if byUser then
 			byUser[gamePassId] = nil
 		end
+		-- Telemetry §6.6 `gamepass_purchased` / `gamepass_prompt_cancelled`.
+		-- Fired regardless of whether we have catalog metadata for the
+		-- gamepass (defensive: Roblox can fire this for off-catalog
+		-- gamepasses sold elsewhere). `Telemetry.Purchase` fires only on
+		-- the success branch — gamepasses don't go through `ProcessReceipt`,
+		-- so this is the canonical revenue row for them.
+		pcall(function()
+			local catalogItem = nil
+			for _, item in ipairs(MonetizationCatalog.Items) do
+				if item.productKind == "GamePass" and item.productId == gamePassId then
+					catalogItem = item
+					break
+				end
+			end
+			if wasPurchased then
+				local price = catalogItem and tonumber(catalogItem.robuxPrice) or 0
+				Telemetry.Purchase(player, "GamePass", gamePassId, price)
+				Telemetry.Track(player, "gamepass_purchased", {
+					gamePassId = gamePassId,
+					itemId = catalogItem and catalogItem.id,
+					robuxPrice = price,
+				})
+			else
+				Telemetry.Track(player, "gamepass_prompt_cancelled", {
+					gamePassId = gamePassId,
+					itemId = catalogItem and catalogItem.id,
+				})
+			end
+		end)
 		if wasPurchased then
 			self:_pushGamePassEffectsToClient(player)
 			-- Mirror the DevProduct receipt path: a successful GamePass buy
@@ -214,18 +248,36 @@ function MonetizationService:_sendResult(player: Player, ok: boolean, code: stri
 end
 
 function MonetizationService:_handlePromptRequest(player: Player, payload: any)
+	-- Telemetry §6.6 helper. Each `monetization_prompt_failed` row carries
+	-- the same `itemId` the prompt was attempted for (or `nil` for
+	-- malformed payloads) plus the `code` we sent back to the client so
+	-- analytics can join failed-prompt funnels by reason.
+	local function emitPromptFailed(itemId: any, code: string, productKind: string?, productId: any?)
+		pcall(function()
+			Telemetry.Track(player, "monetization_prompt_failed", {
+				itemId = if typeof(itemId) == "string" then itemId else nil,
+				code = code,
+				productKind = productKind,
+				productId = if typeof(productId) == "number" then productId else nil,
+			})
+		end)
+	end
+
 	if typeof(payload) ~= "table" then
 		self:_sendResult(player, false, "ERR_BAD_PAYLOAD", "Missing payload.")
+		emitPromptFailed(nil, "ERR_BAD_PAYLOAD", nil, nil)
 		return
 	end
 	local itemId = payload.itemId
 	local item = MonetizationCatalog.GetItem(itemId)
 	if not item then
 		self:_sendResult(player, false, "ERR_UNKNOWN_ITEM", "That item isn't on the menu.", { itemId = itemId })
+		emitPromptFailed(itemId, "ERR_UNKNOWN_ITEM", nil, nil)
 		return
 	end
 	if not MonetizationCatalog.Enabled then
 		self:_sendResult(player, false, "ERR_MONETIZATION_DISABLED", "Robux purchases are currently disabled.", { itemId = itemId })
+		emitPromptFailed(itemId, "ERR_MONETIZATION_DISABLED", item.productKind, item.productId)
 		return
 	end
 	if not MonetizationCatalog.IsValidProductId(item.productId) then
@@ -233,6 +285,7 @@ function MonetizationService:_handlePromptRequest(player: Player, payload: any)
 		-- the UI is testable before the real Roblox dashboard ids exist.
 		-- Surface a "Coming Soon" toast instead of crashing the prompt.
 		self:_sendResult(player, false, "ERR_PRODUCT_NOT_CONFIGURED", "This item isn't on sale yet.", { itemId = itemId })
+		emitPromptFailed(itemId, "ERR_PRODUCT_NOT_CONFIGURED", item.productKind, item.productId)
 		return
 	end
 
@@ -249,6 +302,7 @@ function MonetizationService:_handlePromptRequest(player: Player, payload: any)
 		and self._oilStateService:HasPurchasedOneTimeItem(player.UserId, item.id)
 	then
 		self:_sendResult(player, false, "ERR_ALREADY_PURCHASED", "You already own this one-time bundle.", { itemId = item.id })
+		emitPromptFailed(item.id, "ERR_ALREADY_PURCHASED", item.productKind, item.productId)
 		return
 	end
 
@@ -262,9 +316,22 @@ function MonetizationService:_handlePromptRequest(player: Player, payload: any)
 	if not ok then
 		warn(string.format("[MonetizationService] Prompt failed for %s (%s): %s", item.id, tostring(item.productId), tostring(err)))
 		self:_sendResult(player, false, "ERR_PROMPT_FAILED", "Couldn't open the purchase prompt.", { itemId = item.id })
+		emitPromptFailed(item.id, "ERR_PROMPT_FAILED", item.productKind, item.productId)
 		return
 	end
 	self:_sendResult(player, true, "PROMPT_OPENED", "Opening Roblox purchase prompt.", { itemId = item.id })
+	-- Telemetry §6.6 `monetization_prompted`. Fires only after the
+	-- `MarketplaceService:Prompt*` call returned cleanly so a
+	-- catalog/permission failure does not show up as a "prompt seen"
+	-- in the funnel.
+	pcall(function()
+		Telemetry.Track(player, "monetization_prompted", {
+			itemId = item.id,
+			productKind = item.productKind,
+			productId = item.productId,
+			robuxPrice = item.robuxPrice,
+		})
+	end)
 end
 
 -- =================== RECEIPT ===================
@@ -337,9 +404,29 @@ function MonetizationService:_processReceipt(receiptInfo)
 	end
 
 	if isDuplicateInMemory(self, userId, purchaseId) then
+		-- Telemetry §6.6 `monetization_purchased_replay` — Roblox
+		-- re-delivered a receipt we already granted in-memory this
+		-- session. Recorded so analytics can dedupe revenue against
+		-- the original `monetization_purchased` row.
+		pcall(function()
+			local plr = Players:GetPlayerByUserId(userId)
+			Telemetry.Track(plr, "monetization_purchased_replay", {
+				productId = productId,
+				purchaseId = purchaseId,
+				source = "in_memory",
+			})
+		end)
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
 	if self:_isReceiptAlreadyGranted(userId, purchaseId) then
+		pcall(function()
+			local plr = Players:GetPlayerByUserId(userId)
+			Telemetry.Track(plr, "monetization_purchased_replay", {
+				productId = productId,
+				purchaseId = purchaseId,
+				source = "datastore",
+			})
+		end)
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
 
@@ -375,11 +462,57 @@ function MonetizationService:_processReceipt(receiptInfo)
 	local granted, err = self:_applyGrant(userId, item)
 	if not granted then
 		warn(string.format("[MonetizationService] Grant failed for %s (user=%d): %s", item.id, userId, tostring(err)))
+		-- Telemetry §6.6 `monetization_grant_failed`. Logged before the
+		-- `NotProcessedYet` return so we still record the failure even
+		-- if Roblox eventually stops re-delivering the receipt.
+		pcall(function()
+			local plr = Players:GetPlayerByUserId(userId)
+			Telemetry.Track(plr, "monetization_grant_failed", {
+				itemId = item.id,
+				productId = productId,
+				productKind = item.productKind,
+				code = tostring(err),
+			})
+		end)
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 
 	self:_recordReceiptGranted(userId, purchaseId)
 	DevLog.log(string.format("[Monetization] Granted %s to user %d.", item.id, userId))
+
+	-- Wrap in pcall — Roblox uses our return value to decide whether to
+	-- re-deliver the receipt, and a Telemetry bug must never produce a
+	-- duplicate Robux charge.
+	pcall(function()
+		local player = Players:GetPlayerByUserId(userId)
+		if not player then
+			return
+		end
+		local robuxPrice = tonumber(item.robuxPrice) or 0
+		Telemetry.Purchase(player, "DevProduct", productId, robuxPrice)
+		Telemetry.Track(player, "monetization_purchased", {
+			productKind = "DevProduct",
+			productId = productId,
+			itemId = item.id,
+			robuxPrice = robuxPrice,
+			oneTimePurchase = item.oneTimePurchase == true,
+			replay = false,
+		})
+		if not _firstPurchaseByUserId[userId] then
+			_firstPurchaseByUserId[userId] = true
+			local secondsSinceJoin: number? = nil
+			local session = Telemetry._getSession(player)
+			if session then
+				secondsSinceJoin = math.floor(os.clock() - session.joinedAtClock)
+			end
+			Telemetry.Track(player, "monetization_first_purchase", {
+				productId = productId,
+				itemId = item.id,
+				secondsSinceJoin = secondsSinceJoin,
+			})
+			Telemetry.Funnel(player, "first_run", 5, "first_purchase")
+		end
+	end)
 
 	-- One-time-purchase post-grant flip. Persists immediately so the next
 	-- prompt click hits `ERR_ALREADY_PURCHASED` and the next snapshot push
@@ -607,6 +740,16 @@ function MonetizationService:HasGamePass(player: Player, gamePassId: number): bo
 	local result = ok and owns == true
 	self._gamePassCache[player.UserId] = self._gamePassCache[player.UserId] or {}
 	self._gamePassCache[player.UserId][gamePassId] = result
+	-- Telemetry §6.6 `gamepass_owned_resolved`. Fires once per
+	-- (player, gamepass) per session — only on cache miss — so we get
+	-- one row per ownership resolution rather than one per call site.
+	pcall(function()
+		Telemetry.Track(player, "gamepass_owned_resolved", {
+			gamePassId = gamePassId,
+			owned = result,
+			lookupOk = ok,
+		})
+	end)
 	return result
 end
 

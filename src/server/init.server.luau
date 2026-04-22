@@ -34,7 +34,6 @@ RemoteService:Init()
 -- See `docs/features/telemetry/SPEC.md` §13 PR 3 / §9.1.
 require(Shared:WaitForChild("Telemetry"))
 
-local TelemetryService = require(serviceFolder:WaitForChild("TelemetryService"))
 local StraitStateService = require(serviceFolder:WaitForChild("StraitStateService"))
 local PlotService = require(serviceFolder:WaitForChild("PlotService"))
 local OilStateService = require(serviceFolder:WaitForChild("OilStateService"))
@@ -62,6 +61,7 @@ local SecurityPersonnelService = require(serviceFolder:WaitForChild("SecurityPer
 local AutoShipService = require(serviceFolder:WaitForChild("AutoShipService"))
 local KillZoneService = require(serviceFolder:WaitForChild("KillZoneService"))
 local LeaderboardService = require(serviceFolder:WaitForChild("LeaderboardService"))
+local GlobalEventService = require(serviceFolder:WaitForChild("GlobalEventService"))
 
 local DevLog = require(Shared:WaitForChild("DevLog"))
 
@@ -116,9 +116,8 @@ if RunService:IsStudio() then
 		ev:FireAllClients(msg)
 	end)
 end
-TelemetryService:Init()
 LeaderboardService:Init()
-StraitStateService:Init(RemoteService, TelemetryService)
+StraitStateService:Init(RemoteService)
 PlotService:Init()
 OilStateService:Init(RemoteService, PlotService)
 OilVisualService:Init(OilStateService, PlotService)
@@ -148,6 +147,24 @@ OilStateService:SetMonetizationService(MonetizationService)
 ArmyGeneralService:SetMonetizationService(MonetizationService)
 SecurityPersonnelService:SetMonetizationService(MonetizationService)
 EquipmentShopService:SetMonetizationService(MonetizationService)
+-- GlobalEventService runs the server-wide buff/threat rotation
+-- (`cash_frenzy`, `pirate_wave`, `express_convoy`). Inject into the two
+-- consumer services AFTER `Init` so the query API is available before
+-- `Start`. Effects are pulled at narrow hook sites:
+--   * `OilStateService:AddCash` — `GetMultiplier("Cash")` stacks AFTER
+--     the `DoubleEarnings` GamePass multiplier (×4 for owners during
+--     Cash Frenzy).
+--   * `OilShipmentService:_handleDispatch` — `GetShipStatsBoost()`
+--     overrides resolved ship stats (Express Convoy = ÷2 travel time +
+--     ×1.5 capacity).
+--   * `OilShipmentService:_handleStraitWaypointTrigger` —
+--     `GetForcedStraitEventId()` replaces the rolled strait event with
+--     the forced one (Pirate Wave = `PirateRaid`) AFTER the
+--     `eventImmunity` (Security Personnel) and bracket allow-list
+--     gates, so defended runs and Open straits stay proportional.
+GlobalEventService:Init(RemoteService)
+OilStateService:SetGlobalEventService(GlobalEventService)
+OilShipmentService:SetGlobalEventService(GlobalEventService)
 PlotResourceService:Init(RemoteService, OilStateService, PlotService, OilVisualService, OilShipmentService, ChunkOwnershipService)
 --- `RemoteService` second arg lets the production loop fire per-pump
 --- `pumpCollected` FX packets via `DrillProgressUpdate` for client-side
@@ -209,8 +226,10 @@ OilTankService:Start()
 ToolService:Start()
 FighterPlaneWaveService:Start()
 LeaderboardService:Start()
+GlobalEventService:Start()
 
 game:BindToClose(function()
+	GlobalEventService:Stop()
 	KillZoneService:Stop()
 	PerfService:Stop()
 	ToolService:Stop()
@@ -410,6 +429,60 @@ do
 				"[Dev] /unlockboats by %s -> granted=%d alreadyOwned=%d (re-equip via Ship Management panel)",
 				player.Name, granted, already
 			))
+		elseif cmd == "/eventlist" or cmd == "/events" then
+			-- Dev: list every global event in the catalog with current state
+			-- (active, weight, cooldown). Mirrors the pattern other /list-style
+			-- commands use; pure read, no side effects.
+			local rows = GlobalEventService:DebugListEvents()
+			print(string.format("[Dev] /events  (%d in catalog):", #rows))
+			for _, r in ipairs(rows) do
+				print(string.format(
+					"    %s  weight=%d  duration=%ds  cooldown=%ds  active=%s",
+					r.id, r.weight, r.durationSeconds, r.cooldownSeconds, tostring(r.active)
+				))
+			end
+		elseif cmd:sub(1, 6) == "/event" then
+			-- Dev: activate or end a global event by id, bypassing the
+			-- rotation. Usage:
+			--   /event <id>              -> activate with default duration
+			--   /event <id> <seconds>    -> activate with override duration
+			--   /event end <id>          -> force-end an active event
+			--   /event endall            -> force-end ALL active events
+			-- Examples:
+			--   /event cash_frenzy
+			--   /event pirate_wave 30
+			--   /event end cash_frenzy
+			-- Same `isAuthorizedDev` gate as the rest of `onDebugChat` — safe
+			-- in live builds because randoms can't trigger it.
+			local args = cmd:sub(7):gsub("^%s+", "")
+			if args == "" then
+				warn("[Dev] /event usage: /event <id> [seconds] | /event end <id> | /event endall")
+			elseif args == "endall" then
+				local rows = GlobalEventService:DebugListEvents()
+				local n = 0
+				for _, r in ipairs(rows) do
+					if r.active and GlobalEventService:ForceEnd(r.id) then
+						n += 1
+					end
+				end
+				print(string.format("[Dev] /event endall by %s -> ended %d", player.Name, n))
+			else
+				local endTarget = args:match("^end%s+(%S+)")
+				if endTarget then
+					local ok = GlobalEventService:ForceEnd(endTarget)
+					print(string.format("[Dev] /event end %s by %s -> %s", endTarget, player.Name, tostring(ok)))
+				else
+					local id, secStr = args:match("^(%S+)%s*(%S*)")
+					id = id or ""
+					local secs = tonumber(secStr)
+					local ok, code = GlobalEventService:DebugActivate(id, secs)
+					print(string.format(
+						"[Dev] /event %s%s by %s -> ok=%s code=%s",
+						id, secs and (" " .. tostring(secs)) or "",
+						player.Name, tostring(ok), tostring(code)
+					))
+				end
+			end
 		elseif cmd == "/straitopen" or cmd == "/straitclose" then
 			-- Mirrors the `MonetizationService` consumable handlers for the
 			-- Robux strait force-open / force-close products without going
@@ -596,6 +669,7 @@ do
 		"/hideui",
 		"/autoship",
 		"/security",
+		"/event", "/eventlist", "/events",
 	}
 	for _, alias in ipairs(DEV_COMMAND_ALIASES) do
 		local ok, err = pcall(function()

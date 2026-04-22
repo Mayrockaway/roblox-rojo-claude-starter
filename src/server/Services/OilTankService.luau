@@ -150,8 +150,15 @@ function OilTankService:Init(remoteService, oilStateService)
 	self._remoteService = remoteService
 	self._oilStateService = oilStateService
 	self._connections = {}
-	self._hookedSignParts = {}
-	self._hookedClickDetectors = {}
+	self._running = false
+	-- Per-sign hook tracking. Stores `{ click = ClickDetector, conn = RBXScriptConnection }`
+	-- for each known refinery sign part. We track the CD identity (not just "have we
+	-- ever seen this sign") so the watchdog and re-hook path can detect when the CD
+	-- has been replaced (destroyed + recreated) and re-bind the MouseClick handler
+	-- to the fresh instance — without that, a stale CD reference silently swallows
+	-- every click and the player sees "click did nothing" intermittently.
+	self._signHooks = {} :: { [BasePart]: { click: ClickDetector, conn: RBXScriptConnection } }
+	self._hookedClickDetectors = {} :: { [ClickDetector]: boolean }
 end
 
 function OilTankService:_upgrade(player: Player, oilType: string)
@@ -165,14 +172,17 @@ function OilTankService:_upgrade(player: Player, oilType: string)
 	})
 end
 
+--- Idempotent — safe to call repeatedly on the same sign. We re-apply the
+--- input-soaking defenses every call so a snapshot tick that flipped
+--- `SurfaceGui.Active` back to true gets corrected immediately, dedupe any
+--- extra `TankUpgradeSignClick` CDs that may have been created by a racing
+--- service (historically `OilVisualService` also created the CD; that path
+--- was removed but the dedupe is kept as a safety net), and re-hook the
+--- MouseClick handler if the CD instance has been swapped since we last hooked.
 function OilTankService:_hookSignPart(signPart: BasePart)
-	if self._hookedSignParts[signPart] then
-		return
-	end
 	if isWarehouseSignPart(signPart) then
 		return
 	end
-	self._hookedSignParts[signPart] = true
 
 	-- Ensure this part remains mouse-targetable for ClickDetector and hover affordance.
 	signPart.CanQuery = true
@@ -188,14 +198,15 @@ function OilTankService:_hookSignPart(signPart: BasePart)
 	-- (instead of waiting for the next OilVisualService snapshot tick to
 	-- reach that plot — that wait was the "works for me, not for friend"
 	-- failure mode where the owner had stored oil and got a sync but the
-	-- friend's empty plot did not).
+	-- friend's empty plot did not). Re-applied on every call because some
+	-- snapshot pushes can re-stamp Active=true.
 	local signModel = signPart.Parent
 	if signModel and signModel:IsA("Model") then
 		for _, d in ipairs(signModel:GetDescendants()) do
 			if d:IsA("SurfaceGui") then
 				d.Active = false
 				for _, gui in ipairs(d:GetDescendants()) do
-					if gui:IsA("GuiObject") then
+					if gui:IsA("GuiObject") and gui.Active then
 						gui.Active = false
 					end
 				end
@@ -203,12 +214,29 @@ function OilTankService:_hookSignPart(signPart: BasePart)
 		end
 	end
 
-	local click = signPart:FindFirstChild("TankUpgradeSignClick")
-	if click and not click:IsA("ClickDetector") then
-		click:Destroy()
-		click = nil
+	-- Dedupe: if multiple CDs share the canonical name (e.g. another service
+	-- raced to create one in the same frame), keep the first ClickDetector
+	-- and destroy the rest. Roblox routes a click to *one* CD per Part
+	-- non-deterministically; an unhooked duplicate winning the race was the
+	-- silent "tap does nothing" bug we kept chasing.
+	local primaryClick: ClickDetector? = nil
+	local toDestroy: { Instance } = {}
+	for _, child in ipairs(signPart:GetChildren()) do
+		if child.Name == "TankUpgradeSignClick" then
+			if child:IsA("ClickDetector") and primaryClick == nil then
+				primaryClick = child
+			else
+				table.insert(toDestroy, child)
+			end
+		end
 	end
-	if not click then
+	for _, dup in ipairs(toDestroy) do
+		debugLog(string.format("dedupe: destroying extra %s on %s", dup.ClassName, signPart:GetFullName()))
+		self._hookedClickDetectors[dup :: any] = nil
+		dup:Destroy()
+	end
+
+	if primaryClick == nil then
 		local cd = Instance.new("ClickDetector")
 		cd.Name = "TankUpgradeSignClick"
 		-- 28 (was 22): friend reports of unreliable taps were partly the
@@ -219,43 +247,70 @@ function OilTankService:_hookSignPart(signPart: BasePart)
 		cd.MaxActivationDistance = 28
 		cd.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
 		cd.Parent = signPart
-		click = cd
+		primaryClick = cd
 	end
-	if click and click:IsA("ClickDetector") then
-		click.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
-		click.MaxActivationDistance = math.max(28, click.MaxActivationDistance)
+
+	local click = primaryClick :: ClickDetector
+	click.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
+	if click.MaxActivationDistance < 28 then
+		click.MaxActivationDistance = 28
 	end
-	if click and click:IsA("ClickDetector") and not self._hookedClickDetectors[click] then
-		self._hookedClickDetectors[click] = true
-		table.insert(self._connections, click.MouseClick:Connect(function(player)
-			if isWarehouseSignPart(signPart) then
-				return
-			end
-			local oilType = resolveOilTypeForWoodSign(signPart)
-			if not oilType then
-				debugLog(string.format("click ignored: no oil type for %s", signPart:GetFullName()))
-				return
-			end
-			local ownerUserId = plotOwnerOf(signPart)
-			debugLog(string.format(
-				"click user=%d oilType=%s owner=%s part=%s",
-				player.UserId,
-				tostring(oilType),
-				tostring(ownerUserId),
-				signPart:GetFullName()
-			))
-			if ownerUserId and ownerUserId ~= player.UserId then
-				self._remoteService:GetEvent(RemoteNames.OilActionResult):FireClient(player, {
-					action = "UpgradeOilTank",
-					ok = false,
-					code = "NOT_OWNER",
-					message = "This is not your plot.",
-				})
-				return
-			end
-			self:_upgrade(player, oilType)
-		end))
+
+	-- Re-hook only if either (a) we've never hooked this CD, or (b) the
+	-- previous hook for this sign points at a different (now-stale) CD
+	-- instance. The stale-CD path is what fixes "tap was working, then
+	-- silently stopped" — a snapshot pass replaced the CD without our
+	-- knowledge and the old MouseClick connection fires on a destroyed
+	-- instance forever after.
+	local prev = self._signHooks[signPart]
+	if prev and prev.click == click then
+		return
 	end
+	if prev then
+		if prev.conn then
+			prev.conn:Disconnect()
+		end
+		self._hookedClickDetectors[prev.click] = nil
+	end
+
+	if self._hookedClickDetectors[click] then
+		-- Another path already wired this exact CD; just record it for the
+		-- sign so the watchdog can re-validate on the next pass.
+		self._signHooks[signPart] = { click = click, conn = nil :: any }
+		return
+	end
+
+	self._hookedClickDetectors[click] = true
+	local conn = click.MouseClick:Connect(function(player)
+		if isWarehouseSignPart(signPart) then
+			return
+		end
+		local oilType = resolveOilTypeForWoodSign(signPart)
+		if not oilType then
+			debugLog(string.format("click ignored: no oil type for %s", signPart:GetFullName()))
+			return
+		end
+		local ownerUserId = plotOwnerOf(signPart)
+		debugLog(string.format(
+			"click user=%d oilType=%s owner=%s part=%s",
+			player.UserId,
+			tostring(oilType),
+			tostring(ownerUserId),
+			signPart:GetFullName()
+		))
+		if ownerUserId and ownerUserId ~= player.UserId then
+			self._remoteService:GetEvent(RemoteNames.OilActionResult):FireClient(player, {
+				action = "UpgradeOilTank",
+				ok = false,
+				code = "NOT_OWNER",
+				message = "This is not your plot.",
+			})
+			return
+		end
+		self:_upgrade(player, oilType)
+	end)
+	table.insert(self._connections, conn)
+	self._signHooks[signPart] = { click = click, conn = conn }
 end
 
 function OilTankService:_hookPrompt(prompt: ProximityPrompt)
@@ -264,6 +319,7 @@ function OilTankService:_hookPrompt(prompt: ProximityPrompt)
 end
 
 function OilTankService:Start()
+	self._running = true
 	local upgradeEvent = self._remoteService:GetEvent(RemoteNames.RequestUpgradeOilTank)
 	table.insert(self._connections, upgradeEvent.OnServerEvent:Connect(function(player, payload)
 		local ownerUserId = ownerFromPayload(payload)
@@ -299,12 +355,44 @@ function OilTankService:Start()
 			self:_hookPrompt(d)
 		end
 	end))
+
+	-- Watchdog: re-validate every known sign every few seconds. Catches the
+	-- edge case where a different service / live edit replaced the
+	-- ClickDetector instance after we hooked it (the old hook would silently
+	-- fire on a destroyed CD forever, manifesting as "taps stopped working").
+	-- `_hookSignPart` is fully idempotent: if the CD is unchanged, this is a
+	-- few attribute reads + an early return; if it changed, we re-hook the
+	-- new instance and disconnect the dead one. Cheap (typically ≤24 sign
+	-- parts across all plots) and the user's most reliable line of defense.
+	task.spawn(function()
+		while self._running do
+			task.wait(3)
+			if not self._running then
+				break
+			end
+			for signPart in pairs(self._signHooks) do
+				if signPart.Parent == nil then
+					local prev = self._signHooks[signPart]
+					if prev then
+						if prev.conn then
+							prev.conn:Disconnect()
+						end
+						self._hookedClickDetectors[prev.click] = nil
+						self._signHooks[signPart] = nil
+					end
+				else
+					self:_hookSignPart(signPart)
+				end
+			end
+		end
+	end)
 end
 
 function OilTankService:Stop()
+	self._running = false
 	for _, c in ipairs(self._connections) do c:Disconnect() end
 	self._connections = {}
-	self._hookedSignParts = {}
+	self._signHooks = {}
 	self._hookedClickDetectors = {}
 end
 

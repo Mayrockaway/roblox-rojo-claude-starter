@@ -14,11 +14,10 @@ local function floorPositive(value: number): number
 	return math.max(0, math.floor(value))
 end
 
-function UpgradeService:Init(remoteService, playerStateService, rateLimitService, telemetryService)
+function UpgradeService:Init(remoteService, playerStateService, rateLimitService)
 	self._remoteService = remoteService
 	self._playerStateService = playerStateService
 	self._rateLimitService = rateLimitService
-	self._telemetryService = telemetryService
 	self._connections = {}
 end
 
@@ -92,12 +91,14 @@ function UpgradeService:_handleUpgradeRequest(player: Player, payload)
 	end
 
 	self._playerStateService:SetUpgradeLevel(player.UserId, upgradeId, currentLevel + 1)
-	self._telemetryService:Track("upgrade_purchased", {
-		userId = player.UserId,
-		upgradeId = upgradeId,
-		level = currentLevel + 1,
-		cost = cost,
-	})
+	-- NOTE: this is the legacy generic `UpgradeService` (orphan in current
+	-- wiring). The SPEC §6.4 wires per-upgrade events
+	-- (`warehouse_upgraded`, `ship_speed_upgraded`, `ship_capacity_upgraded`,
+	-- `oil_tank_upgraded`) directly inside `WarehouseService`,
+	-- `OilStateService`, and `OilTankService` instead, so we don't fire
+	-- the legacy `upgrade_purchased` row here. If this service is ever
+	-- re-enabled, route through `Telemetry.Economy(player, "Sink", cost,
+	-- "cash", "<per-upgrade reason>", { kind = "upgrade", id = upgradeId })`.
 
 	self:_sendActionResult(player, true, ErrorCodes.Ok, "Upgrade purchased.", {
 		upgradeId = upgradeId,

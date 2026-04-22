@@ -18,6 +18,7 @@ local OilTankConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilTan
 local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local DevLog = require(Shared:WaitForChild("DevLog"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local OilStateService = {}
 
@@ -624,6 +625,19 @@ end
 --- as every caller passing `{ skipMultiplier = true }`).
 function OilStateService:SetMonetizationService(monetizationService: any)
 	self._monetizationService = monetizationService
+end
+
+--- Set by `init.server` after `GlobalEventService` is constructed. Optional
+--- — without it `AddCash` skips the global event multiplier (effectively
+--- the same as every caller passing `{ skipMultiplier = true }`). The
+--- multiplier composes **after** the per-player `DoubleEarnings` GamePass:
+--- a player who owns the GamePass during a `cash_frenzy` event receives
+--- `amount × 2 (GamePass) × 2 (Frenzy) = ×4`. Refunds and Robux currency
+--- packs continue to opt out via `AddCash(uid, n, { skipMultiplier =
+--- true })` — same `skipMultiplier` flag covers both stack layers so we
+--- don't have to thread a second opt-out flag through every caller.
+function OilStateService:SetGlobalEventService(globalEventService: any)
+	self._globalEventService = globalEventService
 end
 
 --- Clears tutorial-only placement flags so hammer sellback / removal works after FTUE (and old saves cannot keep protection).
@@ -1400,6 +1414,18 @@ function OilStateService:AddCash(userId: number, amount: number, opts: { skipMul
 			end
 		end
 	end
+	-- Stack server-wide global event cash multiplier (`cash_frenzy`, …)
+	-- AFTER the GamePass so the two compose multiplicatively. We swallow
+	-- errors the same way as the GamePass call: a transient `GlobalEvent`
+	-- service hiccup must never block a gameplay credit.
+	if not skipMultiplier and self._globalEventService then
+		local okM, mul = pcall(function()
+			return self._globalEventService:GetMultiplier("Cash")
+		end)
+		if okM and typeof(mul) == "number" and mul > 0 and mul ~= 1 then
+			value = math.floor(value * mul + 0.5)
+		end
+	end
 	state.cash += value
 	self:_markDirty(userId)
 	return true, value
@@ -1541,6 +1567,20 @@ function OilStateService:TryBuyChunk(userId: number, chunkId: string): (boolean,
 
 	self:_markDirty(userId)
 	self:PushState(userId)
+
+	-- Telemetry §6.4 `chunk_unlocked` (Sink). Fires after `TrySpendCash`
+	-- + `chunk.unlocked = true`. SPEC §7 names this in `ChunkOwnershipService`
+	-- but the actual ownership flip lives here in `OilStateService:TryBuyChunk`
+	-- (server-authoritative path); `ChunkOwnershipService` only renders the
+	-- buy signs and routes the click into `TryBuyChunk` via `PlotResourceService`.
+	pcall(function()
+		local plr = Players:GetPlayerByUserId(userId)
+		Telemetry.Economy(plr, "Sink", cost, "cash", "chunk", { kind = "chunk", id = chunkId })
+		Telemetry.Track(plr, "chunk_unlocked", {
+			chunkId = chunkId,
+			cost = cost,
+		})
+	end)
 
 	return true, "OK", string.format("%s Plot Unlocked!", groundType.name)
 end
@@ -2439,6 +2479,19 @@ function OilStateService:TryUpgradeTank(userId: number, oilType: string): (boole
 	state.storageCapacity = totalTankCapacity(state)
 	self:_markDirty(userId)
 	self:PushState(userId)
+	-- Telemetry §6.4 `oil_tank_upgraded` (Sink). Fires after successful
+	-- spend + tier increment. `item_type` encodes the oil tier so
+	-- analytics can split by which tank players upgrade most.
+	pcall(function()
+		local plr = Players:GetPlayerByUserId(userId)
+		Telemetry.Economy(plr, "Sink", cost, "cash", "oil_tank_upgrade:" .. oilType, { kind = "oil_tank_upgrade", id = oilType })
+		Telemetry.Track(plr, "oil_tank_upgraded", {
+			oilType = oilType,
+			tierFrom = currentTier,
+			tierTo = currentTier + 1,
+			cost = cost,
+		})
+	end)
 	return true, "OK", string.format("%s tank upgraded to tier %d.", oilType, state.tankTiers[oilType]), {
 		oilType = oilType,
 		tier = state.tankTiers[oilType],
@@ -2641,6 +2694,17 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 	local persisted = self:_loadPersistedProfile(userId)
 	if persisted then
 		self:_applyPersistedIntoState(state, persisted, plot)
+	else
+		-- Telemetry §6.1 `first_join` — brand-new player (no persisted
+		-- profile in DataStore yet). `oilProfileVersionAtCreate` is the
+		-- current `_serializeState` version so we can backfill profile
+		-- migrations against this row later.
+		pcall(function()
+			local plr = Players:GetPlayerByUserId(userId)
+			Telemetry.Track(plr, "first_join", {
+				oilProfileVersionAtCreate = 7,
+			})
+		end)
 	end
 
 	-- Fix tile state on load:
@@ -3473,12 +3537,29 @@ function OilStateService:_loadPersistedProfile(userId: number)
 				"[OilStateService] Load attempt %d/%d failed for user %d: %s — retrying in %ds",
 				attempt, MAX_LOAD_RETRIES, userId, tostring(profileOrErr), RETRY_DELAY
 			))
+			-- Telemetry §6.7 `oil_state_load_failed` — fire on EACH
+			-- retry attempt (with `attempt` so analytics can plot
+			-- "retry #N → successful resolve" tail behaviour).
+			pcall(function()
+				Telemetry.Track(nil, "oil_state_load_failed", {
+					userId = userId,
+					attempt = attempt,
+					error = tostring(profileOrErr),
+				})
+			end)
 			task.wait(RETRY_DELAY)
 		elseif not ok then
 			warn(string.format(
 				"[OilStateService] Load failed for user %d after %d attempts: %s",
 				userId, MAX_LOAD_RETRIES, tostring(profileOrErr)
 			))
+			pcall(function()
+				Telemetry.Track(nil, "oil_state_load_failed", {
+					userId = userId,
+					attempt = attempt,
+					error = tostring(profileOrErr),
+				})
+			end)
 		end
 		-- ok == true but profileOrErr is not a table (nil / non-table) means
 		-- the key doesn't exist yet (new player). No point retrying.
@@ -3831,6 +3912,19 @@ function OilStateService:SetShipSkinId(userId: number, skinId: string): (boolean
 	if prev ~= skinId and self._skinChangedHandler then
 		task.spawn(self._skinChangedHandler, userId, skinId)
 	end
+	-- Telemetry §6.4 `ship_skin_equipped`. Fires on every equip call
+	-- (even no-op same-skin) so analytics can see equip frequency,
+	-- but `skinIdFrom == skinIdTo` lets queries filter for actual
+	-- changes vs idle re-equip clicks.
+	if prev ~= skinId then
+		pcall(function()
+			local plr = Players:GetPlayerByUserId(userId)
+			Telemetry.Track(plr, "ship_skin_equipped", {
+				skinIdFrom = prev,
+				skinIdTo = skinId,
+			})
+		end)
+	end
 	return true, "OK"
 end
 
@@ -3852,6 +3946,18 @@ function OilStateService:TryUpgradeShipSpeed(userId: number): (boolean, string, 
 	end
 	state.shipSpeedLevel = level + 1
 	self:_markDirty(userId)
+	-- Telemetry §6.4 `ship_speed_upgraded` (Sink). Fires after
+	-- `TrySpendCash` succeeds + level increment, so failure paths above
+	-- are filtered out and the row matches the actual ledger debit.
+	pcall(function()
+		local plr = Players:GetPlayerByUserId(userId)
+		Telemetry.Economy(plr, "Sink", cost, "cash", "ship_speed", { kind = "ship_upgrade", id = "ship_speed" })
+		Telemetry.Track(plr, "ship_speed_upgraded", {
+			levelFrom = level,
+			levelTo = level + 1,
+			cost = cost,
+		})
+	end)
 	return true, "OK", "Speed upgraded."
 end
 
@@ -3890,6 +3996,19 @@ function OilStateService:TryUpgradeShipCapacity(userId: number): (boolean, strin
 	end
 	state.shipCapacityLevel = level + 1
 	self:_markDirty(userId)
+	-- Telemetry §6.4 `ship_capacity_upgraded` (Sink). Fires after
+	-- the level increment regardless of FTUE-free path so we can
+	-- segment FTUE-free from paid in queries (`cost = 0` when free).
+	pcall(function()
+		local effectiveCost = if ftueFree then 0 else cost
+		Telemetry.Economy(plr, "Sink", effectiveCost, "cash", "ship_capacity", { kind = "ship_upgrade", id = "ship_capacity" })
+		Telemetry.Track(plr, "ship_capacity_upgraded", {
+			levelFrom = level,
+			levelTo = level + 1,
+			cost = effectiveCost,
+			ftueFreeOverride = ftueFree,
+		})
+	end)
 	if ftueFree and _ftueService and typeof((_ftueService :: any).OnFtueShipCapacityUpgradeSuccess) == "function" then
 		(_ftueService :: any):OnFtueShipCapacityUpgradeSuccess(plr)
 	end

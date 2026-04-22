@@ -2251,23 +2251,17 @@ function OilVisualService:_syncOilTanks(plot: Model, snapshot)
 					end
 				end
 			end
-			local signClick = woodSignPart:FindFirstChild("TankUpgradeSignClick")
-			if signClick and not signClick:IsA("ClickDetector") then
-				signClick:Destroy()
-				signClick = nil
-			end
-			if not signClick then
-				local cd = Instance.new("ClickDetector")
-				cd.Name = "TankUpgradeSignClick"
-				-- Match `OilTankService:_hookSignPart` — see the note there
-				-- on why 28 instead of 22 (mobile reach + FOV).
-				cd.MaxActivationDistance = 28
-				cd.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
-				cd.Parent = woodSignPart
-			elseif signClick:IsA("ClickDetector") then
-				signClick.CursorIcon = "rbxasset://textures/Cursors/KeyboardMouse/PointingHandCursor.png"
-				signClick.MaxActivationDistance = math.max(28, signClick.MaxActivationDistance)
-			end
+			-- ClickDetector ownership lives entirely in `OilTankService:_hookSignPart`.
+			-- This service used to also create/style the CD here, which raced the
+			-- other service in the same frame on a fresh plot clone: both saw no
+			-- existing CD and both called `Instance.new("ClickDetector")`, parenting
+			-- two CDs onto the same Sign part. Roblox's input picker routes a click
+			-- to *one* CD non-deterministically — when the unhooked duplicate won
+			-- the race, the tap silently no-op'd and the player saw "click did
+			-- nothing". `OilTankService` now dedupes extra CDs as a safety net,
+			-- but the cleanest fix is to stop creating duplicates in the first
+			-- place. If you need to re-style the CD (cursor, distance), do it
+			-- in `OilTankService:_hookSignPart` so there's a single source of truth.
 			local surfaceGui = woodSignPart:FindFirstChildOfClass("SurfaceGui")
 			if surfaceGui then
 				-- Let ClickDetector handle click; sign text does not need GUI input.

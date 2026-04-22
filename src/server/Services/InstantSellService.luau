@@ -22,6 +22,7 @@ local InstantSellConfig = require(Shared:WaitForChild("Config"):WaitForChild("In
 local ErrorCodes = require(Shared:WaitForChild("Net"):WaitForChild("ErrorCodes"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local DevLog = require(Shared:WaitForChild("DevLog"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local InstantSellService = {}
 
@@ -131,8 +132,12 @@ function InstantSellService:_handleSell(player: Player, payload: any)
 		self:_sendActionResult(player, false, ErrorCodes.Unknown, "Sell failed — please retry.")
 		return
 	end
-	-- `actualPayout` carries the post-DoubleEarnings amount so the toast
-	-- message + payload reflect what was actually credited.
+	-- `actualPayout` carries the post-DoubleEarnings (and post-cash-
+	-- frenzy) amount so the toast + `totalPayout` reflect what was
+	-- actually credited. `AddCash` is called **exactly once** per sell
+	-- — `state.cash` only mutates inside `AddCash`, so multipliers
+	-- compose there and there's no path where a caller can double-
+	-- credit by combining `AddCash` with a manual `state.cash +=`.
 	local _ok, actualPayout = self._oilStateService:AddCash(player.UserId, totalPayout)
 	self._oilStateService:PushState(player.UserId)
 
@@ -142,6 +147,24 @@ function InstantSellService:_handleSell(player: Player, payload: any)
 		totalBarrels,
 		actualPayout
 	))
+
+	-- INTENTIONAL: `lines[i].payout` is the **gross** per-tier payout
+	-- (pre-DoubleEarnings) while `totalPayout` is `actualPayout` (post-
+	-- multiplier), so `Σ lines[i].payout` may not equal `totalPayout`
+	-- for DoubleEarnings owners or during `cash_frenzy`. No client
+	-- currently iterates `lines[i].payout`, so this is a latent wire-
+	-- format contract — same fix as `OilmanService` if a per-tier
+	-- receipt UI is added (scale by `actualPayout / totalPayout` with
+	-- final-line residual, or surface the multiplier separately).
+	-- Telemetry §6.4 `instant_sold` (Source). Same shape as
+	-- `oilman_sold` — `cashGained = actualPayout` (post-multiplier).
+	pcall(function()
+		Telemetry.Economy(player, "Source", actualPayout, "cash", "instant_sold", { kind = "oil", id = "mixed" })
+		Telemetry.Track(player, "instant_sold", {
+			barrelsByTier = consumeManifest,
+			cashGained = actualPayout,
+		})
+	end)
 
 	self:_sendActionResult(player, true, ErrorCodes.Ok,
 		string.format("Sold %d barrels for $%d.", totalBarrels, actualPayout),

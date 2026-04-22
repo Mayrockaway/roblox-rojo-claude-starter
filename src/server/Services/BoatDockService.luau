@@ -22,6 +22,7 @@ local BoatCollisionContract = require(script.Parent.Parent.Utils.BoatCollisionCo
 local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
 local ShipRig = require(Shared:WaitForChild("Utils"):WaitForChild("ShipRig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local BoatDockService = {}
 
@@ -1040,6 +1041,18 @@ function BoatDockService:CheckoutBoat(userId: number, shipmentId: string): (Mode
 	if not boat then
 		return nil, "BOAT_MISSING"
 	end
+	-- Telemetry §6.7 `dock_idle_to_active`. Captures the moment the
+	-- player's slot transitions from idle (bobbing) to a live voyage.
+	-- Fired before we mutate `_stateByUser` so analytics records the
+	-- idle dwell-time (`os.clock() - _idleSinceClock`) on the slice the
+	-- player just left, not on the new sailing slice.
+	pcall(function()
+		local plr = Players:GetPlayerByUserId(userId)
+		Telemetry.Track(plr, "dock_idle_to_active", {
+			shipmentId = shipmentId,
+			slotIndex = self._slotByUser[userId],
+		})
+	end)
 	-- Transition to sailing.
 	self._stateByUser[userId] = "sailing"
 	boat:SetAttribute("IsIdleBob", false)   -- stop client bob

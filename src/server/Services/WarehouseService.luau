@@ -13,6 +13,7 @@ local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"
 local WarehouseConfig = require(Shared:WaitForChild("Config"):WaitForChild("WarehouseConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local ResponsiveBillboard = require(Shared:WaitForChild("Utils"):WaitForChild("ResponsiveBillboard"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local WarehouseService = {}
 
@@ -957,6 +958,7 @@ function WarehouseService:TryUpgrade(userId: number, feedbackPlayer: Player?): (
 		return false, msg
 	end
 
+	local tierFrom = state.tier
 	state.tier += 1
 	self._dirtyByUserId[userId] = true
 
@@ -968,6 +970,20 @@ function WarehouseService:TryUpgrade(userId: number, feedbackPlayer: Player?): (
 	self:_updateSign(userId)
 	self._oilStateService:PushState(userId)
 	self:PushState(userId)
+
+	-- Telemetry §6.4 `warehouse_upgraded` (Sink). Fires after `TrySpendCash`
+	-- + tier increment so the row matches the actual ledger debit.
+	pcall(function()
+		local plr = Players:GetPlayerByUserId(userId)
+		local newCapacity = WarehouseConfig.Tiers[state.tier] and WarehouseConfig.Tiers[state.tier].capacity
+		Telemetry.Economy(plr, "Sink", nextCost, "cash", "warehouse_upgrade", { kind = "warehouse_upgrade", id = tostring(state.tier) })
+		Telemetry.Track(plr, "warehouse_upgraded", {
+			tierFrom = tierFrom,
+			tierTo = state.tier,
+			cost = nextCost,
+			newCapacity = newCapacity,
+		})
+	end)
 
 	local msg = string.format("Upgraded to tier %d.", state.tier)
 	if feedbackPlayer then

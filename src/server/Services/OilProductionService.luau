@@ -2,11 +2,14 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local Players = game:GetService("Players")
+
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local VeinConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
 local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local OilProductionService = {}
 
@@ -169,6 +172,32 @@ function OilProductionService:_runTick(deltaSeconds: number)
 					})
 				end
 			end
+			-- Telemetry §6.4 `oil_pumped` (sample 0.05) — one row per
+			-- producing tick per user, aggregating barrel flow by tier.
+			-- Sampling is enforced inside `Telemetry.Track` via the
+			-- catalog row's `sampleRate`; we still gate `pcall` to keep
+			-- the production loop bullet-proof.
+			pcall(function()
+				local plr = Players:GetPlayerByUserId(userId)
+				Telemetry.Track(plr, "oil_pumped", {
+					crude = connectedAdditions.Crude or 0,
+					refined = connectedAdditions.Refined or 0,
+					premium = connectedAdditions.Premium or 0,
+					added = added,
+					producingPumps = if producingPumpIds then #producingPumpIds else 0,
+				})
+				-- `oil_pump_collected` (sample 0.05) — one row per pump
+				-- that contributed > 0 this tick. SPEC §6.4 names the
+				-- per-pump fire moment so analytics can size pump-ROI
+				-- per pump, not per user.
+				if producingPumpIds then
+					for _, pumpId in ipairs(producingPumpIds) do
+						Telemetry.Track(plr, "oil_pump_collected", {
+							pumpId = pumpId,
+						})
+					end
+				end
+			end)
 		end
 	end
 end

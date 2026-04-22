@@ -13,6 +13,7 @@ local OilmanConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilmanC
 local ErrorCodes = require(Shared:WaitForChild("Net"):WaitForChild("ErrorCodes"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local DevLog = require(Shared:WaitForChild("DevLog"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local OilmanService = {}
 
@@ -179,8 +180,12 @@ function OilmanService:_handleSell(player: Player, payload: any)
 		self:_sendActionResult(player, false, ErrorCodes.Unknown, "Sell failed — please retry.")
 		return
 	end
-	-- `actualPayout` carries the post-DoubleEarnings amount so the toast
-	-- message + payload reflect what was actually credited.
+	-- `actualPayout` carries the post-DoubleEarnings (and post-cash-
+	-- frenzy) amount so the toast message + `totalPayout` field reflect
+	-- what was actually credited. `AddCash` is called **exactly once**
+	-- per sell request — `state.cash` is mutated only inside `AddCash`,
+	-- so any multiplier composes there and no caller can accidentally
+	-- double-credit by combining `AddCash` with a manual `state.cash +=`.
 	local _ok, actualPayout = self._oilStateService:AddCash(player.UserId, totalPayout)
 	self._oilStateService:PushState(player.UserId)
 
@@ -190,6 +195,29 @@ function OilmanService:_handleSell(player: Player, payload: any)
 		totalBarrels,
 		actualPayout
 	))
+
+	-- INTENTIONAL: `lines[i].payout` is the **gross** per-tier payout
+	-- (pre-DoubleEarnings) while `totalPayout` here is `actualPayout`
+	-- (post-multiplier), so `Σ lines[i].payout` may not equal
+	-- `totalPayout` for a player who owns DoubleEarnings or while a
+	-- `cash_frenzy` event is live. No current client iterates
+	-- `lines[i].payout` (`OilmanDialoguePanel` only reads `totalBarrels`
+	-- + `totalPayout`), so this is a latent wire-format contract — if a
+	-- future receipt detail panel renders per-tier money, scale the line
+	-- payouts by `actualPayout / totalPayout` (final-line residual to
+	-- absorb int rounding) before sending, or add the multiplier as a
+	-- separate field. Not rewriting today since no UI depends on it.
+	-- Telemetry §6.4 `oilman_sold` (Source). Fires after the atomic
+	-- consume + AddCash. `cashGained` uses `actualPayout` so it
+	-- reflects the post-multiplier credit (matches what hit
+	-- `state.cash`); `barrelsByTier` is the consumed manifest.
+	pcall(function()
+		Telemetry.Economy(player, "Source", actualPayout, "cash", "oilman_sold", { kind = "oil", id = "mixed" })
+		Telemetry.Track(player, "oilman_sold", {
+			barrelsByTier = consumeManifest,
+			cashGained = actualPayout,
+		})
+	end)
 
 	self:_sendActionResult(player, true, ErrorCodes.Ok,
 		string.format("Sold %d barrels for $%d.", totalBarrels, actualPayout),

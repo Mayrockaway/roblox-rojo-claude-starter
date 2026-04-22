@@ -9,8 +9,39 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local FtueService = {}
+
+-- UserId -> os.clock() at most-recent step entry. Powers `secondsInStep` /
+-- `secondsInPreviousStep` for the FTUE funnel telemetry.
+local _ftueStepEnteredAtByUserId: { [number]: number } = {}
+-- UserId -> true once `ftue_done` has fired this server lifetime, so we
+-- don't double-fire if `_setStep(Done)` is reentered (e.g. via Continue
+-- fall-through). `Telemetry.SetSession`/`SessionGet` were not shipped in
+-- PR 3, so we track first-* idempotency locally.
+local _ftueDoneFiredByUserId: { [number]: boolean } = {}
+-- UserId -> true once `ftue_started` has fired this server lifetime.
+-- Same idempotency reasoning as `_ftueDoneFiredByUserId` above — we do
+-- NOT want to record a fresh "started" each time the player respawns or
+-- `SyncFromOilState` re-enters the Intro branch on rejoin.
+local _ftueStartedFiredByUserId: { [number]: boolean } = {}
+
+local function _ftueOrdinal(stepId: string?): number?
+	if typeof(stepId) ~= "string" then
+		return nil
+	end
+	local order = FtueConfig.Order
+	if typeof(order) ~= "table" then
+		return nil
+	end
+	for index, name in ipairs(order) do
+		if name == stepId then
+			return index
+		end
+	end
+	return nil
+end
 
 local _remoteService: any = nil
 local _connections: { RBXScriptConnection } = {}
@@ -178,6 +209,13 @@ local function reapplyFtueRestrictionAttributes(self: any, player: Player)
 end
 
 function FtueService:_setStep(player: Player, step: string?)
+	-- Snapshot previous step BEFORE any of the step-entry side effects
+	-- mutate the FtueStepAttribute so the outgoing-step telemetry fires
+	-- with the correct id.
+	local _prevStepRaw = player:GetAttribute(Constants.FtueStepAttribute)
+	local _prevStep: string? = if typeof(_prevStepRaw) == "string" then _prevStepRaw else nil
+	local _prevEnteredAt = _ftueStepEnteredAtByUserId[player.UserId]
+	local _stepEnteredAt = os.clock()
 	if typeof(step) == "string" and step == FtueConfig.Step.WaitPlotShipment then
 		grantPlotShipmentStageCashIfNeeded(self, player)
 	end
@@ -274,6 +312,46 @@ function FtueService:_setStep(player: Player, step: string?)
 		step == nil and "nil" or tostring(step)
 	)
 	ftueDumpOilState(self._oilState, player, "_setStep after")
+
+	-- Wrap telemetry in pcall so a Telemetry bug can never break the FTUE
+	-- transition path (the FtueStepAttribute / FtueStateUpdate above are
+	-- already committed, the player must not get stuck mid-transition).
+	pcall(function()
+		if _prevStep ~= nil and _prevStep ~= step then
+			local secondsInStep: number? = nil
+			if typeof(_prevEnteredAt) == "number" then
+				secondsInStep = os.clock() - _prevEnteredAt
+			end
+			Telemetry.Track(player, "ftue_step_completed", {
+				stepId = _prevStep,
+				secondsInStep = secondsInStep,
+			})
+		end
+		if typeof(step) == "string" then
+			_ftueStepEnteredAtByUserId[player.UserId] = _stepEnteredAt
+			-- Telemetry §6.1 `ftue_started`. Per session, fires once the
+			-- first time the player enters any non-nil FTUE step
+			-- (typically `Intro`). Idempotent per server lifetime.
+			if not _ftueStartedFiredByUserId[player.UserId] then
+				_ftueStartedFiredByUserId[player.UserId] = true
+				Telemetry.Track(player, "ftue_started", {
+					stepId = step,
+				})
+			end
+			local ordinal = _ftueOrdinal(step)
+			if ordinal then
+				Telemetry.Funnel(player, "ftue", ordinal, step)
+			end
+			if step == FtueConfig.Step.Done and not _ftueDoneFiredByUserId[player.UserId] then
+				_ftueDoneFiredByUserId[player.UserId] = true
+				Telemetry.Track(player, "ftue_done", {
+					cashGranted = FtueConfig.TutorialCompleteCashReward,
+				})
+			end
+		else
+			_ftueStepEnteredAtByUserId[player.UserId] = nil
+		end
+	end)
 end
 
 function FtueService:_clearRestrictionAttributes(player: Player)
@@ -411,6 +489,20 @@ function FtueService:SyncFromOilState(userId: number)
 		end
 	end
 
+	-- Telemetry §6.1 `ftue_started`. The rejoin path through
+	-- `SyncFromOilState` sets the FtueStepAttribute directly without
+	-- going through `_setStep`, so we duplicate the one-shot fire here
+	-- so analytics still records the FTUE-active session start for
+	-- returning players. Idempotent on `_ftueStartedFiredByUserId`.
+	pcall(function()
+		if not _ftueStartedFiredByUserId[player.UserId] then
+			_ftueStartedFiredByUserId[player.UserId] = true
+			Telemetry.Track(player, "ftue_started", {
+				stepId = step,
+				rejoin = true,
+			})
+		end
+	end)
 	reapplyFtueRestrictionAttributes(self, player)
 	--- Re-stamp the BasePart marker on rejoin so the per-plot WaitReveal beam and
 	--- tile highlight resolve to the correct tile without waiting for a step change.
@@ -587,6 +679,20 @@ local function onSkip(self: any, player: Player)
 		return
 	end
 	ftueDbg("onSkip uid=%d -> _setStep(Done) (final modal)", player.UserId)
+	-- Telemetry §6.2 `ftue_skipped`. Fired BEFORE `_setStep(Done)` so
+	-- the row carries the player's last in-progress step (the one they
+	-- chose to skip from) rather than `Done`.
+	pcall(function()
+		local prevStepRaw = player:GetAttribute(Constants.FtueStepAttribute)
+		local prevStep: string? = if typeof(prevStepRaw) == "string" then prevStepRaw else nil
+		local prevEnteredAt = _ftueStepEnteredAtByUserId[player.UserId]
+		local secondsInStep: number? = if typeof(prevEnteredAt) == "number" then os.clock() - prevEnteredAt else nil
+		Telemetry.Track(player, "ftue_skipped", {
+			stepId = prevStep,
+			funnelStep = _ftueOrdinal(prevStep),
+			secondsInStep = secondsInStep,
+		})
+	end)
 	self:_clearRestrictionAttributes(player)
 	self:_setStep(player, FtueConfig.Step.Done)
 end
@@ -1167,6 +1273,40 @@ function FtueService:Start()
 			return
 		end
 		self:OnFtueDocksProgress(player, action)
+	end))
+
+	-- Telemetry §6.2 `ftue_step_abandoned`. On disconnect, if the player
+	-- is still mid-FTUE (current step is set and != Done) AND they got
+	-- past `Intro` (so we don't dilute analytics with players who insta-
+	-- quit at the splash), record the abandoned step + dwell time. Also
+	-- clear the per-server first-fire bookkeeping tables so a returning
+	-- player on a different server gets a fresh `ftue_started` /
+	-- `ftue_done` / `_ftueStepEnteredAtByUserId` slate (matches the
+	-- existing `ftue_done` / `ftue_started` server-lifetime contract).
+	table.insert(_connections, Players.PlayerRemoving:Connect(function(player)
+		pcall(function()
+			if FtueConfig.Enabled == true then
+				local stepRaw = player:GetAttribute(Constants.FtueStepAttribute)
+				local step: string? = if typeof(stepRaw) == "string" then stepRaw else nil
+				local enteredAt = _ftueStepEnteredAtByUserId[player.UserId]
+				local introOrdinal = _ftueOrdinal(FtueConfig.Step.Intro)
+				local stepOrdinal = _ftueOrdinal(step)
+				local pastIntro = stepOrdinal ~= nil and introOrdinal ~= nil and stepOrdinal > introOrdinal
+				if step ~= nil and step ~= FtueConfig.Step.Done and pastIntro then
+					local secondsInStep: number? = if typeof(enteredAt) == "number" then os.clock() - enteredAt else nil
+					Telemetry.Track(player, "ftue_step_abandoned", {
+						stepId = step,
+						funnelStep = stepOrdinal,
+						secondsInStep = secondsInStep,
+					})
+				end
+			end
+		end)
+		_ftueStepEnteredAtByUserId[player.UserId] = nil
+		_ftueDoneFiredByUserId[player.UserId] = nil
+		_ftueStartedFiredByUserId[player.UserId] = nil
+		_ftueRespawnReseatHistory[player.UserId] = nil
+		_ftueRejoinRestoreDone[player.UserId] = nil
 	end))
 end
 

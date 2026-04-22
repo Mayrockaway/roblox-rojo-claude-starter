@@ -29,8 +29,16 @@ local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 local BarrelStacking = require(script.Parent.Parent.Utils.BarrelStacking)
 local BoatCollisionContract = require(script.Parent.Parent.Utils.BoatCollisionContract)
 local DevLog = require(Shared:WaitForChild("DevLog"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local OilShipmentService = {}
+
+-- Per-server, UserId-keyed flags for "first per server lifetime" funnel
+-- gating. `Telemetry.SetSession`/`SessionGet` were not shipped in PR 3, so
+-- each owner service tracks its own first-* sentinel locally; on rejoin to
+-- the same server we won't double-fire, which is the desired idempotency.
+local _firstDispatchedByUserId: { [number]: boolean } = {}
+local _firstDeliveredByUserId: { [number]: boolean } = {}
 -- Player-hired pirate contract loss fraction. Sourced from `HitContractConfig`
 -- so the broker pitch label on the client and the server math here can never
 -- drift. Random PirateRaid strait events use a separate per-event fraction in
@@ -589,6 +597,28 @@ function OilShipmentService:SetAutoShipService(autoShipService: any)
 	self._autoShipService = autoShipService
 end
 
+--- Set by `init.server` after `GlobalEventService` is constructed. Optional
+--- — without it `_handleDispatch` skips the Express Convoy stat boost and
+--- `_handleStraitWaypointTrigger` skips the Pirate Wave override (effective
+--- behavior is "no global events", same as the rotation being idle).
+---
+--- Two hook sites depend on this:
+---   * `_handleDispatch` reads `GetShipStatsBoost()` AFTER `ShipStats.Resolve`
+---     so the boost layers on top of the player's upgrade levels (a maxed
+---     ship gets +50% capacity, not "reset to L1 then boost"). The
+---     resulting `travelSeconds` is clamped against the maxed-stats
+---     minimum to avoid pathological 0-second voyages from a future
+---     misconfigured `speedMul`.
+---   * `_handleStraitWaypointTrigger` reads `GetForcedStraitEventId()`
+---     AFTER the eventImmunity (Security Personnel) and FTUE-suppress
+---     short-circuits, AND after the bracket allow-list / occurrence
+---     roll — so Pirate Wave only replaces the *event picked*, not
+---     *whether* an event fires. Players who own Security Personnel still
+---     get full deflection.
+function OilShipmentService:SetGlobalEventService(globalEventService: any)
+	self._globalEventService = globalEventService
+end
+
 function OilShipmentService:_discoverLanes()
 	self._lanes = {}
 	local Workspace = game:GetService("Workspace")
@@ -1014,6 +1044,26 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 	local speedL = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
 	local capL = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
 	local stats = ShipStats.Resolve(speedL, capL)
+	-- Apply server-wide global event boosts (Express Convoy, future events).
+	-- Layered AFTER `ShipStats.Resolve` so the boost composes with the
+	-- player's upgrade levels (maxed ship + Express Convoy = ~150% capacity
+	-- of max, half travel time). Clamp `travelSeconds` to a fraction of the
+	-- maxed-stats voyage so a future misconfigured `speedMul` (e.g. 100)
+	-- can't produce a 0.1s voyage that breaks lane traversal animation.
+	if self._globalEventService then
+		local boost = self._globalEventService:GetShipStatsBoost()
+		if boost then
+			local speedMul = tonumber(boost.speedMul) or 1
+			local capacityMul = tonumber(boost.capacityMul) or 1
+			if speedMul > 0 and speedMul ~= 1 then
+				local minTravel = ShipStats.Resolve(ShipUpgradeConfig.MaxSpeedLevel, capL).travelSeconds * 0.4
+				stats.travelSeconds = math.max(minTravel, stats.travelSeconds / speedMul)
+			end
+			if capacityMul > 0 and capacityMul ~= 1 then
+				stats.capacity = math.floor(stats.capacity * capacityMul + 0.5)
+			end
+		end
+	end
 	local travelSeconds = stats.travelSeconds
 	local tutorialEscort = false
 	local ftueStepNow = (state :: any).ftueStep
@@ -1096,6 +1146,16 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 	-- the corresponding gameplay path reads.
 	if self._securityPersonnelService and self._securityPersonnelService:TryConsumeForDispatch(player.UserId) then
 		(shipment :: any).eventImmunity = true
+		pcall(function()
+			local remaining = 0
+			if typeof(self._securityPersonnelService.GetOwnedCount) == "function" then
+				remaining = self._securityPersonnelService:GetOwnedCount(player.UserId)
+			end
+			Telemetry.Track(player, "security_personnel_consumed", {
+				shipmentId = shipment.shipmentId,
+				remainingOwned = remaining,
+			})
+		end)
 	end
 
 	self:_sendActionResult(player, true, "OK", "Shipment dispatched.", {
@@ -1103,6 +1163,44 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		shipSkinId = skinId,
 		totalLoaded = totalRequested,
 	})
+
+	-- Wrap telemetry in pcall so a Telemetry bug can never block the
+	-- dispatch path (manifest is already consumed, fee already deducted).
+	pcall(function()
+		Telemetry.Economy(
+			player,
+			"Sink",
+			dispatchFee,
+			"cash",
+			"dispatch_fee",
+			tostring(shipment.shipmentId)
+		)
+		local autoShipFlag = (typeof(payload) == "table" and payload.autoShip == true) or false
+		Telemetry.Track(player, "shipment_dispatched", {
+			shipmentId = shipment.shipmentId,
+			manifestBarrels = totalRequested,
+			manifestByTier = normalizedManifest,
+			dispatchFee = dispatchFee,
+			shipSpeedLevel = speedL,
+			shipCapacityLevel = capL,
+			shipSkinId = skinId,
+			straitEngineStateAtDispatch = self:_getStraitEngineState(),
+			autoShip = autoShipFlag,
+			securityPersonnelActive = (shipment :: any).eventImmunity == true,
+		})
+		if not _firstDispatchedByUserId[player.UserId] then
+			_firstDispatchedByUserId[player.UserId] = true
+			local secondsSinceJoin: number? = nil
+			local session = Telemetry._getSession(player)
+			if session then
+				secondsSinceJoin = math.floor(os.clock() - session.joinedAtClock)
+			end
+			Telemetry.Track(player, "shipment_first_dispatched", {
+				secondsSinceJoin = secondsSinceJoin,
+			})
+			Telemetry.Funnel(player, "first_run", 2, "first_dispatch")
+		end
+	end)
 
 	if self._ftueService and FtueConfig.Enabled then
 		local stD = self._oilStateService:GetState(player.UserId)
@@ -1313,6 +1411,21 @@ function OilShipmentService:_runShipment(shipment)
 
 	local triggerSlots = self:_buildStraitTriggerSlots(path, segDists)
 	local firedAtLaneWaypoint: { [number]: boolean } = {}
+
+	-- Telemetry §6.3 `shipment_voyage_started`. Fires once per voyage AFTER
+	-- path build so `pathLength`, `laneIndex`, and `straitTriggerSlots`
+	-- match the actual route. Owner may have left mid-spawn; pass the
+	-- player handle if still online so per-player rate limit attributes
+	-- correctly, otherwise fall through with `nil`.
+	pcall(function()
+		local ownerForTelemetry = Players:GetPlayerByUserId(ownerUserId)
+		Telemetry.Track(ownerForTelemetry, "shipment_voyage_started", {
+			shipmentId = shipment.shipmentId,
+			pathLength = totalPathLen,
+			laneIndex = laneIndex,
+			straitTriggerSlots = #triggerSlots,
+		})
+	end)
 
 	if self:_straitDebugLogEnabled() then
 		if #triggerSlots == 0 then
@@ -1545,6 +1658,31 @@ function OilShipmentService:_runShipment(shipment)
 
 	self._oilStateService:DecrementShipmentCount(ownerUserId)
 	self._oilStateService:PushState(ownerUserId)
+
+	-- Wrap in pcall so a Telemetry bug can never disrupt the warehouse
+	-- delivery / shipment teardown that follows.
+	pcall(function()
+		local ownerPlayer = Players:GetPlayerByUserId(ownerUserId)
+		if not ownerPlayer then
+			return
+		end
+		local voyageSeconds: number? = nil
+		if typeof(voyageWallStart) == "number" then
+			voyageSeconds = workspace:GetServerTimeNow() - voyageWallStart
+		end
+		Telemetry.Track(ownerPlayer, "shipment_completed", {
+			shipmentId = shipment.shipmentId,
+			barrelsDelivered = totalDelivered,
+			barrelsLost = shipment.totalLoaded - totalDelivered,
+			deliveredByTier = deliveredManifest,
+			voyageSeconds = voyageSeconds,
+			shipSkinId = shipment.shipSkinId,
+		})
+		if not _firstDeliveredByUserId[ownerUserId] then
+			_firstDeliveredByUserId[ownerUserId] = true
+			Telemetry.Funnel(ownerPlayer, "first_run", 3, "first_delivered")
+		end
+	end)
 
 	if self._ftueService and FtueConfig.Enabled and totalDelivered > 0 then
 		(self._ftueService :: any):OnShipmentDeliveredToWarehouse(ownerUserId, totalDelivered)
@@ -2137,6 +2275,15 @@ function OilShipmentService:_finishShipmentWithoutPayout(shipment, reason: strin
 		dispatchFee = shipment.dispatchFee,
 		failureReason = reason,
 	})
+	pcall(function()
+		local ownerForTelemetry = Players:GetPlayerByUserId(shipment.ownerUserId)
+		Telemetry.Track(ownerForTelemetry, "shipment_total_loss", {
+			shipmentId = shipment.shipmentId,
+			reason = reason,
+			barrelsLost = shipment.totalLoaded,
+			eventId = (shipment :: any).lastStraitEventId,
+		})
+	end)
 end
 
 function OilShipmentService:_getStraitEngineState(): string
@@ -2438,6 +2585,27 @@ function OilShipmentService:_executeForcedContractPirateRaid(
 	if barrelsStolen > 0 then
 		self:_deliverContractStolenOil(contractorUserId, stolenByTier)
 	end
+
+	-- Telemetry §6.3 — fire BOTH sides of the contract hit. Victim side
+	-- (`shipment_pirate_hit`) accounts for cargo loss; contractor side
+	-- (`shipment_pirate_hit_payout`) accounts for the stolen oil that
+	-- routed into their warehouse via `_deliverContractStolenOil` above.
+	pcall(function()
+		local victimPlayer = Players:GetPlayerByUserId(ownerUserId)
+		Telemetry.Track(victimPlayer, "shipment_pirate_hit", {
+			shipmentId = shipment.shipmentId,
+			contractorUserId = contractorUserId,
+			stolenByTier = stolenByTier,
+			stolenTotal = barrelsStolen,
+		})
+		local contractorPlayerForTelemetry = Players:GetPlayerByUserId(contractorUserId)
+		Telemetry.Track(contractorPlayerForTelemetry, "shipment_pirate_hit_payout", {
+			contractId = contractId,
+			victimUserId = ownerUserId,
+			stolenByTier = stolenByTier,
+			stolenTotal = barrelsStolen,
+		})
+	end)
 
 	if self._hitContractService and typeof(self._hitContractService.MarkContractExecuted) == "function" then
 		self._hitContractService:MarkContractExecuted(contractId)
@@ -2796,6 +2964,15 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	-- is "this shipment is untouchable", not "events still fire but get
 	-- absorbed", so QA toggles shouldn't bypass it either.
 	if (shipment :: any).eventImmunity == true then
+		pcall(function()
+			local ownerForTelemetry = Players:GetPlayerByUserId(ownerUserId)
+			Telemetry.Track(ownerForTelemetry, "security_personnel_deflected", {
+				shipmentId = shipment.shipmentId,
+				laneWaypointIndex = laneWaypointIndex,
+				eventIdThatWouldHaveFired = nil,
+				severity = nil,
+			})
+		end)
 		return false
 	end
 	local dbg = Constants.StraitEventsDebug
@@ -2809,12 +2986,44 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		bracketNote = string.format("  [FORCE] event bracket overridden → %s (engine maps to %s)", tostring(dbg.ForceBracket), bracketFromEngine)
 	end
 
+	-- Server-wide global event override (Pirate Wave, future ForceStraitEvent
+	-- events). Resolved BEFORE the bracket allow-list and occurrence-chance
+	-- gates because the design intent is "spike this event's frequency for
+	-- the duration" — gating it through the per-bracket sparse roll would
+	-- make Pirate Wave essentially invisible during `Open` strait
+	-- (3 trigger waypoints × 25% = ~0.75 events/voyage, most short voyages
+	-- see zero). Treat an active force the same way as the dev
+	-- `ForceOccurrenceAtWaypoint` flag: every reachable waypoint fires.
+	--
+	-- We DO still respect:
+	--   * `(shipment :: any).eventImmunity` (Security Personnel) above — a
+	--     defended run still sees no event during a Pirate Wave, which is
+	--     exactly the design intent (Pirate Wave is a "spike defensive
+	--     monetization" lever, not "punish everyone equally").
+	--   * `ftueTutorialSuppressStraitIncidents` above — tutorial escort
+	--     shipments stay clean.
+	--
+	-- Severity for the override pulls from the engine bracket so impact
+	-- still scales naturally (Open = Low pirates, Closed = Medium/High);
+	-- this matches what `dbg.ForcePirateRaid` produces today (a Medium
+	-- severity by default), but bracket-derived severity is more honest
+	-- because the player's voyage is still in that strait state.
+	local globalForcedStraitEventId: string? = nil
+	if self._globalEventService then
+		local forcedId = self._globalEventService:GetForcedStraitEventId()
+		if typeof(forcedId) == "string" and forcedId ~= "" then
+			globalForcedStraitEventId = forcedId
+		end
+	end
+
 	-- Per-bracket allow-list gate: a waypoint that isn't enabled for the
 	-- *current* bracket short-circuits before rolling occurrence. Debug
 	-- `ForceOccurrenceAtWaypoint` still fires every reachable waypoint
-	-- regardless of bracket so QA can validate any slot.
+	-- regardless of bracket so QA can validate any slot. An active global
+	-- ForceStraitEvent (Pirate Wave) bypasses for the same reason — the
+	-- event must be felt across the whole voyage.
 	local triggerEnabled = StraitEventConfig.IsTriggerEnabledForBracket(bracket, laneWaypointIndex)
-	if not triggerEnabled and not dbg.ForceOccurrenceAtWaypoint then
+	if not triggerEnabled and not dbg.ForceOccurrenceAtWaypoint and not globalForcedStraitEventId then
 		if log then
 			print(
 				string.format(
@@ -2838,12 +3047,14 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	local occurrenceChance = StraitEventConfig.GetOccurrenceChance(bracket)
 	local rng = Random.new()
 	local rollOcc = rng:NextNumber()
-	local occurrenceHit = dbg.ForceOccurrenceAtWaypoint or rollOcc < occurrenceChance
+	local occurrenceHit = dbg.ForceOccurrenceAtWaypoint
+		or (globalForcedStraitEventId ~= nil)
+		or rollOcc < occurrenceChance
 
 	if log then
 		print(
 			string.format(
-				"  [StraitShipment DEBUG] shipment=%s laneWP=%d\n    strait ENGINE state: %s\n    event BRACKET (for odds/severity): %s (from engine would be: %s)%s\n    occurrence: P(hit)=%.0f%%  roll=%.4f  forceAllCrossings=%s  → %s",
+				"  [StraitShipment DEBUG] shipment=%s laneWP=%d\n    strait ENGINE state: %s\n    event BRACKET (for odds/severity): %s (from engine would be: %s)%s\n    occurrence: P(hit)=%.0f%%  roll=%.4f  forceAllCrossings=%s  globalForceEvent=%s  → %s",
 				shipment.shipmentId,
 				laneWaypointIndex,
 				engineState,
@@ -2853,10 +3064,25 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 				occurrenceChance * 100,
 				rollOcc,
 				tostring(dbg.ForceOccurrenceAtWaypoint),
+				tostring(globalForcedStraitEventId or "<none>"),
 				occurrenceHit and "HIT (will roll severity)" or "MISS (no strait event this waypoint)"
 			)
 		)
 	end
+
+	-- Telemetry §6.3 `strait_waypoint_evaluated` — fires every crossing
+	-- (sample 0.1 in `TelemetryConfig`). Captures bracket + occurrence
+	-- decision so downstream queries can compute "P(event | bracket)" from
+	-- the actual roll distribution rather than the configured chance.
+	pcall(function()
+		local ownerForTelemetry = Players:GetPlayerByUserId(ownerUserId)
+		Telemetry.Track(ownerForTelemetry, "strait_waypoint_evaluated", {
+			shipmentId = shipment.shipmentId,
+			pathIndex = laneWaypointIndex,
+			bracket = bracket,
+			occurred = occurrenceHit,
+		})
+	end)
 
 	if not occurrenceHit then
 		return false
@@ -2864,6 +3090,30 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 
 	local severity = StraitEventConfig.RollSeverity(bracket, rng)
 	local def = StraitEventCatalog.PickRandom(severity, rng)
+
+	-- Apply the global event override now that occurrence has been forced.
+	-- Severity stays bracket-derived so the gameplay impact still scales
+	-- with the current strait state (Open Pirate Wave = lighter raids, Closed
+	-- Pirate Wave = brutal). If the forced id is missing from the catalog
+	-- we fall back to the rolled `def` so the event still feels alive
+	-- rather than silently no-op'ing.
+	if globalForcedStraitEventId then
+		local override = StraitEventCatalog.GetById(globalForcedStraitEventId)
+		if override then
+			def = override
+			if log then
+				print(string.format(
+					"  [StraitShipment DEBUG] global event override → def=%s severity=%s (bracket=%s)",
+					tostring(def.id), severity, bracket
+				))
+			end
+		elseif log then
+			warn(string.format(
+				"  [StraitShipment DEBUG] global event force id %q not found in StraitEventCatalog — keeping rolled %s",
+				globalForcedStraitEventId, tostring(def and def.id or "<nil>")
+			))
+		end
+	end
 
 	-- Debug: force specific event types
 	if dbg.ForceMissileStrike then
@@ -2916,6 +3166,26 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			)
 		)
 	end
+
+	-- Telemetry §6.3 `strait_event_fired` — fires once per realised event
+	-- (after all overrides resolve to a concrete `def`). `barrelsLost`
+	-- isn't known yet (each event-type branch computes loss separately);
+	-- analytics can join against `shipment_completed` /
+	-- `shipment_total_loss` for the actual outcome.
+	(shipment :: any).lastStraitEventId = def.id
+	pcall(function()
+		local ownerForTelemetry = Players:GetPlayerByUserId(ownerUserId)
+		Telemetry.Track(ownerForTelemetry, "strait_event_fired", {
+			shipmentId = shipment.shipmentId,
+			eventId = def.id,
+			displayName = def.displayName,
+			severity = severity,
+			bracket = bracket,
+			priceMultiplierFactor = def.priceMultiplierFactor,
+			pauseSeconds = def.pauseSeconds,
+			totalLoss = def.totalLoss == true,
+		})
+	end)
 
 	local playtestTitle = StraitEventCatalog.GetPlaytestTitle(def)
 

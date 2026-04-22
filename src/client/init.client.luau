@@ -1248,6 +1248,25 @@ ShipmentVisualClient.connect({
 -- Drill animation + super tile pulse live in DrillAnimationClient
 DrillAnimationClient.start()
 
+-- Server-wide global events (Cash Frenzy, Pirate Wave, Express Convoy).
+-- `GlobalEventClientState` owns the single `GlobalEventStateUpdate`
+-- subscription and exposes a tiny query API (cash multiplier, "any
+-- active?", `Changed` signal) so multiple UIs (banner + SellOilPanel
+-- price emphasis, future hooks) can react without duplicate remote
+-- listeners. Start it FIRST so any consumer requiring it later (e.g.
+-- the banner below, the sell oil panel on first open) finds it ready.
+local GlobalEventClientState = require(resolveClientModule(script, "GlobalEventClientState"))
+GlobalEventClientState.start()
+-- The banner subscribes to `GlobalEventClientState.Changed` and renders
+-- one row per active event with a live countdown + a gold animated
+-- accent stroke + a subtle pulse. Runtime ScreenGui under PlayerGui
+-- (notification-style, allowed by `ui-architecture.mdc` §9). Server is
+-- the only source of truth for which events are active and when they
+-- expire — the controller never applies the gameplay effect, only
+-- renders the chrome.
+local GlobalEventBanner = require(resolveClientModule(script, "GlobalEventBanner"))
+GlobalEventBanner.start()
+
 RunService.RenderStepped:Connect(function()
 	updateFocusUi()
 	updateGhost()

@@ -11,6 +11,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local StraitEventCatalog = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("Catalog"))
 local DevLog = require(Shared:WaitForChild("DevLog"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local ArmyGeneralService = {}
 
@@ -270,6 +271,16 @@ function ArmyGeneralService:_executeNuke(player: Player)
 	for _, info in ipairs(shipmentPositions) do
 		self._oilShipmentService:ForceDestroyShipment(info.shipmentId, "Nuclear strike")
 	end
+
+	-- Telemetry §6.5 `nuke_fired`. Fires after detonation FX broadcast
+	-- + ship destruction so analytics records actual blast impact, not
+	-- the click that may still bail (cooldown gate already covered above).
+	pcall(function()
+		Telemetry.Track(player, "nuke_fired", {
+			affectedShipments = #shipmentPositions,
+			cooldownSeconds = NUKE_COOLDOWN,
+		})
+	end)
 	task.delay(10, function()
 		self._oilShipmentService._nukeActive = false
 	end)
@@ -359,6 +370,20 @@ function ArmyGeneralService:_handleAirstrike(player: Player, payload)
 	local jetEnd = boatPos - jetDir * 600 + Vector3.new(0, jetAlt, 0)
 
 	local victimPlayer = Players:GetPlayerByUserId(victimUserId)
+
+	-- Telemetry §6.5 `airstrike_fired` (Sink). Fires after `TrySpendCash`
+	-- success and the early-return refund branches above (so refunds for
+	-- "shipment ended / boat not found / boat error" do NOT show up as
+	-- a fired airstrike). `outcome` is fixed to "hit" — General airstrikes
+	-- guarantee a hit.
+	pcall(function()
+		Telemetry.Economy(player, "Sink", AIRSTRIKE_COST, "cash", "airstrike", { kind = "airstrike", id = "general" })
+		Telemetry.Track(player, "airstrike_fired", {
+			victimUserId = victimUserId,
+			cost = AIRSTRIKE_COST,
+			outcome = "hit",
+		})
+	end)
 
 	-- Fire airstrike event to ALL clients — always hit, barrage of bombs
 	local airstrikeEvent = self._remoteService:GetEvent(RemoteNames.AirStrikeEvent)

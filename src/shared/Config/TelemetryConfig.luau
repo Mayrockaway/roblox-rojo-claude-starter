@@ -180,8 +180,12 @@ TelemetryConfig.RateLimits = {
 --------------------------------------------------------------------------------
 TelemetryConfig.GameAnalytics = {
 	EndpointBase = "https://api.gameanalytics.com/v2/",
-	--- GameAnalytics REST v2 SDK string. Literal value GA expects per their docs.
-	SdkVersion = "rest 2 v3",
+	--- GameAnalytics REST v2 SDK string. Per GA's published JSON schema for the
+	--- shared `sdk_version` field, custom REST integrations MUST send the
+	--- literal string `"rest api v2"` (any other value fails the regex
+	--- `^(...|rest api v2)$` and the whole event is rejected with HTTP 400).
+	--- See https://docs.gameanalytics.com/integrations/api/event-types/ §“Default annotations”.
+	SdkVersion = "rest api v2",
 
 	Batch = {
 		FlushSeconds = 8,

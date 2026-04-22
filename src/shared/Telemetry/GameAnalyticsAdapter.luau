@@ -4,9 +4,14 @@
 -- Owns:
 --   * Boot-time secret loading per SPEC §4.6.2 (split: Game Key via
 --     `HttpService:GetSecret`, Secret Key via `ServerStorage.Secrets.GameAnalytics`).
---   * The mandatory ordering per SPEC §4.6.5: `init` → `user` → `session_start`
---     → gameplay events. The drain loop refuses to POST gameplay events
---     for a user before that user's `user`/`session_start` have shipped.
+--   * The mandatory ordering per SPEC §4.6.5: `init` → `user` → gameplay
+--     events. GA REST v2's `user` event IS the session start (its category
+--     enum is `user | session_end | business | resource | progression |
+--     design | error` — there is no separate `session_start` event); the
+--     locked custom dimensions supplied by `QueueSessionStart` are stashed
+--     on the user state and folded into the `user` event by `_buildUserBody`.
+--     The drain loop refuses to POST gameplay events for a user before that
+--     user's `user` event has shipped.
 --   * HMAC-SHA256 signing of every POST per SPEC §4.6.3, computed over the
 --     EXACT bytes of the JSON-encoded body (no whitespace mutation post-sign).
 --   * Per-user batched buffer per SPEC §4.6.8 (8s flush / 100-event flush /
@@ -115,8 +120,8 @@ type GaEventBody = { [string]: any }
 type BufferedEvent = {
 	body: GaEventBody,
 	queuedAtClock: number,
-	-- True for the user/session_start handshake events so the drain
-	-- loop can stack them at the head of the user's POST.
+	-- True for the `user` handshake event so the drain loop keeps it at
+	-- the head of the user's POST.
 	isHandshake: boolean,
 }
 
@@ -125,7 +130,15 @@ type UserState = {
 	sessionId: string,
 	joinedAtClock: number,
 	gaUserSent: boolean,
+	-- Retained for callers that read this flag, but per GA's data model the
+	-- `user` event IS the session start (there is no separate `session_start`
+	-- event in GA REST v2's category enum). We mirror `gaUserSent` into this
+	-- field whenever the user-handshake POST succeeds. Custom dimensions
+	-- supplied by `QueueSessionStart` are stashed in `gaCustom01` / `gaCustom02`
+	-- and folded into the `user` event body by `_buildUserBody`.
 	gaSessionStartSent: boolean,
+	gaCustom01: string?,
+	gaCustom02: string?,
 	isEnding: boolean,
 	buffer: { BufferedEvent },
 	lastFlushAtClock: number,
@@ -348,32 +361,39 @@ local function _baseEventFields(player: Player?, sessionId: string?): GaEventBod
 	else
 		userId = _serverUserId()
 	end
+	-- IMPORTANT: GA's collector validates `platform` against a strict enum and
+	-- `os_version` against a regex anchored to that same enum. `"roblox"` is
+	-- NOT a valid value for either field, so we report the underlying host
+	-- (`"windows"` is the safest default given the bulk of Roblox sessions
+	-- run on Windows desktops; per-session platform refinement can be added
+	-- later by passing a hint through from the client). `engine_version`'s
+	-- regex DOES allow `"roblox"`, which is how we keep the GA dashboard
+	-- correctly attributing traffic as "Roblox" engine.
 	return {
-		v             = 2,
-		user_id       = userId,
-		client_ts     = _gaClientTs(),
-		sdk_version   = SDK_VERSION,
-		os_version    = "roblox 0.0.0",
-		manufacturer  = "roblox",
-		platform      = "roblox",
-		device        = "unknown",
-		session_id    = sessionId or "",
-		session_num   = 1,
-		build         = tostring(PLACE_VERSION),
+		v              = 2,
+		user_id        = userId,
+		client_ts      = _gaClientTs(),
+		sdk_version    = SDK_VERSION,
+		os_version     = "windows 0.0.0",
+		manufacturer   = "roblox",
+		platform       = "windows",
+		device         = "unknown",
+		engine_version = "roblox 0.0.0",
+		session_id     = sessionId or "",
+		session_num    = 1,
+		build          = tostring(PLACE_VERSION),
 	}
 end
 
 local function _buildUserBody(user: UserState): GaEventBody
 	local body = _baseEventFields(Players:GetPlayerByUserId(user.userId), user.sessionId)
 	body.category = "user"
-	return body
-end
-
-local function _buildSessionStartBody(user: UserState, payload: SessionStartPayload): GaEventBody
-	local body = _baseEventFields(Players:GetPlayerByUserId(user.userId), user.sessionId)
-	body.category  = "session_start"
-	body.custom_01 = payload.accountAgeBucket
-	body.custom_02 = payload.membership
+	-- GA's "user" event is the session start. Fold the custom dimensions
+	-- stashed by `QueueSessionStart` into the same payload — there is no
+	-- separate `session_start` event in GA REST v2 (its category enum is
+	-- `user | session_end | business | resource | progression | design | error`).
+	if user.gaCustom01 then body.custom_01 = user.gaCustom01 end
+	if user.gaCustom02 then body.custom_02 = user.gaCustom02 end
 	return body
 end
 
@@ -542,7 +562,9 @@ local function _ensureUserState(player: Player, payloadSessionId: string?): User
 	if type(payloadSessionId) == "string" and payloadSessionId ~= "" then
 		sessionId = payloadSessionId
 	else
-		sessionId = (HttpService:GenerateGUID(false):gsub("-", "")):sub(1, 16)
+		-- Lowercase, hyphenated UUID matching GA's `session_id` regex
+		-- `^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`.
+		sessionId = string.lower(HttpService:GenerateGUID(false))
 	end
 	state = {
 		userId = userId,
@@ -668,10 +690,13 @@ local function _runInit(): boolean
 	_gaServerInitInFlight = true
 
 	-- /init body is a minimal handshake — only platform/os_version/sdk_version
-	-- per SPEC §4.6.5.
+	-- per SPEC §4.6.5. NOTE: `/init` is more lenient than `/events`, but we
+	-- mirror the same enum-safe values used by `_baseEventFields` to avoid
+	-- surprises if GA tightens validation later. See the comment on
+	-- `_baseEventFields` for the platform/os_version rationale.
 	local initBody = {
-		platform     = "roblox",
-		os_version   = "roblox 0.0.0",
+		platform     = "windows",
+		os_version   = "windows 0.0.0",
 		sdk_version  = SDK_VERSION,
 	}
 	local jsonBody = HttpService:JSONEncode(initBody)
@@ -788,42 +813,26 @@ local function _flushUser(state: UserState): boolean
 			isHandshake = true,
 		})
 	end
-	-- session_start handshake is queued separately by `QueueSessionStart`
-	-- (it carries the locked custom dimensions) — we do not synthesize
-	-- it here. If it was never queued, the user simply has no session
-	-- and gameplay events would be invalid; we drop them below.
-
-	if not state.gaSessionStartSent then
-		-- Walk the buffer for a session_start; if absent we cannot POST
-		-- gameplay events for this user yet (GA would reject them).
-		local hasSessionStart = false
-		for _, ev in state.buffer do
-			if ev.body.category == "session_start" then
-				hasSessionStart = true
-				break
-			end
-		end
-		if not hasSessionStart then
-			-- Nothing we can POST — leave non-handshake events queued.
-			-- This branch shouldn't happen in practice (`QueueSessionStart`
-			-- runs from `_onPlayerAdded` before gameplay events).
-			return false
-		end
-	end
+	-- GA REST v2 has no separate `session_start` event — the `user` event IS
+	-- the session start (and now carries `custom_01` / `custom_02` directly,
+	-- folded in by `_buildUserBody` from the dimensions stashed by
+	-- `QueueSessionStart`). The user-handshake we just prepended above is
+	-- sufficient; no second handshake is needed.
 
 	local slice = _drainSlice(state)
 	if #slice == 0 then
 		return false
 	end
 
-	-- Re-walk the slice to confirm handshake event presence — if user/session_start
-	-- events fall out of the slice (e.g. age-out), we can't safely POST the rest.
+	-- Re-walk the slice to confirm the user-handshake event survived. If it
+	-- fell out of the slice (e.g. age-out), we can't safely POST the rest.
+	-- `gaSessionStartSent` is mirrored from `gaUserSent` since GA's `user`
+	-- event IS the session start (see `_buildUserBody`).
 	local sliceHasUser = state.gaUserSent
-	local sliceHasSessionStart = state.gaSessionStartSent
 	for _, ev in slice do
-		if ev.body.category == "user" then sliceHasUser = true end
-		if ev.body.category == "session_start" then sliceHasSessionStart = true end
+		if ev.body.category == "user" then sliceHasUser = true; break end
 	end
+	local sliceHasSessionStart = sliceHasUser
 
 	state.inFlight = true
 	state.lastFlushAtClock = now
@@ -930,16 +939,13 @@ function GameAnalyticsAdapter.QueueSessionStart(player: Player, payload: Session
 	if not player then return end
 
 	local state = _ensureUserState(player, nil)
-	-- Insert the session_start handshake at the head so subsequent
-	-- gameplay events POST after it (the drain loop also scans for it).
-	local body = _buildSessionStartBody(state, payload)
-	table.insert(state.buffer, 1, {
-		body = body,
-		queuedAtClock = os.clock(),
-		isHandshake = true,
-	})
-	-- The `user` event is added lazily by `_flushUser` so we don't double-
-	-- queue if QueueSessionStart is called twice.
+	-- Stash the locked custom dimensions on the user state. The `user`
+	-- handshake event (queued lazily by the flush loop) folds them in via
+	-- `_buildUserBody`. There is no separate `session_start` event in GA
+	-- REST v2 — the `user` event IS the session start (see GA category enum:
+	-- `user | session_end | business | resource | progression | design | error`).
+	state.gaCustom01 = payload.accountAgeBucket
+	state.gaCustom02 = payload.membership
 end
 
 function GameAnalyticsAdapter.Queue(

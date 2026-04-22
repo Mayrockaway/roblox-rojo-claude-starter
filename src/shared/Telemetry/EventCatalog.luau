@@ -89,6 +89,7 @@ EventCatalog.Events = {
 	funnel_ftue          = { category = "funnel",      gaCategory = "progression", sampleRate = 1.0 },
 	funnel_first_run     = { category = "funnel",      gaCategory = "progression", sampleRate = 1.0 },
 	ftue_step_completed  = { category = "progression", gaCategory = "progression", sampleRate = 1.0 },
+	ftue_step_abandoned  = { category = "progression", gaCategory = "progression", sampleRate = 1.0 },
 	ftue_skipped         = { category = "progression", gaCategory = "progression", sampleRate = 1.0 },
 	ftue_done            = { category = "progression", gaCategory = "progression", sampleRate = 1.0 },
 
@@ -116,7 +117,6 @@ EventCatalog.Events = {
 	oil_sold                = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
 	oilman_sold             = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
 	instant_sold            = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
-	cash_granted_dev        = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
 	dispatch_fee            = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
 	equipment_purchased     = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
 	equipment_purchase_failed = { category = "error", gaCategory = "error",   sampleRate = 1.0 },
@@ -138,6 +138,14 @@ EventCatalog.Events = {
 	pirate_hire_created  = { category = "custom", gaCategory = "design", sampleRate = 1.0 },
 	pirate_hire_refunded = { category = "custom", gaCategory = "design", sampleRate = 1.0 },
 	pirate_hire_executed = { category = "custom", gaCategory = "design", sampleRate = 1.0 },
+
+	-- Global events (`GlobalEventService`). One row per lifecycle stage so
+	-- analytics can compute (a) activation rate per event id, (b) average
+	-- duration delivered (start vs end), and (c) whether players are
+	-- earning/dispatching during the buff window vs ignoring it. The
+	-- `eventId` property carries the `GlobalEventConfig.Events[*].id`.
+	global_event_started = { category = "custom", gaCategory = "design", sampleRate = 1.0 },
+	global_event_ended   = { category = "custom", gaCategory = "design", sampleRate = 1.0 },
 
 	--==========================================================================
 	-- 6.6 Monetization

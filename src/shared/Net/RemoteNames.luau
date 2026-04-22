@@ -140,6 +140,24 @@ local RemoteNames = {
 	-- Dev-only: toggle all UI visibility for marketing footage capture.
 	DevHideUI = "DevHideUI",
 
+	-- Global events (`GlobalEventService` + `GlobalEventConfig` + client
+	-- `GlobalEventBanner`). Server → all clients: full snapshot of currently
+	-- active server-wide events. Fires on activate, on expire, on every
+	-- new player joining (so they don't sit on a stale "no events" state),
+	-- and on the periodic safety-net push from the service.
+	--
+	-- Payload shape (see `GlobalEventService:_buildSnapshotPayload`):
+	--   {
+	--     active = {
+	--       { id, displayName, subtitle, bannerKind, expiresAt, helpText? },
+	--       ...
+	--     },
+	--     serverNow = number, -- workspace:GetServerTimeNow() at broadcast
+	--   }
+	-- Client banner uses `expiresAt - serverNow` as the initial countdown
+	-- so client/server clock skew doesn't cause the timer to drift past 0.
+	GlobalEventStateUpdate = "GlobalEventStateUpdate",
+
 	-- FTUE (`FtueService` + `FtueDialogueController`).
 	RequestFtueAcknowledge = "RequestFtueAcknowledge",
 	RequestFtueSkip = "RequestFtueSkip",

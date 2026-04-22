@@ -11,11 +11,10 @@ local AdminService = {}
 local FORCE_CLOSE_COOLDOWN_SECONDS = 120
 local FORCE_CLOSE_DEFAULT_DURATION_SECONDS = 90
 
-function AdminService:Init(remoteService, straitStateService, rateLimitService, telemetryService)
+function AdminService:Init(remoteService, straitStateService, rateLimitService)
 	self._remoteService = remoteService
 	self._straitStateService = straitStateService
 	self._rateLimitService = rateLimitService
-	self._telemetryService = telemetryService
 	self._connections = {}
 	self._lastForceCloseAt = 0
 end
@@ -58,10 +57,10 @@ function AdminService:_onRequestForceClose(player: Player, payload)
 
 	self._lastForceCloseAt = now
 	self._straitStateService:ForceCloseForDuration(duration)
-	self._telemetryService:Track("admin_force_close", {
-		userId = player.UserId,
-		durationSeconds = duration,
-	})
+	-- `admin_force_close` was a dev-only event not in the SPEC §6 catalog;
+	-- the resulting state change is already captured by
+	-- `strait_force_lock` (fired from `StraitStateService:ForceStateForDuration`
+	-- via `ForceCloseForDuration`), so we don't double-fire here.
 	self:_sendActionResult(player, true, ErrorCodes.Ok, "Strait force-closed.", {
 		durationSeconds = duration,
 	})
