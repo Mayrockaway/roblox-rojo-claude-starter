@@ -217,7 +217,12 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 		-- Mobile fit: shrink the dialogue (never grow above 1x) so a 520x420
 		-- root doesn't overflow phone viewports. Scale auto-rebinds on
 		-- viewport / camera changes and tears down with the screen.
-		ResponsiveScreenScale.Attach(root, 520, 420)
+		--
+		-- Desktop uses the default 0.85 fit; phones (narrow axis ≤ 800 px)
+		-- pull the panel down to 0.55 so the dialogue sits comfortably in
+		-- the lower-right of a phone screen instead of crowding the touch
+		-- joystick / shipping HUD strip.
+		ResponsiveScreenScale.Attach(root, 520, 420, nil, 0.55)
 		local layout = Instance.new("UIListLayout")
 		layout.FillDirection = Enum.FillDirection.Vertical
 		layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
@@ -253,19 +258,65 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 		hireBtn.MouseButton1Click:Connect(function()
 			header.Text = "Pick a target:"; header.TextSize = 38
 			pitchLabel.Visible = false; hireBtn.Visible = false; backBtn.Visible = false
-			for _, c in ipairs(root:GetChildren()) do if c.Name:find("Target_") or c.Name == "FreeTokens" or c.Name == "NoTargets" or c.Name == "HireBack" then c:Destroy() end end
+			-- Wipe rows + the previous scroll container so re-opening the
+			-- target list doesn't stack stale results underneath.
+			for _, c in ipairs(root:GetChildren()) do
+				if c.Name:find("Target_") or c.Name == "FreeTokens" or c.Name == "NoTargets" or c.Name == "HireBack" or c.Name == "TargetScroll" then
+					c:Destroy()
+				end
+			end
 
 			local ok, result = pcall(function()
 				return requestPirateHireTargets:InvokeServer()
 			end)
+			-- Scrollable target container. Same fix as the army-general
+			-- dialogue: the broker root is a fixed `520×420` offset frame, so
+			-- with 5+ targets the rows would overflow the bottom (and slip
+			-- offscreen on phones after the 0.55 mobile clamp). Sized to show
+			-- at most 4 rows, matching the row height + padding so visible
+			-- count == visual count. Anything beyond that scrolls with touch
+			-- + mouse wheel via the engine.
+			local TARGET_ROW_HEIGHT = 34
+			local TARGET_ROW_PADDING = 6
+			local MAX_VISIBLE_TARGETS = 4
+
+			local function makeTargetScroll(visibleRows: number): ScrollingFrame
+				local containerHeight = visibleRows * (TARGET_ROW_HEIGHT + TARGET_ROW_PADDING)
+				local s = Instance.new("ScrollingFrame")
+				s.Name = "TargetScroll"
+				s.LayoutOrder = 5
+				s.Size = UDim2.new(1, 0, 0, containerHeight)
+				s.BackgroundTransparency = 1
+				s.BorderSizePixel = 0
+				s.ScrollBarThickness = 6
+				s.ScrollBarImageColor3 = Color3.fromRGB(220, 220, 220)
+				s.ScrollingDirection = Enum.ScrollingDirection.Y
+				s.AutomaticCanvasSize = Enum.AutomaticSize.Y
+				s.CanvasSize = UDim2.new(0, 0, 0, 0)
+				s.Active = true
+				s.Parent = root
+				local sl = Instance.new("UIListLayout")
+				sl.FillDirection = Enum.FillDirection.Vertical
+				sl.HorizontalAlignment = Enum.HorizontalAlignment.Left
+				sl.VerticalAlignment = Enum.VerticalAlignment.Top
+				sl.SortOrder = Enum.SortOrder.LayoutOrder
+				sl.Padding = UDim.new(0, TARGET_ROW_PADDING)
+				sl.Parent = s
+				return s
+			end
+
 			if not ok or typeof(result) ~= "table" then
-				local errLabel = blockyLine("NoTargets", "Could not fetch targets", 5, false, root)
+				local scroll = makeTargetScroll(1)
+				local errLabel = blockyLine("NoTargets", "Could not fetch targets", 1, false, scroll)
 				errLabel.TextSize = 22; errLabel.Size = UDim2.new(1, 0, 0, 28); errLabel.TextColor3 = COLOR_PIRATE_RED
 			else
 				uiState.freeHitTokens = math.max(0, math.floor(tonumber((result :: any).freeHitTokens) or 0))
 				uiState.hitCost = math.max(0, math.floor(tonumber((result :: any).hitCost) or uiState.hitCost))
 				local targets = (result :: any).targets
-				local order = 5
+				local rowCount = (typeof(targets) == "table" and #targets > 0) and #targets or 1
+				local visibleRows = math.min(MAX_VISIBLE_TARGETS, math.max(1, rowCount))
+				local scroll = makeTargetScroll(visibleRows)
+				local order = 1
 				if typeof(targets) == "table" and #targets > 0 then
 					for _, target in ipairs(targets) do
 						if typeof(target) == "table" then
@@ -273,8 +324,8 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 							if userId then
 								local dn = tostring(target.displayName or target.name or ("User " .. tostring(userId)))
 								local label = string.format("%s", dn)
-								local tBtn = blockyLine("Target_" .. tostring(userId), label, order, true, root)
-								tBtn.TextSize = 26; tBtn.Size = UDim2.new(1, 0, 0, 34)
+								local tBtn = blockyLine("Target_" .. tostring(userId), label, order, true, scroll)
+								tBtn.TextSize = 26; tBtn.Size = UDim2.new(1, 0, 0, TARGET_ROW_HEIGHT)
 								local costLabel = Instance.new("TextLabel")
 								costLabel.Size = UDim2.new(0.4, 0, 1, 0); costLabel.Position = UDim2.new(0.6, 0, 0, 0)
 								costLabel.BackgroundTransparency = 1; costLabel.Text = string.format("$%d", uiState.hitCost)
@@ -291,7 +342,7 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 						end
 					end
 				else
-					local noTargets = blockyLine("NoTargets", "No ships on the strait", 5, false, root)
+					local noTargets = blockyLine("NoTargets", "No ships on the strait", 1, false, scroll)
 					noTargets.TextSize = 22; noTargets.Size = UDim2.new(1, 0, 0, 28); noTargets.TextColor3 = COLOR_PIRATE_DIM
 				end
 			end

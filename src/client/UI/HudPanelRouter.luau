@@ -120,9 +120,29 @@ local function closeAllExceptCtrl(keep: HudPanelTypes.HudPanelController?)
 	end
 end
 
+--- Conventional name for a "this control is gated / WIP" cover authored as a
+--- child of a HUD button. Mirrors `ShipOilPanel.wireRunUpgradeCard1`'s rule:
+--- as long as the overlay is parented to the button, treat the underlying
+--- control as unavailable. Removing the overlay in Studio re-enables the
+--- press path live (the in-handler check below re-evaluates each click).
+local COMING_SOON_OVERLAY_NAME = "ComingSoonOverlay"
+
+local function isComingSoonGated(btn: GuiButton): boolean
+	return btn:FindFirstChild(COMING_SOON_OVERLAY_NAME) ~= nil
+end
+
 local function passthroughDecorationsToTrigger(btn: GuiButton)
 	for _, d in ipairs(btn:GetDescendants()) do
 		if d:IsA("GuiObject") and not d:IsA("GuiButton") then
+			-- Skip the coming-soon cover so it stays input-active and visually
+			-- "owns" the button. Without this `passthrough` would set the
+			-- overlay's `Active = false`, which is the opposite of what we
+			-- want — even with the press handler skipped (see `wireTrigger`),
+			-- a future `Active = true` button restoration would let clicks
+			-- bleed straight through the cover otherwise.
+			if d.Name == COMING_SOON_OVERLAY_NAME then
+				continue
+			end
 			d.Active = false
 		end
 	end
@@ -180,6 +200,20 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 			local byScreen = controllersByScreen
 
 			local function wireTrigger(btn: GuiButton, ctrl: HudPanelTypes.HudPanelController)
+				-- Coming-soon gate: when the button has a `ComingSoonOverlay`
+				-- child the press path stays disabled entirely (no click, no
+				-- hover lift). Mirrors the ShipOilPanel run-upgrade-card
+				-- convention so a single Studio author action (parent the
+				-- overlay onto the button) is enough to disable the modal
+				-- without touching code. Currently used for `DailyButton`;
+				-- removing the overlay in Studio re-enables the wire on the
+				-- next router retry tick (or live, via the in-handler check
+				-- below if the overlay is re-added after we've already wired).
+				if isComingSoonGated(btn) then
+					btn.Active = false
+					btn.AutoButtonColor = false
+					return
+				end
 				-- Defensive: ensure the button itself receives input. Many StarterGui HUD
 				-- buttons ship with `Active = false`, which lets any overlapping GuiObject
 				-- (FTUE pointer, hotbar strip, popups) swallow the click before it reaches
@@ -188,6 +222,15 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 				passthroughDecorationsToTrigger(btn)
 				local armed = false
 				local function onPress()
+					-- Live coming-soon recheck: if the overlay was added to
+					-- the button after wiring (Studio edit, runtime authoring
+					-- pass), this short-circuits the press without requiring
+					-- a router restart. Pair with the wire-time gate above so
+					-- the overlay can be toggled either way and behavior
+					-- tracks immediately.
+					if isComingSoonGated(btn) then
+						return
+					end
 					if armed then
 						return
 					end

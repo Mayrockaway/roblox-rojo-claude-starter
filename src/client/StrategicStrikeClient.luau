@@ -341,7 +341,12 @@ function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDep
 		-- Mobile fit: shrink the dialogue (never grow above 1x) so a 500x320
 		-- root doesn't overflow phone viewports. Scale auto-rebinds on
 		-- viewport / camera changes and tears down with the screen.
-		ResponsiveScreenScale.Attach(root, 500, 320)
+		--
+		-- Desktop uses the default 0.85 fit; phones (narrow axis ≤ 800 px)
+		-- pull the panel down to 0.55 so the dialogue clears the touch
+		-- joystick / shipping HUD strip on the bottom of the screen instead
+		-- of stacking on top of them.
+		ResponsiveScreenScale.Attach(root, 500, 320, nil, 0.55)
 
 		local layout = Instance.new("UIListLayout")
 		layout.FillDirection = Enum.FillDirection.Vertical
@@ -438,9 +443,12 @@ function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDep
 
 		-- Airstrike click — show target list as additional blocky lines
 		airBtn.MouseButton1Click:Connect(function()
-			-- Remove existing target buttons
+			-- Remove the previous target list (rows + their scroll container) so
+			-- a re-click of Airstrike doesn't stack stale rows underneath.
 			for _, c in ipairs(root:GetChildren()) do
-				if c.Name:find("Target_") then c:Destroy() end
+				if c.Name:find("Target_") or c.Name == "TargetScroll" then
+					c:Destroy()
+				end
 			end
 
 			-- Fetch targets
@@ -452,7 +460,50 @@ function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDep
 			nukeBtn.Visible = false
 			airBtn.Visible = false
 
-			local order = 5
+			-- Scrollable target container. The dialogue root is a fixed
+			-- `500×320` offset frame, so before this fix 5–7 returned targets
+			-- would overflow the bottom of the panel (and on phones, after
+			-- the 0.55 mobile clamp, slip off the screen entirely). The
+			-- container is sized to show at most 4 rows; anything beyond
+			-- becomes scrollable on touch + mouse wheel via the engine's
+			-- built-in scroll handling.
+			--
+			-- `LayoutOrder = 5` slots it where the per-target buttons used to
+			-- live in the parent `UIListLayout` order, so the back button
+			-- (order 4) still sits below it after the visible-row collapse
+			-- of nukeBtn / airBtn. Sized off the same `42 px` row height +
+			-- `6 px` padding the rows already use so the visible count math
+			-- matches the visual count exactly.
+			local TARGET_ROW_HEIGHT = 42
+			local TARGET_ROW_PADDING = 6
+			local MAX_VISIBLE_TARGETS = 4
+			local rowCount = math.max(1, #result.targets)
+			local visibleRows = math.min(MAX_VISIBLE_TARGETS, rowCount)
+			local containerHeight = visibleRows * (TARGET_ROW_HEIGHT + TARGET_ROW_PADDING)
+
+			local targetScroll = Instance.new("ScrollingFrame")
+			targetScroll.Name = "TargetScroll"
+			targetScroll.LayoutOrder = 5
+			targetScroll.Size = UDim2.new(1, 0, 0, containerHeight)
+			targetScroll.BackgroundTransparency = 1
+			targetScroll.BorderSizePixel = 0
+			targetScroll.ScrollBarThickness = 6
+			targetScroll.ScrollBarImageColor3 = Color3.fromRGB(220, 220, 220)
+			targetScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+			targetScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+			targetScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+			targetScroll.Active = true
+			targetScroll.Parent = root
+
+			local scrollLayout = Instance.new("UIListLayout")
+			scrollLayout.FillDirection = Enum.FillDirection.Vertical
+			scrollLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+			scrollLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+			scrollLayout.SortOrder = Enum.SortOrder.LayoutOrder
+			scrollLayout.Padding = UDim.new(0, TARGET_ROW_PADDING)
+			scrollLayout.Parent = targetScroll
+
+			local order = 1
 			for _, target in ipairs(result.targets) do
 				local label = target.displayName
 				if not target.hasShipment then
@@ -463,7 +514,7 @@ function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDep
 				if not target.hasShipment then
 					tBtn.TextColor3 = Color3.fromRGB(100, 100, 100)
 				end
-				tBtn.Parent = root
+				tBtn.Parent = targetScroll
 				order += 1
 
 				if target.hasShipment then
@@ -475,10 +526,10 @@ function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDep
 			end
 
 			if #result.targets == 0 then
-				local noTargets = blockyLine("NoTargets", "No ships on the strait", 5, false)
+				local noTargets = blockyLine("NoTargets", "No ships on the strait", 1, false)
 				noTargets.TextSize = 28
 				noTargets.TextColor3 = Color3.fromRGB(180, 80, 80)
-				noTargets.Parent = root
+				noTargets.Parent = targetScroll
 			end
 
 			-- Back returns to main menu

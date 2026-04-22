@@ -358,7 +358,17 @@ local function resolveBoatSupportStandCFrame(boat: Model, desiredCFrame: CFrame)
 	--- `that hit + 4` would drop the player **inside** / **under** the ship.
 	--- Trust `desiredPos.Y` as the lower bound — the rig anchor is the
 	--- authoritative stand height — and only let the support snap raise it.
-	local snapY = math.max(result.Position.Y + 4, desiredPos.Y)
+	---
+	--- `EXTRA_CLEARANCE`: boats are unanchored and bob with wave physics.
+	--- The CFrame resolved here is sampled **once** before `PivotTo`; if the
+	--- boat rises between the sample and the engine actually placing the
+	--- character (1+ physics step), the HRP can end up clipped INSIDE the
+	--- deck slab and Roblox resolves the overlap by ejecting them UNDER the
+	--- ship. Spawning ~2 studs higher gives gravity room to drop them onto
+	--- the deck cleanly without ever overlapping it. The follow-up safety
+	--- re-snap in `teleportCharacterToBoatDeck` covers worse cases.
+	local EXTRA_CLEARANCE = 2
+	local snapY = math.max(result.Position.Y + 4, desiredPos.Y) + EXTRA_CLEARANCE
 	local snappedPos = Vector3.new(desiredPos.X, snapY, desiredPos.Z)
 	if RunService:IsStudio() then
 		print(string.format(
@@ -405,6 +415,59 @@ local function teleportCharacterToBoatDeck(
 
 	local supportCFrame = resolveBoatSupportStandCFrame(boat, targetCFrame)
 	CharacterTeleport.teleportWithUnseat(character, supportCFrame, logLabel)
+
+	--- Post-teleport safety re-snap: an unanchored boat may have bobbed UP
+	--- in the 1+ physics steps between when we sampled `targetCFrame` and
+	--- when `PivotTo` actually landed the character. Re-sample the deck Y
+	--- after the next physics step and, if the HRP is now at or below the
+	--- live deck surface (i.e. the character is clipped inside / under the
+	--- deck), pivot upward by enough to put feet cleanly above the deck.
+	--- The clearance constant matches `EXTRA_CLEARANCE` in
+	--- `resolveBoatSupportStandCFrame` so first-try and re-snap agree on
+	--- the same target standing height.
+	task.delay(0.08, function()
+		if not character.Parent or not boat.Parent then
+			return
+		end
+		local hrp = character:FindFirstChild("HumanoidRootPart")
+		if not hrp or not hrp:IsA("BasePart") then
+			return
+		end
+		local rig = rigForBoatModel(boat)
+		local liveDeckY = ShipRig.ResolveDeckWorldY(boat, rig, supportCFrame.Position.Y)
+		--- HRP center sits ~2 studs above feet (R15) — the player is "on the
+		--- deck" when HRP.Y >= liveDeckY + 3. Anything lower means feet have
+		--- clipped below the deck top. `+0.25` slack absorbs jitter from a
+		--- boat that's still settling.
+		if hrp.Position.Y >= liveDeckY + 3 - 0.25 then
+			return
+		end
+		local correctedY = liveDeckY + 3 + 2 -- live deck + feet offset + safety
+		local correctedPos = Vector3.new(hrp.Position.X, correctedY, hrp.Position.Z)
+		local correctedCFrame = CFrame.lookAt(
+			correctedPos,
+			correctedPos + supportCFrame.LookVector
+		)
+		CharacterTeleport.teleportWithUnseat(
+			character,
+			correctedCFrame,
+			(logLabel or "") .. ":SafetyResnap"
+		)
+		if snapPlayer and snapEvent then
+			pcall(function()
+				snapEvent:FireClient(snapPlayer, correctedCFrame)
+			end)
+		end
+		if RunService:IsStudio() then
+			warn(string.format(
+				"[BoatTeleportSupport] safety re-snap boat=%s prevY=%.2f liveDeckY=%.2f -> correctedY=%.2f",
+				boat:GetFullName(),
+				hrp.Position.Y,
+				liveDeckY,
+				correctedY
+			))
+		end
+	end)
 
 	if snapPlayer and snapEvent then
 		--- Wrap in pcall: a missing `Remotes` folder during a fresh boot or a player

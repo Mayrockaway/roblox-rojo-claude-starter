@@ -44,17 +44,34 @@ local ResponsiveScreenScale = {}
 
 ResponsiveScreenScale.DEFAULT_FIT_FRACTION = 0.85
 
+--- Heuristic mobile-viewport breakpoint (pixels of the *narrow* axis). Phones
+--- in portrait sit well below this; tablets / phones in landscape on the
+--- short side sit around 600–800; desktop windows, even small ones, are
+--- well above this. Used to decide whether to apply `mobileFitFraction` on
+--- top of the regular `fitFraction` clamp.
+ResponsiveScreenScale.MOBILE_BREAKPOINT_PX = 800
+
 local SCALE_NAME = "ResponsiveScreenScale"
 
 --- Attach a viewport-aware `UIScale` to `root`. Returns the `UIScale`
 --- (created or pre-existing) so callers that want to read / animate `Scale`
 --- can do so. Idempotent — calling twice on the same root replaces nothing,
 --- it just re-binds the camera signal.
+---
+--- `mobileFitFraction` is an optional secondary clamp applied **only when**
+--- the smaller viewport axis is `<= MOBILE_BREAKPOINT_PX` (phones, narrow
+--- tablets). Use it when desktop reads fine at the regular `fitFraction`
+--- but mobile still has the panel hugging the edges of the viewport — the
+--- NPC dialogues (Pirate Hire, Army General) hit this exact case because
+--- their authored `refW` is comfortable on a 1366-wide window but eats
+--- 80%+ of a 600-wide phone in landscape. Pass something like `0.55` to
+--- shrink the panel further on phones without affecting desktop sizing.
 function ResponsiveScreenScale.Attach(
 	root: GuiObject,
 	refW: number,
 	refH: number,
-	fitFraction: number?
+	fitFraction: number?,
+	mobileFitFraction: number?
 ): UIScale?
 	if not root or not root:IsA("GuiObject") then
 		return nil
@@ -88,8 +105,18 @@ function ResponsiveScreenScale.Attach(
 		if vp.X <= 0 or vp.Y <= 0 then
 			return
 		end
-		local sx = (vp.X * fit) / refW
-		local sy = (vp.Y * fit) / refH
+		-- Pick the active fit fraction: on phones (narrower axis below the
+		-- breakpoint) prefer the smaller mobile clamp when supplied. We
+		-- don't downscale `refW` / `refH` for mobile — the formula already
+		-- divides by viewport, so applying the smaller fraction is enough
+		-- to push the resulting `scale` further down on phones while
+		-- leaving desktop math untouched.
+		local activeFit = fit
+		if mobileFitFraction and math.min(vp.X, vp.Y) <= ResponsiveScreenScale.MOBILE_BREAKPOINT_PX then
+			activeFit = math.min(activeFit, mobileFitFraction)
+		end
+		local sx = (vp.X * activeFit) / refW
+		local sy = (vp.Y * activeFit) / refH
 		scale.Scale = math.min(1, math.min(sx, sy))
 	end
 

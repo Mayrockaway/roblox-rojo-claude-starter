@@ -51,6 +51,18 @@ local MOOD_BG_UNKNOWN = Color3.fromRGB(60, 60, 64)
 local ARROW_IMG_UP = "rbxassetid://115035977128519"
 local ARROW_IMG_DOWN = "rbxassetid://100037273574272"
 
+-- Perpetual idle bob applied to the `Arrow` ImageLabel inside
+-- `PriceIndicator`. Pixels each direction (so total travel = 2× amp) and one
+-- bob direction takes BOB_TIME seconds; reverses + repeats forever via the
+-- TweenInfo flags so we only kick off ONE tween per arrow instance and let
+-- the engine handle the loop. The bob lives on `Position.Y.Offset` instead
+-- of a child `UIScale` so it actually translates the icon (scale would just
+-- pulse it in place); offset is small enough that even when the parent
+-- `PriceIndicator` clips, the arrow only loses ~`ARROW_BOB_AMP_PX` px at the
+-- top/bottom of its travel and reads as a gentle hover.
+local ARROW_BOB_AMP_PX = 4
+local ARROW_BOB_TIME = 0.85
+
 local LEGACY_HISTORY_FOLDER = "_OilPriceHistoryTicks"
 
 local ANIM_SCALE_NAME = "OilPricePanelAnimScale"
@@ -63,6 +75,15 @@ local activeScaleTween: Tween? = nil
 -- doesn't blank the arrow back to a default — the icon stays at whichever way
 -- the market last moved until the next non-zero delta.
 local lastArrowImage: string? = nil
+
+-- Bob state: bound to a single `Arrow` ImageLabel + the Studio-authored
+-- base Position we snapshot on first bind. We only ever run ONE perpetual
+-- tween at a time; rebinding (canvas swap, instance destroyed) cancels the
+-- previous tween before starting a fresh one so the engine doesn't keep a
+-- handle on a dead instance.
+local bobBoundArrow: ImageLabel? = nil
+local bobBasePosition: UDim2? = nil
+local arrowBobTween: Tween? = nil
 
 local OilPriceHud = {}
 
@@ -246,6 +267,58 @@ local function findArrowLabel(indicator: GuiObject): ImageLabel?
 	return nil
 end
 
+--- Kick off (or rebind) the perpetual vertical bob on the price-indicator
+--- arrow. Idempotent on the same instance — calling again with the same
+--- arrow is a no-op so `applyPriceArrow` can hit this every snapshot
+--- without restarting the loop. Cancels and restarts on a different /
+--- replaced arrow (canvas rebuild, Studio re-author). The base Position is
+--- snapshotted on first bind so the bob travels symmetrically around
+--- whatever Studio authored, not around the post-tween offset position.
+local function ensureArrowBobbing(arrow: ImageLabel)
+	if bobBoundArrow == arrow and arrowBobTween and arrow.Parent ~= nil then
+		return
+	end
+	if arrowBobTween then
+		arrowBobTween:Cancel()
+		arrowBobTween = nil
+	end
+	-- Restore the previous arrow's Position to its captured base if it
+	-- still exists (defensive: the bob tween was mid-cycle on cancel and
+	-- would otherwise leave the icon parked off-center).
+	if bobBoundArrow and bobBoundArrow ~= arrow and bobBoundArrow.Parent ~= nil and bobBasePosition then
+		bobBoundArrow.Position = bobBasePosition
+	end
+	bobBoundArrow = arrow
+	bobBasePosition = arrow.Position
+	-- Start the loop at the top of the bob (- amp on Y) so the arrow
+	-- immediately drifts downward into the base position rather than
+	-- snapping to a side at t=0; the reversing + RepeatCount=-1 flags then
+	-- carry it back and forth forever in a single engine-managed tween.
+	arrow.Position = UDim2.new(
+		bobBasePosition.X.Scale,
+		bobBasePosition.X.Offset,
+		bobBasePosition.Y.Scale,
+		bobBasePosition.Y.Offset - ARROW_BOB_AMP_PX
+	)
+	local target = UDim2.new(
+		bobBasePosition.X.Scale,
+		bobBasePosition.X.Offset,
+		bobBasePosition.Y.Scale,
+		bobBasePosition.Y.Offset + ARROW_BOB_AMP_PX
+	)
+	local info = TweenInfo.new(
+		ARROW_BOB_TIME,
+		Enum.EasingStyle.Sine,
+		Enum.EasingDirection.InOut,
+		-1, -- forever
+		true, -- reverses
+		0
+	)
+	local tween = TweenService:Create(arrow, info, { Position = target })
+	arrowBobTween = tween
+	tween:Play()
+end
+
 --- Update the up/down arrow icon based on price delta. Equal price →
 --- preserve last-shown arrow so a quiet tick doesn't visually reset.
 --- First-ever snapshot (`prevBase == nil`) leaves whatever Studio authored.
@@ -254,6 +327,10 @@ local function applyPriceArrow(indicator: GuiObject, base: number, prevBase: num
 	if not arrow then
 		return
 	end
+	-- Bob is purely visual / decorative; bind it on every refresh so a
+	-- canvas rebuild (HUD reauth, scaffolds re-running) reattaches without
+	-- the panel having to know to reseed us. Idempotent on the same arrow.
+	ensureArrowBobbing(arrow)
 	if prevBase == nil then
 		-- Seed from the authored Image so the persisted "last shown" state
 		-- matches what the player currently sees (otherwise the next

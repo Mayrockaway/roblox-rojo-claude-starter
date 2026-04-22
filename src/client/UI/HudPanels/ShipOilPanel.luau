@@ -382,6 +382,59 @@ local function maxLegalBarrelsForTier(tier: string): number
 	return math.max(0, math.min(inv, maxFromCap))
 end
 
+------------------------------------------------------------
+-- Warehouse-capacity safety (steppers + typed amount)
+------------------------------------------------------------
+-- Server-side `OilShipmentService` already rejects oversized dispatches with
+-- `ERR_WAREHOUSE_FULL`, but we also stop the +/- stepper and the AmountLabel
+-- TextBox from staging more barrels than the warehouse can absorb on
+-- delivery. That gives the player two layers of feedback (immediate at the
+-- input, second pass at dispatch) instead of letting them happily build a
+-- manifest that the server is guaranteed to reject.
+--
+-- The cap projection mirrors the WarehouseCapacityLabel formula in
+-- `refreshFooter`: `cap - stored - selected`. When `hasWarehouseTotals` is
+-- false (no payload yet) the safety opens up — the dispatch-time ERR is
+-- still the backstop.
+local WAREHOUSE_FULL_SAFETY_MESSAGE = "Too many barrels for warehouse storage!"
+local WAREHOUSE_FULL_SAFETY_DEBOUNCE = 0.6
+local lastWarehouseFullSafetyAt = 0
+
+local function warehouseSpotsRemainingForCurrentSelection(): number
+	if not hasWarehouseTotals or warehouseCapTotal <= 0 then
+		-- Unknown / disabled warehouse cap → don't block, defer to server.
+		return math.huge
+	end
+	return math.max(0, warehouseCapTotal - warehouseStoredTotal - sumSelectedBarrels())
+end
+
+--- Headroom for `tier` only (subtracts the OTHER tiers' staged barrels from
+--- the cap, not this tier's own contribution). Used by typed-amount clamp so
+--- the new value isn't double-counted with the value being replaced.
+local function maxBarrelsForWarehouseRemaining(tier: string): number
+	if not hasWarehouseTotals or warehouseCapTotal <= 0 then
+		return math.huge
+	end
+	local otherStaged = sumSelectedBarrels() - (selected[tier] or 0)
+	return math.max(0, warehouseCapTotal - warehouseStoredTotal - otherStaged)
+end
+
+local function notifyWarehouseFullSafety()
+	if not errorNotificationLabel then
+		-- Studio hasn't authored the toast label; play deny SFX so the user
+		-- still gets *some* feedback (mirrors the dispatch-side guard).
+		UiSfx.playUiDenied()
+		return
+	end
+	local now = os.clock()
+	if now - lastWarehouseFullSafetyAt < WAREHOUSE_FULL_SAFETY_DEBOUNCE then
+		return
+	end
+	lastWarehouseFullSafetyAt = now
+	showErrorNotification(WAREHOUSE_FULL_SAFETY_MESSAGE, 4)
+	UiSfx.playUiDenied()
+end
+
 local function setAmountFieldText(field: AmountField, value: number)
 	local t = tostring(value)
 	if field:IsA("TextBox") then
@@ -583,8 +636,24 @@ end
 
 local function applyTypedBarrelsForTier(tier: string, raw: string)
 	local want = parseUnsignedBarrelInput(raw)
-	local legal = maxLegalBarrelsForTier(tier)
-	selected[tier] = math.min(want, legal)
+	local invShipLegal = maxLegalBarrelsForTier(tier)
+	local warehouseLegal = maxBarrelsForWarehouseRemaining(tier)
+	local legal = math.min(invShipLegal, warehouseLegal)
+	local clamped = math.min(want, legal)
+	-- Surface the warehouse-full toast only when the *warehouse* is what
+	-- pulled the typed value down (inventory + ship-cap denials stay silent
+	-- to match the existing stepper UX). `hasWarehouseTotals` guards against
+	-- firing during the brief window before the first WarehouseStateUpdate.
+	if hasWarehouseTotals and want > clamped and clamped == warehouseLegal and warehouseLegal < invShipLegal then
+		notifyWarehouseFullSafety()
+	elseif hasWarehouseTotals and want > clamped and clamped == warehouseLegal and warehouseLegal == invShipLegal then
+		-- Tied caps: the warehouse limit is just as binding as inventory/ship
+		-- here, but the user still typed past warehouse capacity, so make the
+		-- safety message visible (matches user request: "amount should not go
+		-- over the max when summed up").
+		notifyWarehouseFullSafety()
+	end
+	selected[tier] = clamped
 	clampSelectionsToInventory()
 	clampSelectionsToShipCapacity()
 	refreshRowUi()
@@ -601,6 +670,17 @@ local function bumpTier(tier: string, delta: number)
 	end
 	if delta > 0 then
 		if sumSelectedOilUnits() + per > maxShipCapacityOilUnits() then
+			return
+		end
+		-- Block + when the warehouse can't absorb another barrel on
+		-- shipment delivery. Ship cargo lands in the warehouse on success
+		-- (`OilShipmentService` → `WarehouseService`), so a manifest one
+		-- larger than `cap - stored - staged` is guaranteed to bounce on
+		-- the server with `ERR_WAREHOUSE_FULL`. Catching it here gives the
+		-- player immediate feedback at the stepper and keeps the
+		-- `WarehouseSpotsLabel` from ever projecting negative.
+		if warehouseSpotsRemainingForCurrentSelection() <= 0 then
+			notifyWarehouseFullSafety()
 			return
 		end
 	end

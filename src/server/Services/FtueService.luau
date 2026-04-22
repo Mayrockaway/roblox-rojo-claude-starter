@@ -64,7 +64,21 @@ local function grantPlotShipmentStageCashIfNeeded(self: any, player: Player)
 		return
 	end
 	local st = oil:GetState(player.UserId)
-	if not st or st.ftueDispatchCashGranted == true then
+	if not st then
+		return
+	end
+	-- Belt-and-suspenders: the granted flag is the primary gate, but also bail
+	-- if the player has already finished the tutorial entirely so a stale
+	-- WaitPlotShipment re-entry on a fully-completed profile can never re-pay.
+	if (st :: any).ftueDispatchCashGranted == true
+		or (st :: any).ftueCompleted == true
+	then
+		ftueDbg(
+			"grantPlotShipmentStageCashIfNeeded uid=%d skip (granted=%s completed=%s)",
+			player.UserId,
+			tostring((st :: any).ftueDispatchCashGranted),
+			tostring((st :: any).ftueCompleted)
+		)
 		return
 	end
 	local amt = floorPositive(tonumber(FtueConfig.PlotShipmentStageCashReward) or 0)
@@ -72,11 +86,30 @@ local function grantPlotShipmentStageCashIfNeeded(self: any, player: Player)
 		return
 	end
 	st.ftueDispatchCashGranted = true
+	-- Persist the gate **immediately** so a crash/disconnect in the same frame
+	-- as the grant (before the next autosave tick) still saves the flag.
+	-- `AddCash` also marks dirty, but relying on it alone leaves a small window
+	-- where `state.ftueDispatchCashGranted = true` is set but unsaved.
+	if typeof((oil :: any)._markDirty) == "function" then
+		(oil :: any):_markDirty(player.UserId)
+	end
 	oil:AddCash(player.UserId, amt)
 	oil:PushState(player.UserId)
 end
 
 --- One-time cash when entering `Done` (see `FtueConfig.TutorialCompleteCashReward`).
+---
+--- **Idempotency / rejoin safety:** the player can park on the `Done` modal
+--- across sessions (they only finish the tutorial when they click `Complete!`,
+--- which fires `_setStep(nil)` — not `_setStep(Done)` — so this function isn't
+--- re-entered on the normal rejoin path). Even so, anything that calls
+--- `_setStep(Done)` again (e.g. server-side `onSkip` falling through, a future
+--- code path that re-arms the modal) must not re-pay the reward. The gates
+--- below (granted flag + ftueCompleted + ftueDoneScreenAcknowledged) plus an
+--- explicit `_markDirty` immediately after we flip the granted flag make the
+--- payout strictly one-shot per profile, even if the player disconnects in the
+--- same frame as the grant (`AddCash` also marks dirty, but persisting via
+--- `_markDirty` here decouples the gate's durability from `AddCash`).
 local function grantTutorialCompleteCashIfNeeded(self: any, player: Player)
 	if FtueConfig.Enabled ~= true then
 		return
@@ -86,16 +119,33 @@ local function grantTutorialCompleteCashIfNeeded(self: any, player: Player)
 		return
 	end
 	local st = oil:GetState(player.UserId)
-	if not st or (st :: any).ftueTutorialCompleteCashGranted == true then
+	if not st then
+		return
+	end
+	if (st :: any).ftueTutorialCompleteCashGranted == true
+		or (st :: any).ftueCompleted == true
+		or (st :: any).ftueDoneScreenAcknowledged == true
+	then
+		ftueDbg(
+			"grantTutorialCompleteCashIfNeeded uid=%d skip (granted=%s completed=%s doneAck=%s)",
+			player.UserId,
+			tostring((st :: any).ftueTutorialCompleteCashGranted),
+			tostring((st :: any).ftueCompleted),
+			tostring((st :: any).ftueDoneScreenAcknowledged)
+		)
 		return
 	end
 	local amt = floorPositive(tonumber(FtueConfig.TutorialCompleteCashReward) or 0)
 	if amt <= 0 then
 		return
 	end
-	(st :: any).ftueTutorialCompleteCashGranted = true
+	;(st :: any).ftueTutorialCompleteCashGranted = true
+	if typeof((oil :: any)._markDirty) == "function" then
+		(oil :: any):_markDirty(player.UserId)
+	end
 	oil:AddCash(player.UserId, amt)
 	oil:PushState(player.UserId)
+	ftueDbg("grantTutorialCompleteCashIfNeeded uid=%d granted amt=%d", player.UserId, amt)
 end
 
 --- Sets the drill restriction attribute from plot + oil state for the current step.

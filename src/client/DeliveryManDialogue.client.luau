@@ -39,9 +39,23 @@ local playerScripts = player:WaitForChild("PlayerScripts")
 local clientFolder = playerScripts:WaitForChild("Client", 30)
 local uiFolder = clientFolder and clientFolder:WaitForChild("UI", 10)
 local HudPanelRouter = uiFolder and require(uiFolder:WaitForChild("HudPanelRouter"))
--- Ship Oil marker is visible from the entire beach/docks area and remains
--- visible (but smaller) when on the strait or at the warehouse.
-local MARKER_VISIBLE_DISTANCE = 9999
+-- Ship Oil marker is plot-local: visible while the player is on/near their
+-- own plot and the immediate docks approach, hidden once they sail out onto
+-- the strait or wander into other zones (warehouse / shop / armies). Range
+-- chosen to comfortably cover one plot footprint + the dock walk-up but
+-- *not* be visible across the strait — there's no point pointing at a
+-- dispatch NPC the player can't actually walk to from where they are.
+--
+-- Two layers of culling, both keyed off this same constant so they stay in
+-- lockstep:
+--   1. `BillboardGui.MaxDistance` (engine-native, camera-based) — the GPU
+--      stops rendering the billboard once the camera is past this many
+--      studs. Cheapest possible cull.
+--   2. The Heartbeat `inRange` check below (character-based) — covers the
+--      "camera flying around" / scriptable camera case where camera distance
+--      is misleading vs where the character actually is. We also use this
+--      gate to skip the per-frame distance-scale write when out of range.
+local MARKER_VISIBLE_DISTANCE = 260
 
 -- Floating "Ship Oil" marker — client-side only, on the player's own plot.
 -- Bobs gently above the DeliveryMan's head so the dispatch point is visible
@@ -84,15 +98,20 @@ task.spawn(function()
 				-- Design-target pixel size at the reference viewport
 				-- (1366 wide). The shared client controller rescales this
 				-- per-viewport so phones, 1080p, and 4K all read at the same
-				-- on-screen proportion. Distance falloff (1.0× → 2.0× across
-				-- the docks → 0.6× from the strait) is applied below via a
-				-- `UIScale` child instead of mutating Size, so the two
-				-- systems stay orthogonal (Size = viewport, UIScale =
-				-- camera distance).
+				-- on-screen proportion. Distance falloff (1.0× near → 2.0×
+				-- across the plot/docks) is applied below via a `UIScale`
+				-- child instead of mutating Size, so the two systems stay
+				-- orthogonal (Size = viewport, UIScale = camera distance).
 				ResponsiveBillboard.Mark(bb, 200, 110)
 				bb.StudsOffset = Vector3.new(0, 10, 0)
 				bb.AlwaysOnTop = true
 				bb.LightInfluence = 0
+				-- Engine-native distance cull: once the camera is more than
+				-- `MARKER_VISIBLE_DISTANCE` studs from the head this stops
+				-- being submitted for rendering at all. Pairs with the
+				-- character-distance `inRange` gate in the Heartbeat loop;
+				-- whichever fires first hides the marker.
+				bb.MaxDistance = MARKER_VISIBLE_DISTANCE
 				bb.Adornee = head
 				bb.Parent = playerGui
 
@@ -134,10 +153,14 @@ task.spawn(function()
 	player:GetAttributeChangedSignal("PlotId"):Connect(tryCreateMarker)
 	task.delay(3, tryCreateMarker)
 
-	-- Bob animation + distance-aware scaling:
-	--   Close (< 20 studs):   1x base size
-	--   Beach/docks (20-150): scales UP to 2x so it's a landmark from the docks
-	--   Far (> 300, strait/warehouse): shrinks to 0.6x — still visible, just smaller
+	-- Bob animation + distance-aware scaling. The marker is now plot-local
+	-- (culled past `MARKER_VISIBLE_DISTANCE`), so the previous "shrinks to
+	-- 0.6× from the strait" tail is gone — within the visible range we lerp
+	-- the icon UP slightly with distance so it reads as a landmark from
+	-- across the plot, then clamps at the upper end of the range:
+	--   Close (< 20 studs):   1.0x base size
+	--   Plot / docks walk:    1.0x → 2.0x lerp across (20 → MARKER_VISIBLE_DISTANCE)
+	--   At cull boundary:     2.0x (then engine MaxDistance hides it)
 	-- Distance scale is applied through a child `UIScale` so the responsive
 	-- controller (which writes `Size` per viewport) and this loop don't fight
 	-- over the same property. Final on-screen size = viewport-rescaled `Size`
@@ -177,14 +200,16 @@ task.spawn(function()
 					local scale: number
 					if dist < 20 then
 						scale = 1.0
-					elseif dist < 150 then
-						-- Lerp from 1x → 2x across the beach/docks range
-						scale = 1.0 + (dist - 20) / (150 - 20)
-					elseif dist < 300 then
-						-- Lerp from 2x → 0.6x as you sail away
-						scale = 2.0 - 1.4 * (dist - 150) / (300 - 150)
 					else
-						scale = 0.6
+						-- Lerp 1x → 2x across the visible range so the
+						-- marker grows into a landmark as the player walks
+						-- their plot. Capped at 2x once the camera reaches
+						-- the cull boundary; beyond that the engine
+						-- `MaxDistance` hides the billboard entirely so we
+						-- never need a "shrink past X" tail anymore.
+						local span = math.max(1, MARKER_VISIBLE_DISTANCE - 20)
+						local t = math.clamp((dist - 20) / span, 0, 1)
+						scale = 1.0 + t
 					end
 					local s = ensureDistanceScale(markerGui)
 					if math.abs(s.Scale - scale) > 0.005 then

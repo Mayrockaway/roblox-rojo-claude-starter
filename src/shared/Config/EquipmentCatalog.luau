@@ -212,8 +212,26 @@ export type ShopStockBand = {
 ---     on top of the band so it only shows up ~20% of refreshes (~once
 ---     every 15 min on the 3-min cycle) instead of 50% — preserves the
 ---     "wow it's actually here" mythic moment instead of normalizing it.
+--- Multiplier applied to the **rolled** stock count in `rollShopStock`
+--- (NOT to the displayed cap from `computeShopStockMax`). Lets us keep
+--- the "what could the rack hold" number visible in the UI ("of N")
+--- while the actual rolled stock ("X of N") trends a bit lower so the
+--- shop usually has some empty slots — feels less "everything's always
+--- in stock" without lowering the design ceiling.
+---
+--- Applied with `math.ceil` so single-slot items (T5/T6 `[0,1]`) aren't
+--- accidentally zeroed out (`ceil(1 * 0.8) = 1`), while bigger bands
+--- (T1 `[5,8]` solo) shed a slot or two off the top
+--- (`ceil(8 * 0.8) = 7`). `CoreFloor` still applies AFTER scaling so
+--- onboarding essentials (drill_t1 = 3, drill_t2 = 1) stay guaranteed.
+---
+--- Set to `1.0` (or omit / nil) to disable the scaling and roll the
+--- band as-is. Lower values (e.g. 0.6) shed more slots on average.
+local ROLL_FILL_RATIO = 0.8
+
 local ShopRotation = {
 	RefreshIntervalSeconds = 180, -- 3 min
+	RollFillRatio = ROLL_FILL_RATIO,
 	Bands = {
 		drill_t1   = { min = 5,  max = 8,  perPlayer = 1.25 } :: ShopStockBand,
 		drill_t2   = { min = 3,  max = 5,  perPlayer = 1.0  } :: ShopStockBand,
@@ -281,6 +299,7 @@ EquipmentCatalog.ShopRotation = ShopRotation
 --- the result \u2014 callers should treat "missing key" as "unlimited / always in stock".
 function EquipmentCatalog.rollShopStock(rng: Random, playerCount: number?): { [string]: number }
 	local pop = math.max(1, math.floor(tonumber(playerCount) or 1))
+	local fillRatio = math.clamp(tonumber(ShopRotation.RollFillRatio) or 1, 0, 1)
 	local out: { [string]: number } = {}
 	for id, band in pairs(ShopRotation.Bands) do
 		-- `appearChance` is rolled BEFORE the band and BEFORE `CoreFloor`,
@@ -300,7 +319,14 @@ function EquipmentCatalog.rollShopStock(rng: Random, playerCount: number?): { [s
 		local extra = math.floor((tonumber(band.perPlayer) or 0) * pop)
 		local lo = math.max(0, math.floor(band.min) + extra)
 		local hi = math.max(lo, math.floor(band.max) + extra)
-		local n = rng:NextInteger(lo, hi)
+		local raw = rng:NextInteger(lo, hi)
+		-- `RollFillRatio` shaves a bit off the rolled count without
+		-- touching `computeShopStockMax`, so the UI's "of N" cap stays
+		-- the same while "X / N" trends lower (rack usually has empty
+		-- slots). `math.ceil` keeps single-slot bands like T5/T6
+		-- (`[0,1]` → `ceil(0..1 * 0.8) = 0..1`) untouched. `CoreFloor`
+		-- below still guarantees onboarding minimums after scaling.
+		local n = if fillRatio < 1 then math.ceil(raw * fillRatio) else raw
 		local floor = ShopRotation.CoreFloor[id]
 		if typeof(floor) == "number" and floor > n then
 			n = floor

@@ -55,6 +55,30 @@ local function isWoodSignPart(part: BasePart): boolean
 	return true
 end
 
+-- The warehouse upgrade sign reuses the same `Minecraft Wood Sign` template
+-- (and the same `TankUpgradeSignClick` ClickDetector name) as the refinery
+-- tank upgrade signs. Without this guard, OilTankService also hooks the
+-- warehouse sign, picks the geometrically nearest tank via
+-- `resolveOilTypeForWoodSign`, and fires "Premium tank upgraded" alongside
+-- WarehouseService's correct "Upgraded to tier N." — so the player sees the
+-- wrong status line. WarehouseService parents its sign under
+-- `WarehouseWoodSignRig` and stamps `WarehouseOwnerUserId` on it, so check
+-- both (the attribute may not be stamped yet if OilTankService scans first
+-- on plot spawn).
+local function isWarehouseSignPart(signPart: BasePart): boolean
+	if signPart:GetAttribute("WarehouseOwnerUserId") ~= nil then
+		return true
+	end
+	local p: Instance? = signPart.Parent
+	while p do
+		if p.Name == "WarehouseWoodSignRig" then
+			return true
+		end
+		p = p.Parent
+	end
+	return false
+end
+
 local function resolveOilTypeForWoodSign(signPart: BasePart): string?
 	local direct = findOilTypeOnAncestors(signPart)
 	if direct then
@@ -145,6 +169,9 @@ function OilTankService:_hookSignPart(signPart: BasePart)
 	if self._hookedSignParts[signPart] then
 		return
 	end
+	if isWarehouseSignPart(signPart) then
+		return
+	end
 	self._hookedSignParts[signPart] = true
 
 	-- Ensure this part remains mouse-targetable for ClickDetector and hover affordance.
@@ -201,6 +228,9 @@ function OilTankService:_hookSignPart(signPart: BasePart)
 	if click and click:IsA("ClickDetector") and not self._hookedClickDetectors[click] then
 		self._hookedClickDetectors[click] = true
 		table.insert(self._connections, click.MouseClick:Connect(function(player)
+			if isWarehouseSignPart(signPart) then
+				return
+			end
 			local oilType = resolveOilTypeForWoodSign(signPart)
 			if not oilType then
 				debugLog(string.format("click ignored: no oil type for %s", signPart:GetFullName()))

@@ -145,9 +145,20 @@ Catalog.NukeConfig = {
 }
 
 -- Airstrike config (purchasable via Army General NPC, targets specific player)
+--
+-- Player-purchased airstrikes are **GUARANTEED** to destroy the target's
+-- shipment — `ArmyGeneralService:_handleAirstrike` hardcodes `local hit =
+-- true` and broadcasts `outcome = "hit"`. `HitChance` is kept here at 1.0
+-- as a self-documenting constant so the config matches behavior; a previous
+-- 0.70 value was a stale draft that no callsite read. If a future change
+-- reintroduces a `rng:NextNumber() < cfg.HitChance` gate (e.g. a counter-
+-- ability or accuracy modifier), tune through this knob — do not undo the
+-- `local hit = true` in `ArmyGeneralService` without also flipping the UI
+-- copy ("AIRSTRIKE HIT!" / "Airstrike missed") and the victim death-cam
+-- assumptions in `StrategicStrikeClient.airStrikeEvent` handler.
 Catalog.AirStrikeConfig = {
 	Cost = 10000,
-	HitChance = 0.70,
+	HitChance = 1.0,
 	JetAltitude = 300,
 	JetSpeed = 700,
 	BombFallDuration = 2.0,

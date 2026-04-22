@@ -12,6 +12,7 @@ local DataStoreWriteGate = require(script.Parent.Parent.Utils.DataStoreWriteGate
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local WarehouseConfig = require(Shared:WaitForChild("Config"):WaitForChild("WarehouseConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local ResponsiveBillboard = require(Shared:WaitForChild("Utils"):WaitForChild("ResponsiveBillboard"))
 
 local WarehouseService = {}
 
@@ -20,6 +21,37 @@ local WOOD_SIGN_RIG_FOLDER = "WarehouseWoodSignRig"
 local WOOD_SIGN_CLICK_NAME = "TankUpgradeSignClick"
 local WAREHOUSE_TERMINAL_NAME = "WarehouseTerminal"
 local MAX_WAREHOUSE_TIER = #WarehouseConfig.Tiers
+
+--- Y rotation (about world up) applied to every cloned warehouse on spawn so
+--- the gate side of the template faces the ocean. The `WarehouseTemplate` is
+--- authored with gates pointing **inland**; rather than re-author every slot
+--- we just flip the model on placement. Change to `0` to undo, or to
+--- `math.pi/2` etc. if the template is re-authored.
+local WAREHOUSE_Y_ROTATION_RADIANS = math.pi
+
+--- Server-authored "Player's Warehouse" plate sitting above each warehouse,
+--- mirroring `PlotService:_updatePlotNameBillboard`. Same `ResponsiveBillboard`
+--- pipeline so phones get a proportional shrink and 4K gets a proportional
+--- grow. Replaces the legacy `SignBoard.SignGui` (player name + tier + cap)
+--- which used to live on the side of the template — that sign is now
+--- destroyed on spawn. The wooden upgrade sign (Minecraft Wood Sign on the
+--- terminal) is **untouched** by this billboard and stays as the click-to-
+--- upgrade affordance.
+local WAREHOUSE_OWNER_BILLBOARD_NAME = "WarehouseOwnerBillboard"
+local WAREHOUSE_OWNER_BILLBOARD_ANCHOR_NAME = "WarehouseOwnerBillboardAnchor"
+local WH_BILLBOARD_BASE_W = 440
+local WH_BILLBOARD_BASE_H = 96
+local WH_BILLBOARD_TEXT_MAX_SIZE = 96
+local WH_BILLBOARD_TEXT_MIN_SIZE = 18
+--- Studs above the warehouse's world-AABB top to float the plate. The plot
+--- billboard uses 54 above the small `ClaimPad`; warehouses are much taller
+--- so we scale the lift accordingly to keep the plate visible-but-not-
+--- detached.
+local WH_BILLBOARD_HEIGHT_OFFSET_STUDS = 8
+--- Larger than the plot plate's 120 because warehouses are typically viewed
+--- from the ocean approach (post-strait voyage cinematic lands the player
+--- looking at the finish beach from a few hundred studs out).
+local WH_BILLBOARD_MAX_DISTANCE = 220
 
 local function normalizeInstanceName(name: string): string
 	return string.lower((name:gsub("%s+", "")))
@@ -178,11 +210,153 @@ function WarehouseService:Init(remoteService, oilStateService)
 		table.sort(self._slots, function(a, b) return a.slotId < b.slotId end)
 	end
 
+	-- Cache `FinishBeach` for vertical alignment of the warehouse footprint.
+	-- Same lookup pattern `OilShipmentService` uses (`:FindFirstChild("FinishBeach", true)`
+	-- under `Workspace.Map`). Tolerates BasePart, Model, or Folder roots —
+	-- `_getFinishBeachTopY()` walks descendants for the AABB if needed.
+	self._finishBeach = nil :: Instance?
+	local map = Workspace:FindFirstChild("Map")
+	if map then
+		self._finishBeach = map:FindFirstChild("FinishBeach", true)
+	end
+
 	-- Load warehouse template
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	self._template = assets and assets:FindFirstChild("WarehouseTemplate")
 
-	print(string.format("[WarehouseService] %d slots, template=%s", #self._slots, tostring(self._template ~= nil)))
+	print(string.format(
+		"[WarehouseService] %d slots, template=%s, finishBeach=%s",
+		#self._slots,
+		tostring(self._template ~= nil),
+		tostring(self._finishBeach ~= nil)
+	))
+end
+
+--- Top Y (world-space) of the `FinishBeach` AABB. Falls back to the slot's
+--- own Y if the beach is missing so the warehouse never stays half-buried —
+--- worst case we just use the slot height as before.
+function WarehouseService:_getFinishBeachTopY(): number?
+	local fb = self._finishBeach
+	if not fb or not fb.Parent then
+		-- Re-resolve in case Map streaming finished after Init.
+		local map = Workspace:FindFirstChild("Map")
+		if map then
+			fb = map:FindFirstChild("FinishBeach", true)
+			self._finishBeach = fb
+		end
+	end
+	if not fb then
+		return nil
+	end
+	if fb:IsA("BasePart") then
+		return fb.Position.Y + fb.Size.Y / 2
+	end
+	if fb:IsA("Model") then
+		local cf, sz = fb:GetBoundingBox()
+		return cf.Y + sz.Y / 2
+	end
+	-- Folder / generic: union descendant BasePart AABBs along Y only.
+	local maxY: number? = nil
+	for _, d in ipairs(fb:GetDescendants()) do
+		if d:IsA("BasePart") then
+			local topY = d.Position.Y + d.Size.Y / 2
+			if maxY == nil or topY > maxY then
+				maxY = topY
+			end
+		end
+	end
+	return maxY
+end
+
+--- "Player's Warehouse" plate above the cloned warehouse. Mirrors
+--- `PlotService:_updatePlotNameBillboard` (responsive base size, AlwaysOnTop,
+--- text stroke, distance-gated render) so the two world plates feel like one
+--- system. Anchored via an `Attachment` parented to a stable BasePart in the
+--- visual; the attachment's `WorldPosition` is set from the visual's AABB
+--- top so the plate floats the same height regardless of which warehouse
+--- tier / template variant is in use.
+function WarehouseService:_ensureWarehouseOwnerBillboard(visual: Model, ownerName: string)
+	if not visual or not visual.Parent then
+		return
+	end
+	local hostPart: BasePart? = nil
+	if visual.PrimaryPart and visual.PrimaryPart:IsA("BasePart") then
+		hostPart = visual.PrimaryPart
+	else
+		for _, d in ipairs(visual:GetDescendants()) do
+			if d:IsA("BasePart") then
+				hostPart = d
+				break
+			end
+		end
+	end
+	if not hostPart then
+		return
+	end
+
+	local bbCf, bbSize = visual:GetBoundingBox()
+	local topWorldPos = bbCf.Position
+		+ Vector3.new(0, bbSize.Y / 2 + WH_BILLBOARD_HEIGHT_OFFSET_STUDS, 0)
+
+	local existingAtt = hostPart:FindFirstChild(WAREHOUSE_OWNER_BILLBOARD_ANCHOR_NAME)
+	local att: Attachment
+	if existingAtt and existingAtt:IsA("Attachment") then
+		att = existingAtt
+	else
+		if existingAtt then
+			existingAtt:Destroy()
+		end
+		att = Instance.new("Attachment")
+		att.Name = WAREHOUSE_OWNER_BILLBOARD_ANCHOR_NAME
+		att.Parent = hostPart
+	end
+	att.WorldPosition = topWorldPos
+
+	local existing = att:FindFirstChild(WAREHOUSE_OWNER_BILLBOARD_NAME)
+	local bb: BillboardGui
+	if existing and existing:IsA("BillboardGui") then
+		bb = existing
+	else
+		if existing then
+			existing:Destroy()
+		end
+		bb = Instance.new("BillboardGui")
+		bb.Name = WAREHOUSE_OWNER_BILLBOARD_NAME
+		bb.AlwaysOnTop = true
+		ResponsiveBillboard.Mark(bb, WH_BILLBOARD_BASE_W, WH_BILLBOARD_BASE_H)
+		bb.MaxDistance = WH_BILLBOARD_MAX_DISTANCE
+		bb.LightInfluence = 0
+		bb.Parent = att
+		local tl = Instance.new("TextLabel")
+		tl.Name = "WarehouseNameText"
+		tl.Size = UDim2.fromScale(1, 1)
+		tl.BackgroundTransparency = 1
+		tl.TextColor3 = Color3.fromRGB(255, 252, 245)
+		tl.Font = Enum.Font.Merriweather
+		tl.TextStrokeTransparency = 0.4
+		tl.TextStrokeColor3 = Color3.fromRGB(15, 18, 28)
+		tl.TextScaled = true
+		tl.Parent = bb
+		local tsc = Instance.new("UITextSizeConstraint")
+		tsc.MaxTextSize = WH_BILLBOARD_TEXT_MAX_SIZE
+		tsc.MinTextSize = WH_BILLBOARD_TEXT_MIN_SIZE
+		tsc.Parent = tl
+	end
+	bb.Enabled = true
+	ResponsiveBillboard.EnsureMarked(bb, WH_BILLBOARD_BASE_W, WH_BILLBOARD_BASE_H)
+	if bb.MaxDistance ~= WH_BILLBOARD_MAX_DISTANCE then
+		bb.MaxDistance = WH_BILLBOARD_MAX_DISTANCE
+	end
+	local tl = bb:FindFirstChild("WarehouseNameText", true)
+	if tl and tl:IsA("TextLabel") then
+		tl.Font = Enum.Font.Merriweather
+		tl.Text = string.format("%s's Warehouse", ownerName)
+		local tsc = tl:FindFirstChildOfClass("UITextSizeConstraint")
+		if tsc then
+			tsc.MaxTextSize = WH_BILLBOARD_TEXT_MAX_SIZE
+			tsc.MinTextSize = WH_BILLBOARD_TEXT_MIN_SIZE
+		end
+	end
 end
 
 function WarehouseService:Start()
@@ -594,26 +768,29 @@ function WarehouseService:_spawnWarehouseVisual(userId: number)
 
 	local visual = self._template:Clone()
 	visual.Name = orphanName
-	visual:PivotTo(CFrame.new(pos))
+	-- Place + flip about Y so the gate side faces the ocean (template ships
+	-- with gates pointing inland). See `WAREHOUSE_Y_ROTATION_RADIANS` doc.
+	visual:PivotTo(CFrame.new(pos) * CFrame.Angles(0, WAREHOUSE_Y_ROTATION_RADIANS, 0))
 
 	-- Resolve terminal while ProximityPrompts still exist (text match), then parent, place wood sign, strip prompts.
 	local terminalForWoodSign = findWarehouseTerminalAnchor(visual)
 
-	-- Update sign
-	local signBoard = visual:FindFirstChild("SignBoard", true)
-	if signBoard then
-		local gui = signBoard:FindFirstChild("SignGui")
-		if gui then
-			local ownerLabel = gui:FindFirstChild("OwnerLabel")
-			local player = Players:GetPlayerByUserId(userId)
-			if ownerLabel and player then
-				ownerLabel.Text = player.Name
-			end
-			local tierLabel = gui:FindFirstChild("TierLabel")
-			if tierLabel then
-				local cap = WarehouseConfig.GetCapacity(state.tier)
-				tierLabel.Text = string.format("Tier %d | %d/%d", state.tier, totalBarrels(state.barrels), cap)
-			end
+	-- Drop the legacy player-name / tier / capacity sign + its support post
+	-- that lived on the side of the template. The template authors them as
+	-- two **siblings** at the top level (`SignBoard :: Part` + `SignPost ::
+	-- Part`, the dark vertical post — confirmed via Studio MCP inspection
+	-- 2026-04), so destroying `SignBoard` alone leaves the post hanging in
+	-- mid-air. We replace the whole rig with a `BillboardGui` plate that
+	-- floats above the warehouse (see `_ensureWarehouseOwnerBillboard`),
+	-- modelled on `PlotService:_updatePlotNameBillboard`. The wooden
+	-- upgrade sign (`Minecraft Wood Sign` placed by
+	-- `_ensureWarehouseWoodSign`) is intentionally NOT touched — it is the
+	-- only on-warehouse signage that remains, and still shows tier /
+	-- capacity / `Click to Upgrade` copy via `_syncWoodSignGui`.
+	for _, legacySignName in ipairs({ "SignBoard", "SignPost" }) do
+		local legacy = visual:FindFirstChild(legacySignName, true)
+		if legacy then
+			legacy:Destroy()
 		end
 	end
 
@@ -623,8 +800,32 @@ function WarehouseService:_spawnWarehouseVisual(userId: number)
 	-- Parent to FinishPlot
 	visual.Parent = finishPlot or Workspace
 	self._visualByUserId[userId] = visual
+
+	-- Vertically align the warehouse footprint with the top of `FinishBeach`
+	-- so it sits directly on the beach (no half-buried fence, no hovering
+	-- foundation). Done **after** parenting because `GetBoundingBox` returns
+	-- a tighter result once the model is in workspace and any streamed
+	-- descendants have settled. World-space translate (CFrame + Vector3)
+	-- keeps the 180° rotation we just applied.
+	local beachTopY = self:_getFinishBeachTopY()
+	if beachTopY then
+		local bbCf, bbSize = visual:GetBoundingBox()
+		local currentBottomY = bbCf.Y - bbSize.Y / 2
+		local lift = beachTopY - currentBottomY
+		if math.abs(lift) > 1e-3 then
+			visual:PivotTo(visual:GetPivot() + Vector3.new(0, lift, 0))
+		end
+	end
+
 	self:_ensureWarehouseWoodSign(visual, userId, terminalForWoodSign)
 	stripAllProximityPromptsInWarehouse(visual)
+
+	-- Owner plate ("<Name>'s Warehouse") — must run after the lift above so
+	-- the attachment world-position lands on the *final* AABB top.
+	local player = Players:GetPlayerByUserId(userId)
+	if player then
+		self:_ensureWarehouseOwnerBillboard(visual, player.Name)
+	end
 end
 
 function WarehouseService:_applyFenceSize(_visual: Model, _tier: number)
@@ -1006,15 +1207,26 @@ function WarehouseService:_updateSign(userId: number)
 	local visual = self._visualByUserId[userId]
 	if not state or not visual then return end
 
+	-- Legacy `SignBoard.SignGui` is destroyed on spawn (see
+	-- `_spawnWarehouseVisual`). The block below is kept defensively so a
+	-- partial-template clone (or a future re-introduced placard) still
+	-- syncs through this path; in normal operation it short-circuits.
 	local signBoard = visual:FindFirstChild("SignBoard", true)
-	if not signBoard then return end
-	local gui = signBoard:FindFirstChild("SignGui")
-	if not gui then return end
-
-	local tierLabel = gui:FindFirstChild("TierLabel")
-	if tierLabel then
-		local cap = WarehouseConfig.GetCapacity(state.tier)
-		tierLabel.Text = string.format("Tier %d/%d | %d/%d", state.tier, MAX_WAREHOUSE_TIER, totalBarrels(state.barrels), cap)
+	if signBoard then
+		local gui = signBoard:FindFirstChild("SignGui")
+		if gui then
+			local tierLabel = gui:FindFirstChild("TierLabel")
+			if tierLabel then
+				local cap = WarehouseConfig.GetCapacity(state.tier)
+				tierLabel.Text = string.format(
+					"Tier %d/%d | %d/%d",
+					state.tier,
+					MAX_WAREHOUSE_TIER,
+					totalBarrels(state.barrels),
+					cap
+				)
+			end
+		end
 	end
 
 	local rig = visual:FindFirstChild(WOOD_SIGN_RIG_FOLDER)

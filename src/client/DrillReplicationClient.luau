@@ -8,6 +8,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
+local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -54,6 +55,33 @@ function M.connect(deps: Deps)
 					end
 					dc:PivotTo(CFrame.new(pos + Vector3.new(0, 4, 0)))
 					dc.Parent = Workspace
+
+					--- "Ready to reveal" glow: subtle green Highlight on the shovel
+					--- model so finished drills are easy to spot at a glance without
+					--- being visually loud. `AlwaysOnTop` so the cue is findable
+					--- through the dirt mound / surrounding props (this is the
+					--- whole point of the indicator). A gentle outline-transparency
+					--- pulse via TweenService creates the "glowing" sensation with
+					--- a tight amplitude so it stays in the background of the FX
+					--- mix and doesn't compete with the DrillComplete model itself
+					--- or the proximity prompt.
+					local hl = Instance.new("Highlight")
+					hl.Name = "ReadyToRevealHighlight"
+					hl.FillColor = Color3.fromRGB(80, 255, 130)
+					hl.FillTransparency = 0.88
+					hl.OutlineColor = Color3.fromRGB(140, 255, 170)
+					hl.OutlineTransparency = 0.35
+					hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+					hl.Parent = dc
+
+					task.spawn(function()
+						local tween = TweenService:Create(
+							hl,
+							TweenInfo.new(1.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+							{ OutlineTransparency = 0.1 }
+						)
+						tween:Play()
+					end)
 
 					local prompt = Instance.new("ProximityPrompt")
 					prompt.Name = "RevealPrompt"
