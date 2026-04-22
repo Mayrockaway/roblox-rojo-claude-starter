@@ -604,7 +604,7 @@ local function tryBindEquipmentHotbarAsync()
 	task.spawn(function()
 		local uiFolder = getHudUiFolder()
 		if not uiFolder then
-			return
+		return
 		end
 		local hbMod = uiFolder:WaitForChild("EquipmentHotbarController", 30)
 		if not (hbMod and hbMod:IsA("ModuleScript")) then
@@ -770,8 +770,8 @@ local function getTargetedDrillId(): number?
 			local id = tonumber(string.sub(cursor.Name, 7))
 			if id then
 				return id
-			end
 		end
+	end
 		cursor = cursor.Parent
 	end
 	return nil
@@ -932,7 +932,7 @@ end
 
 player:GetAttributeChangedSignal("PlotId"):Connect(function()
 	bindOwnedPlot()
-	updateUi()
+			updateUi()
 	task.spawn(function()
 		OilSnapshotClient.requestSnapshotWithRetry(oilSnapshotDeps, requestOilSnapshot, 6, 0.2)
 	end)
@@ -1378,8 +1378,8 @@ end)
 			(FtueUiPointers :: any).start(player, playerGui, ftueStateUpdate)
 		else
 			warn("[FTUE] FtueUiPointers has no start()")
-		end
-	end)
+	end
+end)
 
 	task.defer(function()
 		local uiRoot = (script.Parent and script.Parent:FindFirstChild("UI")) or getHudUiFolder()

@@ -1175,6 +1175,22 @@ function OilShipmentService:_runShipment(shipment)
 
 	-- Setup physics-driven ship
 	self:_setupShip(shipment.shipmentId, boat, startRaised, initDir)
+
+	-- Yield one physics step before anything downstream (barrel load,
+	-- security personnel mount, owner teleport) reads hull geometry.
+	-- `_setupShip` un-anchors every part, builds new `WeldConstraint`s,
+	-- attaches `AlignPosition`/`AlignOrientation`, and assigns
+	-- `root.CFrame = …` all in the same frame. Roblox needs at least
+	-- one Heartbeat for those new welds to merge into a single
+	-- assembly and for `AlignPosition` to actually drive the hull —
+	-- without this wait, `BoatDockService.resolveBoatSupportStandCFrame`
+	-- can sample a deck that's mid-bob, the support raycast can miss
+	-- the slab (tight `DeckTopAnchor` clearance on Tanker, ~0.12 studs
+	-- above slab top), and the player gets ejected DOWN through the
+	-- deck after `PivotTo`. One frame (~16 ms) is invisible against the
+	-- 1.2s `dockHoldBeforeVoyage` below.
+	RunService.Heartbeat:Wait()
+
 	self._activeShipmentByOwner[ownerUserId] = shipment.shipmentId
 	self._shipmentContexts[shipment.shipmentId] = {
 		ownerUserId = ownerUserId,

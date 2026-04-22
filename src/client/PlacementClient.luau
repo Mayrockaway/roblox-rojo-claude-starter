@@ -153,6 +153,22 @@ local function raycastTouchToChunk(touchScreenPos: Vector2): (string?, Vector3?,
 	local tileName: string? = nil
 	if hitInst:IsA("BasePart") and hitInst.Name:match("^T%d%d$") then
 		tileName = hitInst.Name
+		-- **Mobile placement forgiveness:** snap the returned hit position to
+		-- the **center** of the tile that was struck. The raw ray hit can
+		-- land on the tile's edge or corner where a finger covers ~60px of
+		-- the screen — the cell-key resolver (`globalCellKeyFromChunkHit`)
+		-- and drill-spacing checks (`distanceXZ` in `isPlacementValid`)
+		-- both run on `hitPos`, so an off-center touch on the FTUE tile can
+		-- resolve to a *neighbouring* cell key and falsely report invalid.
+		-- Snapping to the tile's authored center means a release **anywhere
+		-- on a usable tile** commits at the tile's true center — the player
+		-- doesn't have to dead-aim at the middle. Desktop mouse path is
+		-- untouched (uses `mouse.Hit`, not this helper).
+		hitPos = Vector3.new(
+			hitInst.Position.X,
+			hitInst.Position.Y + hitInst.Size.Y / 2,
+			hitInst.Position.Z
+		)
 	end
 
 	local cursor: Instance? = hitInst

@@ -364,10 +364,24 @@ local function resolveBoatSupportStandCFrame(boat: Model, desiredCFrame: CFrame)
 	--- boat rises between the sample and the engine actually placing the
 	--- character (1+ physics step), the HRP can end up clipped INSIDE the
 	--- deck slab and Roblox resolves the overlap by ejecting them UNDER the
-	--- ship. Spawning ~2 studs higher gives gravity room to drop them onto
-	--- the deck cleanly without ever overlapping it. The follow-up safety
-	--- re-snap in `teleportCharacterToBoatDeck` covers worse cases.
-	local EXTRA_CLEARANCE = 2
+	--- ship. Spawning a few studs higher gives gravity room to drop them
+	--- onto the deck cleanly without ever overlapping it.
+	---
+	--- 4 (not 2): on the Tanker template, `DeckTopAnchor` sits only ~0.12
+	--- studs above the deck slab's top face — within Roblox's "ray skips a
+	--- part whose interior the ray originates inside" tolerance. Any small
+	--- downward bob during dispatch (the boat un-anchors + welds + applies
+	--- AlignPosition all in one frame in `_setupShip`) put the cast origin
+	--- inside the slab, the cast missed the deck entirely (no other
+	--- collidable part in the 14-stud band on Tanker), and the player was
+	--- placed clipping the slab → ejected DOWN through the hull and into
+	--- the water. Doubling the clearance lifts the placement well clear of
+	--- the slab so gravity always drops onto, never inside, the deck.
+	--- Pairs with the `RunService.Heartbeat:Wait()` in
+	--- `OilShipmentService:_runShipment` (boat is settled by the time the
+	--- raycast even runs). The follow-up safety re-snap in
+	--- `teleportCharacterToBoatDeck` still covers worse cases.
+	local EXTRA_CLEARANCE = 4
 	local snapY = math.max(result.Position.Y + 4, desiredPos.Y) + EXTRA_CLEARANCE
 	local snappedPos = Vector3.new(desiredPos.X, snapY, desiredPos.Z)
 	if RunService:IsStudio() then
