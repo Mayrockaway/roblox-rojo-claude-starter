@@ -1328,7 +1328,6 @@ task.defer(function()
 	end
 	local startDlg = (FtueDialogueController :: any).start
 	if typeof(FtueDialogueController) == "table" and typeof(startDlg) == "function" then
-		print("[FTUE] Starting FtueDialogueController")
 		startDlg(player, playerGui, requestFtueAcknowledge, requestFtueSkip, ftueStateUpdate, oilActionResult)
 	else
 		warn("[FTUE] FtueDialogueController has no start()")
@@ -1376,7 +1375,6 @@ end)
 		end
 		local startReveal = (FtueHudReveal :: any).start
 		if typeof(FtueHudReveal) == "table" and typeof(startReveal) == "function" then
-			print("[FTUE] Starting FtueHudReveal")
 			startReveal(player)
 		else
 			warn("[FTUE] FtueHudReveal has no start()")
@@ -1401,14 +1399,11 @@ end)
 	end
 	local startHl = (FtueTutorialTileHighlight :: any).start
 	if typeof(FtueTutorialTileHighlight) == "table" and typeof(startHl) == "function" then
-		print("[FTUE] Starting FtueTutorialTileHighlight")
 		startHl(player)
 	else
 		warn("[FTUE] FtueTutorialTileHighlight has no start()")
 	end
 end)
-
-print("[Client] Chunked plot mode active.")
 
 -- Play join game sound (plays after FTUE for first joiners, or immediately for returning players)
 task.delay(1, function()

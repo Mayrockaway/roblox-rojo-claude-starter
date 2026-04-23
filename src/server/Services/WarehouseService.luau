@@ -3,6 +3,7 @@
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -225,12 +226,14 @@ function WarehouseService:Init(remoteService, oilStateService)
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	self._template = assets and assets:FindFirstChild("WarehouseTemplate")
 
-	print(string.format(
-		"[WarehouseService] %d slots, template=%s, finishBeach=%s",
-		#self._slots,
-		tostring(self._template ~= nil),
-		tostring(self._finishBeach ~= nil)
-	))
+	if RunService:IsStudio() then
+		print(string.format(
+			"[WarehouseService] %d slots, template=%s, finishBeach=%s",
+			#self._slots,
+			tostring(self._template ~= nil),
+			tostring(self._finishBeach ~= nil)
+		))
+	end
 end
 
 --- Top Y (world-space) of the `FinishBeach` AABB. Falls back to the slot's

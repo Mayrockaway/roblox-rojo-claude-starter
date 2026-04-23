@@ -16,6 +16,7 @@
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 -- `Constants` / `FtueConfig` / `getClientRemotes` requires are needed
 -- again for the `WaitDocksFleetPanel` → `FleetPanelOpened` FTUE bridge
@@ -81,7 +82,9 @@ function ProximityPanelOpener.start()
 		end
 	end)
 
-	print("[Client] ProximityPanelOpener: listening for `OpensPanel` ProximityPrompts.")
+	if RunService:IsStudio() then
+		print("[Client] ProximityPanelOpener: listening for `OpensPanel` ProximityPrompts.")
+	end
 end
 
 return ProximityPanelOpener

@@ -420,8 +420,10 @@ local function wireBuyPrompt(prompt: ProximityPrompt)
 	if _wiredPromptSet[prompt] then return end
 	_wiredPromptSet[prompt] = true
 	local conn = prompt.Triggered:Connect(function(triggeringPlayer)
-		print(string.format("[Client] BuyPrompt Triggered by %s on %s",
-			triggeringPlayer and triggeringPlayer.Name or "?", prompt:GetFullName()))
+		if RunService:IsStudio() then
+			print(string.format("[Client] BuyPrompt Triggered by %s on %s",
+				triggeringPlayer and triggeringPlayer.Name or "?", prompt:GetFullName()))
+		end
 		if triggeringPlayer ~= player then
 			return
 		end
@@ -430,12 +432,16 @@ local function wireBuyPrompt(prompt: ProximityPrompt)
 			cursor = cursor.Parent
 			if cursor and typeof(cursor:GetAttribute("ChunkId")) == "string" then
 				local chunkId = cursor:GetAttribute("ChunkId")
-				print(string.format("[Client] firing RequestBuyChunk chunkId=%s", chunkId))
+				if RunService:IsStudio() then
+					print(string.format("[Client] firing RequestBuyChunk chunkId=%s", chunkId))
+				end
 				requestBuyChunk:FireServer({ chunkId = chunkId })
 				return
 			end
 		end
-		print("[Client] BuyPrompt: no ChunkId ancestor")
+		if RunService:IsStudio() then
+			print("[Client] BuyPrompt: no ChunkId ancestor")
+		end
 	end)
 	table.insert(promptConnections, conn)
 end
@@ -454,7 +460,9 @@ local function bindPromptsForOwnedPlot()
 			wired += 1
 		end
 	end
-	print(string.format("[Client] bindPromptsForOwnedPlot: wired %d BuyPrompts on %s (initial)", wired, ownedPlot.Name))
+	if RunService:IsStudio() then
+		print(string.format("[Client] bindPromptsForOwnedPlot: wired %d BuyPrompts on %s (initial)", wired, ownedPlot.Name))
+	end
 
 	-- Streaming-resilient: catch BuyPrompts that replicate in later.
 	local boundPlot = ownedPlot
@@ -462,7 +470,9 @@ local function bindPromptsForOwnedPlot()
 		if boundPlot ~= ownedPlot then return end
 		if d:IsA("ProximityPrompt") and d.Name == "BuyPrompt" then
 			wireBuyPrompt(d)
-			print(string.format("[Client] BuyPrompt wired late via DescendantAdded: %s", d:GetFullName()))
+			if RunService:IsStudio() then
+				print(string.format("[Client] BuyPrompt wired late via DescendantAdded: %s", d:GetFullName()))
+			end
 		end
 	end)
 	table.insert(promptConnections, streamConn)
@@ -499,7 +509,9 @@ local function bindOwnedPlot()
 		end
 	end
 
-	print(string.format("[Client] bindOwnedPlot: %s bound, %d chunks found", ownedPlot.Name, count))
+	if RunService:IsStudio() then
+		print(string.format("[Client] bindOwnedPlot: %s bound, %d chunks found", ownedPlot.Name, count))
+	end
 
 	bindPromptsForOwnedPlot()
 end

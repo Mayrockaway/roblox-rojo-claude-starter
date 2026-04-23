@@ -12,6 +12,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local HudTriggerHover = require(script.Parent.HudTriggerHover)
@@ -164,7 +165,9 @@ function HudTeleportRouter.start(playerGui: PlayerGui)
 	if started then
 		return
 	end
-	print("[Client] HudTeleportRouter: start() — waiting for HUD Canvas…")
+	if RunService:IsStudio() then
+		print("[Client] HudTeleportRouter: start() — waiting for HUD Canvas…")
+	end
 
 	task.spawn(function()
 		for attempt = 1, 120 do
@@ -233,7 +236,7 @@ function HudTeleportRouter.start(playerGui: PlayerGui)
 			end
 
 			if wired == 0 then
-				if attempt == 1 or attempt % 10 == 0 then
+				if RunService:IsStudio() and (attempt == 1 or attempt % 10 == 0) then
 					print("[Client] HudTeleportRouter: retry wired=0 attempt=", attempt)
 				end
 				task.wait(0.5)
@@ -241,7 +244,9 @@ function HudTeleportRouter.start(playerGui: PlayerGui)
 			end
 
 			started = true
-			print("[Client] HudTeleportRouter: teleport buttons wired (" .. tostring(wired) .. ").")
+			if RunService:IsStudio() then
+				print("[Client] HudTeleportRouter: teleport buttons wired (" .. tostring(wired) .. ").")
+			end
 			return
 		end
 		warn("[Client] HudTeleportRouter: timed out waiting for HUD Canvas / teleport buttons.")

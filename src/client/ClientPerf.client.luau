@@ -28,6 +28,15 @@ local function reportNow()
 		hitches = 0
 		return
 	end
+	if not RunService:IsStudio() then
+		windowStart = os.clock()
+		frameCount = 0
+		frameTimeTotalMs = 0
+		frameTimeMaxMs = 0
+		hitches = 0
+		return
+	end
+
 	local fps = frameCount / elapsed
 	local avgMs = frameTimeTotalMs / frameCount
 	local maxMs = frameTimeMaxMs

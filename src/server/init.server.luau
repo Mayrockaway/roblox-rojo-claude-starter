@@ -691,4 +691,3 @@ do
 	end
 end
 
-print("[Server] Oil mining mode active: chunked plot + free-placed drills")

@@ -1,5 +1,6 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
@@ -1625,7 +1626,7 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 			-- Tag fill parts on first encounter so we can find them again after transparency changes.
 			local isConnected = drill.connected == true
 			local oilType = drill.tileOilType or "Crude"
-			if justCreated or isConnected then
+			if RunService:IsStudio() and (justCreated or isConnected) then
 				print("[PumpFill] drillId=" .. tostring(drill.drillId) .. " tileOilType=" .. tostring(drill.tileOilType) .. " resolved=" .. oilType .. " connected=" .. tostring(isConnected))
 			end
 			--- Pump glass fill colors are intentionally identical to
@@ -2091,7 +2092,9 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 	local tierTemplates = barrelConfig.TierTemplates or {}
 	local staging = plot:FindFirstChild("BarrelStagingArea")
 	if not staging then
-		print("[OilVisualService] No BarrelStagingArea on plot")
+		if RunService:IsStudio() then
+			warn("[OilVisualService] No BarrelStagingArea on plot")
+		end
 		return
 	end
 	local convStart = staging:FindFirstChild("ConveyorStart")

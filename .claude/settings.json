@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=37816 OR ProcessId=43268\" | ForEach-Object { $pp = Get-CimInstance Win32_Process -Filter \"ProcessId=$\\($_.ParentProcessId\\)\"; [PSCustomObject]@{CmdPID=$_.ProcessId; GPID=$pp.ProcessId; GName=$pp.Name; GCmd=\\($pp.CommandLine | ForEach-Object { if\\($_\\){$_.Substring\\(0,[Math]::Min\\(250,$_.Length\\)\\)} }\\) } } | Format-List)",
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=30332\" | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List; Write-Host \"---parents up the chain---\"; $pid1=\\(Get-CimInstance Win32_Process -Filter \"ProcessId=30332\"\\).ParentProcessId; for \\($i=0; $i -lt 5 -and $pid1; $i++\\){ $p=Get-CimInstance Win32_Process -Filter \"ProcessId=$pid1\"; if\\(-not $p\\){break}; Write-Host \"PID=$\\($p.ProcessId\\) Name=$\\($p.Name\\) Cmd=$\\($p.CommandLine.Substring\\(0,[Math]::Min\\(250,$p.CommandLine.Length\\)\\)\\)\"; $pid1=$p.ParentProcessId })",
+      "mcp__robloxstudio-mcp__search_objects",
+      "mcp__robloxstudio-mcp__mass_get_property",
+      "mcp__robloxstudio-mcp__mass_set_property",
+      "mcp__robloxstudio-mcp__get_instance_properties",
+      "mcp__robloxstudio-mcp__search_by_property"
+    ]
+  }
+}

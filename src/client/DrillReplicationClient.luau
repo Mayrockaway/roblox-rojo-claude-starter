@@ -8,6 +8,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
+local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
@@ -121,7 +122,9 @@ function M.connect(deps: Deps)
 				then Vector3.new(tonumber(data.position.x) or 0, tonumber(data.position.y) or 0, tonumber(data.position.z) or 0)
 				else Vector3.new(0, 0, 0)
 			local dcTemplate = ReplicatedStorage:FindFirstChild("Assets") and ReplicatedStorage.Assets:FindFirstChild("DrillComplete")
-			print("[DrillReplay] pos=", pos, "mag=", pos.Magnitude, "template=", dcTemplate ~= nil)
+			if RunService:IsStudio() then
+				print("[DrillReplay] pos=", pos, "mag=", pos.Magnitude, "template=", dcTemplate ~= nil)
+			end
 			if dcTemplate and pos.Magnitude > 0 then
 				task.spawn(function()
 					local dc = dcTemplate:Clone()

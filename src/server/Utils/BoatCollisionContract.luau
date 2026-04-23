@@ -77,20 +77,29 @@
 --         the whale rig. Respecting authored intent restores the artist's setup.
 --       - Ducky: the duck-body and raft-pillar fake-cube hitboxes are fixed
 --         in the template separately (Block-shape Parts wrapping mesh visuals).
---   * Helper parts identified by `isNonCollidableBoatHelperPart` (FRONT_MARKER,
+--   * Helper parts identified by `IsNonCollidableBoatHelperPart` (FRONT_MARKER,
 --     WaterlineAnchor, BarrelStackRoot, etc., or any part with transparency
---     ≥ 0.95 and no `AllowInvisibleCollision` opt-out) are explicitly neutralized
+--     at/above the template-specific threshold and no opt-out) are explicitly neutralized
 --     — fully invisible, non-colliding, non-touching, massless. This catches the
 --     legacy authored "guide" parts that should never participate in physics
 --     even if their `CanCollide` flag was authored true.
 --   * If a future template intentionally needs an invisible collider (e.g. a
 --     hidden ramp), set the BasePart attribute `AllowInvisibleCollision = true`
 --     and the helper-detector will skip it.
+--   * Semi-transparent **hull** mesh (common on inflatable `Tier3Boat` lifeboats,
+--     transparency ~0.92–0.97) must NOT be misclassified as helpers. Mitigations:
+--       - `Tier3Boat` uses a higher auto-helper transparency threshold (see
+--         `IsNonCollidableBoatHelperPart`); and/or
+--       - set Boolean **`BoatGameplayHullPart = true`** on any BasePart that is
+--         real walkable / collidable shell so it is never transparency-neutralized.
 --
 -- Call sites and the `mode` they MUST pass:
 --   * `BoatDockService:_spawnIdleBoat`           → `Apply(boat, "idle")`
 --   * `BoatDockService:CheckoutBoat`             → `Apply(boat, "voyage")` (re-tag idle → voyage)
 --   * `OilShipmentService:_setupShip`            → `Apply(boat, "voyage")` (idempotent, after un-anchor / weld)
+--   * `OilShipmentService:_loadBarrelsOnDeck`   → `TagDeckCargoAsShipmentHull` after each barrel is
+--     parented + welded (cargo parts must stay `ShipmentShip` so they inherit
+--     the same no-collide pairs as the hull vs `MarinaDock` / `MapDecor`).
 --
 -- Anchoring / welding remain the caller's responsibility — those differ
 -- between idle (anchored, no constraints) and voyage (unanchored, welded rigid
@@ -123,6 +132,13 @@ local NON_COLLIDABLE_BOAT_HELPER_NAMES: { [string]: boolean } = {
 local SHIPMENT_SHIP_GROUP = "ShipmentShip"
 local IDLE_BOAT_GROUP = "IdleBoat"
 
+--- Unnamed guide parts at or above this transparency become auto-helpers (neutralized).
+local TRANSPARENCY_HELPER_MIN_DEFAULT = 0.95
+--- `Tier3Boat` (lifeboat) often authors the orange tube mesh at ~0.92–0.97 transparency;
+--- the default 0.95 threshold strips collision from visible hull, causing dock/strait
+--- snags and odd owner contacts. Only nearly-invisible shells are auto-neutralized.
+local TRANSPARENCY_HELPER_MIN_TIER3_BOAT = 0.998
+
 export type ApplyMode = "idle" | "voyage"
 
 local BoatCollisionContract = {}
@@ -136,14 +152,22 @@ BoatCollisionContract.CollisionGroup = SHIPMENT_SHIP_GROUP
 BoatCollisionContract.VoyageGroup = SHIPMENT_SHIP_GROUP
 BoatCollisionContract.IdleGroup = IDLE_BOAT_GROUP
 
-function BoatCollisionContract.IsNonCollidableBoatHelperPart(part: BasePart): boolean
+function BoatCollisionContract.IsNonCollidableBoatHelperPart(part: BasePart, boatRoot: Instance?): boolean
 	if NON_COLLIDABLE_BOAT_HELPER_NAMES[part.Name] == true then
 		return true
 	end
 	if part:GetAttribute("AllowInvisibleCollision") == true then
 		return false
 	end
-	return part.Transparency >= 0.95
+	--- Explicit hull shell — never strip collision / visibility by transparency heuristic.
+	if part:GetAttribute("BoatGameplayHullPart") == true then
+		return false
+	end
+	local tMin = TRANSPARENCY_HELPER_MIN_DEFAULT
+	if boatRoot and boatRoot:GetAttribute("ShipTemplateName") == "Tier3Boat" then
+		tMin = TRANSPARENCY_HELPER_MIN_TIER3_BOAT
+	end
+	return part.Transparency >= tMin
 end
 
 function BoatCollisionContract.NeutralizeHelperPart(part: BasePart)
@@ -165,6 +189,40 @@ end
 --- Defaults to "voyage" so any legacy callsite that hasn't been updated yet
 --- still produces a hull players can stand on (degrades to current behavior
 --- rather than silently making a boat un-walkable).
+--- Every `BasePart` that belongs to a `DeckBarrel` cargo instance (top-level
+--- Part named `DeckBarrel`, or any descendant under a Model/Part named
+--- `DeckBarrel`) is forced to `ShipmentShip`. Call after barrels are parented
+--- under the voyage boat so welded cargo cannot remain on `Default` (which
+--- would collide with pier / MapDecor even when the hull is correctly tagged).
+function BoatCollisionContract.TagDeckCargoAsShipmentHull(boat: Instance): number
+	local tagged = 0
+	for _, d in ipairs(boat:GetDescendants()) do
+		if not d:IsA("BasePart") then
+			continue
+		end
+		local isCargo = false
+		if d.Name == "DeckBarrel" and d.Parent == boat then
+			isCargo = true
+		else
+			local p: Instance? = d.Parent
+			while p and p ~= boat do
+				if p.Name == "DeckBarrel" then
+					isCargo = true
+					break
+				end
+				p = p.Parent
+			end
+		end
+		if isCargo then
+			pcall(function()
+				(d :: BasePart).CollisionGroup = SHIPMENT_SHIP_GROUP
+			end)
+			tagged += 1
+		end
+	end
+	return tagged
+end
+
 function BoatCollisionContract.Apply(boat: Instance, mode: ApplyMode?): (number, number)
 	local resolvedMode: ApplyMode = if mode == "idle" then "idle" else "voyage"
 	local groupName: string = if resolvedMode == "idle" then IDLE_BOAT_GROUP else SHIPMENT_SHIP_GROUP
@@ -174,7 +232,7 @@ function BoatCollisionContract.Apply(boat: Instance, mode: ApplyMode?): (number,
 		if not d:IsA("BasePart") then
 			continue
 		end
-		if BoatCollisionContract.IsNonCollidableBoatHelperPart(d) then
+		if BoatCollisionContract.IsNonCollidableBoatHelperPart(d, boat) then
 			BoatCollisionContract.NeutralizeHelperPart(d)
 			helperCount += 1
 		end

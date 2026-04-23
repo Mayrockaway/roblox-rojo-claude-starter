@@ -65,10 +65,19 @@ local CASH_COIN_ASSET = "rbxassetid://81632778317714"
 local DEFAULT_RARITY_STROKE_TRANSPARENCY = 0.15
 local EQUIPPED_STROKE_TRANSPARENCY = 0
 local SEG_EMPTY_COLOR = Color3.fromRGB(40, 50, 62)
+-- Ship Fleet only: `VeinCrateConfig.RarityStyles.Mythic` is purple (crate/loot
+-- parody). For boat cards and the hero detail we use a red family so Mythic
+-- does not read as a second purple tier next to Epic.
+local FLEET_SHIP_MYTHIC_STROKE = Color3.fromHex("#ff3b3b")
+local FLEET_SHIP_MYTHIC_PILL_BG = Color3.fromHex("#6e0a0a")
+local FLEET_SHIP_MYTHIC_PILL_TEXT = Color3.fromHex("#ffdede")
 
 local FleetPanelPopulate = {}
 
 local function rarityStrokeColor(rarity: string?): Color3
+	if rarity == "Mythic" then
+		return FLEET_SHIP_MYTHIC_STROKE
+	end
 	-- The rarity panel and crate UI share `VeinCrateConfig.RarityStyles`
 	-- so a single source of truth drives card border tinting too.
 	-- `bgStart` is the brighter rarity color (used by the crate header
@@ -81,6 +90,9 @@ local function rarityStrokeColor(rarity: string?): Color3
 end
 
 local function rarityPillBackground(rarity: string?): Color3
+	if rarity == "Mythic" then
+		return FLEET_SHIP_MYTHIC_PILL_BG
+	end
 	local style = VeinCrateConfig.RarityStyles[rarity or "Common"]
 	if style then
 		return style.bgEnd
@@ -89,6 +101,9 @@ local function rarityPillBackground(rarity: string?): Color3
 end
 
 local function rarityPillTextColor(rarity: string?): Color3
+	if rarity == "Mythic" then
+		return FLEET_SHIP_MYTHIC_PILL_TEXT
+	end
 	return VeinCrateConfig.GetRarityTextColor(rarity or "Common")
 end
 
@@ -301,9 +316,17 @@ function FleetPanelPopulate.Apply(card: GuiObject, entry: BoatEntry, ctx: ApplyC
 	-- back in.
 	local iconHost = card:FindFirstChild("IconHost")
 	if iconHost then
+		if iconHost:IsA("GuiObject") then
+			(iconHost :: GuiObject).BackgroundTransparency = 1
+		end
 		local icon = iconHost:FindFirstChild("Icon")
 		if icon and icon:IsA("ImageLabel") then
-			icon.Image = entry.icon or ""
+			if typeof(entry.icon) == "string" and entry.icon ~= "" then
+				icon.Image = entry.icon
+			end
+			-- Maximize use of the authored icon frame (no letterboxing on square art).
+			icon.ScaleType = Enum.ScaleType.Fit
+			icon.BackgroundTransparency = 1
 		end
 		local stray = iconHost:FindFirstChild("EquippedTag")
 		if stray then
@@ -387,9 +410,16 @@ function FleetPanelPopulate.HydrateRightColumn(rightCol: Frame, entry: BoatEntry
 
 	local heroIconHost = heroCard:FindFirstChild("HeroIconHost")
 	if heroIconHost then
+		if heroIconHost:IsA("GuiObject") then
+			(heroIconHost :: GuiObject).BackgroundTransparency = 1
+		end
 		local heroIcon = heroIconHost:FindFirstChild("HeroIcon")
 		if heroIcon and heroIcon:IsA("ImageLabel") then
-			heroIcon.Image = entry.icon or ""
+			if typeof(entry.icon) == "string" and entry.icon ~= "" then
+				heroIcon.Image = entry.icon
+			end
+			heroIcon.ScaleType = Enum.ScaleType.Fit
+			heroIcon.BackgroundTransparency = 1
 		end
 	end
 
@@ -492,6 +522,7 @@ local RARITY_RANK: { [string]: number } = {
 	Rare = 3,
 	Epic = 4,
 	Legendary = 5,
+	Mythic = 6,
 }
 function FleetPanelPopulate.SortedBoatList(): { BoatEntry }
 	local list: { BoatEntry } = {}

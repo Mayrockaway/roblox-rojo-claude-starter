@@ -166,13 +166,14 @@ end
 --- in sync when you wire the real `productId` so the in-game label matches
 --- what the Roblox prompt will say.
 local SHIP_PLACEHOLDER_PRICE: { [string]: number } = {
-	PirateShip = 149, -- The Sparrow (RobuxShop Ship1)
-	Ducky = 299, -- Jet Duck     (RobuxShop Ship2)
-	Moby = 299, -- Moby         (RobuxShop Ship3)
+	PirateShip = 149, -- The Sparrow (RobuxShop Ships.Ship1)
+	Ducky = 299, -- Jet Duck     (RobuxShop Ships.Ship2)
+	Moby = 299, -- Moby         (RobuxShop Ships.Ship3)
+	AmericanEagleBoat = 499, -- The Patriot (RobuxShop Ships2.Ship1)
 }
 
-local function buildShipItem(boatId: string, productId: number?): MonetizationItem
-	return {
+local function buildShipItem(boatId: string, productId: number?, iconAssetId: string?): MonetizationItem
+	local item: MonetizationItem = {
 		id = "ship." .. string.lower(boatId),
 		productKind = "DevProduct",
 		productId = productId or 0,
@@ -187,6 +188,10 @@ local function buildShipItem(boatId: string, productId: number?): MonetizationIt
 			boatId = boatId,
 		},
 	}
+	if typeof(iconAssetId) == "string" and iconAssetId ~= "" then
+		item.iconAssetId = iconAssetId
+	end
+	return item
 end
 
 --- Master item table.
@@ -241,6 +246,28 @@ MonetizationCatalog.Items = {
 		},
 	},
 
+	-- Early Supporter Bundle (Featured2 `Tab.EquipBest`).
+	-- Grants: 5× Security Personnel, 1× Ground Pounder (drill T6), Jet Duck
+	-- boat (auto-equip on first buy). One-time: row hides after purchase.
+	{
+		id = "early_supporter_bundle",
+		productKind = "DevProduct",
+		productId = 3580438556,
+		robuxPrice = 499,
+		displayName = "Early Supporter Bundle",
+		subtitle = "5× Security Personnel + Ground Pounder (T6) + Jet Duck",
+		category = "Featured2",
+		oneTimePurchase = true,
+		grant = {
+			kind = "Bundle",
+			bundle = {
+				{ kind = "Consumable", consumable = { id = "security_personnel", quantity = 5 } },
+				{ kind = "Equipment", equipment = { itemId = "drill_t6", quantity = 1 } },
+				{ kind = "Ship", boatId = "Ducky", equipOnGrant = true },
+			},
+		},
+	},
+
 	-- Ships ----------------------------------------------------------------
 	-- The cash-chain `Tier1Boat`..`Tier10Boat` entries are intentionally
 	-- absent: those unlock through `OilStateService:TryUnlockBoat` (cash
@@ -252,7 +279,9 @@ MonetizationCatalog.Items = {
 	buildShipItem("PirateShip", 3578818285),
 	buildShipItem("Ducky", 3578818474),
 	buildShipItem("Moby", 3578818669),
-	buildShipItem("AmericanEagleBoat", 0), -- TODO: replace 0 with real DevProduct ID (500 Robux)
+	-- R$499 Patriot — DevProduct id `3580438808` (not shared with `early_supporter_bundle`).
+	-- `iconAssetId` matches `BoatCatalog` / Robux shop `Ships2` card preview.
+	buildShipItem("AmericanEagleBoat", 3580438808, "rbxassetid://121375807397511"),
 
 	-- Boosts ---------------------------------------------------------------
 	-- 2x Earnings GamePass. `gamePassEffect = "DoubleEarnings"` is the

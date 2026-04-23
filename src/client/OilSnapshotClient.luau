@@ -1,4 +1,6 @@
 --!strict
+
+local RunService = game:GetService("RunService")
 -- Server → client oil **snapshot** apply + retry helpers. Lives in its own module so `init.client`
 -- stays under Luau's local register limit and snapshot logic is easier to test/extend.
 
@@ -49,7 +51,7 @@ function OilSnapshotClient.requestSnapshotWithRetry(
 	for attempt = 1, attempts do
 		local ok, snapshot = OilSnapshotClient.invokeOilSnapshot(requestOilSnapshot)
 		if ok and OilSnapshotClient.applySnapshot(deps, snapshot) then
-			if attempt > 1 then
+			if attempt > 1 and RunService:IsStudio() then
 				print(string.format("[Client] snapshot recovered on retry %d", attempt))
 			end
 			return

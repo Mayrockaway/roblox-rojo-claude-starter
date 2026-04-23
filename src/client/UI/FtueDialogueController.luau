@@ -9,6 +9,7 @@
 --   Omit `PortraitFrame` / `PortraitImage` if unused. Code only sets `Image` + `Visible` on the image and frame.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
@@ -358,17 +359,19 @@ function FtueDialogueController.start(
 		)
 	end
 
-	print(
-		string.format(
-			"[FTUE] wired under %s | Title=%s Body=%s Continue=%s Skip=%s | FtueConfig.Enabled=%s",
-			sg.Name,
-			titleHost and titleHost.Name or "nil",
-			bodyHost and bodyHost.Name or "nil",
-			continueBtn and continueBtn.Name or "nil",
-			skipBtn and skipBtn.Name or "nil",
-			tostring(FtueConfig.Enabled)
+	if RunService:IsStudio() then
+		print(
+			string.format(
+				"[FTUE] wired under %s | Title=%s Body=%s Continue=%s Skip=%s | FtueConfig.Enabled=%s",
+				sg.Name,
+				titleHost and titleHost.Name or "nil",
+				bodyHost and bodyHost.Name or "nil",
+				continueBtn and continueBtn.Name or "nil",
+				skipBtn and skipBtn.Name or "nil",
+				tostring(FtueConfig.Enabled)
+			)
 		)
-	)
+	end
 
 	local dismissedStep: string? = nil
 	local lastKachingStep: string? = nil

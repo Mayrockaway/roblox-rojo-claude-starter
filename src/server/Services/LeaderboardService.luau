@@ -24,6 +24,7 @@
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local DataStoreWriteGate = require(script.Parent.Parent.Utils.DataStoreWriteGate)
@@ -203,13 +204,15 @@ function LeaderboardService:OnStraitVoyageSuccess(userId: number, barrelsDeliver
 	local bd = math.max(0, math.floor(barrelsDelivered))
 	self._sessionBarrels[userId] = (self._sessionBarrels[userId] or 0) + bd
 
-	print(string.format(
-		"[LeaderboardService] strait voyage tracked: userId=%d delivered=%d -> session crossings=%d, session barrels=%d",
-		userId,
-		bd,
-		self._sessionCrossings[userId],
-		self._sessionBarrels[userId]
-	))
+	if RunService:IsStudio() then
+		print(string.format(
+			"[LeaderboardService] strait voyage tracked: userId=%d delivered=%d -> session crossings=%d, session barrels=%d",
+			userId,
+			bd,
+			self._sessionCrossings[userId],
+			self._sessionBarrels[userId]
+		))
+	end
 
 	if not self._bound then
 		warn("[LeaderboardService] tracked voyage but UI is not bound yet; rows will update once Studio UI is found.")
@@ -235,11 +238,13 @@ function LeaderboardService:OnStraitVoyageSuccess(userId: number, barrelsDeliver
 				end)
 			end)
 			if ok then
-				print(string.format(
-					"[LeaderboardService] crossings ODS updated: userId=%d new=%s",
-					userId,
-					tostring(errOrNew)
-				))
+				if RunService:IsStudio() then
+					print(string.format(
+						"[LeaderboardService] crossings ODS updated: userId=%d new=%s",
+						userId,
+						tostring(errOrNew)
+					))
+				end
 			else
 				warn(string.format(
 					"[LeaderboardService] crossings ODS UpdateAsync FAILED for userId=%d: %s",
@@ -255,12 +260,14 @@ function LeaderboardService:OnStraitVoyageSuccess(userId: number, barrelsDeliver
 				end)
 			end)
 			if ok then
-				print(string.format(
-					"[LeaderboardService] barrels ODS updated: userId=%d delta=%d new=%s",
-					userId,
-					bd,
-					tostring(errOrNew)
-				))
+				if RunService:IsStudio() then
+					print(string.format(
+						"[LeaderboardService] barrels ODS updated: userId=%d delta=%d new=%s",
+						userId,
+						bd,
+						tostring(errOrNew)
+					))
+				end
 			else
 				warn(string.format(
 					"[LeaderboardService] barrels ODS UpdateAsync FAILED for userId=%d delta=%d: %s",

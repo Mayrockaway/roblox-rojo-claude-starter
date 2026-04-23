@@ -78,6 +78,31 @@ local function clamp01(value: number): number
 	return math.max(0, math.min(1, value))
 end
 
+--- Smallest squared horizontal distance from `spawnWorld` to any waypoint
+--- on the lane polyline (`lane.positions`). Used at dispatch so, among
+--- lanes tied on `_laneVoyageCounts`, we prefer the route geometry closest
+--- to the boat's dock slot — cuts down on long diagonal cuts across pier
+--- / marina volume before the hull merges onto the authored lane.
+local function laneSpawnDistanceSqXZ(spawnWorld: Vector3, lane: any): number
+	local positions = lane and (lane :: any).positions
+	if typeof(positions) ~= "table" then
+		return math.huge
+	end
+	local best = math.huge
+	local sx, sz = spawnWorld.X, spawnWorld.Z
+	for _, p in ipairs(positions) do
+		if typeof(p) == "Vector3" then
+			local dx = p.X - sx
+			local dz = p.Z - sz
+			local d = dx * dx + dz * dz
+			if d < best then
+				best = d
+			end
+		end
+	end
+	return best
+end
+
 --- Option A (carrot): max arc length the lead target may sit ahead of measured hull progress.
 --- `RouteProgress01`: max of bow FRONT_MARKER and commanded `s_lead` point vs finish (XZ),
 --- `1 - dist(pos, finish) / dist(dock, finish)`, monotonic. Strait logic still uses `s_hull`.
@@ -220,9 +245,8 @@ local function findBoatSeat(boat: Instance): Seat?
 end
 
 -- Helper-part detection (FRONT_MARKER, WaterlineAnchor, etc., plus the
--- transparency ≥ 0.95 fallback) lives in `BoatCollisionContract` so the
--- voyage hull and the dock-spawner agree on what counts as a "helper".
-local isNonCollidableBoatHelperPart = BoatCollisionContract.IsNonCollidableBoatHelperPart
+-- transparency fallback — see `BoatCollisionContract`) lives in that module so
+-- the voyage hull and the dock-spawner agree on what counts as a "helper".
 
 local function findBarrelStackRoot(boat: Instance): BasePart?
 	if not boat:IsA("Model") then
@@ -505,6 +529,16 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 	safeRegister("MarinaDock")
 	safeRegister("MapDecor")
 	safeRegister(BoatCollisionContract.IdleGroup)
+	-- Voyage hull + deck cargo (`ShipmentShip`) must ignore pier and strait
+	-- decor the same way. `BoatDockService:Init` also sets these pairs; repeat
+	-- here so unit tests / alternate init order cannot leave barrels on
+	-- `Default` colliding with untagged geometry before the dock service runs.
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable("ShipmentShip", "MarinaDock", false)
+	end)
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable("ShipmentShip", "MapDecor", false)
+	end)
 	local function noCollidePair(other: string)
 		pcall(function()
 			PhysicsService:CollisionGroupSetCollidable(STRAIT_FX_NPC_GROUP, other, false)
@@ -591,17 +625,19 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 		local idleVsDefault = PhysicsService:CollisionGroupsAreCollidable(BoatCollisionContract.IdleGroup, "Default")
 		local idleVsShipmentShip = PhysicsService:CollisionGroupsAreCollidable(BoatCollisionContract.IdleGroup, "ShipmentShip")
 		local shipVsShip = PhysicsService:CollisionGroupsAreCollidable("ShipmentShip", "ShipmentShip")
-		print(string.format(
-			"[OilShipmentService] CollisionGroups: %s registered=%s, %s registered=%s, %s registered=%s, fxVsDefault collidable=%s, pieVsFx collidable=%s, pieVsMarinaDock collidable=%s, pieVsMapDecor collidable=%s, pieVsShipmentShip collidable=%s, idleVsDefault collidable=%s, idleVsShipmentShip collidable=%s, shipVsShip collidable=%s",
-			STRAIT_FX_NPC_GROUP, tostring(fxRegistered),
-			PLAYER_IN_STRAIT_EVENT_GROUP, tostring(pieRegistered),
-			BoatCollisionContract.IdleGroup, tostring(idleRegistered),
-			tostring(fxVsDefault), tostring(pieVsFx),
-			tostring(pieVsMarinaDock), tostring(pieVsMapDecor),
-			tostring(pieVsShipmentShip),
-			tostring(idleVsDefault), tostring(idleVsShipmentShip),
-			tostring(shipVsShip)
-		))
+		if RunService:IsStudio() then
+			print(string.format(
+				"[OilShipmentService] CollisionGroups: %s registered=%s, %s registered=%s, %s registered=%s, fxVsDefault collidable=%s, pieVsFx collidable=%s, pieVsMarinaDock collidable=%s, pieVsMapDecor collidable=%s, pieVsShipmentShip collidable=%s, idleVsDefault collidable=%s, idleVsShipmentShip collidable=%s, shipVsShip collidable=%s",
+				STRAIT_FX_NPC_GROUP, tostring(fxRegistered),
+				PLAYER_IN_STRAIT_EVENT_GROUP, tostring(pieRegistered),
+				BoatCollisionContract.IdleGroup, tostring(idleRegistered),
+				tostring(fxVsDefault), tostring(pieVsFx),
+				tostring(pieVsMarinaDock), tostring(pieVsMapDecor),
+				tostring(pieVsShipmentShip),
+				tostring(idleVsDefault), tostring(idleVsShipmentShip),
+				tostring(shipVsShip)
+			))
+		end
 	end)
 
 	-- Discover strait lane waypoints
@@ -705,41 +741,41 @@ function OilShipmentService:_discoverLanes()
 	-- among lanes with equal `_laneVoyageCounts`. Stamped in
 	-- `_reserveLaneSlot`. Initialized to 0 so on a fresh server every
 	-- lane is equally "stale" (and the secondary RNG tie-break in
-	-- `_pickLaneLeastLoaded` decides). See picker doc-comment for why
-	-- we prefer LRU over uniform random — same-time dispatches were
-	-- otherwise rolling the same lane and creating the player-mediated
-	-- ship-vs-ship contact described in `BoatCollisionContract`.
+	-- `_pickLaneLeastLoaded` decides). See picker doc-comment for tie-break
+	-- order (load → spawn proximity → LRU → RNG).
 	self._laneLastReservedClock = {} :: { [number]: number }
 	for i = 1, #self._lanes do
 		self._laneVoyageCounts[i] = 0
 		self._laneLastReservedClock[i] = 0
 	end
 
-	print(string.format("[OilShipmentService] Discovered %d lanes", #self._lanes))
+	if RunService:IsStudio() then
+		print(string.format("[OilShipmentService] Discovered %d lanes", #self._lanes))
+	end
 end
 
 --- Pick the lane to assign this voyage to.
 ---
---- Aggressive separation policy (in priority order):
----   1. Smallest `_laneVoyageCounts` — fewest active voyages on the lane.
----      With N lanes and ≤ N concurrent voyages this guarantees one voyage
----      per lane, so two ships should never share a path geometry.
----   2. Among ties, smallest `_laneLastReservedClock` — least-recently
----      reserved. This is what makes the spread "aggressive": when all
----      lanes are at the same count (typical server quiet state, count=0
----      for everyone), we prefer the lane that hasn't carried a voyage
----      for the longest, which produces a near-perfect round-robin and
----      avoids two near-simultaneous dispatches both rolling lane 1
----      because their RNG seeds happen to collide.
----   3. Among ties on BOTH count AND last-reserved clock (only happens on
----      the first few dispatches after boot, when every lane's clock is
----      still 0), break with a small seeded RNG so we don't lock into
----      ascending lane order forever. `seed` is still derived from
----      server clock + ownerUserId at the call site.
+--- Priority order (strict — never skip an earlier criterion for a later one):
+---   1. **Smallest `_laneVoyageCounts`** — fewest active voyages on the lane.
+---      With N lanes and ≤ N concurrent voyages this still guarantees one
+---      voyage per lane when possible.
+---   2. **Closest route to spawn** — when `spawnWorld` is provided (boat
+---      pivot at the dock slot when checkout completes), smallest horizontal
+---      (XZ) distance from that point to **any** waypoint on the lane
+---      polyline. Reduces long diagonal cuts across docks / piers before the
+---      hull joins the authored strait route.
+---   3. **Smallest `_laneLastReservedClock`** — least-recently reserved among
+---      remaining ties (round-robin spread when counts and distance tie).
+---   4. **Seeded RNG** — final tie-break (`serverTime*1000 + ownerUserId` at
+---      the call site) so boot-time ties don't always pick lane 1.
+---
+--- When `spawnWorld` is `nil`, step 2 is skipped (LRU then RNG among min-count
+--- lanes only) for backwards-compatible tests.
 ---
 --- Returns the lane table + 1-based index, or `nil, nil` when no lanes
 --- were discovered (caller falls back to a straight-line voyage).
-function OilShipmentService:_pickLaneLeastLoaded(seed: number): (any, number?)
+function OilShipmentService:_pickLaneLeastLoaded(seed: number, spawnWorld: Vector3?): (any, number?)
 	if #self._lanes == 0 then
 		return nil, nil
 	end
@@ -754,20 +790,45 @@ function OilShipmentService:_pickLaneLeastLoaded(seed: number): (any, number?)
 		end
 	end
 
-	-- Collect lanes with the smallest count, then refine to those with
-	-- the smallest last-reserved clock among that subset.
-	local minClock = math.huge
-	local candidates: { number } = {}
+	local afterCount: { number } = {}
 	for i = 1, #self._lanes do
 		local c = if counts[i] ~= nil then counts[i] :: number else 0
 		if c == minCount then
-			local clk = if lastReserved[i] ~= nil then lastReserved[i] :: number else 0
-			if clk < minClock then
-				minClock = clk
-				candidates = { i }
-			elseif clk == minClock then
-				table.insert(candidates, i)
+			table.insert(afterCount, i)
+		end
+	end
+
+	local narrowed = afterCount
+	if spawnWorld then
+		local minDistSq = math.huge
+		for _, i in ipairs(afterCount) do
+			local d = laneSpawnDistanceSqXZ(spawnWorld, self._lanes[i])
+			if d < minDistSq then
+				minDistSq = d
 			end
+		end
+		local DIST_EPS_SQ = 1e-2 -- ~0.1 stud XZ — float noise on identical routes
+		local afterDist: { number } = {}
+		for _, i in ipairs(afterCount) do
+			if laneSpawnDistanceSqXZ(spawnWorld, self._lanes[i]) <= minDistSq + DIST_EPS_SQ then
+				table.insert(afterDist, i)
+			end
+		end
+		narrowed = afterDist
+	end
+
+	local minClock = math.huge
+	for _, i in ipairs(narrowed) do
+		local clk = if lastReserved[i] ~= nil then lastReserved[i] :: number else 0
+		if clk < minClock then
+			minClock = clk
+		end
+	end
+	local candidates: { number } = {}
+	for _, i in ipairs(narrowed) do
+		local clk = if lastReserved[i] ~= nil then lastReserved[i] :: number else 0
+		if clk == minClock then
+			table.insert(candidates, i)
 		end
 	end
 
@@ -775,9 +836,6 @@ function OilShipmentService:_pickLaneLeastLoaded(seed: number): (any, number?)
 	if #candidates == 1 then
 		pickIdx = candidates[1]
 	else
-		-- Should only hit on a fresh server when multiple lanes still have
-		-- last-reserved clock = 0. Random tie-break prevents lane 1 from
-		-- always winning the first ever dispatch.
 		local rng = Random.new(seed)
 		pickIdx = candidates[rng:NextInteger(1, #candidates)]
 	end
@@ -1356,9 +1414,13 @@ function OilShipmentService:_runShipment(shipment)
 		self:_finishShipmentWithoutPayout(shipment, "Boat unavailable: " .. tostring(checkoutErr))
 		return
 	end
-	-- Pick a lane and build the full path: dock (boat's current slot) → lane waypoints
+	-- Pick a lane and build the full path: dock (boat's current slot) → lane waypoints.
+	-- Pass boat pivot XZ so `_pickLaneLeastLoaded` can prefer the physically
+	-- closest authored route among lanes tied on voyage count (reduces
+	-- awkward pier clips before the hull joins the lane).
 	local seed = math.floor(workspace:GetServerTimeNow() * 1000) + ownerUserId
-	local lane, laneIndex = self:_pickLaneLeastLoaded(seed)
+	local boatPivotForLanePick = boat:GetPivot().Position
+	local lane, laneIndex = self:_pickLaneLeastLoaded(seed, boatPivotForLanePick)
 	if not lane then
 		warn("[OilShipmentService] No lanes available, falling back to straight line.")
 		local startPos = boat:GetPivot().Position
@@ -1373,7 +1435,7 @@ function OilShipmentService:_runShipment(shipment)
 	-- the actual water surface — boat model pivots can be anywhere in the model (Ship3
 	-- pivot is up near the sail at Y~33), not at the waterline. Using pivot Y directly
 	-- would make the voyage path float at pivot height.
-	local boatPivotPos = boat:GetPivot().Position
+	local boatPivotPos = boatPivotForLanePick
 	local oceanPart = workspace:FindFirstChild("Map")
 		and workspace.Map:FindFirstChild("Ocean")
 		and workspace.Map.Ocean:FindFirstChild("StraitHormuz")
@@ -1630,7 +1692,7 @@ function OilShipmentService:_runShipment(shipment)
 			local s_raw = projectWorldPosToArcLength(path, segDists, samplePos)
 			s_hull = math.max(s_hull_prev, math.min(s_raw, totalPathLen))
 			-- DEBUG: detailed stall diagnostics
-			if math.abs(s_hull - s_hull_prev) < 0.01 and s_hull < totalPathLen - 20 then
+			if RunService:IsStudio() and math.abs(s_hull - s_hull_prev) < 0.01 and s_hull < totalPathLen - 20 then
 				local wl = boat:FindFirstChild("WaterlineAnchor", true)
 				local wlPos = (wl and wl:IsA("BasePart")) and wl.Position or Vector3.zero
 				local pivotPos = boat:GetPivot().Position
@@ -2378,6 +2440,10 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 			barrelIndex += 1
 		end
 	end
+
+	-- Re-assert `ShipmentShip` on every deck cargo part (covers template defaults,
+	-- late-welded descendants, and any init-order gap vs `MarinaDock` / `MapDecor`).
+	BoatCollisionContract.TagDeckCargoAsShipmentHull(boat)
 end
 
 function OilShipmentService:_addPlayerFlag(boat: Instance, ownerUserId: number)
@@ -4094,16 +4160,18 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 
 	-- DIAGNOSTIC: verify waterline landed where we asked.
 	local wlNowY = waterlineAnchorPart and waterlineAnchorPart.Position.Y or math.huge
-	print(string.format(
-		"[ShipSetup] skin=%s template=%s wlToRootY=%.2f startY_req=%.2f rootY=%.2f wlY=%.2f (delta-from-target=%.2f)",
-		tostring(boatModel:GetAttribute("BoatId")),
-		tostring(boatModel:GetAttribute("ShipTemplateName")),
-		waterlineToRootY,
-		startPosition.Y,
-		root.Position.Y,
-		wlNowY,
-		wlNowY - startPosition.Y
-	))
+	if RunService:IsStudio() then
+		print(string.format(
+			"[ShipSetup] skin=%s template=%s wlToRootY=%.2f startY_req=%.2f rootY=%.2f wlY=%.2f (delta-from-target=%.2f)",
+			tostring(boatModel:GetAttribute("BoatId")),
+			tostring(boatModel:GetAttribute("ShipTemplateName")),
+			waterlineToRootY,
+			startPosition.Y,
+			root.Position.Y,
+			wlNowY,
+			wlNowY - startPosition.Y
+		))
+	end
 
 	-- Store default yaw + bow-convention mode so _updateShipPosition matches.
 	boatModel:SetAttribute("DefaultYaw", defaultYaw)
@@ -4189,9 +4257,9 @@ function OilShipmentService:_updateShipPosition(shipmentId: string, boatModel: M
 	end
 	state.alignOri.CFrame = CFrame.Angles(0, yawDelta, 0) * state.baseRotation
 
-	-- Throttled diagnostic: 1 log/sec showing movement forensics.
+	-- Throttled diagnostic: 1 log/sec (Studio only) — was extremely noisy on live.
 	local now = os.clock()
-	if (state.lastDiagnosticT or 0) + 1.0 < now then
+	if RunService:IsStudio() and (state.lastDiagnosticT or 0) + 1.0 < now then
 		state.lastDiagnosticT = now
 		local wlPart = boatModel:FindFirstChild("WaterlineAnchor", true)
 		local rootPos = state.root.Position
@@ -4313,7 +4381,9 @@ function OilShipmentService:DebugDispatchMissile(player: Player)
 		eventRisk = 0,
 	}
 
-	print(string.format("[DebugDispatch] Launching missile test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+	if RunService:IsStudio() then
+		print(string.format("[DebugDispatch] Launching missile test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+	end
 
 	task.spawn(function()
 		self:_runShipment(shipment)
@@ -4359,7 +4429,9 @@ function OilShipmentService:DebugDispatchMine(player: Player)
 		eventRisk = 0,
 	}
 
-	print(string.format("[DebugDispatch] Launching mine test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+	if RunService:IsStudio() then
+		print(string.format("[DebugDispatch] Launching mine test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+	end
 
 	task.spawn(function()
 		self:_runShipment(shipment)
@@ -4403,7 +4475,9 @@ function OilShipmentService:DebugDispatchPirate(player: Player)
 		eventRisk = 0,
 	}
 
-	print(string.format("[DebugDispatch] Launching pirate test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+	if RunService:IsStudio() then
+		print(string.format("[DebugDispatch] Launching pirate test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+	end
 
 	task.spawn(function()
 		self:_runShipment(shipment)
@@ -4446,7 +4520,9 @@ function OilShipmentService:DebugDispatchStorm(player: Player)
 		eventRisk = 0,
 	}
 
-	print(string.format("[DebugDispatch] Launching storm test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+	if RunService:IsStudio() then
+		print(string.format("[DebugDispatch] Launching storm test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+	end
 
 	task.spawn(function()
 		self:_runShipment(shipment)
@@ -4489,7 +4565,9 @@ function OilShipmentService:DebugDispatchTornado(player: Player)
 		eventRisk = 0,
 	}
 
-	print(string.format("[DebugDispatch] Launching tornado test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+	if RunService:IsStudio() then
+		print(string.format("[DebugDispatch] Launching tornado test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+	end
 
 	task.spawn(function()
 		self:_runShipment(shipment)
@@ -4532,7 +4610,9 @@ function OilShipmentService:DebugDispatchCoastGuard(player: Player)
 		eventRisk = 0,
 	}
 
-	print(string.format("[DebugDispatch] Launching coast guard inspection test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+	if RunService:IsStudio() then
+		print(string.format("[DebugDispatch] Launching coast guard inspection test ship for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+	end
 
 	task.spawn(function()
 		self:_runShipment(shipment)
@@ -4575,7 +4655,9 @@ function OilShipmentService:DebugDispatchUSShipSlap(player: Player)
 		eventRisk = 0,
 	}
 
-	print(string.format("[DebugDispatch] Launching US ship slap test for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+	if RunService:IsStudio() then
+		print(string.format("[DebugDispatch] Launching US ship slap test for %s (shipmentId=%s)", player.Name, shipment.shipmentId))
+	end
 
 	task.spawn(function()
 		self:_runShipment(shipment)

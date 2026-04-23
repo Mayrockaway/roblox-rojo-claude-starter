@@ -10,6 +10,7 @@
 -- Retries until every **mapped** button is wired or attempts exhaust.
 
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 
 local getClientRemotes = require(script.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
 
@@ -203,7 +204,9 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 	if started then
 		return
 	end
-	print("[Client] HudPanelRouter: start() — waiting for HUD + modal ScreenGuis (HUD buttons optional)…")
+	if RunService:IsStudio() then
+		print("[Client] HudPanelRouter: start() — waiting for HUD + modal ScreenGuis (HUD buttons optional)…")
+	end
 	--- Idempotent — safe to call before any controllers are registered; the
 	--- per-frame tick is a no-op until at least one panel reports `IsOpen() == true`.
 	HudMousePolicy.Start()
@@ -436,11 +439,13 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 
 			if wired >= needButtons then
 				started = true
-				print("[Client] HudPanelRouter: HUD modal buttons wired (" .. tostring(wired) .. "/" .. tostring(needButtons) .. ").")
+				if RunService:IsStudio() then
+					print("[Client] HudPanelRouter: HUD modal buttons wired (" .. tostring(wired) .. "/" .. tostring(needButtons) .. ").")
+				end
 				return
 			end
 
-			if attempt == 1 or attempt % 10 == 0 then
+			if RunService:IsStudio() and (attempt == 1 or attempt % 10 == 0) then
 				local missingPanels: { string } = {}
 				for sn in pairs(SCREEN_BIND) do
 					if not byScreen[sn] then

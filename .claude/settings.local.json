@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__robloxstudio-mcp__get_instance_children",
+      "WebFetch(domain:github.com)",
+      "Bash(claude mcp *)",
+      "mcp__robloxstudio-mcp__get_place_info",
+      "Bash(npm view *)",
+      "Bash(npx robloxstudio-mcp@latest --version)",
+      "Bash(npm pack *)",
+      "Bash(cd /tmp)",
+      "Bash(tar -xzf robloxstudio-mcp-2.6.0.tgz)",
+      "Read(//tmp/**)",
+      "Bash(netstat -ano)",
+      "PowerShell(Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 58740,58741,58742,58743,58744,58745,3002 } | Select-Object LocalAddress,LocalPort,OwningProcess | Format-Table)",
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=27552 OR ProcessId=46920 OR ProcessId=30332\")",
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=7792 OR ProcessId=32040 OR ProcessId=26316\")",
+      "PowerShell(Stop-Process -Id 46920,27552 -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 58741,58742,58743,58744 } | Select-Object LocalPort,OwningProcess | Format-Table)",
+      "PowerShell(Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 58740..58750 } | Select-Object LocalPort,OwningProcess | Sort-Object LocalPort | Format-Table)",
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=35620 OR ProcessId=48132\")",
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=46916 OR ProcessId=31516\")",
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=46916 OR ProcessId=31516\" | ForEach-Object { $pp = Get-CimInstance Win32_Process -Filter \"ProcessId=$\\($_.ParentProcessId\\)\"; [PSCustomObject]@{CmdPID=$_.ProcessId; GrandparentPID=$pp.ProcessId; GrandparentName=$pp.Name; GrandparentCmd=$pp.CommandLine} } | Format-List)",
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=27536 OR ProcessId=26432\" | ForEach-Object { $pp = Get-CimInstance Win32_Process -Filter \"ProcessId=$\\($_.ParentProcessId\\)\"; [PSCustomObject]@{NpxPID=$_.ProcessId; ParentPID=$pp.ProcessId; ParentName=$pp.Name; ParentCmd=\\($pp.CommandLine | ForEach-Object { if\\($_\\){$_.Substring\\(0,[Math]::Min\\(200,$_.Length\\)\\)} }\\) } } | Format-List)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "robloxstudio-mcp"
+  ]
+}

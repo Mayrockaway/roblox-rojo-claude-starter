@@ -514,14 +514,16 @@ local function runGroup(
 	end
 
 	local elapsed = os.clock() - startedAt
-	print(string.format(
-		"[LoadingBootstrap] %s finished in %.2fs (%d targets, %d failures, %d optional misses).",
-		group.id,
-		elapsed,
-		#prepared.targets,
-		failureCount,
-		missingOptional
-	))
+	if RunService:IsStudio() then
+		print(string.format(
+			"[LoadingBootstrap] %s finished in %.2fs (%d targets, %d failures, %d optional misses).",
+			group.id,
+			elapsed,
+			#prepared.targets,
+			failureCount,
+			missingOptional
+		))
+	end
 
 	return failureCount, missingOptional
 end
@@ -568,12 +570,14 @@ task.spawn(function()
 		progressBase += group.weight / math.max(blockingWeightTotal, 1)
 	end
 
-	print(string.format(
-		"[LoadingBootstrap] Blocking preload complete in %.2fs (failures=%d, optional misses=%d).",
-		os.clock() - blockingStartedAt,
-		blockingFailures,
-		optionalGroupMisses
-	))
+	if RunService:IsStudio() then
+		print(string.format(
+			"[LoadingBootstrap] Blocking preload complete in %.2fs (failures=%d, optional misses=%d).",
+			os.clock() - blockingStartedAt,
+			blockingFailures,
+			optionalGroupMisses
+		))
+	end
 
 	blockingDone = true
 	setProgress("Finishing up...", 1)
@@ -713,10 +717,12 @@ task.spawn(function()
 		deferredOptionalMisses += groupOptionalMisses
 	end
 
-	print(string.format(
-		"[LoadingBootstrap] Deferred warm complete in %.2fs (failures=%d, optional misses=%d).",
-		os.clock() - deferredStartedAt,
-		deferredFailures,
-		deferredOptionalMisses
-	))
+	if RunService:IsStudio() then
+		print(string.format(
+			"[LoadingBootstrap] Deferred warm complete in %.2fs (failures=%d, optional misses=%d).",
+			os.clock() - deferredStartedAt,
+			deferredFailures,
+			deferredOptionalMisses
+		))
+	end
 end)
