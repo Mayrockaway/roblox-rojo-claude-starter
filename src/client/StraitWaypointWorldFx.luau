@@ -1997,7 +1997,6 @@ function StraitWaypointWorldFx.OnMissileStrikePayload(data: { [string]: any })
 			glow.Color = Color3.fromRGB(255, 160, 40)
 			glow.Parent = trailHost
 		end
-
 		-- The `Missile` asset's nose points along its local +X, not the LookVector
 		-- axis produced by `CFrame.lookAt`, so apply a yaw -90° correction so
 		-- the nose points along the flight direction instead of sideways.
@@ -3710,14 +3709,20 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 			setObjCF(officer.npc, targetCF)
 		end
 
-		local function runPar(tasks: { () -> () }, minDur: number)
+		-- Deadline-aware parallel runner. When tasks exceed minDur + grace,
+		-- onDeadline is called (if provided) so callers can snap stragglers
+		-- before the next phase begins.
+		local function runPar(tasks: { () -> () }, minDur: number, onDeadline: (() -> ())?)
 			local done = 0
 			if #tasks == 0 then task.wait(minDur); return end
 			for _, fn in ipairs(tasks) do
 				task.spawn(function() fn(); done += 1 end)
 			end
 			local t0 = os.clock()
-			while done < #tasks do task.wait() end
+			while done < #tasks and (os.clock() - t0) < minDur + 2 do task.wait() end
+			if done < #tasks and onDeadline then
+				onDeadline()
+			end
 			local left = minDur - (os.clock() - t0)
 			if left > 0 then task.wait(left) end
 		end
@@ -3939,7 +3944,15 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 				task.wait(rng:NextNumber(0.2, 0.4))
 			end)
 		end
-		runPar(boardInspTasks, PHASE_BOARD_INSP)
+		runPar(boardInspTasks, PHASE_BOARD_INSP, function()
+			-- Deadline: snap any straggling officers to zipline landing so the
+			-- return phase can zipline them back cleanly.
+			for _, off in ipairs(officers) do
+				local snapCF = CFrame.new(zipToPos, zipToPos + fwd)
+				off.cf = snapCF
+				setObjCF(off.npc, snapCF)
+			end
+		end)
 
 		-- Phase 3: Officers zipline straight back to CG boat, then disappear — so it
 		-- reads as "they went inside" and the CG boat leaves empty-looking.

@@ -252,6 +252,7 @@ MonetizationCatalog.Items = {
 	buildShipItem("PirateShip", 3578818285),
 	buildShipItem("Ducky", 3578818474),
 	buildShipItem("Moby", 3578818669),
+	buildShipItem("AmericanEagleBoat", 0), -- TODO: replace 0 with real DevProduct ID (500 Robux)
 
 	-- Boosts ---------------------------------------------------------------
 	-- 2x Earnings GamePass. `gamePassEffect = "DoubleEarnings"` is the

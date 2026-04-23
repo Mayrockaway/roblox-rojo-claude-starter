@@ -370,6 +370,18 @@ local BoatCatalog = {
 			unlock = { kind = "robux", devProductId = 3578818669 },
 		},
 
+		AmericanEagleBoat = {
+			displayName = "American Eagle",
+			templateName = "AmericanEagleBoat",
+			fxParticleScale = 1,
+			rarityDisplay = "Legendary",
+			-- icon: not yet authored
+			progressionIndex = 11,
+			speedLevel = 8,
+			capacityLevel = 8,
+			unlock = { kind = "robux", devProductId = 0 },
+		},
+
 		-- ─────────────────────────────────────────────────────────────────
 		-- Tier progression chain (cash unlocks). `Tier1Boat` is the
 		-- auto-granted starter; the rest cost cash. Each `templateName`

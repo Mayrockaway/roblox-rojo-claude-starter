@@ -518,6 +518,18 @@ local function teleportCharacterToBoatDeck(
 
 	local supportCFrame = resolveBoatSupportStandCFrame(boat, targetCFrame)
 	CharacterTeleport.teleportWithUnseat(character, supportCFrame, logLabel)
+	-- DEBUG: log teleport placement details
+	if RunService:IsStudio() then
+		local hrp = character:FindFirstChild("HumanoidRootPart")
+		local hrpPos = hrp and hrp.Position or Vector3.zero
+		local boatId = boat:GetAttribute("BoatId") or "?"
+		local rig = rigForBoatModel(boat)
+		local liveDeckY = ShipRig.ResolveDeckWorldY(boat, rig, targetCFrame.Position.Y)
+		warn(string.format(
+			"[BoatTeleportDebug] boatId=%s targetY=%.1f supportY=%.1f hrpY=%.1f liveDeckY=%.1f label=%s",
+			boatId, targetCFrame.Position.Y, supportCFrame.Position.Y, hrpPos.Y, liveDeckY, logLabel or "?"
+		))
+	end
 
 	--- Post-teleport safety re-snap: an unanchored boat may have bobbed UP
 	--- in the 1+ physics steps between when we sampled `targetCFrame` and
@@ -538,6 +550,14 @@ local function teleportCharacterToBoatDeck(
 		end
 		local rig = rigForBoatModel(boat)
 		local liveDeckY = ShipRig.ResolveDeckWorldY(boat, rig, supportCFrame.Position.Y)
+		if RunService:IsStudio() then
+			warn(string.format(
+				"[BoatTeleportResnap] hrpY=%.1f liveDeckY=%.1f threshold=%.1f needsCorrection=%s boatPos=%s",
+				hrp.Position.Y, liveDeckY, liveDeckY + 3 - 0.25, 
+				tostring(hrp.Position.Y < liveDeckY + 3 - 0.25),
+				tostring(boat:GetPivot().Position)
+			))
+		end
 		--- HRP center sits ~2 studs above feet (R15) — the player is "on the
 		--- deck" when HRP.Y >= liveDeckY + 3. Anything lower means feet have
 		--- clipped below the deck top. `+0.25` slack absorbs jitter from a
