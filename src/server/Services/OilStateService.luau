@@ -2886,6 +2886,13 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 			))
 		end
 		(state :: any).legacyShipUpgradeRefunded = true
+		-- Always queue a save after the one-shot branch: we flip
+		-- `legacyShipUpgradeRefunded` in RAM even when `refund == 0` (L1/L1
+		-- legacy fields — no cash to return, but we must persist the flag
+		-- so the migration never re-runs). Without `_markDirty`, a player
+		-- could get `refund > 0` in-session but lose it on crash if no
+		-- other action marked the profile dirty before the next flush.
+		self:_markDirty(state.ownerUserId)
 	end
 
 	if typeof((persisted :: any).ftueEscortShipmentRemaining) == "number" then
