@@ -88,7 +88,7 @@ function NpcProximityVoice.start()
 			return
 		end
 		--- Any prompt authored to open a panel (`OpensPanel = "<ScreenGuiName>"`) is treated as a
-		--- vendor / NPC interaction — covers DrillShopMan (`ShopPanelGui`), Boatman (`ShipManagementPanelGui`),
+		--- vendor / NPC interaction — covers DrillShopMan (`ShopPanelGui`), Boatman (`FleetPanelGui`),
 		--- and any future shop NPC without needing to add its prompt name above.
 		local opens = prompt:GetAttribute(OPENS_PANEL_ATTR)
 		if typeof(opens) == "string" and opens ~= "" and not SUPPRESSED_PANEL_NAMES[opens] then

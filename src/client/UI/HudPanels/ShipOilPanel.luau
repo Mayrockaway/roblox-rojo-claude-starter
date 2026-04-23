@@ -4,6 +4,7 @@
 -- UI counts whole barrels; manifest uses oil units (`barrels selected * PerBarrelOil`) to match `ConsumeManifest`.
 
 local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
@@ -273,7 +274,11 @@ local function resolvedStats(): { capacity: number, dispatchFee: number }
 	if latestResolved then
 		cap = latestResolved.capacity
 	else
-		cap = ShipStats.Resolve(1, 1).capacity
+		-- Pre-snapshot fallback. Boat progression refactor (Step 2): use
+		-- the starter boat's baked stats instead of `Resolve(1, 1)` so
+		-- the placeholder matches what the server will compute on the
+		-- first `OilStateUpdate` push.
+		cap = ShipStats.ResolveForBoat("Tier1Boat").capacity
 	end
 	local per = perBarrelOilUnits()
 	local manifest: { [string]: number } = {}
@@ -298,10 +303,22 @@ end
 
 --- For `FtueUiPointers`: whether the ship-oil modal is open and how many barrels are selected.
 function ShipOilPanel.peekOpenAndBarrelsForFtue(): (boolean, number)
-	if not wiredScreen or not wiredScreen.Parent then
-		return false, 0
+	--- `HudPanelRouter.start` binds modals inside `task.spawn`; `FtueUiPointers`
+	--- can refresh first while `ShipOilPanelGui` is already `Enabled` (e.g. plot
+	--- dispatch prox). Without `wiredScreen`, FTUE used to think the panel was
+	--- closed and hid all in-panel pointers. Eager-bind once — idempotent with
+	--- `wireShipOil` when the same `ScreenGui` is already wired.
+	if not (wiredScreen and wiredScreen.Parent) then
+		local plr = Players.LocalPlayer
+		local pg = plr and plr:FindFirstChildOfClass("PlayerGui")
+		if pg then
+			ShipOilPanel.bind(pg)
+		end
 	end
-	return wiredScreen.Enabled, sumSelectedBarrels()
+	if wiredScreen and wiredScreen.Parent then
+		return wiredScreen.Enabled, sumSelectedBarrels()
+	end
+	return false, 0
 end
 
 local function maybeFireFtueDispatchPointerRefresh()
@@ -479,10 +496,10 @@ local function mergeOilByTierFromSnapshot(snap: any): boolean
 end
 
 local function mergeResolvedFromSnapshot(snap: any)
-	if typeof(snap) ~= "table" or typeof((snap :: any).resolvedShip) ~= "table" then
+	if typeof(snap) ~= "table" or typeof((snap :: any).resolvedBoat) ~= "table" then
 		return
 	end
-	local rs = (snap :: any).resolvedShip
+	local rs = (snap :: any).resolvedBoat
 	local cap = tonumber(rs.capacity)
 	if cap and cap > 0 then
 		latestResolved = { capacity = math.floor(cap) }

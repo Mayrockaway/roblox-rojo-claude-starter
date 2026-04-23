@@ -70,12 +70,29 @@ local Constants = {
 	FtueRestrictDrillCellKeyAttribute = "FtueRestrictDrillCellKey",
 	--- Replicated FTUE step id for `FtueDialogueController` (e.g. Intro, WaitDrill). Cleared when done.
 	FtueStepAttribute = "FtueStep",
-	--- Docks upgrade leg (`WaitDocksUpgradeShip`): `"Dockman"` → talk opens ship UI → `"CargoBuy"` → upgrade → `"CloseModal"`.
-	FtueDocksUpgradeSubStepAttribute = "FtueDocksUpgradeSubStep",
+	-- `FtueDocksUpgradeSubStepAttribute` (`"FtueDocksUpgradeSubStep"`) was
+	-- deleted by Step 4 of the boat-progression refactor along with the
+	-- entire `WaitDocksUpgradeShip` FTUE leg (Dockman → free cargo upgrade
+	-- → change ship → close panel) and the per-player speed/capacity
+	-- upgrade ladder. Do not revive the same attribute name for a future
+	-- boat-inventory FTUE leg (legacy clients on old saves may still have
+	-- the player attribute lingering until the next `_setStep`); pick a
+	-- fresh name when re-introducing per-leg sub-step gating.
 	--- Equipment shop leg (`WaitDocksEquipmentShop`): `"BuyDrill"` (purchase the free
 	--- Tier 3 drill) → `"ClosePanel"` (close the modal). Closing while in
-	--- `ClosePanel` advances FTUE to `WaitDocksUpgradeShip` (Dockman sub-step).
+	--- `ClosePanel` now advances FTUE directly to `WaitDocksHire` (the
+	--- `WaitDocksUpgradeShip` leg was deleted by Step 4 of the boat-
+	--- progression refactor; see `FtueService.OnFtueDocksProgress` and
+	--- `FtueConfig.Order` for the new flow).
 	FtueDocksEquipmentShopSubStepAttribute = "FtueDocksEquipmentShopSubStep",
+	--- Fleet panel leg (`WaitDocksFleetPanel`): `"OpenPanel"` (beam to dockman,
+	--- waiting for the player to trigger `ManageShipPrompt`) → `"ClosePanel"`
+	--- (`FleetPanelGui` modal is open, `CloseButtonPointerRoot` lit). Closing
+	--- the modal while in `ClosePanel` advances FTUE to `WaitDocksHire` (see
+	--- `FtueService.OnFtueDocksProgress` `"FleetPanelOpened"` /
+	--- `"FleetPanelClosed"` actions). Not persisted in the oil profile —
+	--- rejoin reverts to `OpenPanel` because the modal closes on disconnect.
+	FtueDocksFleetPanelSubStepAttribute = "FtueDocksFleetPanelSubStep",
 
 	-- After Humanoid.Died: seconds before `LoadCharacter()` (PlotService; CharacterAutoLoads=false).
 	-- Lower = faster respawn. Ignores `Players.RespawnTime` so tuning is explicit.

@@ -447,7 +447,14 @@ function FtueDialogueController.start(
 			return
 		end
 		if step == FtueConfig.Step.Done then
-			FtueTpHomePointerState.markLegActive()
+			--- Do **not** call `FtueTpHomePointerState.markLegActive()` here.
+			--- `ftueStateUpdate` can run `applyStep("Done")` before the replicated
+			--- `FtueStep` attribute catches up; arming the TP-home leg that early
+			--- made `FtueUiPointers` treat `TPHomePointerRoot` as the sole active
+			--- pointer (suppressing Strait / ship-oil / shop arrows for the whole
+			--- session if `TPHomePointerRoot` is missing). `FtueUiPointers.refresh`
+			--- arms the leg only when `FtueStep` is actually `Done`; Continue/Skip
+			--- on Done still call `markLegActive()` where the attribute is known.
 			FtueDispatchPointerSignals.fireFtuePointersRefresh()
 			if dismissedStep ~= nil and dismissedStep ~= step then
 				dismissedStep = nil

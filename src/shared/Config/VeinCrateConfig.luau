@@ -2149,21 +2149,40 @@ function VeinCrateConfig.GetAllForGround(groundType: string): { VeinTypeDef }
 	return result
 end
 
-function VeinCrateConfig.RollVeinType(groundType: string, rng: Random): VeinTypeDef
+--- Roll a vein for `groundType`. `weightBias`, when provided, multiplies the
+--- per-rarity slice from `GroundRarityWeights` before sampling — used by
+--- drills with a rarity-bump (currently T6 in `EquipmentCatalog`). Multipliers
+--- default to `1.0` for any rarity not listed (no change). `0` removes that
+--- rarity entirely; values `> 1` boost; values `< 1` shrink. Internally we
+--- switch to float math + `rng:NextNumber()` because biased weights are
+--- typically fractional (e.g. `Unlucky × 0.5`); when no bias is passed the
+--- result distribution is statistically identical to the previous integer
+--- roll. See `EquipmentCatalog.EquipmentRow.rerollWeightBias` for the
+--- design rationale and current values.
+function VeinCrateConfig.RollVeinType(groundType: string, rng: Random, weightBias: { [string]: number }?): VeinTypeDef
 	local weights = VeinCrateConfig.GroundRarityWeights[groundType] or VeinCrateConfig.GroundRarityWeights.Bronze
 	local groundItems = VeinCrateConfig.GroundItemRarities[groundType]
-	local totalWeight = 0
+	local effectiveByRarity: { [string]: number } = {}
+	local totalWeight = 0.0
 	for _, rarity in ipairs(VeinCrateConfig.RarityOrder) do
-		totalWeight += weights[rarity] or 0
+		local w = weights[rarity] or 0
+		if weightBias ~= nil then
+			local mult = weightBias[rarity]
+			if typeof(mult) == "number" and mult >= 0 then
+				w = w * mult
+			end
+		end
+		effectiveByRarity[rarity] = w
+		totalWeight += w
 	end
 	if totalWeight <= 0 then
 		return VeinCrateConfig.VeinTypes[1]
 	end
-	local roll = rng:NextInteger(1, totalWeight)
-	local accum = 0
+	local roll = rng:NextNumber() * totalWeight
+	local accum = 0.0
 	local pickedRarity = "Common"
 	for _, rarity in ipairs(VeinCrateConfig.RarityOrder) do
-		accum += weights[rarity] or 0
+		accum += effectiveByRarity[rarity]
 		if roll <= accum then
 			pickedRarity = rarity
 			break

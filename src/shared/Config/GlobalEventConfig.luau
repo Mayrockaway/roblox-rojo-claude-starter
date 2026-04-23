@@ -58,8 +58,10 @@ local GlobalEventConfig = {}
 ---   * `ShipStatsBoost`  → `GlobalEventService:GetShipStatsBoost()`
 ---     Returns a `{ speedMul, capacityMul, eventRiskMul }` table consumed by
 ---     `OilShipmentService:_handleDispatch` to overwrite `stats` *after*
----     `ShipStats.Resolve` (so player upgrade levels stay authoritative;
----     this is a temporary override, not a level change).
+---     `ShipStats.ResolveForBoat` (so the equipped boat's baked stats stay
+---     authoritative; this is a temporary multiplicative override, not a
+---     stat change). Post-Step-2 of the boat-progression refactor the
+---     resolver reads directly from the equipped boat's catalog entry.
 ---
 	---   * `ForceStraitEvent` → `GlobalEventService:GetForcedStraitEventId()`
 ---     Returns the `StraitEventCatalog` id ("PirateRaid", "CoastGuardInspection",
@@ -171,7 +173,7 @@ export type EventDefinition = {
 --==============================================================================
 
 GlobalEventConfig.Events = {
-	--- Cash Frenzy — all earnings ×2 server-wide for 60 seconds.
+	--- Cash Frenzy — all earnings ×2 server-wide for 30 seconds.
 	---
 	--- Stacks multiplicatively with the `DoubleEarnings` GamePass in
 	--- `OilStateService:AddCash` (GamePass owners get ×4 during the event).
@@ -179,22 +181,31 @@ GlobalEventConfig.Events = {
 	--- `AddCash(uid, n, { skipMultiplier = true })` so neither the Frenzy
 	--- nor the GamePass apply to those credits — same contract as today.
 	---
-	--- Tuning intent: medium frequency (weight 10), 8-min self-cooldown so
-	--- the same player doesn't see two Cash Frenzies back-to-back; pairs
-	--- well with the rotation `minSecondsBetweenEvents` floor.
+	--- Tuning intent: lower frequency than Express Convoy (weight 6 vs
+	--- 10) — Cash Frenzy is the highest-impact `Buff` (literal ×2 on
+	--- every earning hook including sales, contracts, and oil-tank
+	--- payouts), so making it the rarer of the two `Buff` events keeps
+	--- it feeling like a payday moment instead of the default state. Was
+	--- weight 10; reduced after playtesters reported it eclipsing
+	--- Express Convoy in roll frequency. 8-min self-cooldown still
+	--- prevents the same player from seeing two Cash Frenzies
+	--- back-to-back. Duration was 60s → 30s to make the buff feel like
+	--- a "scramble window" — long enough to dispatch a shipment / sell
+	--- a stockpile, short enough that it still feels rare and worth
+	--- pre-stacking inventory for.
 	cash_frenzy = {
 		id = "cash_frenzy",
 		displayName = "Cash Frenzy",
 		subtitle = "All earnings x2!",
 		bannerKind = "Buff",
 		effect = { kind = "CashMultiplier", value = 2 },
-		durationSeconds = 60,
-		weight = 10,
+		durationSeconds = 30,
+		weight = 6,
 		cooldownSeconds = 480,
 		helpText = "Sell oil, ship cargo, or finish contracts NOW for double cash!",
 	},
 
-	--- Pirate Wave — every strait waypoint event roll for the next 90
+	--- Pirate Wave — every strait waypoint event roll for the next 30
 	--- seconds is forced to `PirateRaid`. Players who own the
 	--- `Security Personnel` consumable (`OilStateService:GetRunUpgradeOwned(
 	--- userId, "security_personnel") > 0`) still get full deflection on
@@ -204,15 +215,24 @@ GlobalEventConfig.Events = {
 	--- Bracket gate (`StraitEventConfig.IsTriggerEnabledForBracket`) is
 	--- preserved so a Pirate Wave during `Open` strait still uses the
 	--- sparse Open waypoint allow-list — the goal is "spike Pirate
-	--- frequency", not "make the strait feel like Closed for 90s".
+	--- frequency", not "make the strait feel like Closed for the
+	--- duration of the event".
+	---
+	--- Tuning intent: this is the only `Threat`-flavor event today, so it's
+	--- intentionally the rarest of the three (weight 3 vs Cash Frenzy's
+	--- 10 / Express Convoy's 8 → ~14% of rolls). Lowered from weight 6
+	--- after playtesters reported it landing too often relative to the
+	--- two `Buff` events. Duration was 60s → 30s for the same reason —
+	--- shorter window means a single Pirate Wave doesn't dominate a
+	--- rotation slot if the player happens to have a shipment in flight.
 	pirate_wave = {
 		id = "pirate_wave",
 		displayName = "Pirate Wave",
 		subtitle = "Pirates raiding all shipments!",
 		bannerKind = "Threat",
 		effect = { kind = "ForceStraitEvent", straitEventId = "PirateRaid" },
-		durationSeconds = 60,
-		weight = 6,
+		durationSeconds = 30,
+		weight = 3,
 		cooldownSeconds = 720,
 		helpText = "Ship now and get raided, or wait it out. Security Personnel still defends.",
 	},
@@ -246,7 +266,7 @@ GlobalEventConfig.Events = {
 			eventRiskMul = 1.0,
 		},
 		durationSeconds = 60,
-		weight = 8,
+		weight = 10,
 		cooldownSeconds = 600,
 		helpText = "Dispatch big shipments now — they arrive in half the time.",
 	},

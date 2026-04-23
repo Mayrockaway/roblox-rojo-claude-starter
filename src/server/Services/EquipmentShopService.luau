@@ -637,9 +637,11 @@ function EquipmentShopService:_handlePurchase(player: Player, payload: any)
 		totalCost = totalCost,
 	})
 
-	--- FTUE step advance: notify after the inventory + state are committed so the
-	--- next step transition (`WaitDocksUpgradeShip` + `Dockman` sub-step) is
-	--- driven from a consistent server snapshot.
+	--- FTUE step advance: notify after the inventory + state are committed so
+	--- the next step transition is driven from a consistent server snapshot.
+	--- Step 4 of the boat-progression refactor deleted the
+	--- `WaitDocksUpgradeShip` (Dockman) leg, so the next step is now
+	--- `WaitDocksHire` directly (see `FtueService.OnFtueDocksProgress`).
 	if ftueFreeQty > 0 and self._ftueService and typeof((self._ftueService :: any).OnFtueEquipmentShopPurchase) == "function" then
 		(self._ftueService :: any):OnFtueEquipmentShopPurchase(player, item.id)
 	end

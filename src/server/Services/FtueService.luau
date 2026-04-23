@@ -252,17 +252,16 @@ function FtueService:_setStep(player: Player, step: string?)
 		;(self._oilState :: any):SetFtueTutorialTileMarker(player.UserId, enableMarker)
 	end
 	player:SetAttribute(Constants.FtueStepAttribute, step)
-	if typeof(step) ~= "string" or step ~= FtueConfig.Step.WaitDocksUpgradeShip then
-		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, nil)
-		--- Mirror the clear into oil state so the persisted sub-step never lingers
-		--- past the leg it belongs to (a save flush mid-transition could otherwise
-		--- restore a stale value on the next rejoin).
-		if self._oilState and typeof((self._oilState :: any).SetFtueDocksUpgradeSubStep) == "function" then
-			(self._oilState :: any):SetFtueDocksUpgradeSubStep(player.UserId, nil)
-		end
-	end
+	-- `WaitDocksUpgradeShip` sub-step attribute clear was deleted by
+	-- Step 4 of the boat-progression refactor (the leg + the attribute
+	-- + the matching `SetFtueDocksUpgradeSubStep` are gone). The new
+	-- `WaitDocksFleetPanel` leg uses `FtueDocksFleetPanelSubStepAttribute`
+	-- instead — cleared on every transition out of that step.
 	if typeof(step) ~= "string" or step ~= FtueConfig.Step.WaitDocksEquipmentShop then
 		player:SetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute, nil)
+	end
+	if typeof(step) ~= "string" or step ~= FtueConfig.Step.WaitDocksFleetPanel then
+		player:SetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute, nil)
 	end
 	fireState(player, step)
 	--- The sell-leg can't progress unless the player is standing on the
@@ -384,7 +383,6 @@ function FtueService:SyncFromOilState(userId: number)
 	if FtueConfig.Enabled ~= true then
 		self:_clearRestrictionAttributes(player)
 		player:SetAttribute(Constants.FtueStepAttribute, nil)
-		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, nil)
 		player:SetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute, nil)
 		fireState(player, nil)
 		ftueDbg("SyncFromOilState uid=%d FTUE disabled -> clear UI", userId)
@@ -411,9 +409,8 @@ function FtueService:SyncFromOilState(userId: number)
 	if completed and stepStr == nil then
 		self:_clearRestrictionAttributes(player)
 		player:SetAttribute(Constants.FtueStepAttribute, nil)
-		--- Clear both leg sub-steps too: they should never replicate to the
+		--- Clear leg sub-steps too: they should never replicate to the
 		--- client past the FTUE itself (stale value would re-show old pointers).
-		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, nil)
 		player:SetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute, nil)
 		fireState(player, nil)
 		ftueDbg("SyncFromOilState uid=%d branch=finished (completed+no step) -> FtueStateUpdate(nil)", userId)
@@ -427,8 +424,8 @@ function FtueService:SyncFromOilState(userId: number)
 		end
 		self:_clearRestrictionAttributes(player)
 		player:SetAttribute(Constants.FtueStepAttribute, nil)
-		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, nil)
 		player:SetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute, nil)
+		player:SetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute, nil)
 		fireState(player, nil)
 		ftueDbg(
 			"SyncFromOilState uid=%d branch=sanitize ftueCompleted+stale ftueStep -> SetFtueProgress(nil)",
@@ -444,8 +441,8 @@ function FtueService:SyncFromOilState(userId: number)
 		end
 		self:_clearRestrictionAttributes(player)
 		player:SetAttribute(Constants.FtueStepAttribute, nil)
-		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, nil)
 		player:SetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute, nil)
+		player:SetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute, nil)
 		fireState(player, nil)
 		ftueDbg(
 			"SyncFromOilState uid=%d branch=legacy doneAck+ftueStep==Done -> SetFtueProgress(nil)+FtueStateUpdate(nil)",
@@ -458,8 +455,8 @@ function FtueService:SyncFromOilState(userId: number)
 	if stepStr == FtueConfig.Step.Done then
 		self:_clearRestrictionAttributes(player)
 		player:SetAttribute(Constants.FtueStepAttribute, FtueConfig.Step.Done)
-		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, nil)
 		player:SetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute, nil)
+		player:SetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute, nil)
 		fireState(player, FtueConfig.Step.Done)
 		ftueDbg("SyncFromOilState uid=%d branch=show Done modal -> FtueStateUpdate(Done)", userId)
 		return
@@ -524,31 +521,20 @@ function FtueService:SyncFromOilState(userId: number)
 	else
 		player:SetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute, nil)
 	end
-	--- Re-arm the dock-ship sub-step on rejoin from the persisted oil-state value
-	--- so the player resumes on the same beam (Dockman) / cargo-buy pointer
-	--- (`CargoBuy`) / close pointer (`CloseModal`) they last saw. Default to
-	--- `Dockman` if the player is in the leg but the persisted sub is missing
-	--- (legacy save without the field) so the dockman beam still resolves.
-	if step == FtueConfig.Step.WaitDocksUpgradeShip then
-		local subAny = (st :: any).ftueDocksUpgradeSubStep
-		local sub = if typeof(subAny) == "string" then (subAny :: string) else nil
-		if
-			sub ~= "Dockman"
-			and sub ~= "CargoBuy"
-			and sub ~= "ChangeShip"
-			and sub ~= "SelectShipOpen"
-			and sub ~= "CloseModal"
-		then
-			sub = "Dockman"
-			--- Backfill so the next save round-trip keeps the recovered sub-step.
-			if self._oilState and typeof((self._oilState :: any).SetFtueDocksUpgradeSubStep) == "function" then
-				(self._oilState :: any):SetFtueDocksUpgradeSubStep(userId, sub)
-			end
-		end
-		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, sub)
+	--- Re-arm the fleet-panel sub-step on rejoin. `FleetPanelGui` closes on
+	--- disconnect, so we always default to `OpenPanel` (beam to dockman); the
+	--- `ProximityPanelOpener` bridge will flip to `ClosePanel` when the player
+	--- re-opens the modal. The sub-step itself is intentionally **not**
+	--- persisted — there is no useful "halfway" state for this leg.
+	if step == FtueConfig.Step.WaitDocksFleetPanel then
+		player:SetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute, "OpenPanel")
 	else
-		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, nil)
+		player:SetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute, nil)
 	end
+	-- `WaitDocksUpgradeShip` rejoin-recovery block (re-arm sub-step from
+	-- persisted `ftueDocksUpgradeSubStep`) was deleted by Step 4 of the
+	-- boat-progression refactor along with the leg itself, the
+	-- `FtueDocksUpgradeSubStepAttribute`, and `SetFtueDocksUpgradeSubStep`.
 	fireState(player, step)
 	ftueDbg("SyncFromOilState uid=%d branch=midFlow -> FtueStateUpdate(%s)", userId, step)
 end
@@ -875,101 +861,82 @@ function FtueService:OnFtueEquipmentShopPurchase(player: Player, itemId: string)
 	fireState(player, FtueConfig.Step.WaitDocksEquipmentShop)
 end
 
---- FTUE docks sub-leg flow:
----   `DockmanOpened`     (sub `Dockman`)        → sub `CargoBuy`        (CargoUpgradePointer)
----   cargo upgrade buy   (sub `CargoBuy`)       → sub `ChangeShip`      (ChangeShipPointer)
----     — handled by `OnFtueShipCapacityUpgradeSuccess`
----   `SelectShipOpened`  (sub `ChangeShip`)     → sub `SelectShipOpen`  (CloseButtonPointer / SelectShip)
----   `SelectShipClosed`  (sub `SelectShipOpen`) → sub `CloseModal`      (ClosePointer / ShipManagement)
----   `ShipPanelClosed`   (sub `CloseModal`)     → step **`WaitDocksHire`**
---- Equipment shop leg: `EquipmentShopPanelClosed` (after free drill purchased) → **`WaitDocksUpgradeShip` (Dockman)`**.
+--- FTUE docks flow (post-Step-4 + fleet-panel leg):
+---   `EquipmentShopPanelClosed` (after free drill purchased + panel
+---     closed during `WaitDocksEquipmentShop` sub `ClosePanel`) →
+---     **`WaitDocksFleetPanel`** + sub `OpenPanel` (world beam to dockman).
+---   `FleetPanelOpened` (dockman prox prompt opened `FleetPanelGui` while
+---     on `WaitDocksFleetPanel` + sub `OpenPanel`) → keep step, flip sub
+---     to `ClosePanel` (lights `CloseButtonPointerRoot` inside `FleetPanelGui`).
+---   `FleetPanelClosed` (player closed `FleetPanelGui` while on
+---     `WaitDocksFleetPanel` + sub `ClosePanel`) → **`WaitDocksHire`**.
+---
+--- The new fleet-panel leg replaces the deleted `WaitDocksUpgradeShip`
+--- leg (Dockman → free first cargo upgrade → change ship → close panel)
+--- but is much simpler — there's no free upgrade hand-out and no sub-
+--- step pointer chain inside the modal; the player just needs to learn
+--- the panel exists and how to close it.
+---
+--- Other legacy action ids (`DockmanOpened`, `SelectShipOpened`,
+--- `SelectShipClosed`, `ShipPanelClosed`) are still ignored — clients
+--- on old builds may continue to fire them; the server silently no-ops.
 function FtueService:OnFtueDocksProgress(player: Player, action: any)
 	if FtueConfig.Enabled ~= true then
 		return
 	end
 	local a = if typeof(action) == "string" then (action :: string):gsub("^%s+", ""):gsub("%s+$", "") else ""
-	if a == "" then
-		return
-	end
 	local st = self._oilState:GetState(player.UserId)
 	if not st then
 		return
 	end
-	--- Equipment shop close branch lives in its own step; handle and return so the
-	--- existing `WaitDocksUpgradeShip` guard below stays untouched.
+	local curStep = (st :: any).ftueStep
+
 	if a == "EquipmentShopPanelClosed" then
-		if (st :: any).ftueStep ~= FtueConfig.Step.WaitDocksEquipmentShop then
+		if curStep ~= FtueConfig.Step.WaitDocksEquipmentShop then
 			return
 		end
 		local eqSub = player:GetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute)
 		if eqSub ~= "ClosePanel" then
 			return
 		end
-		self:_setStep(player, FtueConfig.Step.WaitDocksUpgradeShip)
-		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, "Dockman")
-		;(self._oilState :: any):SetFtueDocksUpgradeSubStep(player.UserId, "Dockman")
-		fireState(player, FtueConfig.Step.WaitDocksUpgradeShip)
+		self:_setStep(player, FtueConfig.Step.WaitDocksFleetPanel)
+		--- `_setStep` cleared every other leg's sub-step but does not seed
+		--- the new leg's `OpenPanel` (the entry attribute), so set it here.
+		player:SetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute, "OpenPanel")
+		fireState(player, FtueConfig.Step.WaitDocksFleetPanel)
 		return
 	end
-	if (st :: any).ftueStep ~= FtueConfig.Step.WaitDocksUpgradeShip then
+
+	if a == "FleetPanelOpened" then
+		if curStep ~= FtueConfig.Step.WaitDocksFleetPanel then
+			return
+		end
+		local fpSub = player:GetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute)
+		if fpSub ~= "OpenPanel" then
+			return
+		end
+		player:SetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute, "ClosePanel")
+		fireState(player, FtueConfig.Step.WaitDocksFleetPanel)
 		return
 	end
-	local sub = player:GetAttribute(Constants.FtueDocksUpgradeSubStepAttribute)
-	if a == "DockmanOpened" then
-		if sub ~= "Dockman" then
+
+	if a == "FleetPanelClosed" then
+		if curStep ~= FtueConfig.Step.WaitDocksFleetPanel then
 			return
 		end
-		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, "CargoBuy")
-		;(self._oilState :: any):SetFtueDocksUpgradeSubStep(player.UserId, "CargoBuy")
-		fireState(player, FtueConfig.Step.WaitDocksUpgradeShip)
-		--- `OilStateService` snapshot `upgradeShipCapacityCost` reads this attribute; push immediately so
-		--- Ship Management's first `InvokeServer` sees **$0** (free FTUE upgrade) instead of a stale price.
-		if typeof((self._oilState :: any).PushState) == "function" then
-			(self._oilState :: any):PushState(player.UserId)
-		end
-	elseif a == "SelectShipOpened" then
-		if sub ~= "ChangeShip" then
-			return
-		end
-		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, "SelectShipOpen")
-		;(self._oilState :: any):SetFtueDocksUpgradeSubStep(player.UserId, "SelectShipOpen")
-		fireState(player, FtueConfig.Step.WaitDocksUpgradeShip)
-	elseif a == "SelectShipClosed" then
-		if sub ~= "SelectShipOpen" then
-			return
-		end
-		player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, "CloseModal")
-		;(self._oilState :: any):SetFtueDocksUpgradeSubStep(player.UserId, "CloseModal")
-		fireState(player, FtueConfig.Step.WaitDocksUpgradeShip)
-	elseif a == "ShipPanelClosed" then
-		if sub ~= "CloseModal" then
+		local fpSub = player:GetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute)
+		if fpSub ~= "ClosePanel" then
 			return
 		end
 		self:_setStep(player, FtueConfig.Step.WaitDocksHire)
-	else
+		fireState(player, FtueConfig.Step.WaitDocksHire)
 		return
 	end
 end
 
---- After first free cargo upgrade succeeds during **`WaitDocksUpgradeShip`** (`CargoBuy` sub-step).
---- Advances sub-step to `ChangeShip` so the **`ChangeShipPointer`** lights up next
---- (the player still has to open SelectShip and close it before the leg ends —
---- see `OnFtueDocksProgress` for the rest of the chain).
-function FtueService:OnFtueShipCapacityUpgradeSuccess(player: Player)
-	if FtueConfig.Enabled ~= true then
-		return
-	end
-	local st = self._oilState:GetState(player.UserId)
-	if not st or (st :: any).ftueStep ~= FtueConfig.Step.WaitDocksUpgradeShip then
-		return
-	end
-	if player:GetAttribute(Constants.FtueDocksUpgradeSubStepAttribute) ~= "CargoBuy" then
-		return
-	end
-	player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, "ChangeShip")
-	;(self._oilState :: any):SetFtueDocksUpgradeSubStep(player.UserId, "ChangeShip")
-	fireState(player, FtueConfig.Step.WaitDocksUpgradeShip)
-end
+-- `OnFtueShipCapacityUpgradeSuccess` was deleted by Step 4 of the boat-
+-- progression refactor — the free first cargo upgrade leg is gone (see
+-- the comment on `OnFtueDocksProgress` above).
 
 --- Force the player onto their warehouse `WarehouseSpawn` for the
 --- `WaitWarehouseSell` leg. The step can't progress unless they reach the
@@ -1216,8 +1183,8 @@ function FtueService:Start()
 			if FtueConfig.Enabled ~= true then
 				self:_clearRestrictionAttributes(player)
 				player:SetAttribute(Constants.FtueStepAttribute, nil)
-				player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, nil)
 				player:SetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute, nil)
+				player:SetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute, nil)
 				return
 			end
 			for _ = 1, 160 do
@@ -1240,8 +1207,8 @@ function FtueService:Start()
 			if FtueConfig.Enabled ~= true then
 				self:_clearRestrictionAttributes(player)
 				player:SetAttribute(Constants.FtueStepAttribute, nil)
-				player:SetAttribute(Constants.FtueDocksUpgradeSubStepAttribute, nil)
 				player:SetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute, nil)
+				player:SetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute, nil)
 				return
 			end
 			local plot = self._plotService:GetOwnedPlot(player.UserId)

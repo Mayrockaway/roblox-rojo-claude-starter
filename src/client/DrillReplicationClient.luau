@@ -26,6 +26,82 @@ export type Deps = {
 
 local M = {}
 
+--- Resolve the BasePart for a (chunkId, tileKey) pair **inside the local
+--- player's own plot**. The previous version of this lookup walked every plot
+--- under `Workspace.Map.Plots` and grabbed the first descendant anywhere named
+--- `tileKey` (e.g. `"T33"`). Because every chunk in every plot reuses the same
+--- local `T11..T55` naming, that almost always returned a tile in plot 1 (or
+--- whichever plot iterated first), not the player's own — so the slot-spin
+--- color flicker and the burst `OilSpray_*` clones spawned **on top of locked
+--- tiles in a neighboring plot** instead of the tile actually being rolled.
+--- We now constrain to the player's `PlotId`-attributed plot and use the
+--- server-supplied `chunkId` to pick the correct section before resolving the
+--- tile by name. Falls back to a wider search **only inside the same plot**
+--- if the section isn't where it normally lives.
+local function resolveOwnedTilePart(player: Player, chunkId: any, tileKey: any): BasePart?
+	if typeof(tileKey) ~= "string" or tileKey == "" then
+		return nil
+	end
+	local plotId = player:GetAttribute("PlotId")
+	if typeof(plotId) ~= "number" or plotId <= 0 then
+		return nil
+	end
+	local map = Workspace:FindFirstChild("Map")
+	local plots = map and map:FindFirstChild("Plots")
+	if not plots then
+		return nil
+	end
+	local plot: Model? = nil
+	for _, item in ipairs(plots:GetChildren()) do
+		if item:IsA("Model") then
+			local id = item:GetAttribute("PlotId")
+			if typeof(id) ~= "number" then
+				id = tonumber(item.Name:match("(%d+)"))
+			end
+			if typeof(id) == "number" and id == plotId then
+				plot = item
+				break
+			end
+		end
+	end
+	if not plot then
+		return nil
+	end
+	local ground = plot:FindFirstChild("PlotGround")
+	if not ground then
+		return nil
+	end
+	-- Preferred path: server provided chunkId, so pin the section first.
+	if typeof(chunkId) == "string" and chunkId ~= "" then
+		local section = ground:FindFirstChild(chunkId)
+		if section then
+			local tp = section:FindFirstChild(tileKey)
+			if tp and tp:IsA("BasePart") then
+				return tp
+			end
+			-- Tile may live one level deeper if the section authors tiles inside
+			-- a sub-Model (e.g. Model with PrimaryPart). Recursive search but
+			-- still scoped to this section only.
+			local deep = section:FindFirstChild(tileKey, true)
+			if deep and deep:IsA("BasePart") then
+				return deep
+			end
+		end
+	end
+	-- Fallback: chunkId missing or section not yet replicated. Walk only this
+	-- plot's sections (still constrained to the owned plot, never crossing
+	-- into a neighboring locked plot).
+	for _, section in ipairs(ground:GetChildren()) do
+		if section:IsA("Model") then
+			local tp = section:FindFirstChild(tileKey)
+			if tp and tp:IsA("BasePart") then
+				return tp
+			end
+		end
+	end
+	return nil
+end
+
 function M.connect(deps: Deps)
 	local player = deps.player
 	local playerGui = deps.playerGui
@@ -106,6 +182,17 @@ function M.connect(deps: Deps)
 				end)
 			end
 
+		elseif data.kind == "redrilled" and data.ownerUserId == player.UserId then
+			-- T4+ re-drilled this tile — server already wiped production state
+			-- and is about to fire `kind="started"`. Despawn the previous
+			-- shovel (if the tile was sitting in `revealPending`) so the new
+			-- drill animation runs on a clean tile. Production sprays /
+			-- billboards clean up on their own from the state push that
+			-- preceded this event (`OilVisualService` gates on `tile.drilled`).
+			local dcName = "DrillComplete_" .. tostring(data.chunkId) .. "_" .. tostring(data.tileKey)
+			local dcModel = Workspace:FindFirstChild(dcName)
+			if dcModel then dcModel:Destroy() end
+
 		elseif data.kind == "revealed" and data.ownerUserId == player.UserId then
 			-- Remove DrillComplete model
 			local dcName = "DrillComplete_" .. tostring(data.chunkId) .. "_" .. tostring(data.tileKey)
@@ -142,25 +229,14 @@ function M.connect(deps: Deps)
 			-- spinner already announces the tile name + rarity, so any
 			-- post-resolve banner here is redundant.
 
-			-- Slot spin animation on the tile
-			-- Find tile part by searching owned plot sections
-			local tilePart = nil
-			local ownedPlot = Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("Plots")
-			if ownedPlot then
-				for _, plot in ipairs(ownedPlot:GetChildren()) do
-					local pg = plot:FindFirstChild("PlotGround")
-					if not pg then continue end
-					for _, section in ipairs(pg:GetChildren()) do
-						if not section:IsA("Model") then continue end
-						local tp = section:FindFirstChild(tostring(data.tileKey))
-						if tp and tp:IsA("BasePart") then
-							tilePart = tp
-							break
-						end
-					end
-					if tilePart then break end
-				end
-			end
+			-- Slot spin animation on the tile. Resolve the BasePart strictly
+			-- inside the **player's own plot** using both `chunkId` and `tileKey`
+			-- (see `resolveOwnedTilePart` for the bug we used to ship: the old
+			-- lookup walked every plot and grabbed the first child anywhere
+			-- named `tileKey`, so the slot-spin tile color flicker and the
+			-- post-spin oil burst sprays landed on locked tiles in a
+			-- neighboring plot instead of the tile actually being rolled).
+			local tilePart = resolveOwnedTilePart(player, data.chunkId, data.tileKey)
 
 			task.spawn(function()
 				-- Tile-color slot spin (3s). The world-anchored billboard

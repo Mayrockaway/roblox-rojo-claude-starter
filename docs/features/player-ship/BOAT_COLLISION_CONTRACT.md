@@ -43,10 +43,25 @@ The engine pair-rule matrix is registered idempotently in both `BoatDockService:
 | `IdleBoat` ↔ `IdleBoat` | **no** | Parked boats never push each other |
 | `IdleBoat` ↔ `MarinaDock` | **no** | Docked hulls sit on / next to pier; no fight with static geometry |
 | `IdleBoat` ↔ `MapDecor` | **no** | Same as above for buoys / props |
-| `IdleBoat` ↔ `PlayerInStraitEvent` (strait-event reassigned char) | **no** | Mirrors the `Default ↔ IdleBoat = false` rule for the temporary group |
+| `IdleBoat` ↔ `PlayerInStraitEvent` (voyaging char) | **no** | Mirrors the `Default ↔ IdleBoat = false` rule for the voyage group |
 | `IdleBoat` ↔ `StraitWaypointFxNpc` | **no** | Cinematic NPCs don't snag on parked boats |
 
 > Trade-off: players cannot walk onto a parked boat from the pier. The dispatch flow auto-teleports the owner onto the deck (`BoatDockService:TeleportOwnerToSeat`), so this is invisible in the normal gameplay loop.
+
+### Voyaging owner (`PlayerInStraitEvent`) pairs
+
+The owner character is reassigned to `PlayerInStraitEvent` for the **entire voyage** (apply at dispatch in `OilShipmentService:_runShipment` after `TeleportOwnerToSeat` via `_applyOwnerOnVoyageCollisionGroup`; restore at success / total-loss via `_restoreOwnerOnVoyageCollisionGroup`). Group name is legacy — it originally only covered the strait-event freeze cinematic — but the rule it enforces (voyaging player only collides with hulls + other characters) applies for the whole trip.
+
+| Pair | Collide? | Reason |
+|---|---|---|
+| `PlayerInStraitEvent` ↔ `ShipmentShip` (own + other voyage hulls) | yes | Owner stands on their deck; can also board another player's ship |
+| `PlayerInStraitEvent` ↔ `Default` / `Players` | yes | Other characters can still bump them |
+| `PlayerInStraitEvent` ↔ `IdleBoat` (parked boats) | **no** | Walks through docked hulls (registered above) |
+| `PlayerInStraitEvent` ↔ `MarinaDock` (pier geometry) | **no** | Boat docks against pier; static dock collider would yank the player off the moving hull |
+| `PlayerInStraitEvent` ↔ `MapDecor` (buoys / lane props) | **no** | Hull already ignores them; player must too |
+| `PlayerInStraitEvent` ↔ `StraitWaypointFxNpc` | **no** | Cosmetic NPC ships / officers / pirates never push the player |
+
+> Auto-reapply on respawn is **deliberately not wired**: a player who dies mid-voyage (e.g. MissileStrike total loss) typically respawns at warehouse / plot, where re-tagging them with `PlayerInStraitEvent` would make them clip through the dock pier on land. The voyage-end restore handles the (rare) case where the player is re-spawned still in voyage scope (the per-part attribute check in `restorePlayerCharacterCollisionGroup` no-ops on un-stamped parts, so this is safe).
 
 ## Authored `CanCollide` is the source of truth
 
@@ -95,4 +110,4 @@ If a fixed-collision detail (like the legacy "Hat giver" widget on the Ducky) si
 
 ## Dev testing
 
-`/unlockboats` (server chat command) grants every skin in `ShipSkinCatalog.Skins` to the calling player so each hull can be QA'd through the in-game Ship Management panel without buying via Robux. Aliases: `/unlockallboats`, `/giveallboats`.
+`/unlockboats` (server chat command) grants every boat in `BoatCatalog.Boats` (excluding `placeholder = true` entries) to the calling player so each hull can be QA'd through the in-game Ship Management panel without buying via Robux. Aliases: `/unlockallboats`, `/giveallboats`.

@@ -111,10 +111,10 @@ _G.Perf = PerfService   -- global hook so any service can call PerfService:OpenS
 -- in production. `DevLog.log(...)` itself still calls `print(...)` either
 -- way, so server Output continues to work normally on the live shard.
 if RunService:IsStudio() then
-	DevLog.SetBroadcaster(function(msg)
-		local ev = RemoteService:GetEvent(RemoteNames.DevLog)
-		ev:FireAllClients(msg)
-	end)
+DevLog.SetBroadcaster(function(msg)
+	local ev = RemoteService:GetEvent(RemoteNames.DevLog)
+	ev:FireAllClients(msg)
+end)
 end
 LeaderboardService:Init()
 StraitStateService:Init(RemoteService)
@@ -306,31 +306,31 @@ do
 
 	local function onDebugChat(player: Player, message: string)
 		if not isAuthorizedDev(player) then return end
-		local cmd = message:lower():gsub("^%s+", ""):gsub("%s+$", "")
-		if cmd == "/missile" then
-			OilShipmentService:DebugDispatchMissile(player)
-		elseif cmd == "/mine" then
-			OilShipmentService:DebugDispatchMine(player)
-		elseif cmd == "/pirate" then
-			OilShipmentService:DebugDispatchPirate(player)
-		elseif cmd == "/storm" then
-			OilShipmentService:DebugDispatchStorm(player)
-		elseif cmd == "/tornado" then
-			OilShipmentService:DebugDispatchTornado(player)
-		elseif cmd == "/coastguard" then
-			OilShipmentService:DebugDispatchCoastGuard(player)
-		elseif cmd == "/slap" then
-			OilShipmentService:DebugDispatchUSShipSlap(player)
+			local cmd = message:lower():gsub("^%s+", ""):gsub("%s+$", "")
+			if cmd == "/missile" then
+				OilShipmentService:DebugDispatchMissile(player)
+			elseif cmd == "/mine" then
+				OilShipmentService:DebugDispatchMine(player)
+			elseif cmd == "/pirate" then
+				OilShipmentService:DebugDispatchPirate(player)
+			elseif cmd == "/storm" then
+				OilShipmentService:DebugDispatchStorm(player)
+			elseif cmd == "/tornado" then
+				OilShipmentService:DebugDispatchTornado(player)
+			elseif cmd == "/coastguard" then
+				OilShipmentService:DebugDispatchCoastGuard(player)
+			elseif cmd == "/slap" then
+				OilShipmentService:DebugDispatchUSShipSlap(player)
 		elseif cmd == "/nuke" then
 			ArmyGeneralService:DebugNuke(player)
 		elseif cmd == "/airstrike" then
 			ArmyGeneralService:DebugAirstrike(player)
-		elseif cmd == "/fighterwave" or cmd == "/fighters" then
-			FighterPlaneWaveService:DebugSpawnWave(player.Name)
-		elseif cmd == "/fighterhere" or cmd == "/jethere" then
-			FighterPlaneWaveService:DebugSpawnOverPlayer(player)
-		elseif cmd == "/fighterretarget" or cmd == "/jetretarget" then
-			FighterPlaneWaveService:DebugRetargetTemplate(player.Name)
+			elseif cmd == "/fighterwave" or cmd == "/fighters" then
+				FighterPlaneWaveService:DebugSpawnWave(player.Name)
+			elseif cmd == "/fighterhere" or cmd == "/jethere" then
+				FighterPlaneWaveService:DebugSpawnOverPlayer(player)
+			elseif cmd == "/fighterretarget" or cmd == "/jetretarget" then
+				FighterPlaneWaveService:DebugRetargetTemplate(player.Name)
 		elseif cmd:sub(1, 9) == "/testvein" then
 			-- /testvein <oil> <stream> <veincount>
 			-- oil: dirt, good, gold
@@ -404,25 +404,25 @@ do
 			EquipmentShopService:GrantFreeOwnedEquipment(player, itemId, count)
 			print(string.format("[Dev] Gave %s x%d %s drills", player.Name, count, tier:upper()))
 		elseif cmd == "/unlockboats" or cmd == "/unlockallboats" or cmd == "/giveallboats" then
-			-- Dev-only: grant every cosmetic ship skin in `ShipSkinCatalog` to
-			-- the calling player (mirrors what `MonetizationService` does on a
-			-- successful Robux receipt for each `gamepass.*Skin` /
-			-- `consumable.*Skin` grant). Use this to QA each hull's collision /
-			-- rig under the new `BoatCollisionContract` without buying every
-			-- skin. Idempotent — `OilStateService:GrantShipSkin` returns
-			-- `OK_ALREADY_OWNED` for skins the player already has, so spamming
-			-- the command is safe. Re-equip via the in-game Ship Management
-			-- panel after running.
-			local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
+			-- Dev-only: grant every boat in `BoatCatalog` (excluding placeholder
+			-- entries — those are filtered server-side by `GrantBoat`) to the
+			-- calling player (mirrors what `MonetizationService` does on a
+			-- successful Robux receipt for each `ship.*` grant). Use this to
+			-- QA each hull's collision / rig under the new
+			-- `BoatCollisionContract` without buying every boat. Idempotent —
+			-- `OilStateService:GrantBoat` returns `OK_ALREADY_OWNED` for boats
+			-- the player already has, so spamming the command is safe.
+			-- Re-equip via the in-game Ship Management panel after running.
+			local BoatCatalog = require(Shared:WaitForChild("Config"):WaitForChild("BoatCatalog"))
 			local granted, already = 0, 0
-			for skinId, _ in pairs(ShipSkinCatalog.Skins) do
-				local ok, code = OilStateService:GrantShipSkin(player.UserId, skinId)
+			for boatId, _ in pairs(BoatCatalog.Boats) do
+				local ok, code = OilStateService:GrantBoat(player.UserId, boatId)
 				if ok then
 					granted += 1
 				elseif code == "OK_ALREADY_OWNED" then
 					already += 1
 				else
-					warn(string.format("[Dev] /unlockboats GrantShipSkin(%s) failed: %s", skinId, tostring(code)))
+					warn(string.format("[Dev] /unlockboats GrantBoat(%s) failed: %s", boatId, tostring(code)))
 				end
 			end
 			print(string.format(

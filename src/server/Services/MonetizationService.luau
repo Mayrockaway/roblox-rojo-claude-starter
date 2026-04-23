@@ -8,7 +8,7 @@
 ---      validate the `productId`, and call `MarketplaceService:Prompt*`.
 ---   2. **Receipt** — claim `MarketplaceService.ProcessReceipt` so we can
 ---      verify the receipt, look the item up by `ProductId`, and run the
----      grant payload (e.g. `OilStateService:GrantShipSkin`). Idempotent on
+---      grant payload (e.g. `OilStateService:GrantBoat`). Idempotent on
 ---      `(userId, purchaseId)` via DataStore so a double-network-flush can't
 ---      grant a ship twice.
 ---   3. **Ownership** — for GamePass items, expose a `HasGamePassEffect`
@@ -566,7 +566,7 @@ function MonetizationService:_dispatchGrant(userId: number, grant: MonetizationC
 	local kind = grant.kind
 	if kind == "Ship" then
 		local equip = if grant.equipOnGrant ~= nil then grant.equipOnGrant == true else parentEquipOnGrant
-		return self:_grantShip(userId, equip, grant.skinId)
+		return self:_grantShip(userId, equip, grant.boatId)
 	elseif kind == "Currency" then
 		return self:_grantCurrency(userId, grant.cashAmount)
 	elseif kind == "Consumable" then
@@ -586,11 +586,11 @@ function MonetizationService:_dispatchGrant(userId: number, grant: MonetizationC
 	return false, "ERR_UNHANDLED_GRANT_KIND"
 end
 
-function MonetizationService:_grantShip(userId: number, equipOnGrant: boolean, skinId: string?): (boolean, string?)
-	if typeof(skinId) ~= "string" or skinId == "" then
+function MonetizationService:_grantShip(userId: number, equipOnGrant: boolean, boatId: string?): (boolean, string?)
+	if typeof(boatId) ~= "string" or boatId == "" then
 		return false, "ERR_BAD_GRANT_PAYLOAD"
 	end
-	local ok, code = self._oilStateService:GrantShipSkin(userId, skinId)
+	local ok, code = self._oilStateService:GrantBoat(userId, boatId)
 	-- `OK_ALREADY_OWNED` is a valid no-op outcome (re-grant from a re-deliver).
 	if not ok and code ~= "OK_ALREADY_OWNED" then
 		return false, code
@@ -600,7 +600,7 @@ function MonetizationService:_grantShip(userId: number, equipOnGrant: boolean, s
 		-- Best-effort auto-equip — we don't fail the grant if this falls
 		-- through because the player is mid-disconnect.
 		pcall(function()
-			self._oilStateService:SetShipSkinId(userId, skinId)
+			self._oilStateService:SetEquippedBoatId(userId, boatId)
 		end)
 	end
 	pcall(function()

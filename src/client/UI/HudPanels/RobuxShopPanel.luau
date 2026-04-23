@@ -8,11 +8,11 @@
 --   * Each card's `Template/Buy` ImageButton fires `RequestPromptRobuxPurchase` with the
 --     matching `MonetizationCatalog` item id (`ship.ship4skin`, `ship.ship5skin`,
 --     `ship.whaleskin`). The server's `MonetizationService` opens the Roblox prompt
---     and on receipt grants the ship via `OilStateService:GrantShipSkin`.
+--     and on receipt grants the boat via `OilStateService:GrantBoat`.
 --   * The Buy pill text is repainted from the catalog's `robuxPrice` so the displayed
 --     price stays in sync with `MonetizationCatalog.SHIP_PLACEHOLDER_PRICE` without
 --     hard-coding numbers in Studio.
---   * `oilStateUpdate.ownedShipSkinIds` flips owned cards to "OWNED" so the player
+--   * `oilStateUpdate.ownedBoatIds` flips owned cards to "OWNED" so the player
 --     can't accidentally re-prompt for a ship they already own. (Server is
 --     idempotent via `OK_ALREADY_OWNED`, but suppressing the prompt is better UX.)
 --   * Failure codes from `MonetizationResult` are warned to the console; the success
@@ -57,7 +57,7 @@ local RobuxShopPanel = {}
 
 local wiredScreen: ScreenGui? = nil
 local connections: { RBXScriptConnection } = {}
-local ownedSkinSet: { [string]: boolean } = { DefaultTanker = true }
+local ownedBoatSet: { [string]: boolean } = { Tier1Boat = true }
 local purchasedOneTimeSet: { [string]: boolean } = {}
 local lastPromptFireByItemId: { [string]: number } = {}
 local cardRefs: { { slotName: string, itemId: string, buy: ImageButton, label: TextLabel? } } = {}
@@ -110,17 +110,17 @@ local function priceForItemId(itemId: string): number?
 	return item.robuxPrice
 end
 
-local function skinIdForItemId(itemId: string): string?
+local function boatIdForItemId(itemId: string): string?
 	local item = MonetizationCatalog.GetItem(itemId)
 	if not item or item.grant.kind ~= "Ship" then
 		return nil
 	end
-	return item.grant.skinId
+	return item.grant.boatId
 end
 
 local function repaintCard(card: { slotName: string, itemId: string, buy: ImageButton, label: TextLabel? })
-	local skinId = skinIdForItemId(card.itemId)
-	local owned = skinId ~= nil and ownedSkinSet[skinId] == true
+	local boatId = boatIdForItemId(card.itemId)
+	local owned = boatId ~= nil and ownedBoatSet[boatId] == true
 	card.buy:SetAttribute("Owned", owned)
 
 	local label = card.label
@@ -161,13 +161,13 @@ local function repaintAllCards()
 	repaintFeatured()
 end
 
-local function readOwnedShipSkins(st: any): { [string]: boolean }
-	local nextOwned: { [string]: boolean } = { DefaultTanker = true }
-	local newOwned = (st :: any).ownedShipSkinIds
+local function readOwnedBoats(st: any): { [string]: boolean }
+	local nextOwned: { [string]: boolean } = { Tier1Boat = true }
+	local newOwned = (st :: any).ownedBoatIds
 	if typeof(newOwned) == "table" then
-		for skinId, isOwned in pairs(newOwned) do
-			if typeof(skinId) == "string" and isOwned == true then
-				nextOwned[skinId] = true
+		for boatId, isOwned in pairs(newOwned) do
+			if typeof(boatId) == "string" and isOwned == true then
+				nextOwned[boatId] = true
 			end
 		end
 	end
@@ -198,7 +198,7 @@ local function snapshotInitialOwnership(remotes: any)
 	if typeof(st) ~= "table" then
 		return
 	end
-	ownedSkinSet = readOwnedShipSkins(st)
+	ownedBoatSet = readOwnedBoats(st)
 	purchasedOneTimeSet = readPurchasedOneTime(st)
 end
 
@@ -308,8 +308,8 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 	repaintAllCards()
 
 	-- Re-paint when ownership changes server-side (e.g. successful Robux receipt
-	-- → `OilStateService:GrantShipSkin` → push). Cheap; we only touch labels
-	-- and the Featured row's Visible. We re-read both `ownedShipSkinIds` and
+	-- → `OilStateService:GrantBoat` → push). Cheap; we only touch labels
+	-- and the Featured row's Visible. We re-read both `ownedBoatIds` and
 	-- `purchasedOneTimeItemIds` on every snapshot because either can change
 	-- as a side-effect of a single receipt (e.g. Starter Pack flips both the
 	-- Pirate ship + the one-time set in one push).
@@ -317,7 +317,7 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 		if typeof(snap) ~= "table" then
 			return
 		end
-		ownedSkinSet = readOwnedShipSkins(snap)
+		ownedBoatSet = readOwnedBoats(snap)
 		purchasedOneTimeSet = readPurchasedOneTime(snap)
 		repaintAllCards()
 	end))

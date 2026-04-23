@@ -29,12 +29,27 @@ export type InitParams = {
 }
 
 -- ===================== shared utils =====================
+local UserInputService = game:GetService("UserInputService")
 local ResponsiveBillboard = require(
 	game:GetService("ReplicatedStorage")
 		:WaitForChild("Shared")
 		:WaitForChild("Utils")
 		:WaitForChild("ResponsiveBillboard")
 )
+
+-- ===================== mobile placement constants =====================
+-- Forward projection distance for the touch-device facing preview: the
+-- ghost is anchored this far ahead of the player along
+-- `HumanoidRootPart.LookVector` (XZ-projected). Locked to
+-- `SUB_TILE_SIZE = 8` (one tile ahead) so projecting forward from any
+-- position on the player's current tile **reliably crosses the next
+-- tile boundary** and snaps to a single, predictable target tile.
+-- Smaller values (e.g. 5) made the ghost visually closer but caused the
+-- snap raycast to land back on the player's current tile when the
+-- player was in the trailing half of it — producing red ghosts over
+-- already-drilled tiles the player thought they were past. See chat
+-- 2026-04 "red on empty tile" bug repro.
+local TOUCH_FORWARD_PROJECTION_STUDS = 8
 
 -- ===================== module table =====================
 local M = {}
@@ -71,17 +86,18 @@ local focusLabel: TextLabel? = nil
 local hammerHoverBB: BillboardGui? = nil
 local hammerHoverLbl: TextLabel? = nil
 
--- Mobile / touch placement: tap-to-preview-then-confirm. The active touch flow
--- locks the ghost onto a specific tile (`MobilePreviewHit` below); a second tap
--- on the **same** tile commits via `tryPrimaryAction` while a tap on a
--- different tile re-locks the preview without placing. Cleared automatically
--- when the player switches off Drill (see `updateGhost`).
-export type MobilePreviewHit = {
-	chunkId: string,
-	hitPos: Vector3,
-	tileName: string?,
-}
-local mobilePreviewHit: MobilePreviewHit? = nil
+-- Mobile / touch placement: **facing-projection preview**. On pure-touch
+-- devices (`TouchEnabled and not MouseEnabled`) the ghost floats one tile
+-- ahead of the player along their `HumanoidRootPart` LookVector (XZ-projected)
+-- and slides **smoothly** with facing — the visual is the un-snapped
+-- projection point, so turning rotates the ghost around the player without
+-- it clicking from one tile center to the next. Validity / commit still
+-- snap to the host tile (so green/red and the server payload reflect what
+-- placement will actually do, matching `OilStateService:_validateTilePlacement`'s
+-- own snap). A single tap on the ghost (or its host tile) commits via
+-- `tryPrimaryAction`; the desktop click-flow and FTUE cell restrictions
+-- are unchanged. See `resolveProjectedTileFromCharacter`, `getDesiredPlacementHit`,
+-- and `isTouchOverGhostOrHostTile`.
 
 -- ===================== exported functions =====================
 
@@ -108,80 +124,144 @@ local function getTargetedChunkHit(): (Instance?, Vector3?, string?)
 	return nil, nil, nil
 end
 
---- Camera-ray version of `getTargetedChunkHit` for **touch** input on mobile —
---- `Mouse.Target`/`Mouse.Hit` are unreliable before a tap actually lands, so
---- the touch handler hands us the screen-space tap position and we cast from
---- the live `Camera` through that point. Returns `(chunkId, hitPos, tileName)`
---- so the touch handler can both lock the preview (`tileName` is the snap key
---- for "is the second tap on the same tile?") and re-snap to the surface Y.
-local function raycastTouchToChunk(touchScreenPos: Vector2): (string?, Vector3?, string?)
-	local camera = _Workspace.CurrentCamera
-	if not camera then
-		return nil, nil, nil
+--- True when this client should use the **facing-projection** mobile flow
+--- (auto-preview ahead of the character + tap-to-commit) instead of the
+--- desktop mouse-cursor flow. Restricted to **pure-touch** devices so
+--- hybrid inputs (touchscreen laptops, tablets with hardware mice) keep
+--- the precise mouse-cursor placement.
+local function isPureTouchDevice(): boolean
+	return UserInputService.TouchEnabled and not UserInputService.MouseEnabled
+end
+
+--- Snap a raw ray hit to the **center** of the tile BasePart that was
+--- struck so the cell-key resolver (`globalCellKeyFromChunkHit`) and the
+--- drill-spacing check (`distanceXZ` in `isPlacementValid`) read the
+--- authored center, not a corner / edge that could resolve to the wrong
+--- cell. Shared between the camera-ray path and the projection path.
+local function tileCenterHitFromPart(part: BasePart): Vector3
+	return Vector3.new(
+		part.Position.X,
+		part.Position.Y + part.Size.Y / 2,
+		part.Position.Z
+	)
+end
+
+--- Climb parents of a ray-hit BasePart to find the chunk Model carrying a
+--- `ChunkId` attribute. Stops at the owned plot's parent so we never walk
+--- the whole DataModel.
+local function chunkIdFromInstance(hitInst: Instance, ownedPlot: Model): string?
+	local cursor: Instance? = hitInst
+	while cursor do
+		if typeof(cursor:GetAttribute("ChunkId")) == "string" then
+			return cursor:GetAttribute("ChunkId") :: string
+		end
+		cursor = cursor.Parent
+		if cursor == nil or cursor == ownedPlot.Parent then
+			return nil
+		end
+	end
+	return nil
+end
+
+--- **Mobile facing-projection.** Projects a point one tile ahead of the
+--- player's `HumanoidRootPart` along the XZ-flattened LookVector, then
+--- short-rays straight down onto the plot to resolve which tile / chunk
+--- the ghost should sit on. Returns `(chunkId, snappedHitPos, tileName, rawHitPos)`:
+---
+---   * `snappedHitPos` — the host tile's authored center XZ + tile-top Y.
+---     Used for **validity / commit** so the green/red highlight and the
+---     server payload reflect what placement will actually do (server
+---     itself also snaps in `OilStateService:_validateTilePlacement`,
+---     this matches that authoritative behaviour client-side so spacing
+---     and FTUE cell-key checks stay consistent).
+---   * `rawHitPos` — the un-snapped projected point. Used by `updateGhost`
+---     for the **visual** ghost position so the preview glides smoothly
+---     with the player's facing instead of clicking from tile-center to
+---     tile-center.
+---
+--- Why a downward ray (and not a 2D bucket lookup): the plot tiles are
+--- already physical BaseParts with `CanQuery=true`, so a 16-stud-tall ray
+--- snaps to the correct tile top **and** lets sub-tile resolution match
+--- the existing `mouse.Target` semantics for free. Cost is one raycast per
+--- frame — same order as the old mouse path.
+local function resolveProjectedTileFromCharacter(): (string?, Vector3?, string?, Vector3?)
+	if not _player then
+		return nil, nil, nil, nil
+	end
+	local character = _player.Character
+	if not character then
+		return nil, nil, nil, nil
+	end
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not (hrp and hrp:IsA("BasePart")) then
+		return nil, nil, nil, nil
 	end
 	local ownedPlot = ClientPlotGrid.getOwnedPlot()
 	if not ownedPlot then
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	end
 
-	local ray = camera:ViewportPointToRay(touchScreenPos.X, touchScreenPos.Y, 0)
+	-- Flatten LookVector onto XZ (ignore pitch) so looking up/down doesn't
+	-- shorten the projected distance.
+	local look = hrp.CFrame.LookVector
+	local lookXZ = Vector3.new(look.X, 0, look.Z)
+	if lookXZ.Magnitude < 1e-3 then
+		-- Edge case: character facing straight up/down; fall back to the
+		-- HumanoidRootPart's RightVector × world-up so we still pick a
+		-- direction instead of hiding the ghost.
+		lookXZ = Vector3.new(hrp.CFrame.RightVector.X, 0, hrp.CFrame.RightVector.Z)
+		if lookXZ.Magnitude < 1e-3 then
+			return nil, nil, nil, nil
+		end
+	end
+	lookXZ = lookXZ.Unit
+
+	local projected = Vector3.new(
+		hrp.Position.X + lookXZ.X * TOUCH_FORWARD_PROJECTION_STUDS,
+		hrp.Position.Y,
+		hrp.Position.Z + lookXZ.Z * TOUCH_FORWARD_PROJECTION_STUDS
+	)
+
+	-- Cast straight down from above the projected XZ. Skip the local
+	-- character (so HumanoidRootPart / accessories don't intercept) and the
+	-- ghost itself (so it doesn't shadow the actual tile when streaming
+	-- catches up mid-frame).
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
-	-- Ignore the local character so a tap that grazes the player doesn't snap
-	-- the ghost onto the avatar instead of the tile underneath.
-	local exclude: { Instance } = {}
-	if _player and _player.Character then
-		table.insert(exclude, _player.Character)
-	end
+	local exclude: { Instance } = { character }
 	if ghostDrill then
 		table.insert(exclude, ghostDrill)
 	end
 	params.FilterDescendantsInstances = exclude
 	params.IgnoreWater = true
 
-	local result = _Workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
-	if not result or not result.Instance then
-		return nil, nil, nil
+	local origin = projected + Vector3.new(0, 200, 0)
+	local result = _Workspace:Raycast(origin, Vector3.new(0, -400, 0), params)
+	if not (result and result.Instance) then
+		return nil, nil, nil, nil
 	end
 	local hitInst = result.Instance
-	local hitPos = result.Position
-
-	-- Tile name (T01..T99) is captured so the touch handler can decide whether
-	-- a second tap landed on the **same** tile (= confirm) vs a new one (= move
-	-- preview). Walk **only** the ray hit itself for the tile name; chunkId is
-	-- found by climbing parents like the desktop path does.
+	local chunkId = chunkIdFromInstance(hitInst, ownedPlot)
+	if not chunkId then
+		return nil, nil, nil, nil
+	end
+	-- Defence-in-depth: only proceed if the resolved chunk belongs to the
+	-- local player's plot state. Stops a stray ray that lands on a
+	-- neighbour plot from showing a ghost we couldn't possibly place.
+	if not ClientPlotGrid.getChunkPartById()[chunkId] then
+		return nil, nil, nil, nil
+	end
+	-- Raw hit Y comes from the downward ray landing on whatever surface
+	-- (tile top, decor, etc.). Use it as-is for the smooth visual; the
+	-- snapped Y below is the authoritative tile-top for placement.
+	local rawHitPos = result.Position
 	local tileName: string? = nil
+	local snappedHitPos = rawHitPos
 	if hitInst:IsA("BasePart") and hitInst.Name:match("^T%d%d$") then
 		tileName = hitInst.Name
-		-- **Mobile placement forgiveness:** snap the returned hit position to
-		-- the **center** of the tile that was struck. The raw ray hit can
-		-- land on the tile's edge or corner where a finger covers ~60px of
-		-- the screen — the cell-key resolver (`globalCellKeyFromChunkHit`)
-		-- and drill-spacing checks (`distanceXZ` in `isPlacementValid`)
-		-- both run on `hitPos`, so an off-center touch on the FTUE tile can
-		-- resolve to a *neighbouring* cell key and falsely report invalid.
-		-- Snapping to the tile's authored center means a release **anywhere
-		-- on a usable tile** commits at the tile's true center — the player
-		-- doesn't have to dead-aim at the middle. Desktop mouse path is
-		-- untouched (uses `mouse.Hit`, not this helper).
-		hitPos = Vector3.new(
-			hitInst.Position.X,
-			hitInst.Position.Y + hitInst.Size.Y / 2,
-			hitInst.Position.Z
-		)
+		snappedHitPos = tileCenterHitFromPart(hitInst)
 	end
-
-	local cursor: Instance? = hitInst
-	while cursor do
-		if typeof(cursor:GetAttribute("ChunkId")) == "string" then
-			return cursor:GetAttribute("ChunkId") :: string, hitPos, tileName
-		end
-		cursor = cursor.Parent
-		if cursor == nil or cursor == ownedPlot.Parent then
-			break
-		end
-	end
-	return nil, nil, nil
+	return chunkId, snappedHitPos, tileName, rawHitPos
 end
 
 local function isChunkUnlocked(chunkId: string): boolean
@@ -242,7 +322,7 @@ local function distanceXZ(a: Vector3, b: Vector3): number
 	return math.sqrt(dx * dx + dz * dz)
 end
 
-local function isPlacementValid(chunkId: string, hitPos: Vector3, equipKind: string?): boolean
+local function isPlacementValid(chunkId: string, hitPos: Vector3, equipKind: string?, tileName: string?): boolean
 	if not isChunkUnlocked(chunkId) then
 		return false
 	end
@@ -270,6 +350,35 @@ local function isPlacementValid(chunkId: string, hitPos: Vector3, equipKind: str
 			)
 			if ck ~= want then
 				return false
+			end
+		end
+		-- Already-drilled host tile: mirror the server's `TryStartDrill`
+		-- gates so the ghost color matches the actual placement outcome
+		-- instead of going green and surprising the player with a toast:
+		--   * `hasCenterPump`        → permanent center pump, never placeable
+		--                              (server: `ERR_CENTER_PUMP`)
+		--   * `revealPending`        → drilled but not yet shoveled; ALL
+		--                              tiers blocked, even T4+ `canRedrill`,
+		--                              so the player has to shovel first
+		--                              (server: `ERR_TILE_AWAITING_SHOVEL`)
+		--   * drilled + revealed +   → only tiers with `canRedrill = true`
+		--     no-redrill tier          (T4+) may re-drill; lower tiers go
+		--                              red (server: `ERR_ALREADY_DRILLED`)
+		if tileName then
+			local ch = chunkStateById[chunkId]
+			local tileData = ch and ch.tiles and ch.tiles[tileName]
+			if tileData and tileData.drilled then
+				if tileData.hasCenterPump then
+					return false
+				end
+				if tileData.revealPending then
+					return false
+				end
+				local _, tier = ClientPlotGrid.getEquippedToolInfo()
+				local tierCfg = tier and _OilConfig and _OilConfig.DrillTiers and _OilConfig.DrillTiers[tier]
+				if not (tierCfg and tierCfg.canRedrill == true) then
+					return false
+				end
 			end
 		end
 	end
@@ -436,14 +545,20 @@ local function hideGhost()
 	clearGhostTimerUi()
 end
 
---- Resolve the current intended placement coordinate. On **mobile**, when the
---- player has locked a preview via the touch handler, that locked hit wins so
---- the ghost stays pinned to the tapped tile while the player decides whether
---- to confirm. On **desktop** (or before the first mobile tap), falls back to
---- the live `mouse.Hit` reading from `getTargetedChunkHit()`.
+--- Resolve the **commit / validity** placement coordinate. On **pure-touch
+--- devices** (`isPureTouchDevice()`), this returns the facing-projection
+--- preview snapped to the host tile's center so green/red highlight, FTUE
+--- cell-key, and drill-spacing checks all reflect what placement will
+--- actually do (the server snaps too, in `OilStateService:_validateTilePlacement`).
+--- On **desktop / hybrid** devices, falls back to the live `mouse.Hit`
+--- reading from `getTargetedChunkHit()`.
+---
+--- For the **visual** ghost position on touch devices (smooth follow
+--- instead of tile-snapped), use `resolveTouchGhostVisualHit` instead.
 local function getDesiredPlacementHit(): (string?, Vector3?, string?)
-	if mobilePreviewHit ~= nil then
-		return mobilePreviewHit.chunkId, mobilePreviewHit.hitPos, mobilePreviewHit.tileName
+	if isPureTouchDevice() then
+		local chunkId, snappedHitPos, tileName, _raw = resolveProjectedTileFromCharacter()
+		return chunkId, snappedHitPos, tileName
 	end
 	local hit, hitPos, chunkId = getTargetedChunkHit()
 	if hit and hitPos and chunkId then
@@ -457,21 +572,62 @@ local function getDesiredPlacementHit(): (string?, Vector3?, string?)
 	return nil, nil, nil
 end
 
-local function getMobilePreviewHit(): MobilePreviewHit?
-	return mobilePreviewHit
+--- Visual-only companion to `getDesiredPlacementHit` for the touch flow.
+--- Returns the **raw** un-snapped projected hit (so the ghost slides
+--- smoothly with the player's facing) plus the chunkId / tileName / snapped
+--- hit so `updateGhost` can still drive the surface-Y look-up and validity
+--- check from the same single projection call. Returns `nil` on desktop /
+--- hybrid devices — desktop ghost positioning stays on the existing
+--- `getDesiredPlacementHit` path.
+local function resolveTouchGhostVisualHit(): (string?, Vector3?, string?, Vector3?)
+	if not isPureTouchDevice() then
+		return nil, nil, nil, nil
+	end
+	return resolveProjectedTileFromCharacter()
 end
 
---- Returns true if a touch at `touchScreenPos` would hit the live ghost
---- preview model (or any of its descendant `BasePart`s). Used by the **mobile
---- second-tap → confirm** path: the ghost normally has `CanQuery = false` so
---- the raycast in `raycastTouchToChunk` passes through it and resolves the
---- tile underneath — which means tapping on the green ghost itself often
---- lands a few studs off the original tile (drill straddles a corner, touch
---- isn't dead-center, etc.) and the handler re-locks instead of confirming.
---- Cast a second ray with `CanQuery` flipped to `true` for the ghost parts
---- only and report whether the ray actually hit the ghost — the touch handler
---- treats a positive hit as "tap on locked preview = confirm placement".
-local function isTouchOverGhost(touchScreenPos: Vector2): boolean
+--- Generous mobile tap target: returns true if a touch at `touchScreenPos`
+--- lands on (a) the ghost's **screen-space** projected bounding box,
+--- (b) the live ghost preview's geometry via raycast, (c) the ghost's
+--- world-space XZ footprint (so a finger that lands on the visible drill
+--- silhouette still counts when the ray slips between sparse drill parts —
+--- thin stem + small base — and lands on the tile underneath), or (d) the
+--- **same tile** the ghost is currently sitting on (`hostChunkId` /
+--- `hostTileName`). A tap on a different tile **outside** the ghost's XZ
+--- footprint returns false — the player must walk to face that tile, which
+--- is the deliberate "aim with body, tap to commit" model.
+---
+--- Why the screen-space pass exists (check (a)): drills are tall and
+--- sparse — the visible silhouette covers a much larger area than the
+--- physical `BasePart`s. With `DepthMode = AlwaysOnTop`, the player sees
+--- a solid drill outline, but a tap near the **top** of that silhouette
+--- shoots a ray that enters the bbox high, finds no part to hit, and
+--- continues forward to land on a tile far behind the ghost. Both the
+--- world-XZ check (c) and the host-tile check (d) miss in that case.
+--- The screen-space check projects the ghost's 3D OBB corners to viewport
+--- pixel coords and accepts any tap inside the resulting 2D AABB — which
+--- mirrors what the player visually sees regardless of where the world
+--- ray ends up. Skipped if any corner is behind the camera (extreme close
+--- camera or player inside the ghost) — falls through to the raycast
+--- checks below.
+---
+--- Why the XZ-footprint pass (check (c)) also exists: even when all 8
+--- corners are in front of the camera, the world-XZ check still catches
+--- taps that resolve onto a neighbour tile inside the ghost's footprint
+--- (e.g. when the ghost overhangs slightly during smooth follow).
+---
+--- The ghost normally has `CanQuery = false` (so its placement raycast
+--- doesn't shadow the tile beneath); we flip it on temporarily for the
+--- raycast and restore it before returning so no other system sees the
+--- ghost as queryable.
+local GHOST_XZ_FOOTPRINT_PADDING_STUDS = 0.5
+local GHOST_SCREEN_TAP_PAD_PX = 8
+
+local function isTouchOverGhostOrHostTile(
+	touchScreenPos: Vector2,
+	hostChunkId: string?,
+	hostTileName: string?
+): boolean
 	if not (ghostDrill and ghostDrill.Parent) then
 		return false
 	end
@@ -479,8 +635,54 @@ local function isTouchOverGhost(touchScreenPos: Vector2): boolean
 	if not camera then
 		return false
 	end
+	local ownedPlot = ClientPlotGrid.getOwnedPlot()
+	if not ownedPlot then
+		return false
+	end
+	local bbCf, bbSize = ghostDrill:GetBoundingBox()
+	-- (a) Screen-space AABB: project the ghost's 3D OBB corners to
+	-- viewport pixel coords, build the 2D AABB, accept any tap inside
+	-- (with a small pixel pad). Mirrors the visible silhouette since
+	-- the highlight is `AlwaysOnTop`. Falls through to raycast checks if
+	-- any corner is behind the camera.
+	do
+		local hx, hy, hz = bbSize.X / 2, bbSize.Y / 2, bbSize.Z / 2
+		local corners = {
+			Vector3.new(hx, hy, hz),
+			Vector3.new(-hx, hy, hz),
+			Vector3.new(hx, -hy, hz),
+			Vector3.new(-hx, -hy, hz),
+			Vector3.new(hx, hy, -hz),
+			Vector3.new(-hx, hy, -hz),
+			Vector3.new(hx, -hy, -hz),
+			Vector3.new(-hx, -hy, -hz),
+		}
+		local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+		local allInFront = true
+		for _, c in ipairs(corners) do
+			local world = bbCf * c
+			local sp = camera:WorldToViewportPoint(world)
+			if sp.Z <= 0 then
+				allInFront = false
+				break
+			end
+			if sp.X < minX then minX = sp.X end
+			if sp.Y < minY then minY = sp.Y end
+			if sp.X > maxX then maxX = sp.X end
+			if sp.Y > maxY then maxY = sp.Y end
+		end
+		if allInFront then
+			local pad = GHOST_SCREEN_TAP_PAD_PX
+			if
+				touchScreenPos.X >= minX - pad and touchScreenPos.X <= maxX + pad
+				and touchScreenPos.Y >= minY - pad and touchScreenPos.Y <= maxY + pad
+			then
+				return true
+			end
+		end
+	end
 	-- Snapshot + restore CanQuery on every BasePart in the ghost so the
-	-- temporary flip can never leak (errors above don't apply but be defensive).
+	-- temporary flip can never leak even if a downstream call yields.
 	local restored: { { part: BasePart, prev: boolean } } = {}
 	for _, d in ipairs(ghostDrill:GetDescendants()) do
 		if d:IsA("BasePart") then
@@ -490,40 +692,73 @@ local function isTouchOverGhost(touchScreenPos: Vector2): boolean
 	end
 	local ray = camera:ViewportPointToRay(touchScreenPos.X, touchScreenPos.Y, 0)
 	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Include
-	params.FilterDescendantsInstances = { ghostDrill }
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	-- Skip the local character so a tap that grazes the avatar still
+	-- resolves to the ghost / tile underneath.
+	local exclude: { Instance } = {}
+	if _player and _player.Character then
+		table.insert(exclude, _player.Character)
+	end
+	params.FilterDescendantsInstances = exclude
 	params.IgnoreWater = true
 	local result = _Workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
 	for _, r in ipairs(restored) do
 		r.part.CanQuery = r.prev
 	end
-	return result ~= nil and result.Instance ~= nil
-end
-
-local function setMobilePreviewHit(chunkId: string, hitPos: Vector3, tileName: string?)
-	mobilePreviewHit = {
-		chunkId = chunkId,
-		hitPos = hitPos,
-		tileName = tileName,
-	}
-end
-
-local function clearMobilePreview()
-	mobilePreviewHit = nil
+	if not (result and result.Instance) then
+		return false
+	end
+	local hitInst = result.Instance
+	-- (b) Tap landed on the ghost itself → confirm.
+	if hitInst:IsDescendantOf(ghostDrill) then
+		return true
+	end
+	-- (c) Tap landed on a non-ghost surface, but the world hit position
+	-- falls inside the ghost's bounding box projected onto the XZ plane
+	-- (plus a small forgiveness pad). Catches the "ray slipped past the
+	-- sparse drill parts and resolved to the tile underneath" case where
+	-- the player visually tapped clean inside the green drill silhouette.
+	-- Compared in the bbox's local frame so a rotated ghost still tests
+	-- correctly.
+	local hitPos = result.Position
+	local localHit = bbCf:PointToObjectSpace(Vector3.new(hitPos.X, bbCf.Position.Y, hitPos.Z))
+	local pad = GHOST_XZ_FOOTPRINT_PADDING_STUDS
+	if math.abs(localHit.X) <= bbSize.X / 2 + pad and math.abs(localHit.Z) <= bbSize.Z / 2 + pad then
+		return true
+	end
+	-- (d) Tap landed on the same tile the ghost is sitting on → confirm.
+	if hostChunkId and hostTileName then
+		if hitInst:IsA("BasePart") and hitInst.Name == hostTileName then
+			local chunkId = chunkIdFromInstance(hitInst, ownedPlot)
+			if chunkId == hostChunkId then
+				return true
+			end
+		end
+	end
+	return false
 end
 
 local function updateGhost()
 	local kind = select(1, ClientPlotGrid.getEquippedToolInfo())
 	local equipped = ClientPlotGrid.getEquippedToolName()
 	if kind ~= "Drill" and equipped ~= TOOL_DRILL then
-		-- Switching off Drill must also drop any locked mobile preview so the
-		-- next time we re-equip, the ghost doesn't immediately re-appear on a
-		-- stale tile.
-		mobilePreviewHit = nil
+		-- Off-Drill: hide the ghost. Touch projection is computed live every
+		-- frame from `getDesiredPlacementHit`, so there's no preview state
+		-- left to clear here (the old tap-to-preview lock was retired).
 		hideGhost()
 		return
 	end
-	local chunkId, hitPos, tileName = getDesiredPlacementHit()
+	-- Touch flow: one projection call returns both the **snapped** hit
+	-- (used for validity / surface Y / commit) and the **raw** hit (used
+	-- for the smooth ghost visual that follows facing without snapping
+	-- between tile centers). Desktop / hybrid devices fall through to the
+	-- mouse-cursor path with no visual override.
+	local chunkId: string?, hitPos: Vector3?, tileName: string?, rawHitPos: Vector3?
+	if isPureTouchDevice() then
+		chunkId, hitPos, tileName, rawHitPos = resolveProjectedTileFromCharacter()
+	else
+		chunkId, hitPos, tileName = getDesiredPlacementHit()
+	end
 	if not (hitPos and chunkId) then
 		hideGhost()
 		return
@@ -539,8 +774,9 @@ local function updateGhost()
 	end
 	-- Surface Y resolution priority:
 	--   1. `mouse.Target` is a tile part (desktop hover) — exact tile top.
-	--   2. Locked mobile preview's tile name → look up that tile's Y in the
-	--      chunk so the second-tap-confirm position matches the ghost exactly.
+	--   2. Touch-projection's host tile name → look up that tile's Y in
+	--      the chunk so the ghost sits flush with the tile that placement
+	--      will actually land on.
 	--   3. Chunk's highest tile Y (conservative — drill won't sink).
 	--   4. Raw ray hit Y (last resort).
 	local surfaceY = surfaceYFromRayTarget()
@@ -553,12 +789,21 @@ local function updateGhost()
 	if g:IsA("Model") then
 		pivotToBottom = PlacementAnchor.pivotYMinusBottomWorldY(g)
 	end
-	g:PivotTo(CFrame.new(hitPos.X, surfaceY + pivotToBottom, hitPos.Z))
+	-- **Visual XZ:** prefer the raw projected XZ on touch devices so the
+	-- preview slides smoothly with the player's facing. Snapped Y stays
+	-- (so the ghost rests on the host tile's top, not at the raw ray's
+	-- decor-or-tile-edge Y), and validity / commit still use the snapped
+	-- XZ below — only the visible position drifts within the tile.
+	local visualX, visualZ = hitPos.X, hitPos.Z
+	if rawHitPos then
+		visualX, visualZ = rawHitPos.X, rawHitPos.Z
+	end
+	g:PivotTo(CFrame.new(visualX, surfaceY + pivotToBottom, visualZ))
 	if ghostTimerAnchor then
-		ghostTimerAnchor.Position = getGhostTimerAnchorPosition(g, Vector3.new(hitPos.X, surfaceY + 3, hitPos.Z))
+		ghostTimerAnchor.Position = getGhostTimerAnchorPosition(g, Vector3.new(visualX, surfaceY + 3, visualZ))
 	end
 	if ghostHighlight then
-		if isPlacementValid(chunkId, hitPos, equipKind) then
+		if isPlacementValid(chunkId, hitPos, equipKind, tileName) then
 			ghostHighlight.FillColor = Color3.fromRGB(80, 220, 120)
 			ghostHighlight.OutlineColor = Color3.fromRGB(190, 255, 200)
 		else
@@ -871,12 +1116,11 @@ M.updateFocusUi = updateFocusUi
 M.updateHammerHover = updateHammerHover
 M.hideGhost = hideGhost
 M.hideHammerHover = hideHammerHover
--- Mobile placement (tap-to-preview, tap-again-to-confirm):
-M.raycastTouchToChunk = raycastTouchToChunk
+-- Mobile placement (facing-projection preview + generous tap-to-commit):
 M.getDesiredPlacementHit = getDesiredPlacementHit
-M.getMobilePreviewHit = getMobilePreviewHit
-M.setMobilePreviewHit = setMobilePreviewHit
-M.clearMobilePreview = clearMobilePreview
-M.isTouchOverGhost = isTouchOverGhost
+M.isPureTouchDevice = isPureTouchDevice
+M.resolveProjectedTileFromCharacter = resolveProjectedTileFromCharacter
+M.resolveTouchGhostVisualHit = resolveTouchGhostVisualHit
+M.isTouchOverGhostOrHostTile = isTouchOverGhostOrHostTile
 
 return M

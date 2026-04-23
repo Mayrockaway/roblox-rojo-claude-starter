@@ -17,15 +17,17 @@ local ProximityPromptService = game:GetService("ProximityPromptService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+-- `Constants` / `FtueConfig` / `getClientRemotes` requires are needed
+-- again for the `WaitDocksFleetPanel` → `FleetPanelOpened` FTUE bridge
+-- (replaces the deleted `ShipManagementPanelGui` → `DockmanOpened` one).
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
-
+local HudPanelRouter = require(script.Parent.HudPanelRouter)
 local getClientRemotes = require(script.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
 
-local HudPanelRouter = require(script.Parent.HudPanelRouter)
-
 local OPENS_PANEL_ATTR = "OpensPanel"
+local FLEET_PANEL_GUI = "FleetPanelGui"
 
 local ProximityPanelOpener = {}
 
@@ -55,15 +57,26 @@ function ProximityPanelOpener.start()
 			)
 			return
 		end
-		if screenName == "ShipManagementPanelGui" then
+		--- Fleet-panel FTUE leg bridge (replaces the deleted
+		--- `ShipManagementPanelGui` → `DockmanOpened` bridge). When the
+		--- dockman prox prompt opens `FleetPanelGui` and the player is on
+		--- `WaitDocksFleetPanel` + sub `OpenPanel`, fire `FleetPanelOpened`
+		--- so the server flips the sub-step to `ClosePanel` and the
+		--- `CloseButtonPointerRoot` lights up inside the modal. Server
+		--- re-validates step + sub-step (see
+		--- `FtueService.OnFtueDocksProgress`) so this fire is harmless
+		--- outside the FTUE.
+		if screenName == FLEET_PANEL_GUI then
 			local plr = Players.LocalPlayer
 			if
 				plr
-				and plr:GetAttribute(Constants.FtueStepAttribute) == FtueConfig.Step.WaitDocksUpgradeShip
-				and plr:GetAttribute(Constants.FtueDocksUpgradeSubStepAttribute) == "Dockman"
+				and plr:GetAttribute(Constants.FtueStepAttribute) == FtueConfig.Step.WaitDocksFleetPanel
+				and plr:GetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute) == "OpenPanel"
 			then
-				local ClientRemotes = getClientRemotes()
-				ClientRemotes.requestFtueDocksProgress:FireServer("DockmanOpened")
+				local remotes = getClientRemotes()
+				if remotes and remotes.requestFtueDocksProgress then
+					remotes.requestFtueDocksProgress:FireServer("FleetPanelOpened")
+				end
 			end
 		end
 	end)

@@ -19,7 +19,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local SharedConfig = Shared:WaitForChild("Config")
 local EquipmentCatalog = require(SharedConfig:WaitForChild("EquipmentCatalog"))
-local ShipSkinCatalog = require(SharedConfig:WaitForChild("ShipSkinCatalog"))
+local BoatCatalog = require(SharedConfig:WaitForChild("BoatCatalog"))
 
 local IconPreloader = {}
 
@@ -60,8 +60,8 @@ local function collectUris(): { string }
 		add((row :: any).iconAssetId)
 	end
 
-	for _, skin in pairs(ShipSkinCatalog.Skins) do
-		add((skin :: any).icon)
+	for _, boat in pairs(BoatCatalog.Boats) do
+		add((boat :: any).icon)
 	end
 
 	return out

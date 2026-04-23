@@ -473,6 +473,7 @@ function OilVisualService:_syncUserVisuals(userId: number, snapshot)
 	local activeDrillsFolder = ensureFolder(visualRoot, "ActiveDrills")
 	local spraysFolder = ensureFolder(visualRoot, "OilSprays")
 	local barrelsFolder = ensureFolder(visualRoot, "Barrels")
+	local rarityHighlightsFolder = ensureFolder(visualRoot, "RarityHighlights")
 
 	-- Drills-only refactor: nuke any leftover ActiveProspectors / Pipes / Drums folders so
 	-- existing places shed legacy visuals on next snapshot.
@@ -496,6 +497,7 @@ function OilVisualService:_syncUserVisuals(userId: number, snapshot)
 	run("Visual.syncDrills", function() self:_syncDrills(plot, drillsFolder, snapshot.drills or {}, userId, snapshot) end)
 	run("Visual.syncActiveDrills", function() self:_syncActiveDrills(plot, activeDrillsFolder, snapshot.activeDrills or {}, userId) end)
 	run("Visual.syncOilSprays", function() self:_syncOilSprays(plot, spraysFolder, snapshot) end)
+	run("Visual.syncTileRarityHighlights", function() self:_syncTileRarityHighlights(plot, rarityHighlightsFolder, snapshot) end)
 	run("Visual.syncBarrels", function() self:_syncBarrels(plot, barrelsFolder, snapshot) end)
 	run("Visual.syncOilTanks", function() self:_syncOilTanks(plot, snapshot) end)
 	self:_ensureDepthBanners(plot)
@@ -1190,6 +1192,289 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 	end
 end
 
+--- Per-tile **rarity surface overlay**: any drilled-and-revealed tile whose
+--- vein rolled to a rarity at or above `Special` (i.e. **above** Common /
+--- Uncommon — these stay un-tinted per design) gets a thin semitransparent
+--- `Part` painted with `VeinCrateConfig.RarityStyles[rarity].glow` covering
+--- the entire **top surface** of the tile. The overlay sits flush on the
+--- tile top so the oil spray puddle (~6.5×6.5 on an 8×8 tile, parented from
+--- `_syncOilSprays` and physically above the overlay) stays the dominant
+--- visual — the rarity tint reads as a colored "tile floor" peeking out
+--- around the puddle edges. (Earlier iterations tried a `Highlight` (covered
+--- the whole box including bottom edges) and 4 short Neon perimeter walls
+--- (read as glowing trim, conflicted with bright VFX). See chat 2026-04
+--- "tile rarity outlines".)
+---
+--- Lifecycle mirrors `_syncOilSprays`:
+---   * Wanted-set built each snapshot push from `chunk.tiles[*]` where
+---     `drilled == true`, `hasOil ~= false`, `revealedAt` is set, and the
+---     resolved rarity passes `rarityShouldHighlight`.
+---   * Each overlay lives in the `RarityHighlights` folder under the plot's
+---     `OilVisuals` root as a `Folder` named
+---     `RarityBorder_<chunkId>:<tileKey>` containing one `Part`.
+---   * The folder gets a `RarityName` attribute so we can skip rebuilding
+---     on subsequent ticks when nothing changed (which is the common case —
+---     rarity is fixed once `RevealTile` runs and the tile part doesn't move).
+---   * Removed automatically when the tile no longer qualifies — including
+---     after a T4+ redrill (which wipes `tile.drilled` / `veinTypeId`)
+---     so the overlay disappears the same tick the production sprays do.
+---   * Center pump tile (T33) is **excluded** so the chunk's permanent pump
+---     doesn't pick up an overlay (its `tile.drilled = true` is set by
+---     `_autoPlaceCenterPump`, but it has no real rolled vein).
+---   * Unlucky / dead tiles never qualify (`tile.hasOil == false`) so they
+---     stay un-tinted.
+local RARITY_OVERLAY_THICKNESS = 0.06
+--- Inset on each XZ side so adjacent rarity tiles don't z-fight along their
+--- shared edges and so the overlay doesn't hide the FTUE walls / drill leg
+--- footprints sitting on the tile boundary.
+local RARITY_OVERLAY_INSET = 0.06
+--- Pulse range — overlay tweens between these two transparency values
+--- so the color appears to dramatically breathe. Lower = brighter / more
+--- opaque. With `Material = Neon`, lower values also pump emissive
+--- intensity, so the pulse reads as a strong glow swell.
+--- Set `MIN == MAX` to disable the pulse and fall back to a static tint.
+local RARITY_OVERLAY_TRANSPARENCY_MIN = 0.10
+local RARITY_OVERLAY_TRANSPARENCY_MAX = 0.90
+--- Total period for one full pulse cycle (bright → dim → bright) in seconds.
+--- The tween runs at `period / 2` with `Reverses = true`.
+local RARITY_OVERLAY_PULSE_PERIOD = 2.6
+--- Neon at low transparency reads as a glowing rarity wash without
+--- becoming a competing light source — the previous `SmoothPlastic` was
+--- legible but felt muted next to the bright oil sprays / billboards.
+local RARITY_OVERLAY_MATERIAL: Enum.Material = Enum.Material.Neon
+
+--- Higher-rarity tiers stack additional effects on top of the pulsing
+--- overlay so a plot reads at a glance:
+---   * `RARITY_GLOW_MIN_INDEX`  → adds a `PointLight` tinted to the rarity
+---                                color, brightness scales with rarity index.
+---   * `RARITY_SPARKLE_MIN_INDEX` → adds an upward `ParticleEmitter` sparkle
+---                                  stream, rate scales with rarity index.
+--- Indices follow `VeinCrateConfig.RarityOrder`:
+---   `{ Unlucky=1, Common=2, Uncommon=3, Special=4, Rare=5, Epic=6,
+---      Exotic=7, Legendary=8, Ascendant=9, Transcendent=10,
+---      "Top Secret"=11, Mythic=12 }`
+--- Bump these thresholds to tighten or loosen which rarities qualify.
+local RARITY_GLOW_MIN_INDEX = 6      -- Epic and rarer get a PointLight halo
+local RARITY_SPARKLE_MIN_INDEX = 8   -- Legendary and rarer get sparkles
+
+--- Bump this whenever overlay thickness / inset / transparency / material /
+--- pulse / per-rarity FX change so live sessions rebuild stale overlays on
+--- the next snapshot push instead of waiting for a redrill to refresh them.
+local RARITY_BORDER_VERSION = 7
+
+local RARITY_INDEX_CACHE: { [string]: number }? = nil
+local function rarityIndex(rarity: string): number
+	if RARITY_INDEX_CACHE == nil then
+		local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
+		local m: { [string]: number } = {}
+		for i, r in ipairs(VeinCrateConfig.RarityOrder) do
+			m[r] = i
+		end
+		RARITY_INDEX_CACHE = m
+	end
+	return (RARITY_INDEX_CACHE :: { [string]: number })[rarity] or 0
+end
+
+--- Minimum rarity that gets an outline. `RarityOrder` is
+--- `{ Unlucky=1, Common=2, Uncommon=3, Special=4, ... }` so `4` means
+--- "Special and rarer". Bump this to `5` to also hide Special, etc.
+local RARITY_HIGHLIGHT_MIN_INDEX = 4
+
+local function rarityShouldHighlight(rarity: string?): boolean
+	if typeof(rarity) ~= "string" then return false end
+	return rarityIndex(rarity) >= RARITY_HIGHLIGHT_MIN_INDEX
+end
+
+local function rarityOutlineColor(rarity: string): Color3
+	local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
+	local style = VeinCrateConfig.RarityStyles[rarity]
+	if typeof(style) == "table" and typeof(style.glow) == "Color3" then
+		return style.glow
+	end
+	return Color3.fromRGB(255, 255, 255)
+end
+
+--- Build the single semitransparent surface overlay flush on the **top**
+--- of `tilePart`, parented under a one-child `Folder` so cleanup is a
+--- one-shot `:Destroy()` and the lifecycle / sig keying matches the prior
+--- 4-wall implementation. Overlay sits at `tile top + thickness/2` and is
+--- inset on XZ to avoid z-fighting with adjacent rarity tiles. Higher
+--- rarity tiers also receive a `PointLight` halo and / or a
+--- `ParticleEmitter` sparkle stream — see `RARITY_GLOW_MIN_INDEX` /
+--- `RARITY_SPARKLE_MIN_INDEX` thresholds at the top of this section.
+local function buildRarityBorderFolder(tilePart: BasePart, color: Color3, parent: Folder, name: string, rarityName: string, rarityIdx: number): Folder
+	local f = Instance.new("Folder")
+	f.Name = name
+	f:SetAttribute("RarityName", rarityName)
+	f:SetAttribute("BorderVersion", RARITY_BORDER_VERSION)
+
+	local sz = tilePart.Size
+	local cf = tilePart.CFrame
+	local sizeX = math.max(0.1, sz.X - RARITY_OVERLAY_INSET * 2)
+	local sizeZ = math.max(0.1, sz.Z - RARITY_OVERLAY_INSET * 2)
+	local yMid = sz.Y / 2 + RARITY_OVERLAY_THICKNESS / 2
+
+	local p = Instance.new("Part")
+	p.Name = "RarityOverlay"
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.Material = RARITY_OVERLAY_MATERIAL
+	p.Color = color
+	p.Transparency = RARITY_OVERLAY_TRANSPARENCY_MIN
+	p.CastShadow = false
+	p.Size = Vector3.new(sizeX, RARITY_OVERLAY_THICKNESS, sizeZ)
+	p.CFrame = cf * CFrame.new(0, yMid, 0)
+	p.Parent = f
+
+	-- Slow looping breathe so each rarity tile pulses between
+	-- MIN (brightest) and MAX (dimmest) transparency. Tween dies with the
+	-- Part on redrill / plot release. Random per-tile delay staggers the
+	-- pulses so a plot full of overlays doesn't strobe in unison. The
+	-- PointLight halo (if present) tweens with the same TweenInfo so glow
+	-- and brightness pulse together.
+	local pulseInfo: TweenInfo? = nil
+	local pulseDelay = 0
+	if RARITY_OVERLAY_TRANSPARENCY_MIN ~= RARITY_OVERLAY_TRANSPARENCY_MAX then
+		pulseInfo = TweenInfo.new(
+			RARITY_OVERLAY_PULSE_PERIOD * 0.5,
+			Enum.EasingStyle.Sine,
+			Enum.EasingDirection.InOut,
+			-1,
+			true
+		)
+		pulseDelay = math.random() * RARITY_OVERLAY_PULSE_PERIOD
+		local overlayTween = TweenService:Create(p, pulseInfo, { Transparency = RARITY_OVERLAY_TRANSPARENCY_MAX })
+		task.delay(pulseDelay, function()
+			if p.Parent then overlayTween:Play() end
+		end)
+	end
+
+	-- Tier 2: PointLight halo for Epic and rarer. Brightness scales with
+	-- rarity index so Mythic genuinely outshines Epic. Range capped low so
+	-- the halo doesn't bleed across half the plot.
+	if rarityIdx >= RARITY_GLOW_MIN_INDEX then
+		local light = Instance.new("PointLight")
+		light.Name = "RarityGlow"
+		light.Color = color
+		--- 1.0 at Epic → ~2.0 at Mythic (12 - 6 = 6 steps × 0.18).
+		local bright = 1.0 + (rarityIdx - RARITY_GLOW_MIN_INDEX) * 0.18
+		light.Brightness = bright
+		light.Range = 8
+		light.Shadows = false
+		light.Parent = p
+
+		-- Pulse the light's brightness in lockstep with the overlay so the
+		-- swell reads as one unified rarity pulse rather than two effects.
+		if pulseInfo then
+			local lightTween = TweenService:Create(p:FindFirstChildWhichIsA("PointLight") :: any, pulseInfo, { Brightness = bright * 0.35 })
+			task.delay(pulseDelay, function()
+				if light.Parent then lightTween:Play() end
+			end)
+		end
+	end
+
+	-- Tier 3: rising sparkle ParticleEmitter for Legendary and rarer. Rate
+	-- and lifetime scale with rarity index. ParticleEmitter parented to
+	-- the overlay part so it emits across the whole tile surface (Roblox
+	-- emits across the part's volume by default).
+	if rarityIdx >= RARITY_SPARKLE_MIN_INDEX then
+		local emitter = Instance.new("ParticleEmitter")
+		emitter.Name = "RaritySparkle"
+		emitter.Color = ColorSequence.new(color)
+		--- 6 at Legendary → ~14 at Mythic (12 - 8 = 4 steps × 2.0).
+		emitter.Rate = 6 + (rarityIdx - RARITY_SPARKLE_MIN_INDEX) * 2.0
+		emitter.Lifetime = NumberRange.new(0.7, 1.4)
+		emitter.Speed = NumberRange.new(1.5, 3.5)
+		emitter.SpreadAngle = Vector2.new(15, 15)
+		emitter.Rotation = NumberRange.new(0, 360)
+		emitter.RotSpeed = NumberRange.new(-60, 60)
+		emitter.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.35),
+			NumberSequenceKeypoint.new(0.5, 0.5),
+			NumberSequenceKeypoint.new(1, 0),
+		})
+		emitter.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.2),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+		emitter.LightEmission = 0.85
+		emitter.LightInfluence = 0
+		--- Direction sends sparkles upward off the tile surface (overlay's
+		--- thin Y axis). EmissionDirection is in the part's local frame.
+		emitter.EmissionDirection = Enum.NormalId.Top
+		emitter.Acceleration = Vector3.new(0, 4, 0)
+		emitter.Parent = p
+	end
+
+	f.Parent = parent
+	return f
+end
+
+function OilVisualService:_syncTileRarityHighlights(_plot: Model, folder: Folder, snapshot)
+	if typeof(snapshot) ~= "table" then return end
+	local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
+
+	-- Build wanted set: { sig -> { rarity, tilePart } }.
+	local wanted: { [string]: { rarity: string, tilePart: BasePart } } = {}
+	for _, chunk in ipairs(snapshot.chunks or {}) do
+		if chunk.tiles and chunk.unlocked then
+			local groundType = chunk.groundType or chunk.biome or "Bronze"
+			local sectionModel = self._plotService:GetChunkModel(_plot, chunk.chunkId)
+			if sectionModel then
+				for tileKey, tile in pairs(chunk.tiles) do
+					if tileKey ~= "T33"
+						and tile
+						and tile.drilled == true
+						and tile.hasOil ~= false
+						and typeof(tile.revealedAt) == "number"
+						and typeof(tile.veinTypeId) == "string"
+					then
+						local def = VeinCrateConfig.GetById(tile.veinTypeId)
+						if def and not def.isUnlucky then
+							local rarity = VeinCrateConfig.GetItemRarityForGround(def, groundType)
+							if rarityShouldHighlight(rarity) then
+								local tilePart = self._plotService:FindChunkTileBasePart(sectionModel, tileKey)
+								if tilePart and tilePart:IsA("BasePart") then
+									wanted[chunk.chunkId .. ":" .. tileKey] = { rarity = rarity, tilePart = tilePart }
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- Spawn / refresh borders in `wanted`. Skip the rebuild if the existing
+	-- folder already matches this rarity — rarity is fixed once `RevealTile`
+	-- runs and the tile part doesn't move, so the common case is a no-op.
+	for sig, info in pairs(wanted) do
+		local childName = "RarityBorder_" .. sig
+		local existing = folder:FindFirstChild(childName)
+		local needsRebuild = true
+		if existing and existing:IsA("Folder")
+			and existing:GetAttribute("RarityName") == info.rarity
+			and existing:GetAttribute("BorderVersion") == RARITY_BORDER_VERSION
+		then
+			needsRebuild = false
+		end
+		if needsRebuild then
+			if existing then existing:Destroy() end
+			buildRarityBorderFolder(info.tilePart, rarityOutlineColor(info.rarity), folder, childName, info.rarity, rarityIndex(info.rarity))
+		end
+	end
+
+	-- Reap any borders for tiles that no longer qualify (e.g. redrilled).
+	for _, child in ipairs(folder:GetChildren()) do
+		local sig = child.Name:match("^RarityBorder_(.+)$")
+		if sig and not wanted[sig] then
+			child:Destroy()
+		end
+	end
+end
+
 function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills, ownerUserId: number, snapshot: any?)
 	local function getFlowRate(drill: any): number
 		if drill.isCenterPump ~= true or typeof(snapshot) ~= "table" or typeof(snapshot.chunks) ~= "table" then
@@ -1375,9 +1660,9 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 							}):Play()
 						elseif part.Transparency ~= targetTrans then
 							part.Transparency = targetTrans
-						end
-					end
-				end
+			end
+		end
+	end
 			end
 			model:SetAttribute("WasConnected", isConnected)
 			-- Hologram text above pump: oil type + output rate.
@@ -1479,10 +1764,10 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 						if child.Name == "HoloGui" and not seenCanonical then
 							seenCanonical = true
 						else
-							child:Destroy()
-						end
-					end
-				end
+			child:Destroy()
+		end
+	end
+end
 			end
 			-- Update hologram text + reposition
 			local holoGui = holoPart:FindFirstChild("HoloGui")
@@ -1529,9 +1814,9 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 						if lbl.Name == "Info" then
 							infoLabel = lbl
 							break
-						end
 					end
 				end
+			end
 				if not infoLabel and #allLabels > 0 then
 					infoLabel = allLabels[1]
 				end
@@ -1591,8 +1876,8 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 					if backdrop and backdrop:IsA("GuiObject") then
 						local stalePad = backdrop:FindFirstChildOfClass("UIPadding")
 						if stalePad then stalePad:Destroy() end
-					end
-				end
+		end
+	end
 				local staleConstraint = infoLabel:FindFirstChildOfClass("UITextSizeConstraint")
 				if staleConstraint then staleConstraint:Destroy() end
 				if not infoLabel.TextScaled then
@@ -1639,7 +1924,7 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 					-- Low: white
 					infoLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 				end
-			end
+				end
 			else
 				-- Regular drill: nuke any leftover PumpHologram from the old
 				-- always-on code path so the misleading "0.20 bbl/sec" label
@@ -1750,7 +2035,7 @@ function OilVisualService:_syncDrills(_plot: Model, drillsFolder: Folder, drills
 					existingUpg:Destroy()
 				end
 		end
-	end
+		end
 	end
 	for _, child in ipairs(drillsFolder:GetChildren()) do
 		local key = string.gsub(child.Name, "^Drill_", "")

@@ -176,7 +176,7 @@ local DEFAULT_SHIP_RIG: ShipRigDef = {
 	playerFlagName = "PlayerFlag",
 }
 
-local ShipSkinCatalog: any = nil
+local BoatCatalog: any = nil
 local ShipRigUtil: any = nil
 local OilConfig: any = nil
 local sharedFolder = ReplicatedStorage:WaitForChild("Shared", 45)
@@ -197,11 +197,11 @@ if sharedFolder then
 			OilConfig = loadedOilConfig
 		end
 	end
-	local skinCatalogMod = configFolder and configFolder:FindFirstChild("ShipSkinCatalog")
-	if skinCatalogMod and skinCatalogMod:IsA("ModuleScript") then
-		local okSkinCatalog, loadedSkinCatalog = pcall(require, skinCatalogMod)
-		if okSkinCatalog and typeof(loadedSkinCatalog) == "table" then
-			ShipSkinCatalog = loadedSkinCatalog
+	local boatCatalogMod = configFolder and configFolder:FindFirstChild("BoatCatalog")
+	if boatCatalogMod and boatCatalogMod:IsA("ModuleScript") then
+		local okBoatCatalog, loadedBoatCatalog = pcall(require, boatCatalogMod)
+		if okBoatCatalog and typeof(loadedBoatCatalog) == "table" then
+			BoatCatalog = loadedBoatCatalog
 		end
 	end
 	local straitEventsFolder = configFolder and configFolder:FindFirstChild("StraitEvents")
@@ -827,19 +827,19 @@ local function getBoatAttachmentPart(boat: Model): BasePart?
 end
 
 local function getBoatRigDef(boat: Model): ShipRigDef
-	if ShipSkinCatalog then
+	if BoatCatalog then
 		local templateName = boat:GetAttribute("ShipTemplateName")
-		if typeof(templateName) == "string" and templateName ~= "" and typeof(ShipSkinCatalog.GetRigForTemplate) == "function" then
-			local okTemplateRig, rigTemplate = pcall(ShipSkinCatalog.GetRigForTemplate, templateName)
+		if typeof(templateName) == "string" and templateName ~= "" and typeof(BoatCatalog.GetRigForTemplate) == "function" then
+			local okTemplateRig, rigTemplate = pcall(BoatCatalog.GetRigForTemplate, templateName)
 			if okTemplateRig and typeof(rigTemplate) == "table" then
 				return rigTemplate :: ShipRigDef
 			end
 		end
-		local skinId = boat:GetAttribute("ShipSkinId")
-		if typeof(skinId) == "string" and skinId ~= "" and typeof(ShipSkinCatalog.GetRigForSkin) == "function" then
-			local okSkinRig, rigSkin = pcall(ShipSkinCatalog.GetRigForSkin, skinId)
-			if okSkinRig and typeof(rigSkin) == "table" then
-				return rigSkin :: ShipRigDef
+		local boatId = boat:GetAttribute("BoatId")
+		if typeof(boatId) == "string" and boatId ~= "" and typeof(BoatCatalog.GetRigForBoat) == "function" then
+			local okBoatRig, rigBoat = pcall(BoatCatalog.GetRigForBoat, boatId)
+			if okBoatRig and typeof(rigBoat) == "table" then
+				return rigBoat :: ShipRigDef
 			end
 		end
 	end
@@ -3101,8 +3101,9 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 	if not assets then
 		return
 	end
-	-- NPC pirate-raid hull. Renamed from `PirateShip` -> `PirateShipNpc` when the
-	-- player-purchasable `Ship4Skin` claimed the `PirateShip` model name.
+	-- NPC pirate-raid hull. Renamed from `PirateShip` -> `PirateShipNpc` when
+	-- the player-purchasable `PirateShip` boat (was `Ship4Skin` pre-Step-7)
+	-- claimed the `PirateShip` model name.
 	local pirateShipTemplate = assets:FindFirstChild("PirateShipNpc")
 	local pirateNpcTemplate = assets:FindFirstChild("Pirate")
 	if not pirateShipTemplate or not pirateNpcTemplate then

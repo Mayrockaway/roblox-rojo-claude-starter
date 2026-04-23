@@ -28,7 +28,7 @@ local FtueConfig = {
 	TutorialCompleteCashReward = 500,
 
 	--- First FTUE strait shipment: cosmetic + guaranteed safe crossing (see `OilShipmentService`).
-	FtueTutorialShipmentSkinId = "Ship5Skin",
+	FtueTutorialShipmentSkinId = "Ducky",
 	--- Multiplier on resolved `travelSeconds` for that first shipment only (`0.5` = 2× faster crossing than max-speed baseline).
 	FtueTutorialShipmentTravelTimeScale = 0.5,
 
@@ -66,8 +66,20 @@ local FtueConfig = {
 		--- (`FtueDocksFreeDrillItemId`). `EquipmentShopService` advances the FTUE on
 		--- successful purchase. No Continue button — the leg finishes only on purchase.
 		WaitDocksEquipmentShop = "WaitDocksEquipmentShop",
-		--- Dockman → free first **cargo** upgrade → close ship panel (sub-steps on `FtueDocksUpgradeSubStep`).
-		WaitDocksUpgradeShip = "WaitDocksUpgradeShip",
+		-- `WaitDocksUpgradeShip` (Dockman → free first cargo upgrade →
+		-- close ship panel) was deleted by Step 4 of the boat-
+		-- progression refactor along with the per-player speed/capacity
+		-- upgrade ladder. The replacement leg below (`WaitDocksFleetPanel`)
+		-- teaches the new single-modal `FleetPanelGui` (boat picker +
+		-- buy + equip) introduced after the refactor.
+		--- Dock fleet panel leg: world beam to the **Dockman**, prox prompt
+		--- (`ManageShipPrompt.OpensPanel = "FleetPanelGui"`) opens the new
+		--- `FleetPanelGui` modal, then UI pointer points at its `CloseButton`.
+		--- Step advances to `WaitDocksHire` once the modal is closed.
+		--- Sub-step (`Constants.FtueDocksFleetPanelSubStepAttribute`):
+		---   `OpenPanel`  → beam to dockman, no UI pointer.
+		---   `ClosePanel` → modal open, `CloseButtonPointerRoot` lit inside `FleetPanelGui`.
+		WaitDocksFleetPanel = "WaitDocksFleetPanel",
 		WaitDocksHire = "WaitDocksHire",
 		Done = "Done",
 	},
@@ -83,7 +95,10 @@ local FtueConfig = {
 		"WaitSell",
 		"WaitDocksShipUpgrade",
 		"WaitDocksEquipmentShop",
-		"WaitDocksUpgradeShip",
+		-- `WaitDocksUpgradeShip` removed by Step 4 of the boat-
+		-- progression refactor (see `Step` block above).
+		-- `WaitDocksFleetPanel` is its replacement — teaches `FleetPanelGui`.
+		"WaitDocksFleetPanel",
 		"WaitDocksHire",
 		"Done",
 	} :: { string },
@@ -92,7 +107,7 @@ local FtueConfig = {
 	Copy = {
 		Intro = {
 			title = "CALLING ALL OIL TYCOONS!",
-			body = "HEY YOU! Looking to make a quick buck? Our country is desperate for oil and you look like you can get through the Strait of Hormuz by any means necessary!",
+			body = "HEY YOU! Our country is desperate for oil and you look like you can get through the Strait of Hormuz by any means necessary!",
 		},
 		WaitDrillOil_WIP = {
 			title = "FIRST STRIKE!",
@@ -108,7 +123,7 @@ local FtueConfig = {
 		},
 		WaitShipment = {
 			title = "SAIL THE STRAIT!",
-			body = "Time to set sea! I'll give you my fastest ship so you can cross undisturbed. But be careful, that won't always be the case. Keep an eye on the status of the Strait!",
+			body = "Time to set sea! I'll give you a speed boost so you can cross undisturbed. But be careful, that won't always be the case. Keep an eye on the status of the Strait!",
 		},
 		WaitWarehouseSell = {
 			title = "TIME TO CASH IN!",
@@ -120,15 +135,17 @@ local FtueConfig = {
 		},
 		WaitDocksShipUpgrade = {
 			title = "TO THE DOCKS!",
-			body = "Now head to the town - that's where you'll buy all your equipment, upgrade your ship, and hire some Secret Services.",
+			body = "Now head to the town - that's where you'll buy all your equipment, manage your fleet, and hire some Secret Services.",
 		},
 		WaitDocksEquipmentShop = {
 			title = "GEAR UP!",
 			body = "First stop, the Equipment Shop - here's where you'll find all your drilling gear. Step up to the counter and grab that Advanced Drill - first one's free.",
 		},
-		WaitDocksUpgradeShip = {
-			title = "VISIT THE DOCKMAN",
-			body = "Find the Dockman to manage your ship - your first upgrade is on the house! You can also change your ship's appearance here. Close the panel when you're done to move on.",
+		-- `WaitDocksUpgradeShip` copy removed by Step 4 of the boat-
+		-- progression refactor (see `Step` block above).
+		WaitDocksFleetPanel = {
+			title = "MIND YOUR FLEET",
+			body = "Next, talk to the dockman to get new, upgraded vessels and swap out your current ship.",
 		},
 		WaitDocksHire = {
 			title = "SUSPICIOUS PERSONS",
@@ -159,7 +176,9 @@ local FtueConfig = {
 		WaitSell = FtuePortraitAssets.OilmanPointAngry,
 		WaitDocksShipUpgrade = FtuePortraitAssets.OilmanSalute,
 		WaitDocksEquipmentShop = FtuePortraitAssets.OilmanDrilling,
-		WaitDocksUpgradeShip = FtuePortraitAssets.OilmanDrilling,
+		-- `WaitDocksUpgradeShip` portrait removed by Step 4 of the boat-
+		-- progression refactor (see `Step` block above).
+		WaitDocksFleetPanel = FtuePortraitAssets.OilmanSalute,
 		WaitDocksHire = FtuePortraitAssets.OilmanCelebrate,
 		Done = FtuePortraitAssets.OilmanCelebrate,
 	} :: { [string]: string },

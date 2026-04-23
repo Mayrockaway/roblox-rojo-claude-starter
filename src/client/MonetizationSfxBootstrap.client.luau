@@ -9,9 +9,9 @@
 --     this is the only "money actually changed hands" outcome.
 --
 -- We listen once globally so any panel that fires
--- `RequestPromptRobuxPurchase` (today only `SelectShipPanel`; future:
--- `RobuxShopPanel`, `ArmyGeneralService` Robux nuke, etc.) gets the SFX
--- automatically without each panel duplicating this gating.
+-- `RequestPromptRobuxPurchase` (today: `FleetPanel` boat unlocks,
+-- `RobuxShopPanel`; future: `ArmyGeneralService` Robux nuke, etc.) gets
+-- the SFX automatically without each panel duplicating this gating.
 --
 -- Cash-side equipment shop purchases are handled in `EquipmentShopPanel.luau`
 -- because they ride `oilActionResult` (a multi-purpose channel where we need

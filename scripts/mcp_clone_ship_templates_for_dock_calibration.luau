@@ -2,7 +2,7 @@
 	Run in Roblox Studio (Command Bar or MCP `execute_luau`) to create editable ship previews.
 
 	What it does:
-	- Reads all unique `templateName` values from `Shared.Config.ShipSkinCatalog`.
+	- Reads all unique `templateName` values from `Shared.Config.BoatCatalog`.
 	- Clones each ship template from `ReplicatedStorage.Assets` into:
 	  `Workspace.Map.ShipRigCalibration.ShipTemplatePreviews`
 	- Anchors preview parts and lays ships out in a grid for easy editing.
@@ -17,13 +17,13 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
-local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
+local BoatCatalog = require(Shared:WaitForChild("Config"):WaitForChild("BoatCatalog"))
 local ShipRig = require(Shared:WaitForChild("Utils"):WaitForChild("ShipRig"))
 
 local function uniqueTemplateNamesFromCatalog(): { string }
 	local seen = {}
 	local names = {}
-	for _, def in pairs(ShipSkinCatalog.Skins) do
+	for _, def in pairs(BoatCatalog.Boats) do
 		if typeof(def) == "table" then
 			local templateName = def.templateName
 			if typeof(templateName) == "string" and templateName ~= "" and not seen[templateName] then
@@ -133,7 +133,7 @@ local function anchorModel(model: Model)
 end
 
 local function labelRigPoints(model: Model, templateName: string): { string }, { string }
-	local rig = ShipSkinCatalog.GetRigForTemplate(templateName)
+	local rig = BoatCatalog.GetRigForTemplate(templateName)
 	local missingRequired = {}
 	local missingOptional = {}
 

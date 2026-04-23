@@ -378,7 +378,7 @@ local config = {
 	removeDrillHoldSeconds = 2,
 	removeDrillRangeStuds = 18,
 	chunks = { size = 8, rows = 10, cols = 10, startingCenterSize = 4 },
-	shipSkinCatalog = {},
+	boatCatalog = {},
 }
 
 local ownedPlot: Model? = nil
@@ -855,9 +855,11 @@ local function tryPrimaryAction()
 
 	if kind ~= "Drill" then return end
 
-	-- Prefer the **locked mobile preview** when present so a confirm-tap on the
-	-- same tile places exactly where the ghost was shown. Falls back to the
-	-- live mouse hit on desktop / before the first mobile tap.
+	-- `getDesiredPlacementHit` returns the **facing-projection** preview on
+	-- pure-touch devices (one tile ahead of the player along their
+	-- HumanoidRootPart LookVector, snapped to tile center) and the live
+	-- `mouse.Hit` on desktop / hybrid devices. Either way the placement
+	-- coord matches the visible ghost the player just confirmed.
 	local chunkId, hitPos, previewTileName = PlacementClient.getDesiredPlacementHit()
 	if not (hitPos and chunkId) then return end
 	if not isChunkUnlocked(chunkId) then
@@ -968,57 +970,28 @@ mouse.Button1Down:Connect(function()
 		tryPrimaryAction()
 end)
 
--- Touch (mobile / tablet) placement: TAP-AND-HOLD, RELEASE TO PLACE.
+-- Touch (mobile / tablet) placement: AUTO-PROJECT FACING, TAP TO COMMIT.
 --
--- Why this model: the previous tap-to-preview / tap-again-to-confirm flow was
--- too fragile on mobile — players reported that even tapping the green ghost
--- "just repositioned the raycast" because (a) the ghost has `CanQuery=false`
--- so the raycast slips through to a neighbouring tile, and (b) the second
--- tap had to land **on the same tile** as the first, which is hard with a
--- finger covering ~60px of screen. Hold-and-release fixes both issues:
+-- The drill ghost is anchored one tile ahead of the player's
+-- `HumanoidRootPart` along their LookVector (XZ-projected). Walking /
+-- turning slides the preview live without any tap or hold state to track
+-- (`PlacementClient.resolveProjectedTileFromCharacter`). A single tap on
+-- the ghost — or on the **same tile** the ghost is sitting on (generous
+-- hitbox so a finger covering ~60px of screen still counts) — commits via
+-- `tryPrimaryAction` if the ghost is currently valid (green). Taps that
+-- land elsewhere on screen are ignored so the touch joystick / camera-pan
+-- areas keep working, and an invalid (red / off-grid) ghost simply
+-- doesn't commit on tap.
 --
---   * `InputBegan` (Drill equipped, gameProcessed=false) → lock the preview
---     at the tile under the finger; track this `InputObject` as active.
---   * `InputChanged` for the SAME `InputObject` (finger drag) → re-resolve
---     the preview live so the ghost follows the finger to the desired tile.
---   * `InputEnded` for the SAME `InputObject` → if the locked preview is
---     **valid** (green) at release time, fire `tryPrimaryAction()`. If the
---     preview is invalid (red) or off-grid (water/sky), just clear and do
---     nothing — the player can lift over an invalid spot to cancel.
+-- Why "must face the tile, then tap": this teaches the mechanic explicitly
+-- ("aim with body, tap to commit") rather than silently snapping the
+-- ghost to the FTUE tile, which would leave the player unable to place a
+-- second drill. The FTUE world beam (`FtuePoiBeamConfig` rule for
+-- `WaitDrillOil_WIP`) guides them to the right tile during the tutorial.
 --
--- Net effect: a single touch gesture either commits (release on green) or
--- cancels (release on red / off-grid). No double-tap timing, no "hit the
--- same tile twice" rule, no chasing the ghost across tiles.
---
--- Desktop mouse path is untouched: `Mouse.Button1Down` still places on click
--- and the early-returns below ignore non-Touch inputs.
-local activeTouchInput: InputObject? = nil
-local activeTouchValid = false
-
-local function resolveTouchPreview(input: InputObject)
-	local touchPos = Vector2.new(input.Position.X, input.Position.Y)
-	local chunkId, hitPos, tileName = PlacementClient.raycastTouchToChunk(touchPos)
-	if not (chunkId and hitPos) then
-		PlacementClient.clearMobilePreview()
-		activeTouchValid = false
-		return
-	end
-	PlacementClient.setMobilePreviewHit(chunkId, hitPos, tileName)
-	activeTouchValid = PlacementClient.isPlacementValid(chunkId, hitPos, "Drill")
-end
-
-local function endTouchGesture(commit: boolean)
-	if commit and activeTouchValid then
-		-- `tryPrimaryAction` reads `getDesiredPlacementHit()` which still
-		-- returns the locked preview, so the placement coord matches the
-		-- visible ghost exactly at the moment of release.
-		tryPrimaryAction()
-	end
-	PlacementClient.clearMobilePreview()
-	activeTouchInput = nil
-	activeTouchValid = false
-end
-
+-- Desktop mouse path is untouched: `Mouse.Button1Down` still places on
+-- click, `getDesiredPlacementHit` only swaps to projection on **pure-touch
+-- devices** (`UserInputService.TouchEnabled and not MouseEnabled`).
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then
 		return
@@ -1031,38 +1004,23 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		kind = "Drill"
 	end
 	if kind ~= "Drill" then
-		-- Equipped tool is not a drill — clear any stale preview and bail.
-		-- We deliberately do NOT track the touch here so other tools handle
-		-- it normally.
-		PlacementClient.clearMobilePreview()
-		activeTouchInput = nil
-		activeTouchValid = false
 		return
 	end
-	-- Track this specific InputObject; subsequent InputChanged / InputEnded
-	-- for the same instance drive the preview update + commit decision.
-	activeTouchInput = input
-	resolveTouchPreview(input)
-end)
-
-UserInputService.InputChanged:Connect(function(input, _gameProcessed)
-	-- Filter to the exact tracked touch; ignore mouse-move, gamepad axes,
-	-- and any other concurrent touches (e.g. second finger pinch).
-	if input ~= activeTouchInput then
+	-- Snapshot the ghost's current projected hit. Same source as
+	-- `updateGhost`, so the tap-target check below sees exactly what the
+	-- player sees on screen.
+	local chunkId, hitPos, tileName = PlacementClient.getDesiredPlacementHit()
+	if not (chunkId and hitPos) then
 		return
 	end
-	resolveTouchPreview(input)
-end)
-
-UserInputService.InputEnded:Connect(function(input, _gameProcessed)
-	if input ~= activeTouchInput then
+	if not PlacementClient.isPlacementValid(chunkId, hitPos, "Drill", tileName) then
 		return
 	end
-	-- One last resolve so the commit reflects the **release** position, not
-	-- whatever the last InputChanged saw (Roblox usually fires a final
-	-- InputChanged before InputEnded but defensively re-resolve anyway).
-	resolveTouchPreview(input)
-	endTouchGesture(true)
+	local touchPos = Vector2.new(input.Position.X, input.Position.Y)
+	if not PlacementClient.isTouchOverGhostOrHostTile(touchPos, chunkId, tileName) then
+		return
+	end
+	tryPrimaryAction()
 end)
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)

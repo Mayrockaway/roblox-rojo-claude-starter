@@ -13,9 +13,18 @@
 --- dialog (we never call `MarketplaceService` directly from the client; the
 --- server calls `PromptProductPurchase`, then `ProcessReceipt` lands here).
 ---
---- Only the **Default Tanker** ship is a starter-owned skin. Every other ship
---- skin in `ShipSkinCatalog` is gated behind a Robux DevProduct entry below
---- (`productId = 0` until an owner wires the real Roblox asset id).
+--- Only the **Default Tanker** boat is a starter-owned entry. Every other
+--- ship/skin boat in `BoatCatalog` is gated behind a Robux DevProduct entry
+--- below (`productId = 0` until an owner wires the real Roblox asset id).
+---
+--- Naming note (Step 6 boat-progression rename): `ShipSkinCatalog` →
+--- `BoatCatalog`, `MonetizationGrant.skinId` → `boatId`,
+--- `MonetizationItemForClient.grantSkinId` → `grantBoatId`,
+--- `_shipItemBySkinId` index → `_shipItemByBoatId`. The
+--- `MonetizationGrantKind` discriminator string `"Ship"` is intentionally
+--- preserved — it describes the *category* of grant, not the legacy boat
+--- name, and it's referenced by other consumers (RobuxShopPanel,
+--- SelectShipPanel) that filter by `grant.kind == "Ship"`.
 ---
 --- Adding new items later (currency packs, consumable nukes, GamePasses, etc.)
 --- is intentionally additive: append to `Items`, set `productKind` /
@@ -25,7 +34,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
-local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
+local BoatCatalog = require(Shared:WaitForChild("Config"):WaitForChild("BoatCatalog"))
 
 export type MonetizationProductKind = "DevProduct" | "GamePass"
 export type MonetizationGrantKind = "Ship" | "Currency" | "Consumable" | "GamePassEffect" | "Cosmetic" | "Equipment" | "Bundle"
@@ -34,9 +43,10 @@ export type MonetizationGrant = {
 	--- One-of: discriminator for the grant payload below.
 	kind: MonetizationGrantKind,
 
-	--- "Ship" — the catalog skin id to add to `state.ownedShipSkinIds` and
-	--- (optionally) auto-equip via `OilStateService:SetShipSkinId`.
-	skinId: string?,
+	--- "Ship" — the boat id (`BoatCatalog.Boats[boatId]`) to add to
+	--- `state.ownedBoatIds` and (optionally) auto-equip via
+	--- `OilStateService:SetEquippedBoatId`.
+	boatId: string?,
 
 	--- Per-grant override of the parent item's `equipOnGrant`. Lets a Bundle
 	--- sub-grant opt out of (or into) auto-equip without changing the parent
@@ -92,7 +102,7 @@ export type MonetizationItem = {
 	--- field stays optional today.
 	category: string?,
 	--- After a successful receipt, automatically equip the granted item if
-	--- the kind supports it (e.g. ships → `SetShipSkinId`).
+	--- the kind supports it (e.g. ships → `SetEquippedBoatId`).
 	equipOnGrant: boolean?,
 	--- When `true`, this item is marketed as a one-time-only purchase
 	--- (e.g. Featured "Starter Pack" bundles). Behavior:
@@ -134,48 +144,47 @@ end
 
 local SHIP_RARITY_FALLBACK = "Common"
 
-local function shipDisplayName(skinId: string): string
-	local def = ShipSkinCatalog.Skins[skinId]
+local function shipDisplayName(boatId: string): string
+	local def = BoatCatalog.Boats[boatId]
 	if def and typeof(def.displayName) == "string" and def.displayName ~= "" then
 		return def.displayName
 	end
-	return skinId
+	return boatId
 end
 
-local function shipRarity(skinId: string): string
-	local def = ShipSkinCatalog.Skins[skinId]
+local function shipRarity(boatId: string): string
+	local def = BoatCatalog.Boats[boatId]
 	if def and typeof(def.rarityDisplay) == "string" and def.rarityDisplay ~= "" then
 		return def.rarityDisplay
 	end
 	return SHIP_RARITY_FALLBACK
 end
 
---- Per-skin Robux pricing. These are the canonical prices the in-game shop
+--- Per-boat Robux pricing. These are the canonical prices the in-game shop
 --- chrome reads (see `RobuxShopPanel` Buy pill text). The Roblox Creator
 --- Dashboard owns the *actual* charged price on each DevProduct — keep these
 --- in sync when you wire the real `productId` so the in-game label matches
 --- what the Roblox prompt will say.
 local SHIP_PLACEHOLDER_PRICE: { [string]: number } = {
-	Ship3Skin = 199,
-	Ship4Skin = 149, -- Pirate (RobuxShop Ship1)
-	Ship5Skin = 299, -- Ducky  (RobuxShop Ship2)
-	WhaleSkin = 299, -- Whale  (RobuxShop Ship3)
+	PirateShip = 149, -- The Sparrow (RobuxShop Ship1)
+	Ducky = 299, -- Jet Duck     (RobuxShop Ship2)
+	Moby = 299, -- Moby         (RobuxShop Ship3)
 }
 
-local function buildShipItem(skinId: string, productId: number?): MonetizationItem
+local function buildShipItem(boatId: string, productId: number?): MonetizationItem
 	return {
-		id = "ship." .. string.lower(skinId),
+		id = "ship." .. string.lower(boatId),
 		productKind = "DevProduct",
 		productId = productId or 0,
-		robuxPrice = SHIP_PLACEHOLDER_PRICE[skinId] or 99,
-		displayName = shipDisplayName(skinId),
+		robuxPrice = SHIP_PLACEHOLDER_PRICE[boatId] or 99,
+		displayName = shipDisplayName(boatId),
 		subtitle = "Ship Skin",
-		rarityDisplay = shipRarity(skinId),
+		rarityDisplay = shipRarity(boatId),
 		category = "Ships",
 		equipOnGrant = true,
 		grant = {
 			kind = "Ship",
-			skinId = skinId,
+			boatId = boatId,
 		},
 	}
 end
@@ -188,7 +197,7 @@ end
 --- purchases. Add new rows; do not rename old ones.
 MonetizationCatalog.Items = {
 	-- Featured bundles -----------------------------------------------------
-	-- Starter Pack: Pirate ship (Ship4Skin) + $5,000 cash + 2x tier-5 drills
+	-- Starter Pack: Pirate ship (PirateShip) + $5,000 cash + 2x tier-5 drills
 	-- ("Glizzy Grinder", `EquipmentCatalog.drill_t5`). Authored card lives at
 	-- `StarterGui.RobuxShop.Canvas.Container.Main.Container.Featured` with the
 	-- buy button literally named `EquipBest` (Studio author quirk; kept as-is
@@ -198,10 +207,11 @@ MonetizationCatalog.Items = {
 	-- each sub-grant logs its own failure and the receipt is marked granted
 	-- so Roblox doesn't retry and re-deliver the parts that did succeed.
 	-- Ship sub-grant `equipOnGrant = true` keeps the visible "you bought a
-	-- new ship!" beat for first-time buyers; if the player already owns it
-	-- (e.g. they bought just the Pirate ship before grabbing the bundle),
-	-- `_grantShip` short-circuits via `OK_ALREADY_OWNED` and the rest of the
-	-- bundle (cash + drills) still applies on that single first-buy.
+	-- new ship!" beat for first-time buyers; if the player already owns
+	-- `PirateShip` (e.g. they bought it standalone before grabbing the
+	-- bundle), `_grantShip` short-circuits via `OK_ALREADY_OWNED` and the
+	-- rest of the bundle (cash + drills) still applies on that single
+	-- first-buy.
 	--
 	-- `oneTimePurchase = true`: per-player limit of 1. After the receipt
 	-- grants, `MonetizationService` flips
@@ -224,7 +234,7 @@ MonetizationCatalog.Items = {
 		grant = {
 			kind = "Bundle",
 			bundle = {
-				{ kind = "Ship", skinId = "Ship4Skin", equipOnGrant = true },
+				{ kind = "Ship", boatId = "PirateShip", equipOnGrant = true },
 				{ kind = "Currency", cashAmount = 5000 },
 				{ kind = "Equipment", equipment = { itemId = "drill_t5", quantity = 2 } },
 			},
@@ -232,12 +242,16 @@ MonetizationCatalog.Items = {
 	},
 
 	-- Ships ----------------------------------------------------------------
-	-- DefaultTanker is intentionally absent: it's the starter ship granted
-	-- to every player by `OilStateService` — no Robux product needed.
-	buildShipItem("Ship3Skin"),
-	buildShipItem("Ship4Skin", 3578818285),
-	buildShipItem("Ship5Skin", 3578818474),
-	buildShipItem("WhaleSkin", 3578818669),
+	-- The cash-chain `Tier1Boat`..`Tier10Boat` entries are intentionally
+	-- absent: those unlock through `OilStateService:TryUnlockBoat` (cash
+	-- spend), not Robux. `Tier1Boat` is the auto-granted starter.
+	-- The Robux-only premium boats keep their original DevProductIds —
+	-- the v10 → v11 profile migration in `OilStateService` remaps prior
+	-- `Ship4Skin` / `Ship5Skin` / `WhaleSkin` ownership to these new ids
+	-- so existing buyers don't lose their purchases.
+	buildShipItem("PirateShip", 3578818285),
+	buildShipItem("Ducky", 3578818474),
+	buildShipItem("Moby", 3578818669),
 
 	-- Boosts ---------------------------------------------------------------
 	-- 2x Earnings GamePass. `gamePassEffect = "DoubleEarnings"` is the
@@ -407,16 +421,16 @@ local _itemsByProductId: { DevProduct: { [number]: MonetizationItem }, GamePass:
 	DevProduct = {},
 	GamePass = {},
 }
---- Index: ship skin id -> Ship item (so `OilStateService` can ask "is this
---- skin Robux-gated, and if so what's the Robux price?" without scanning the
---- whole table).
-local _shipItemBySkinId: { [string]: MonetizationItem } = {}
+--- Index: boat id -> Ship-grant item (so `OilStateService` can ask "is this
+--- boat Robux-gated, and if so what's the Robux price?" without scanning the
+--- whole table). Renamed from `_shipItemBySkinId` in Step 6.
+local _shipItemByBoatId: { [string]: MonetizationItem } = {}
 
 local function rebuildIndexes()
 	table.clear(_itemsById)
 	table.clear(_itemsByProductId.DevProduct)
 	table.clear(_itemsByProductId.GamePass)
-	table.clear(_shipItemBySkinId)
+	table.clear(_shipItemByBoatId)
 	for _, item in ipairs(MonetizationCatalog.Items) do
 		if typeof(item.id) ~= "string" or item.id == "" then
 			continue
@@ -432,8 +446,8 @@ local function rebuildIndexes()
 				bucket[item.productId] = item
 			end
 		end
-		if item.grant.kind == "Ship" and typeof(item.grant.skinId) == "string" and item.grant.skinId ~= "" then
-			_shipItemBySkinId[item.grant.skinId] = item
+		if item.grant.kind == "Ship" and typeof(item.grant.boatId) == "string" and item.grant.boatId ~= "" then
+			_shipItemByBoatId[item.grant.boatId] = item
 		end
 	end
 end
@@ -461,15 +475,15 @@ function MonetizationCatalog.ItemForGamePass(productId: number?): MonetizationIt
 	return _itemsByProductId.GamePass[productId :: number]
 end
 
-function MonetizationCatalog.GetShipItemBySkinId(skinId: string?): MonetizationItem?
-	if typeof(skinId) ~= "string" or skinId == "" then
+function MonetizationCatalog.GetShipItemByBoatId(boatId: string?): MonetizationItem?
+	if typeof(boatId) ~= "string" or boatId == "" then
 		return nil
 	end
-	return _shipItemBySkinId[skinId]
+	return _shipItemByBoatId[boatId]
 end
 
-function MonetizationCatalog.IsRobuxGatedShip(skinId: string?): boolean
-	return MonetizationCatalog.GetShipItemBySkinId(skinId) ~= nil
+function MonetizationCatalog.IsRobuxGatedShip(boatId: string?): boolean
+	return MonetizationCatalog.GetShipItemByBoatId(boatId) ~= nil
 end
 
 function MonetizationCatalog.IsBuyable(item: MonetizationItem?): boolean
@@ -503,7 +517,7 @@ export type MonetizationItemForClient = {
 	rarityDisplay: string?,
 	category: string?,
 	grantKind: MonetizationGrantKind,
-	grantSkinId: string?,
+	grantBoatId: string?,
 	isBuyable: boolean,
 	oneTimePurchase: boolean?,
 }
@@ -522,7 +536,7 @@ function MonetizationCatalog.ListForClient(): { MonetizationItemForClient }
 			rarityDisplay = item.rarityDisplay,
 			category = item.category,
 			grantKind = item.grant.kind,
-			grantSkinId = item.grant.skinId,
+			grantBoatId = item.grant.boatId,
 			isBuyable = MonetizationCatalog.IsBuyable(item),
 			oneTimePurchase = item.oneTimePurchase == true,
 		})

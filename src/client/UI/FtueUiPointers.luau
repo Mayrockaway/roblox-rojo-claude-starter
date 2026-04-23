@@ -37,6 +37,14 @@ local POINTER_ROOT_BY_STEP: { [string]: string } = {
 
 --- Active set the resolver iterates each refresh. Any name in this list is either toggled on (active)
 --- or force-hidden (inactive). Legacy roots are included so leftover Studio authoring stays hidden.
+---
+--- The `Cargo/ChangeShip/Close/ShipCapacityUpgradeBuy/ShipManagementClose`
+--- pointer roots that previously lived in here were authored under
+--- `ShipManagementPanelGui` / `SelectShipPanelGui`; those ScreenGuis were
+--- deleted when the new `FleetPanelGui` replaced both. The fleet-panel
+--- FTUE leg (`WaitDocksFleetPanel`) uses **`ClosePointerRoot`** under
+--- `FleetPanelGui`; the equipment shop keeps **`CloseButtonPointerRoot`**
+--- under `ShopPanelGui` (see `PANEL_FIRST_ROOT`).
 local ALL_POINTER_ROOT_NAMES = {
 	"StraitPointerRoot",
 	"TownPointerRoot",
@@ -45,29 +53,28 @@ local ALL_POINTER_ROOT_NAMES = {
 	"SellPointerRoot",
 	"ShipBarrelPointerRoot",
 	"DispatchPointerRoot",
-	"CargoUpgradePointerRoot",
-	"ChangeShipPointerRoot",
-	"ClosePointerRoot",
 	"OilPricePointerRoot",
 	"BuyDrillPointerRoot",
 	"CloseButtonPointerRoot",
+	--- Fleet-panel close hint (`WaitDocksFleetPanel` sub `ClosePanel`).
+	--- Authored under `FleetPanelGui.Canvas.PanelHost.ClosePointerRoot`
+	--- with inner `ClosePointer` (ImageLabel) for the bobbing tween
+	--- (see `findTweenTarget` — strips trailing `Root`).
+	"ClosePointerRoot",
 	"TPHomePointerRoot",
 	-- Legacy roots kept so any prior Studio authoring is force-hidden when not active:
 	"PlotShipmentPointerRoot",
 	"DocksTownBuyPointerRoot",
 	"FtueDockmanWorldPointerRoot",
-	"ShipCapacityUpgradeBuyPointerRoot",
-	"ShipManagementClosePointerRoot",
 	"FtuePirateHireWorldPointerRoot",
 	"SellOilPointerRoot",
 	"SellButtonPointerRoot",
 }
 
 local SELL_OIL_PANEL_GUI = "SellOilPanelGui"
-local SHIP_MANAGEMENT_PANEL_GUI = "ShipManagementPanelGui"
 local SHIP_OIL_PANEL_GUI = "ShipOilPanelGui"
 local SHOP_PANEL_GUI = "ShopPanelGui"
-local SELECT_SHIP_PANEL_GUI = "SelectShipPanelGui"
+local FLEET_PANEL_GUI = "FleetPanelGui"
 local HUD_SCREEN_GUI = "HUD"
 
 --- World-hierarchy `GuiObject` roots (e.g. under `BillboardGui` / `SurfaceGui` in `Workspace`).
@@ -81,25 +88,28 @@ local warnedMissingTpHomeRoot = false
 
 --- Prefer modal `ScreenGui` for roots that must align with cargo / CTA (author under that panel in Studio).
 --- A root may resolve to **multiple** panels — `findPointerRootFrame` walks the
---- list in order and returns the first authored copy. This is needed for
---- `CloseButtonPointerRoot` which is authored under both `ShopPanelGui` (FTUE
---- equipment-shop close prompt) and `SelectShipPanelGui` (FTUE select-ship
---- close prompt). Only one panel is open at any time so visibility-wise they
---- never collide.
+--- list in order and returns the first authored copy. (The previous
+--- multi-panel mapping for `CloseButtonPointerRoot` to both `ShopPanelGui`
+--- and `SelectShipPanelGui` collapsed to a single panel when the latter was
+--- removed; the `string | { string }` shape is preserved so a future
+--- shared-pointer use case can opt in without a refactor.)
+---
+--- `CloseButtonPointerRoot` is the equipment-shop close hint authored under
+--- `ShopPanelGui`. The fleet-panel close hint is a separate root name
+--- (`ClosePointerRoot`) authored under `FleetPanelGui.Canvas.PanelHost` —
+--- different name so the two pointers can't collide on a stale `Enabled`
+--- lookup, and so each panel's bobbing tween targets its own inner image
+--- (`CloseButtonPointer` vs `ClosePointer`).
 local PANEL_FIRST_ROOT: { [string]: string | { string } } = {
 	SellBarrelPointerRoot = SELL_OIL_PANEL_GUI,
 	SellPointerRoot = SELL_OIL_PANEL_GUI,
-	CargoUpgradePointerRoot = SHIP_MANAGEMENT_PANEL_GUI,
-	ChangeShipPointerRoot = SHIP_MANAGEMENT_PANEL_GUI,
-	ClosePointerRoot = SHIP_MANAGEMENT_PANEL_GUI,
 	ShipBarrelPointerRoot = SHIP_OIL_PANEL_GUI,
 	DispatchPointerRoot = SHIP_OIL_PANEL_GUI,
 	BuyDrillPointerRoot = SHOP_PANEL_GUI,
-	CloseButtonPointerRoot = { SHOP_PANEL_GUI, SELECT_SHIP_PANEL_GUI },
+	CloseButtonPointerRoot = SHOP_PANEL_GUI,
+	ClosePointerRoot = FLEET_PANEL_GUI,
 	-- Legacy authored roots (kept so they're still discoverable for hide-when-inactive):
 	SellButtonPointerRoot = SELL_OIL_PANEL_GUI,
-	ShipCapacityUpgradeBuyPointerRoot = SHIP_MANAGEMENT_PANEL_GUI,
-	ShipManagementClosePointerRoot = SHIP_MANAGEMENT_PANEL_GUI,
 }
 
 --- Equipment shop leg pointer is two-phase, both inside `ShopPanelGui`:
@@ -121,25 +131,31 @@ local function resolveWaitDocksEquipmentShopPointer(player: Player, step: string
 	return "BuyDrillPointerRoot"
 end
 
-local function resolveWaitDocksUpgradeShipPointer(player: Player, step: string): string?
-	if step ~= FtueConfig.Step.WaitDocksUpgradeShip then
+-- `resolveWaitDocksUpgradeShipPointer` was deleted by Step 4 of the
+-- boat-progression refactor along with the `WaitDocksUpgradeShip` FTUE
+-- leg. Replaced below by `resolveWaitDocksFleetPanelPointer` for the new
+-- `WaitDocksFleetPanel` leg (Dockman → `FleetPanelGui` close button).
+
+--- Fleet panel leg pointer is two-phase:
+---   `OpenPanel`  → no UI pointer (world beam to dockman from `FtuePoiBeamConfig` handles guidance).
+---   `ClosePanel` → `ClosePointerRoot` inside `FleetPanelGui.Canvas.PanelHost`
+---                  (own root name + tween target so it doesn't collide with
+---                  `ShopPanelGui.CloseButtonPointerRoot`).
+--- Sub-step is set server-side (`Constants.FtueDocksFleetPanelSubStepAttribute`):
+---   * Server flips to `OpenPanel` on entry into `WaitDocksFleetPanel`.
+---   * `ProximityPanelOpener` fires `FleetPanelOpened` when the dockman prompt opens
+---     `FleetPanelGui`; server flips to `ClosePanel`.
+---   * `FleetPanel` fires `FleetPanelClosed` on `ScreenGui.Enabled` → `false`; server
+---     advances FTUE to `WaitDocksHire`.
+local function resolveWaitDocksFleetPanelPointer(player: Player, step: string): string?
+	if step ~= FtueConfig.Step.WaitDocksFleetPanel then
 		return nil
 	end
-	local subAny = player:GetAttribute(Constants.FtueDocksUpgradeSubStepAttribute)
+	local subAny = player:GetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute)
 	local sub = if typeof(subAny) == "string" then (subAny :: string) else ""
-	if sub == "CargoBuy" then
-		return "CargoUpgradePointerRoot"
-	elseif sub == "ChangeShip" then
-		return "ChangeShipPointerRoot"
-	elseif sub == "SelectShipOpen" then
-		--- `CloseButtonPointerRoot` lives under `SelectShipPanelGui` for this
-		--- sub-step (also under `ShopPanelGui` for the equipment-shop leg —
-		--- `findPointerRootFrame` walks both panel candidates).
-		return "CloseButtonPointerRoot"
-	elseif sub == "CloseModal" then
+	if sub == "ClosePanel" then
 		return "ClosePointerRoot"
 	end
-	--- `Dockman` substep is covered by the `PlayerToPoiBeam` beam — no UI pointer.
 	return nil
 end
 
@@ -167,18 +183,25 @@ local function resolveActivePointerRootName(player: Player, step: string): strin
 			return "DispatchPointerRoot"
 		end
 	end
-	local docksShip = resolveWaitDocksUpgradeShipPointer(player, step)
-	if docksShip then
-		return docksShip
-	end
 	local equipShop = resolveWaitDocksEquipmentShopPointer(player, step)
 	if equipShop then
 		return equipShop
+	end
+	local fleet = resolveWaitDocksFleetPanelPointer(player, step)
+	if fleet then
+		return fleet
 	end
 	return POINTER_ROOT_BY_STEP[step]
 end
 
 --- Teleport Home hint: from `Done` through post-FTUE until the player uses Teleport Home.
+---
+--- `markLegActive()` must **not** run from `FtueDialogueController.applyStep(Done)`
+--- on `ftueStateUpdate` alone — that raced ahead of the replicated `FtueStep`
+--- and left `shouldShowPointer()` true while the player was still on earlier
+--- legs (all step pointers lost). Arm the leg only from **`FtueUiPointers`**
+--- when `FtueStep == Done`, or from Continue/Skip handlers on Done (see
+--- `FtueDialogueController`).
 local function resolveTpHomePointerRootName(): string?
 	if FtueTpHomePointerState.shouldShowPointer() then
 		return "TPHomePointerRoot"
@@ -274,12 +297,11 @@ local function findPointerRootFrame(playerGui: PlayerGui, rootName: string): Gui
 	end
 	--- Pass 1: prefer the candidate whose `ScreenGui.Enabled == true`. This
 	--- is the panel currently visible to the player, which is the one whose
-	--- authored pointer copy can actually be seen. Critical for shared root
-	--- names like `CloseButtonPointerRoot` (authored under both `ShopPanelGui`
-	--- and `SelectShipPanelGui`): without this, the iteration order in
-	--- `PANEL_FIRST_ROOT` would pick the wrong panel's copy and toggle
-	--- `Visible = true` on a frame inside a disabled `ScreenGui`, leaving
-	--- nothing visible on screen.
+	--- authored pointer copy can actually be seen. Critical when a root
+	--- name is mapped to multiple panels in `PANEL_FIRST_ROOT` (the
+	--- `string | { string }` shape) — without this, the iteration order
+	--- could pick a disabled `ScreenGui` and toggle `Visible = true` on a
+	--- frame inside it, leaving nothing visible on screen.
 	for _, panelName in ipairs(panelCandidates) do
 		local sg = playerGui:FindFirstChild(panelName, true)
 		if sg and sg:IsA("ScreenGui") and (sg :: ScreenGui).Enabled then
@@ -373,8 +395,17 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 		end)
 	end
 
-	local function currentFtueStep(): string
-		return pickDisplayedStep(normStep(player:GetAttribute(Constants.FtueStepAttribute)), stepFromRemote)
+	--- Prefer the **replicated** `FtueStep` attribute for pointer pickers so a
+	--- stale / ahead-of-time `FtueStateUpdate` payload cannot suppress the
+	--- Strait / Town / Hire / … arrows for the whole leg. Fall back to the
+	--- attr+remote merge only while the attribute is still unset (first
+	--- frames after join).
+	local function currentFtueStepForPointers(): string
+		local a = normStep(player:GetAttribute(Constants.FtueStepAttribute))
+		if a ~= "" then
+			return a
+		end
+		return pickDisplayedStep("", stepFromRemote)
 	end
 
 	local function stopTween(gui: GuiObject)
@@ -435,8 +466,12 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 			end
 		end
 
-		local step = currentFtueStep()
-		if step == FtueConfig.Step.Done then
+		local attrStep = normStep(player:GetAttribute(Constants.FtueStepAttribute))
+		local step = currentFtueStepForPointers()
+		--- Only arm the TP-home leg once the **replicated** step is actually
+		--- `Done` — do not key off `pickDisplayedStep` / remote-only Done
+		--- (see `resolveTpHomePointerRootName` docstring).
+		if attrStep == FtueConfig.Step.Done then
 			FtueTpHomePointerState.markLegActive()
 		end
 
@@ -497,8 +532,13 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 		end
 		scheduleRefresh()
 	end)
-	player:GetAttributeChangedSignal(Constants.FtueDocksUpgradeSubStepAttribute):Connect(scheduleRefresh)
+	-- `FtueDocksUpgradeSubStepAttribute` change-listener was deleted by
+	-- Step 4 of the boat-progression refactor along with the leg + the
+	-- attribute itself. The replacement leg `WaitDocksFleetPanel` uses
+	-- `FtueDocksFleetPanelSubStepAttribute` (`OpenPanel` / `ClosePanel`)
+	-- to gate `CloseButtonPointerRoot` inside `FleetPanelGui`.
 	player:GetAttributeChangedSignal(Constants.FtueDocksEquipmentShopSubStepAttribute):Connect(scheduleRefresh)
+	player:GetAttributeChangedSignal(Constants.FtueDocksFleetPanelSubStepAttribute):Connect(scheduleRefresh)
 	if ftueStateUpdate then
 		ftueStateUpdate.OnClientEvent:Connect(function(payload: any)
 			if typeof(payload) == "table" then
@@ -526,14 +566,15 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 		hookDescendantRefresh(dlg0)
 	end
 
+	-- `SHIP_MANAGEMENT_PANEL_GUI` / `SELECT_SHIP_PANEL_GUI` were removed
+	-- by Step 4 of the boat-progression refactor (panels deleted; new
+	-- single-modal `FleetPanelGui` replaces both). Their hooks here have
+	-- been retired. `FleetPanelGui` is hooked below so opening it
+	-- triggers a refresh and `CloseButtonPointerRoot` resolves correctly
+	-- through the `PANEL_FIRST_ROOT` `Enabled` lookup.
 	local sell0 = playerGui:FindFirstChild(SELL_OIL_PANEL_GUI, true)
 	if sell0 and sell0:IsA("ScreenGui") then
 		hookDescendantRefresh(sell0)
-	end
-
-	local ship0 = playerGui:FindFirstChild(SHIP_MANAGEMENT_PANEL_GUI, true)
-	if ship0 and ship0:IsA("ScreenGui") then
-		hookDescendantRefresh(ship0)
 	end
 
 	local shipOil0 = playerGui:FindFirstChild(SHIP_OIL_PANEL_GUI, true)
@@ -541,14 +582,19 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 		hookDescendantRefresh(shipOil0)
 	end
 
-	local selectShip0 = playerGui:FindFirstChild(SELECT_SHIP_PANEL_GUI, true)
-	if selectShip0 and selectShip0:IsA("ScreenGui") then
-		hookDescendantRefresh(selectShip0)
-	end
-
 	local shop0 = playerGui:FindFirstChild(SHOP_PANEL_GUI, true)
 	if shop0 and shop0:IsA("ScreenGui") then
 		hookDescendantRefresh(shop0)
+	end
+
+	local fleet0 = playerGui:FindFirstChild(FLEET_PANEL_GUI, true)
+	if fleet0 and fleet0:IsA("ScreenGui") then
+		local fleetSg = fleet0 :: ScreenGui
+		hookDescendantRefresh(fleetSg)
+		--- Re-resolve when `FleetPanelGui.Enabled` flips so the
+		--- `CloseButtonPointerRoot` panel pick (`Pass 1: prefer Enabled`
+		--- in `findPointerRootFrame`) updates as the modal opens / closes.
+		fleetSg:GetPropertyChangedSignal("Enabled"):Connect(scheduleRefresh)
 	end
 
 	playerGui.ChildAdded:Connect(function(ch)
@@ -560,13 +606,16 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 			ch:IsA("ScreenGui")
 			and (
 				ch.Name == SELL_OIL_PANEL_GUI
-				or ch.Name == SHIP_MANAGEMENT_PANEL_GUI
 				or ch.Name == SHIP_OIL_PANEL_GUI
-				or ch.Name == SELECT_SHIP_PANEL_GUI
 				or ch.Name == SHOP_PANEL_GUI
+				or ch.Name == FLEET_PANEL_GUI
 			)
 		then
 			hookDescendantRefresh(ch)
+			if ch.Name == FLEET_PANEL_GUI then
+				local fleetCh = ch :: ScreenGui
+				fleetCh:GetPropertyChangedSignal("Enabled"):Connect(scheduleRefresh)
+			end
 			scheduleRefresh()
 		end
 	end)
@@ -580,10 +629,9 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 		end
 		if
 			inst.Name == SELL_OIL_PANEL_GUI
-			or inst.Name == SHIP_MANAGEMENT_PANEL_GUI
 			or inst.Name == SHIP_OIL_PANEL_GUI
-			or inst.Name == SELECT_SHIP_PANEL_GUI
 			or inst.Name == SHOP_PANEL_GUI
+			or inst.Name == FLEET_PANEL_GUI
 			or inst.Name == HUD_SCREEN_GUI
 		then
 			scheduleRefresh()

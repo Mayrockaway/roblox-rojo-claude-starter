@@ -230,6 +230,23 @@ function DrillingService:_handleStartDrill(player: Player, payload: any)
 	-- (spatial SFX, sink animation, etc.).
 	self._oilStateService:PushState(userId)
 
+	-- Redrill (T4+): the placed tile was already drilled, and `TryStartDrill`
+	-- has wiped the tile's production state. Tell the owner to clean up the
+	-- DrillComplete shovel model if it was up (tile was in `revealPending`).
+	-- Production sprays / pump intake stop on their own because
+	-- `OilProductionService` / `OilVisualService` gate on `tile.drilled` etc.
+	-- and the state push above already updated. Owner-only because the
+	-- shovel only spawns for the owner (`DrillReplicationClient`); other
+	-- clients never see one to clean up. See chat 2026-04 "T4-T6 reroll".
+	if data.isRedrill == true then
+		self._progressEvent:FireClient(player, {
+			kind = "redrilled",
+			ownerUserId = userId,
+			chunkId = data.chunkId,
+			tileKey = data.tileKey,
+		})
+	end
+
 	local duration = data.duration
 	-- Broadcast "drill started" so all clients play the sink animation
 	self._progressEvent:FireAllClients({

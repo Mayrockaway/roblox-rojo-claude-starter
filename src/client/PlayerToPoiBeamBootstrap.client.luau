@@ -49,29 +49,21 @@ local function normStep(any: any): string
 	return (any :: string):gsub("^%s+", ""):gsub("%s+$", "")
 end
 
-local function currentDocksSub(): string
-	local subAny = player:GetAttribute(Constants.FtueDocksUpgradeSubStepAttribute)
-	if typeof(subAny) == "string" then
-		return subAny :: string
-	end
-	return ""
-end
-
-local function ruleApplies(rule: any, step: string, docksSub: string): boolean
-	if rule.ftueStep ~= step then
-		return false
-	end
-	if rule.docksSubStep == nil then
-		return true
-	end
-	return rule.docksSubStep == docksSub
+-- `currentDocksSub` + the `docksSubStep` branch in `ruleApplies` were
+-- deleted by Step 4 of the boat-progression refactor along with the
+-- `WaitDocksUpgradeShip` FTUE leg, the `FtueDocksUpgradeSubStep`
+-- attribute, and the dockman beam rule. Beam rules are now keyed only
+-- by `ftueStep`; if a future leg needs sub-step gating, re-introduce a
+-- fresh per-leg field on `PoiBeamStepRule` rather than reviving the old
+-- one (see `FtuePoiBeamConfig` header).
+local function ruleApplies(rule: any, step: string): boolean
+	return rule.ftueStep == step
 end
 
 local function currentRule(): any
 	local step = normStep(player:GetAttribute(Constants.FtueStepAttribute))
-	local docksSub = currentDocksSub()
 	for _, rule in FtuePoiBeamConfig.Rules do
-		if ruleApplies(rule, step, docksSub) then
+		if ruleApplies(rule, step) then
 			return rule
 		end
 	end
@@ -245,7 +237,9 @@ local function refresh()
 end
 
 player:GetAttributeChangedSignal(Constants.FtueStepAttribute):Connect(refresh)
-player:GetAttributeChangedSignal(Constants.FtueDocksUpgradeSubStepAttribute):Connect(refresh)
+-- `FtueDocksUpgradeSubStepAttribute` change-listener was deleted by
+-- Step 4 of the boat-progression refactor along with the leg + the
+-- attribute itself.
 player:GetAttributeChangedSignal(PLOT_ID_ATTRIBUTE):Connect(refresh)
 
 --- **Rejoin / respawn:** re-resolve the rig and reattach all beams when the

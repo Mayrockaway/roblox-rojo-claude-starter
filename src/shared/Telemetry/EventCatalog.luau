@@ -125,7 +125,14 @@ EventCatalog.Events = {
 	oil_tank_upgraded       = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
 	ship_speed_upgraded     = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
 	ship_capacity_upgraded  = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
+	-- `ship_skin_equipped` was renamed to `boat_equipped` + `boat_unlocked`
+	-- by Step 6 of the boat-progression refactor (`OilStateService` emits
+	-- `boat_equipped` from `:SetEquippedBoatId` and `boat_unlocked` from
+	-- `:TryUnlockBoat`). The old key is kept here for back-compat with
+	-- pre-Step-6 dashboards but is no longer emitted by live code.
 	ship_skin_equipped      = { category = "custom",  gaCategory = "design",   sampleRate = 1.0 },
+	boat_equipped           = { category = "custom",  gaCategory = "design",   sampleRate = 1.0 },
+	boat_unlocked           = { category = "custom",  gaCategory = "design",   sampleRate = 1.0 },
 	equipment_shop_rotated  = { category = "custom",  gaCategory = "design",   sampleRate = 1.0 },
 
 	--==========================================================================

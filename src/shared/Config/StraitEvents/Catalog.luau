@@ -14,6 +14,15 @@ export type StraitEventDef = {
 	displayName: string,
 	--- Optional banner line for playtest HUD (defaults to `displayName` if omitted).
 	playtestTitle: string?,
+	--- Relative pick weight inside the same-severity pool. `nil` defaults
+	--- to 1 (legacy uniform behavior). The picker normalizes against
+	--- `Σ(weight)` of the pool, so set these as plain ratios — e.g.
+	--- `{Tornado=2, MineStrike=1, MissileStrike=1, USShipSlap=1}` would
+	--- make Tornado fire 40% of the time within the High pool while
+	--- the three total-loss events split the remaining 60% evenly.
+	--- Negative or zero weights are coerced to "skip" (event won't be
+	--- picked) so you can hot-mute an event without removing the row.
+	weight: number?,
 	skipWaypointPause: boolean?,
 	pauseSeconds: number?,
 	-- Multiplies shipment.priceMultiplier (e.g. 0.94 = 6% effective payout hit at resolution).
@@ -165,12 +174,21 @@ Catalog.AirStrikeConfig = {
 	SequenceDuration = 14, -- 2s warning + ~8s jet flight (halved speed) + 4s aftermath
 }
 
+--- TUNING NOTE — `weight` field on every row defaults to `1` (uniform
+--- inside the same severity pool). Bump a value to make that event
+--- relatively more likely than its siblings; drop to `0` to mute. The
+--- `Catalog.PickRandom` math normalizes against the pool total, so
+--- weights are pure ratios — `2` vs `1` = "fires twice as often within
+--- this severity bucket". Per-bracket occurrence chance and severity
+--- distribution are still controlled by `StraitEventConfig` (this only
+--- affects which event from the chosen severity rolls).
 Catalog.Events = {
 	-- Low: paperwork FX (StraitWaypointWorldFx EVENT_FX + optional StraitWaypointsFx assets)
 	{
 		id = "RoutinePaperwork",
 		severity = "Low",
 		displayName = "Routine paperwork",
+		weight = 1,
 		priceMultiplierFactor = 0.97,
 	} :: StraitEventDef,
 	-- Low: former "Coast guard glance" — same boarding inspection cinematic as full inspection
@@ -178,6 +196,7 @@ Catalog.Events = {
 		id = "CoastGuardInspection",
 		severity = "Low",
 		displayName = "Coast guard inspection",
+		weight = 1,
 		coastGuardEvent = true,
 	} :: StraitEventDef,
 	-- Low: former "High winds" — uses tornado rolls + `TornadoEvent` / Tornado VFX (catalog id stays for manifests / logs)
@@ -185,6 +204,7 @@ Catalog.Events = {
 		id = "HighWinds",
 		severity = "Low",
 		displayName = "High winds",
+		weight = 1,
 		tornadoEvent = true,
 	} :: StraitEventDef,
 	-- Medium: no bespoke world FX yet; payout + extended pause only
@@ -192,6 +212,7 @@ Catalog.Events = {
 		id = "EngineRoomSmoke",
 		severity = "Medium",
 		displayName = "Engine room smoke",
+		weight = 1,
 		pauseSeconds = EXT,
 		priceMultiplierFactor = 0.9,
 	} :: StraitEventDef,
@@ -199,6 +220,7 @@ Catalog.Events = {
 		id = "PirateRaid",
 		severity = "Medium",
 		displayName = "Pirate raid",
+		weight = 1,
 		looseBarrelLossFraction = 0.25,
 		pirateEvent = true,
 	} :: StraitEventDef,
@@ -207,26 +229,35 @@ Catalog.Events = {
 		id = "Storm",
 		severity = "Medium",
 		displayName = "Thunderstorm",
+		weight = 1,
 		stormEvent = true,
 	} :: StraitEventDef,
-	-- High: US Navy slap cinematic (absorbs old plain "Boarding and seizure" total-loss row)
+	-- High: US Navy slap cinematic (absorbs old plain "Boarding and seizure" total-loss row).
+	-- Lowest weight in the High pool — Sea Monster is the rare "spectacle"
+	-- total loss; Mine and Missile already cover the bulk of that fantasy.
 	{
 		id = "USShipSlap",
 		severity = "High",
 		displayName = "Sea Monster",
+		weight = 0.5,
 		totalLoss = true,
 		usShipSlapEvent = true,
 	} :: StraitEventDef,
+	-- Tornado is the only non-total-loss High event (independent barrel-loss
+	-- + delay rolls instead of "instant ship gone"). Heavily weighted so
+	-- Closed-strait High rolls don't feel like 75% guaranteed total loss.
 	{
 		id = "Tornado",
 		severity = "High",
 		displayName = "Strait tornado",
+		weight = 2,
 		tornadoEvent = true,
 	} :: StraitEventDef,
 	{
 		id = "MineStrike",
 		severity = "High",
 		displayName = "Mine strike",
+		weight = 0.75,
 		totalLoss = true,
 		mineEvent = true,
 	} :: StraitEventDef,
@@ -234,6 +265,7 @@ Catalog.Events = {
 		id = "MissileStrike",
 		severity = "High",
 		displayName = "Missile strike",
+		weight = 0.75,
 		totalLoss = true,
 		missileEvent = true,
 	} :: StraitEventDef,
@@ -265,12 +297,52 @@ function Catalog.GetPool(severity: Severity): { StraitEventDef }
 	return pool
 end
 
+--- Weighted random pick from the same-severity pool. Each `def.weight`
+--- defaults to 1 (legacy uniform behavior), so adding the field to the
+--- type without authoring per-row weights is a no-op. Authors can tune
+--- relative ratios (e.g. weight 2 vs 1 → 2x as likely within the pool)
+--- to bias Closed-strait High rolls away from the three total-loss
+--- events and toward Tornado, etc., without touching this function.
+---
+--- A pool whose total weight is `0` (every entry weight ≤ 0) silently
+--- falls back to uniform across the full pool — defensive so a bad
+--- config never returns `nil` and breaks the shipment-event chain.
 function Catalog.PickRandom(severity: Severity, rng: Random): StraitEventDef?
 	local pool = Catalog.GetPool(severity)
 	if #pool == 0 then
 		return nil
 	end
-	return pool[rng:NextInteger(1, #pool)]
+
+	local total = 0
+	for _, def in ipairs(pool) do
+		local w = tonumber(def.weight) or 1
+		if w > 0 then
+			total += w
+		end
+	end
+	if total <= 0 then
+		--- Defensive fallback: every entry was 0/negative. Don't return
+		--- nil (would cancel the event silently); pick uniformly so the
+		--- event chain still resolves while authors investigate.
+		return pool[rng:NextInteger(1, #pool)]
+	end
+
+	local roll = rng:NextNumber(0, total)
+	local cursor = 0
+	for _, def in ipairs(pool) do
+		local w = tonumber(def.weight) or 1
+		if w <= 0 then
+			continue
+		end
+		cursor += w
+		if roll <= cursor then
+			return def
+		end
+	end
+	-- FP-drift safety: NextNumber's upper bound is exclusive in Roblox
+	-- but we use `<=` above to catch the rare exact-`total` case; this
+	-- final return guards against a microscopic precision miss.
+	return pool[#pool]
 end
 
 return Catalog

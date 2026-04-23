@@ -116,4 +116,33 @@ function ShipUpgradeConfig.GetCapacityUpgradeCost(level: number): number?
 	return CAPACITY_UPGRADE_COSTS[level]
 end
 
+--- Cumulative cash a player must have spent to reach `currentLevel` from L1.
+--- A level-1 ship paid nothing; level 2 = `costs[1]`; level 3 = `costs[1] + costs[2]`; etc.
+--- Used by the v8 → v11 boat-progression refund migration in
+--- `OilStateService._applyPersistedIntoState`: when a legacy profile still
+--- carries `shipSpeedLevel` / `shipCapacityLevel`, the player is refunded
+--- the exact cumulative cash they sank into the upgrade ladder before the
+--- per-boat-baked-stats system shipped. Both helpers clamp the input to
+--- the configured max level so a tampered profile can't claim a refund
+--- larger than the published ladder.
+function ShipUpgradeConfig.GetTotalSpeedUpgradeCost(currentLevel: number): number
+	local maxLevel = ShipUpgradeConfig.MaxSpeedLevel
+	local lvl = math.clamp(math.floor(currentLevel or 1), 1, maxLevel)
+	local total = 0
+	for i = 1, lvl - 1 do
+		total += SPEED_UPGRADE_COSTS[i] or 0
+	end
+	return total
+end
+
+function ShipUpgradeConfig.GetTotalCapacityUpgradeCost(currentLevel: number): number
+	local maxLevel = ShipUpgradeConfig.MaxCapacityLevel
+	local lvl = math.clamp(math.floor(currentLevel or 1), 1, maxLevel)
+	local total = 0
+	for i = 1, lvl - 1 do
+		total += CAPACITY_UPGRADE_COSTS[i] or 0
+	end
+	return total
+end
+
 return ShipUpgradeConfig

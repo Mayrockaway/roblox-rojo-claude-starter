@@ -47,8 +47,22 @@ export type ClientRemotes = {
 	requestRevealTile: RemoteEvent,
 	requestDispatchShipment: RemoteEvent,
 	requestSetSelectedBoat: RemoteEvent,
-	requestUpgradeShipSpeed: RemoteEvent,
-	requestUpgradeShipCapacity: RemoteEvent,
+	-- Step 6: boat-equip flow. The planned boat-inventory UI fires this
+	-- after `RequestUnlockBoat` succeeds (or directly when re-equipping
+	-- an already-owned boat). Server handler:
+	-- `PlotResourceService` → `OilStateService:SetEquippedBoatId`.
+	-- Distinct from `requestSetSelectedBoat` (legacy ship-picker
+	-- payload that also accepts the legacy `boatTypeId` shape via
+	-- `ShipProfileMigration`); the two will collapse once the boat-
+	-- inventory UI replaces the legacy picker.
+	requestSetEquippedBoat: RemoteEvent,
+	requestUnlockBoat: RemoteEvent,
+	-- `requestUpgradeShipSpeed` / `requestUpgradeShipCapacity` aliases were
+	-- deleted by Step 4 of the boat-progression refactor. Speed/capacity
+	-- are baked per-boat in `BoatCatalog` (`speedLevel` /
+	-- `capacityLevel`); progression happens via `RequestUnlockBoat` +
+	-- `RequestSetEquippedBoat`. Removed simultaneously with the matching
+	-- `RemoteNames` entries to avoid a `waitRemote(nil)` boot crash.
 	requestSellWarehouseBarrels: RemoteEvent,
 	requestEquipmentShopCatalog: RemoteFunction,
 	requestPurchaseEquipment: RemoteEvent,
@@ -111,8 +125,8 @@ local Remotes: ClientRemotes = {
 	requestRevealTile = waitRemote(RemoteNames.RequestRevealTile) :: RemoteEvent,
 	requestDispatchShipment = waitRemote(RemoteNames.RequestDispatchShipment) :: RemoteEvent,
 	requestSetSelectedBoat = waitRemote(RemoteNames.RequestSetSelectedBoat) :: RemoteEvent,
-	requestUpgradeShipSpeed = waitRemote(RemoteNames.RequestUpgradeShipSpeed) :: RemoteEvent,
-	requestUpgradeShipCapacity = waitRemote(RemoteNames.RequestUpgradeShipCapacity) :: RemoteEvent,
+	requestSetEquippedBoat = waitRemote(RemoteNames.RequestSetEquippedBoat) :: RemoteEvent,
+	requestUnlockBoat = waitRemote(RemoteNames.RequestUnlockBoat) :: RemoteEvent,
 	requestSellWarehouseBarrels = waitRemote(RemoteNames.RequestSellWarehouseBarrels) :: RemoteEvent,
 	requestEquipmentShopCatalog = waitRemote(RemoteNames.RequestEquipmentShopCatalog) :: RemoteFunction,
 	requestPurchaseEquipment = waitRemote(RemoteNames.RequestPurchaseEquipment) :: RemoteEvent,

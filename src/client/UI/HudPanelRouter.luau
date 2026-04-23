@@ -16,10 +16,10 @@ local getClientRemotes = require(script.Parent.Parent:WaitForChild("GetClientRem
 local ActiveManifestController = require(script.Parent.ActiveManifestController)
 local DailyPanel = require(script.Parent.HudPanels.DailyPanel)
 local EquipmentShopPanel = require(script.Parent.HudPanels.EquipmentShopPanel)
+local FleetPanel = require(script.Parent.HudPanels.FleetPanel)
 local OilPriceInfoPanel = require(script.Parent.HudPanels.OilPriceInfoPanel)
 local RobuxShopPanel = require(script.Parent.HudPanels.RobuxShopPanel)
 local SellOilPanel = require(script.Parent.HudPanels.SellOilPanel)
-local ShipManagementPanel = require(script.Parent.HudPanels.ShipManagementPanel)
 local ShipOilPanel = require(script.Parent.HudPanels.ShipOilPanel)
 local StraitControlPanel = require(script.Parent.HudPanels.StraitControlPanel)
 local SettingsPanel = require(script.Parent.HudPanels.SettingsPanel)
@@ -76,7 +76,17 @@ local SCREEN_BIND: { [string]: (PlayerGui) -> HudPanelTypes.HudPanelController? 
 	[StraitInfoPanel.screenName()] = StraitInfoPanel.bind,
 	[EquipmentShopPanel.screenName()] = EquipmentShopPanel.bind,
 	[ShipOilPanel.screenName()] = ShipOilPanel.bind,
-	[ShipManagementPanel.screenName()] = ShipManagementPanel.bind,
+	-- Fleet panel (`FleetPanelGui`) — single-modal replacement for the
+	-- legacy `ShipManagementPanelGui` + `SelectShipPanelGui` split. Bound
+	-- here so `HudPanelRouter.start()` calls `FleetPanel.bind()` once
+	-- `PlayerGui` has the modal, which (a) runs `wireFleetPanel` so the
+	-- catalog grid populates and the card-click router attaches, and (b)
+	-- lets `HudPanelBase.bindScreenGui` wire the `CloseButton` via
+	-- `ModalPanelShell.bindCloseControls`. Open from elsewhere via
+	-- `HudPanelRouter.openScreen("FleetPanelGui")` — today the dockman
+	-- `ManageShipPrompt.OpensPanel` attribute drives this through
+	-- `ProximityPanelOpener`.
+	[FleetPanel.screenName()] = FleetPanel.bind,
 	[SettingsPanel.screenName()] = SettingsPanel.bind,
 	[SellOilPanel.screenName()] = SellOilPanel.bind,
 	[DailyPanel.screenName()] = DailyPanel.bind,

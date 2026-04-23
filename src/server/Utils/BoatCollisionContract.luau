@@ -14,8 +14,18 @@
 --       - "ShipmentShip": active voyage hulls (un-anchored, welded rigid assembly)
 --     The pair-rule matrix is registered by `BoatDockService:Init` /
 --     `OilShipmentService:Init` (idempotent). Characters use the engine default
---     `Default` group; the strait-event freeze flow temporarily reassigns to
---     `PlayerInStraitEvent` (see `OilShipmentService`).
+--     `Default` group on land; while a player is **on a voyage** (their owner
+--     character has been teleported onto the deck at dispatch) the SERVER
+--     reassigns every body part to `PlayerInStraitEvent` and only restores
+--     the prior group at voyage completion / total loss. The group name is
+--     legacy — it originally applied only during the strait-event freeze
+--     cinematic, but the rule it expresses ("this character is on a moving
+--     boat in the strait, so they should not collide with anything in the
+--     world except the deck they're standing on") is the same for the
+--     full voyage; expanding scope to the entire voyage was the simplest
+--     way to satisfy the product rule that voyaging players never clip on
+--     docks / map decor / parked boats while still standing on their
+--     own (and other players') ship hulls.
 --
 --   * Voyage hulls (`ShipmentShip`) collision pairs:
 --       - ShipmentShip ↔ Default (characters)   → collide   (owner walks on their own deck)
@@ -34,8 +44,19 @@
 --       - IdleBoat ↔ IdleBoat                   → no collide (parked boats never push each other)
 --       - IdleBoat ↔ MarinaDock                 → no collide
 --       - IdleBoat ↔ MapDecor                   → no collide
---       - IdleBoat ↔ PlayerInStraitEvent        → no collide (strait-event reassigned characters too)
+--       - IdleBoat ↔ PlayerInStraitEvent        → no collide (voyaging characters)
 --       - IdleBoat ↔ StraitWaypointFxNpc        → no collide
+--
+--   * Voyaging owner (`PlayerInStraitEvent`, applied for the full voyage):
+--       - PlayerInStraitEvent ↔ ShipmentShip    → collide   (owner stands on their hull)
+--       - PlayerInStraitEvent ↔ Default/Players → collide   (other characters can bump them)
+--       - PlayerInStraitEvent ↔ IdleBoat        → no collide (covered above)
+--       - PlayerInStraitEvent ↔ MarinaDock      → no collide (boat can dock right against pier)
+--       - PlayerInStraitEvent ↔ MapDecor        → no collide (buoys / props in the lane don't trip them)
+--       - PlayerInStraitEvent ↔ StraitWaypointFxNpc → no collide (cosmetic NPCs)
+--     The rule "voyaging players only collide with hulls + other players"
+--     is what lets the deck stay walkable while ships sail through the
+--     dock pier and past world decor without snagging the player.
 --
 --     The "characters clip through docked boats" rule is deliberate — the
 --     gameplay requirement is to prevent owners being knocked off their own
@@ -77,6 +98,22 @@
 
 local NON_COLLIDABLE_BOAT_HELPER_NAMES: { [string]: boolean } = {
 	BarrelStackRoot = true,
+	-- `DeckSeat` is authored as a `Seat` so legacy rigs can fall back to its
+	-- world position for owner teleport / NPC deck-Y resolution, but it is
+	-- never meant to actually seat the player (see the header comment on
+	-- `BoatDockService.luau` — "DeckSeat remains as authored rig geometry
+	-- only; it is neutralized so players are never seated by the boat").
+	-- The legacy `Tanker` / `PirateShip` / `Ducky` templates were authored
+	-- with `Transparency = 1` already; the new `Tier1Boat`..`Tier10Boat`
+	-- templates ship at `Transparency = 0.30` (they were imported from a
+	-- single base raft model and the seat helper was never re-hidden), so
+	-- without an entry here the seat showed through during voyages and at
+	-- the dock. Adding it makes `BoatCollisionContract.NeutralizeHelperPart`
+	-- force `Transparency = 1` + disable `CanCollide` / `CanTouch` /
+	-- `CanQuery` on every spawn so the seat never auto-sits a player who
+	-- walks over it. Position is preserved (we only flip render / hit flags),
+	-- so all existing rig fallbacks that read `seat.Position` keep working.
+	DeckSeat = true,
 	FRONT_MARKER = true,
 	PlayerFlag = true,
 	WaterlineAnchor = true,

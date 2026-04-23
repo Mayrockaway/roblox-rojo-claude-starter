@@ -8,14 +8,17 @@
 -- 3) Else first **`Model`** named **`modelName`** under the **search root** (`PrimaryPart` or any **`BasePart`**).
 --
 -- **`searchScope`** picks the search root:
--- * `"Workspace"` (default): whole `Workspace` (use for shared NPCs like `Dockman`, `PirateHire`, `ArmyGeneral`).
+-- * `"Workspace"` (default): whole `Workspace` (use for shared NPCs like `PirateHire`, `ArmyGeneral`).
 -- * `"OwnedPlot"`: only the local player's plot (`Workspace.Map.Plots.<myPlot>`). Use for cloned per-plot decor
 --   like `PlotDispatch` so the beam points at **your** copy, not another player's.
 -- * `"OwnedWarehouse"`: only the local player's warehouse visual
 --   (`Workspace.Map.FinishPlot.Warehouse_<myUserId>`). Use for the warehouse terminal / sell prompt anchor.
 --
--- **`docksSubStep`**: when set, the rule applies only if `Player:GetAttribute("FtueDocksUpgradeSubStep")` matches
--- (e.g. `"Dockman"` during docks ship leg). Omit for all substeps of that step.
+-- The `docksSubStep` field was deleted by Step 4 of the boat-progression
+-- refactor along with the `WaitDocksUpgradeShip` FTUE leg / Dockman beam
+-- and the `FtueDocksUpgradeSubStep` player attribute. No remaining rule
+-- needs sub-step gating; if a future leg does, re-introduce a fresh
+-- per-leg field rather than reviving the old one.
 
 local FtueConfig = require(script.Parent:WaitForChild("FtueConfig"))
 
@@ -52,19 +55,37 @@ export type PoiBeamTarget = {
 
 export type PoiBeamStepRule = {
 	ftueStep: string,
-	docksSubStep: string?,
 	targets: { PoiBeamTarget },
 }
 
 local FtuePoiBeamConfig = {
 	Rules = {
 		{
+			--- Place-first-drill leg: world beam from the player rig to the
+			--- highlighted tutorial tile so the player knows **where to walk and
+			--- face** before tapping to place. Targets the same per-plot
+			--- `IsFtueTutorialTile` BasePart that **`OilStateService:SetFtueTutorialTileMarker`**
+			--- stamps for both `WaitDrillOil_WIP` and `WaitReveal` (see
+			--- `FtueService._setStep` `enableMarker` clause). Pairs with the
+			--- mobile facing-projection placement flow (`PlacementClient.resolveProjectedTileFromCharacter`):
+			--- player walks toward the beam, ghost auto-anchors on the tile,
+			--- single tap commits.
+			ftueStep = FtueConfig.Step.WaitDrillOil_WIP,
+			targets = {
+				{
+					id = "FtueTutorialTile",
+					attributeName = "IsFtueTutorialTile",
+					searchScope = "OwnedPlot",
+					style = nil,
+				},
+			},
+		},
+		{
 			--- Reveal leg: world beam from the player rig to the just-drilled tutorial tile
 			--- (the BasePart that **`OilStateService:SetFtueTutorialTileMarker`** stamps with
 			--- `IsFtueTutorialTile = true`). Scoped to the local player's plot so other
 			--- players' tutorial tiles do not pull the beam off-target.
 			ftueStep = FtueConfig.Step.WaitReveal,
-			docksSubStep = nil,
 			targets = {
 				{
 					id = "FtueTutorialTile",
@@ -76,7 +97,6 @@ local FtuePoiBeamConfig = {
 		},
 		{
 			ftueStep = FtueConfig.Step.WaitPlotShipment,
-			docksSubStep = nil,
 			targets = {
 				{
 					id = "PlotDispatch",
@@ -95,7 +115,6 @@ local FtuePoiBeamConfig = {
 			--- the parent model lets `PlayerToPoiBeam.resolveBasePart` pick a sensible
 			--- anchor (PrimaryPart / first BasePart).
 			ftueStep = FtueConfig.Step.WaitDocksEquipmentShop,
-			docksSubStep = nil,
 			targets = {
 				{
 					id = "DocksEquipmentShop",
@@ -104,12 +123,18 @@ local FtuePoiBeamConfig = {
 				},
 			},
 		},
+		--- Fleet-panel leg replaces the deleted `WaitDocksUpgradeShip` Dockman
+		--- beam. World beam from the player rig to the **Dockman** NPC so the
+		--- player can spot the prox prompt (`ManageShipPrompt.OpensPanel =
+		--- "FleetPanelGui"`) that opens the new `FleetPanelGui` modal. Once
+		--- the modal is open the beam is hidden (the FTUE pointer system
+		--- switches to `CloseButtonPointerRoot` inside `FleetPanelGui` —
+		--- driven by sub-step `ClosePanel`; see `FtueUiPointers`).
 		{
-			ftueStep = FtueConfig.Step.WaitDocksUpgradeShip,
-			docksSubStep = "Dockman",
+			ftueStep = FtueConfig.Step.WaitDocksFleetPanel,
 			targets = {
 				{
-					id = "Dockman",
+					id = "DockmanFleetPanel",
 					pointerGuiName = "FtueDockmanWorldPointerRoot",
 					modelName = "Dockman",
 					style = nil,
@@ -118,7 +143,6 @@ local FtuePoiBeamConfig = {
 		},
 		{
 			ftueStep = FtueConfig.Step.WaitWarehouseSell,
-			docksSubStep = nil,
 			targets = {
 				{
 					id = "WarehouseTerminal",
@@ -133,7 +157,6 @@ local FtuePoiBeamConfig = {
 		},
 		{
 			ftueStep = FtueConfig.Step.WaitDocksHire,
-			docksSubStep = nil,
 			targets = {
 				{
 					id = "PirateHire",

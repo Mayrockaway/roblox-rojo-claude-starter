@@ -290,9 +290,12 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 	screen:GetPropertyChangedSignal("Enabled"):Connect(function()
 		if not screen.Enabled then
 			--- FTUE equipment-shop leg: closing the modal *after* the free Tier 3
-			--- drill is purchased advances the player to the dockman leg
-			--- (`WaitDocksUpgradeShip`). Server validates step + sub-step before
-			--- transitioning so this fire is harmless outside the FTUE.
+			--- drill is purchased now advances the player directly to
+			--- `WaitDocksHire` (the old `WaitDocksUpgradeShip` Dockman leg was
+			--- deleted by Step 4 of the boat-progression refactor — see
+			--- `FtueService.OnFtueDocksProgress` for the new transition). Server
+			--- validates step + sub-step before transitioning so this fire is
+			--- harmless outside the FTUE.
 			local plr = Players.LocalPlayer
 			if
 				plr

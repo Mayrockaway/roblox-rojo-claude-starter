@@ -1,7 +1,7 @@
 --!strict
 
 local EquipmentCatalog = require(script.Parent:WaitForChild("EquipmentCatalog"))
-local ShipSkinCatalog = require(script.Parent:WaitForChild("ShipSkinCatalog"))
+local BoatCatalog = require(script.Parent:WaitForChild("BoatCatalog"))
 local FtuePoiBeamConfig = require(script.Parent:WaitForChild("FtuePoiBeamConfig"))
 local VeinCrateConfig = require(script.Parent:WaitForChild("VeinCrateConfig"))
 
@@ -59,8 +59,8 @@ local function collectCommonUiImageUris(): { string }
 		add((row :: any).iconAssetId)
 	end
 
-	for _, skin in pairs(ShipSkinCatalog.Skins) do
-		add((skin :: any).icon)
+	for _, boat in pairs(BoatCatalog.Boats) do
+		add((boat :: any).icon)
 	end
 
 	return out
@@ -119,8 +119,7 @@ local COMMON_STARTER_GUI_ENTRIES: { InstanceEntry } = {
 	{ service = "StarterGui", segments = { "HUD" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "SellOilPanelGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "ShipOilPanelGui" }, includeDescendants = true, optional = true },
-	{ service = "StarterGui", segments = { "ShipManagementPanelGui" }, includeDescendants = true, optional = true },
-	{ service = "StarterGui", segments = { "SelectShipPanelGui" }, includeDescendants = true, optional = true },
+	{ service = "StarterGui", segments = { "FleetPanelGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "SettingsPanelGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "FTUEDialogueGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "OilPriceInfoPanelGui" }, includeDescendants = true, optional = true },

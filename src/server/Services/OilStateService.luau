@@ -10,7 +10,7 @@ local Constants = require(Shared:WaitForChild("Constants"))
 local DataStoreWriteGate = require(script.Parent.Parent.Utils.DataStoreWriteGate)
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local BiomeConfig = require(Shared:WaitForChild("Config"):WaitForChild("BiomeConfig"))
-local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
+local BoatCatalog = require(Shared:WaitForChild("Config"):WaitForChild("BoatCatalog"))
 local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
 local ShipUpgradeConfig = require(Shared:WaitForChild("Config"):WaitForChild("ShipUpgradeConfig"))
 local ShipProfileMigration = require(Shared:WaitForChild("Config"):WaitForChild("ShipProfileMigration"))
@@ -158,12 +158,46 @@ end
 
 local function buildDefaultPersisted()
 	return {
-		version = 7,
+		--- Profile version. Bumped to **11** by Step 7 of the boat-progression
+		--- refactor: v11 retires the legacy boat ids (`DefaultTanker`,
+		--- `Ship3Skin`, `Ship4Skin`, `Ship5Skin`, `WhaleSkin`) in favor of
+		--- the consolidated `Tier1Boat`..`Tier10Boat` cash chain plus
+		--- `PirateShip` / `Ducky` / `Moby` Robux boats. The v10 → v11
+		--- migration in `_applyPersistedIntoState` runs every persisted
+		--- `equippedBoatId` and every key of `ownedBoatIds` /
+		--- `ownedShipSkinIds` through `BoatCatalog.RemapLegacyBoatId`
+		--- BEFORE any catalog gate so Robux purchases survive the rename.
+		---
+		--- Earlier history:
+		---   * 9 → 10 (Step 6): `shipSkinId` → `equippedBoatId`,
+		---     `ownedShipSkinIds` → `ownedBoatIds` field rename. Robux-only
+		---     carry-forward from the legacy ownership map.
+		---   * 8 → 9 (Step 4): deleted the `shipSpeedLevel` /
+		---     `shipCapacityLevel` + `ftueDocksUpgradeSubStep` upgrade
+		---     fields.
+		---   * 7 → 8 (Step 3): data-driven starter set.
+		--- v < 8 backfill still runs — see `_applyPersistedIntoState`.
+		version = 11,
 		cash = initialStartingCash(),
 		ftueEscortShipmentRemaining = initialFtueEscortShipmentRemaining(),
 		ftueDispatchCashGranted = false,
 		ftueTutorialCompleteCashGranted = false,
-		ftueFreeCargoCapacityUpgradeUsed = false,
+		--- One-shot **boat-progression refund** flag (Step 7+). When the
+		--- per-player speed/capacity upgrade ladder was retired (v8 → v9)
+		--- in favor of stats baked per-boat in `BoatCatalog`, the
+		--- `shipSpeedLevel` / `shipCapacityLevel` profile fields were
+		--- silently dropped — players who had spent cash on those
+		--- upgrades had no way to recover it. The v8 → v11 read shim in
+		--- `_applyPersistedIntoState` now refunds the exact cumulative
+		--- ladder cost (`ShipUpgradeConfig.GetTotalSpeedUpgradeCost` +
+		--- `GetTotalCapacityUpgradeCost`) into `state.cash` for any
+		--- profile that still carries the legacy fields, then flips this
+		--- flag to `true` so the refund cannot be replayed on subsequent
+		--- loads. Profiles whose legacy fields were already stripped by
+		--- an earlier v9+ load **cannot** be retroactively refunded —
+		--- the level data is gone — so this flag is also set to `true`
+		--- on those reads to avoid leaving a permanently "pending" mark.
+		legacyShipUpgradeRefunded = false,
 		--- One-shot flag: when `false`, the dock equipment shop FTUE leg
 		--- (`WaitDocksEquipmentShop`) hands the player **one** free drill of
 		--- `FtueConfig.FtueDocksFreeDrillItemId` (cost forced to 0 + rotation stock
@@ -199,18 +233,17 @@ local function buildDefaultPersisted()
 		nextDrillId = 1,
 		nextAttachmentId = 1,
 		activeDrills = {},
-		shipSpeedLevel = 1,
-		shipCapacityLevel = 1,
-		shipSkinId = "DefaultTanker",
-		--- Seeded so a freshly persisted profile is never written without the
-		--- starter tanker entry — keeps `_applyPersistedIntoState` and
-		--- `MonetizationService` from disagreeing on first save.
-		ownedShipSkinIds = { DefaultTanker = true },
-		--- Ship skins the player is allowed to equip via `SetShipSkinId`. Every
-		--- new profile starts with the starter `DefaultTanker`; everything else
-		--- is granted by `MonetizationService` on a verified Robux receipt.
-		--- Stored as `[skinId] = true` so JSON round-trip is order-stable.
-		ownedShipSkinIds = { DefaultTanker = true },
+		equippedBoatId = "Tier1Boat",
+		--- Boats the player is allowed to equip via `SetEquippedBoatId`.
+		--- Seeded data-drivenly from
+		--- `BoatCatalog.GetStarterBoatIds()` (Step 3 of the boat-
+		--- progression refactor) so adding a second starter / changing
+		--- the starter id in the catalog requires no service edit. Cash
+		--- unlocks land via `OilStateService:TryUnlockBoat`; Robux
+		--- unlocks land via `MonetizationService` `ProcessReceipt` →
+		--- `GrantBoat`. Stored as `[boatId] = true` so JSON
+		--- round-trip is order-stable.
+		ownedBoatIds = BoatCatalog.GetStarterBoatIds(),
 		ftueStep = if FtueConfig.Enabled then FtueConfig.Step.Intro else nil,
 		ftueCompleted = not FtueConfig.Enabled,
 		ftueDoneScreenAcknowledged = false,
@@ -238,12 +271,10 @@ local function buildDefaultPersisted()
 		--- (we never store `false`; absence == not purchased). Legacy saves
 		--- without the field load as `{}`.
 		purchasedOneTimeItemIds = {} :: { [string]: boolean },
-		--- Persisted **sub-step** within `WaitDocksUpgradeShip` so a player who quits
-		--- mid-leg (after talking to the dockman / mid-cargo-buy / about to close
-		--- the modal) resumes on the **same** dock ship beam + UI pointer they last
-		--- saw. Values: `"Dockman"` | `"CargoBuy"` | `"CloseModal"`. `nil` outside
-		--- that step. Mirrors `Constants.FtueDocksUpgradeSubStepAttribute` 1-to-1.
-		ftueDocksUpgradeSubStep = nil :: string?,
+		-- `ftueDocksUpgradeSubStep` was deleted by Step 4 of the boat-
+		-- progression refactor along with the `WaitDocksUpgradeShip`
+		-- FTUE leg + the speed/capacity upgrade ladder. Pre-Step-4
+		-- payloads carrying that field are silently ignored on load.
 		--- Persisted **rejoin / death-respawn anchor** while the player is mid-FTUE.
 		--- Captured (a) ~1s after every `_setStep` transition (post-step-driven
 		--- teleports settle), and (b) on `PlayerRemoving` right before the profile
@@ -594,7 +625,7 @@ function OilStateService:Init(remoteService, plotService)
 	self._dataStoreStudioFallbackWarned = false
 	self._lastOilDataStoreSaveClock = {} :: { [number]: number }
 	self._boatDockService = nil :: any
-	self._skinChangedHandler = nil :: ((number, string) -> ())?
+	self._equippedBoatChangedHandler = nil :: ((number, string) -> ())?
 	self._stateReadyForTimersCallback = nil :: ((number, { any }) -> ())?
 		self._dataStore = nil
 	self._devSkipSaveOnNextDrop = {} :: { [number]: boolean }
@@ -670,12 +701,8 @@ function OilStateService:SetFtueProgress(userId: number, step: string?)
 	if step == nil then
 		self:_clearFtuePlacementNoSellback(state)
 	end
-	-- Drop the dock-ship sub-step persistence whenever we leave that step so a
-	-- save flush mid-transition can never re-arm a stale Dockman / CargoBuy /
-	-- CloseModal value on a future rejoin.
-	if step ~= FtueConfig.Step.WaitDocksUpgradeShip then
-		(state :: any).ftueDocksUpgradeSubStep = nil
-	end
+	-- `ftueDocksUpgradeSubStep` cleanup removed by Step 4 (the leg + the
+	-- field are gone — see `WaitDocksUpgradeShip` notes above).
 	-- Tutorial escort vessel is only for the first dispatch during **`WaitPlotShipment`**; never after FTUE completes or past that leg.
 	if state.ftueCompleted or step == FtueConfig.Step.Done or step == FtueConfig.Step.WaitShipment then
 		state.ftueEscortShipmentRemaining = 0
@@ -796,37 +823,9 @@ function OilStateService:CaptureFtueSpawnSnapshot(userId: number)
 	self:SetFtueLastSpawn(userId, hrp.CFrame, plotId)
 end
 
---- Persist the dock-ship sub-step so a player who quits mid-leg rejoins on the
---- **same** beam / pointer they last saw. Valid values:
----   * `Dockman` — world beam to the dockman (no UI pointer)
----   * `CargoBuy` — `CargoUpgradePointer` over the cargo upgrade button
----   * `ChangeShip` — `ChangeShipPointer` over the change-ship button (after upgrade buy)
----   * `SelectShipOpen` — `CloseButtonPointer` on `SelectShipPanelGui` (browse + close)
----   * `CloseModal` — `ClosePointer` on `ShipManagementPanelGui` (close to advance)
----   * `nil` — not in the leg
---- `FtueService` mirrors its `Constants.FtueDocksUpgradeSubStepAttribute` writes
---- through this setter.
-function OilStateService:SetFtueDocksUpgradeSubStep(userId: number, sub: string?)
-	local state = self._statesByUserId[userId]
-	if not state then
-		return
-	end
-	if
-		sub ~= nil
-		and sub ~= "Dockman"
-		and sub ~= "CargoBuy"
-		and sub ~= "ChangeShip"
-		and sub ~= "SelectShipOpen"
-		and sub ~= "CloseModal"
-	then
-		sub = nil
-	end
-	if (state :: any).ftueDocksUpgradeSubStep == sub then
-		return
-	end
-	(state :: any).ftueDocksUpgradeSubStep = sub
-	self:_markDirty(userId)
-end
+-- `SetFtueDocksUpgradeSubStep` was deleted by Step 4 of the boat-
+-- progression refactor along with the entire `WaitDocksUpgradeShip`
+-- FTUE leg.
 
 --- Fired after a plot profile is loaded into memory: `(userId, drillCompletions)`.
 --- Used to replay completed timers that finished while offline and to schedule remaining delays.
@@ -1227,28 +1226,48 @@ function OilStateService:GetStateForClient(userId: number)
 		activeShipmentCount = state.activeShipmentCount,
 		boatState = (self._boatDockService and self._boatDockService:GetState(userId)) or nil,
 		boatCooldownEndsAt = (self._boatDockService and self._boatDockService:GetCooldownEndsAt(userId)) or nil,
-		shipSpeedLevel = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel),
-		shipCapacityLevel = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel),
-		shipSkinId = (typeof(state.shipSkinId) == "string" and state.shipSkinId) or "DefaultTanker",
-		--- Sent on every snapshot + push so `SelectShipPanel` can render the
-		--- locked / owned state without invoking a separate snapshot RemoteFn.
-		--- Keys are skin ids, values are always `true`. Unknown ids are
-		--- filtered defensively (catalog rename safety).
-		ownedShipSkinIds = (function()
-			local out: { [string]: boolean } = { DefaultTanker = true }
-			if typeof(state.ownedShipSkinIds) == "table" then
-				for skinId, owned in pairs(state.ownedShipSkinIds) do
-					if typeof(skinId) == "string" and skinId ~= "" and owned == true and ShipSkinCatalog.Skins[skinId] then
-						out[skinId] = true
+		-- `shipSpeedLevel` / `shipCapacityLevel` snapshot fields were
+		-- removed by Step 4 of the boat-progression refactor — speed and
+		-- capacity are baked per-boat in `BoatCatalog`. Clients that
+		-- need the equipped boat's level should look it up via
+		-- `ShipStats.LevelsForBoat(snap.equippedBoatId)`.
+		equippedBoatId = (typeof(state.equippedBoatId) == "string" and state.equippedBoatId) or "Tier1Boat",
+		--- Sent on every snapshot + push so `FleetPanel` (the boat picker /
+		--- buy / equip modal) can render the locked / owned / equipped
+		--- state without invoking a separate snapshot RemoteFn. Keys are
+		--- boat ids, values are always `true`. Unknown ids are filtered
+		--- defensively (catalog rename safety).
+		ownedBoatIds = (function()
+			-- Boat progression refactor (Step 3): seed the wire snapshot
+			-- from the data-driven starter set and filter persisted
+			-- entries through `IsBoatPurchasable` so placeholder
+			-- (`Tier*Boat`) ids never leak to the client even if a
+			-- tampered profile somehow contained one.
+			local out: { [string]: boolean } = BoatCatalog.GetStarterBoatIds()
+			if typeof(state.ownedBoatIds) == "table" then
+				for boatId, owned in pairs(state.ownedBoatIds) do
+					if
+						typeof(boatId) == "string"
+						and boatId ~= ""
+						and owned == true
+						and BoatCatalog.IsBoatPurchasable(boatId)
+					then
+						out[boatId] = true
 					end
 				end
 			end
 			return out
 		end)(),
-		resolvedShip = (function()
-			local spd = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
-			local capL = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
-			local rs = ShipStats.Resolve(spd, capL)
+		resolvedBoat = (function()
+			-- Boat progression refactor (Step 2/4): `resolvedBoat` is the
+			-- snapshot field clients render as the player's authoritative
+			-- ship stats (cargo, voyage seconds, dispatch fee). Stats are
+			-- baked per-boat in `BoatCatalog` (Step 4 deleted the
+			-- legacy per-player `shipSpeedLevel` / `shipCapacityLevel`
+			-- profile fields and the per-player upgrade ladder).
+			local boatId = (typeof(state.equippedBoatId) == "string" and BoatCatalog.Boats[state.equippedBoatId] and state.equippedBoatId)
+				or "Tier1Boat"
+			local rs = ShipStats.ResolveForBoat(boatId)
 			return {
 				capacity = rs.capacity,
 				dispatchFee = rs.dispatchFee,
@@ -1256,26 +1275,11 @@ function OilStateService:GetStateForClient(userId: number)
 				eventRisk = rs.eventRisk,
 			}
 		end)(),
-		upgradeShipSpeedCost = ShipUpgradeConfig.GetSpeedUpgradeCost(
-			math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
-		),
-		upgradeShipCapacityCost = (function()
-			local capL = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
-			local capCost = ShipUpgradeConfig.GetCapacityUpgradeCost(capL)
-			local plrSnap = Players:GetPlayerByUserId(userId)
-			if FtueConfig.Enabled and plrSnap and typeof(capCost) == "number" and capCost > 0 then
-				local fs = plrSnap:GetAttribute(Constants.FtueStepAttribute)
-				local sub = plrSnap:GetAttribute(Constants.FtueDocksUpgradeSubStepAttribute)
-				if
-					fs == FtueConfig.Step.WaitDocksUpgradeShip
-					and sub == "CargoBuy"
-					and (state :: any).ftueFreeCargoCapacityUpgradeUsed ~= true
-				then
-					return 0
-				end
-			end
-			return capCost
-		end)(),
+		-- `upgradeShipSpeedCost` / `upgradeShipCapacityCost` snapshot
+		-- fields were removed by Step 4 of the boat-progression refactor
+		-- alongside the `RequestUpgradeShip*` remotes. Per-boat unlock
+		-- costs live on `BoatCatalog.Boats[boatId].unlock.cashCost`
+		-- and are surfaced via the `RequestUnlockBoat` flow.
 		chunks = chunks,
 		drills = drills,
 		activeDrills = activeDrills,
@@ -1842,9 +1846,49 @@ function OilStateService:TryStartDrill(userId: number, payload): (boolean, strin
 	local ok, code, msg, chunk, tileKey, sx, sy, sz, cellR, cellC = self:_validateTilePlacement(userId, payload)
 	if not ok then return false, code, msg, nil end
 
+	-- Redrill path (T4+ with `canRedrill = true`): if the tile has already
+	-- been drilled, allow placement only when the tier supports redrill AND
+	-- the tile is not the chunk's permanent center pump. The tile's
+	-- production state is wiped here so the standard `_completeDrill` →
+	-- shovel → reveal flow re-rolls a fresh vein against
+	-- `GroundRarityWeights[chunk.groundType]` (with optional T6 bias from
+	-- `tierCfg.rerollWeightBias`). Production naturally stops the next tick
+	-- because `OilProductionService` / `OilVisualService` gate on
+	-- `tile.drilled` + `tile.veinTypeId` + `tile.visualsStartedAt`. The
+	-- shovel model (if any) gets cleaned up client-side via the
+	-- `kind="redrilled"` `DrillProgressUpdate` fired by `DrillingService`.
+	-- See chat 2026-04 "T4-T6 reroll capability".
 	local tile = chunk.tiles and chunk.tiles[tileKey]
+	local isRedrill = false
 	if tile and tile.drilled then
-		return false, "ERR_ALREADY_DRILLED", "This tile has already been drilled.", nil
+		if tile.hasCenterPump == true then
+			return false, "ERR_CENTER_PUMP", "The center pump is permanent — it can't be re-drilled.", nil
+		end
+		-- Shovel reveal stage: the tile has been drilled but the player has
+		-- not yet used the shovel on the `DrillComplete` model. Block ALL
+		-- placements (including T4+ `canRedrill`) so the player has to
+		-- shovel before this tile becomes available again — otherwise the
+		-- pending shovel reveal model gets orphaned and the player can
+		-- "skip" the shovel mechanic by stomping a fresh drill on top.
+		-- `PlacementClient.isPlacementValid` mirrors this rule so the
+		-- preview ghost goes red; this server check is the authoritative
+		-- gate against stale client state.
+		if tile.revealPending then
+			return false, "ERR_TILE_AWAITING_SHOVEL", "Shovel this drill open before placing another here.", nil
+		end
+		if tierCfg.canRedrill ~= true then
+			return false, "ERR_ALREADY_DRILLED", "This tile has already been drilled. Use a T4+ drill to re-drill it.", nil
+		end
+		isRedrill = true
+		tile.drilled = nil
+		tile.revealPending = nil
+		tile.revealedAt = nil
+		tile.visualsStartedAt = nil
+		tile.veinTypeId = nil
+		tile.veinResult = nil
+		tile.hasOil = nil
+		tile.oilType = nil
+		tile.drillPosition = nil
 	end
 
 	local ck = cellKey(cellR, cellC)
@@ -1928,6 +1972,11 @@ function OilStateService:TryStartDrill(userId: number, payload): (boolean, strin
 		tier = tier,
 		template = tierCfg.templateName,
 		oilType = entry.oilType,
+		--- True when this placement re-drilled an already-drilled tile (T4+
+		--- with `canRedrill = true`). `DrillingService` uses this to fire a
+		--- `kind="redrilled"` cleanup so the previous shovel model + production
+		--- visuals despawn before the new drill animation starts.
+		isRedrill = isRedrill,
 		depthMeters = depthMeters,
 		metersPerSecond = metersPerSecond,
 	}
@@ -1956,7 +2005,13 @@ function OilStateService:CompleteDrill(userId: number, drillId: number): (boolea
 	local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
 	local groundTypeName = chunk.groundType or chunk.biome or "Bronze"
 	local rng = Random.new(userId * 13 + drillId * 7 + math.floor(workspace:GetServerTimeNow() * 1000))
-	local rolledType = VeinCrateConfig.RollVeinType(groundTypeName, rng)
+	-- Per-tier rarity bias (e.g. T6's halved Unlucky + ×1.5 Epic+). Bias is
+	-- looked up by `entry.tier` rather than stored on the entry so config
+	-- changes take effect even for drills placed before the change. Applies
+	-- to every roll for that tier — first drill or reroll alike. Nil for
+	-- T1-T5 → standard `GroundRarityWeights` apply unchanged.
+	local rollTierCfg = entry.tier and OilConfig.DrillTiers[entry.tier]
+	local rolledType = VeinCrateConfig.RollVeinType(groundTypeName, rng, rollTierCfg and rollTierCfg.rerollWeightBias or nil)
 
 	--- FTUE first reveal: force Crude Geyser (item-11) — the Bronze Legendary jackpot.
 	--- Gives new players an immediate exciting hook. Only applies once per profile.
@@ -2626,7 +2681,13 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		ftueEscortShipmentRemaining = initialFtueEscortShipmentRemaining(),
 		ftueDispatchCashGranted = false,
 		ftueTutorialCompleteCashGranted = false,
-		ftueFreeCargoCapacityUpgradeUsed = false,
+		--- See `buildDefaultPersisted` — runtime mirror of the one-shot
+		--- legacy ship-upgrade cash refund flag. Flips to `true` after
+		--- `_applyPersistedIntoState` processes a profile that still
+		--- carried the v8 `shipSpeedLevel` / `shipCapacityLevel` fields
+		--- (or that arrived already stripped — see the field doc on the
+		--- persisted side for why both cases mark refunded).
+		legacyShipUpgradeRefunded = false,
 		--- See `buildDefaultPersisted` — runtime mirror of the one-shot free dock equipment shop drill flag.
 		ftueFreeDocksDrillUsed = false,
 		--- See `buildDefaultPersisted` — runtime mirror of the one-shot exact-Rare FTUE first-reveal flag.
@@ -2648,14 +2709,15 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 			Premium = 0,
 		},
 		activeShipmentCount = 0,
-		shipSpeedLevel = 1,
-		shipCapacityLevel = 1,
-		shipSkinId = "DefaultTanker",
-		--- See `buildDefaultPersisted` — same field, runtime side. Always
-		--- includes the starter tanker; `_applyPersistedIntoState` overlays
-		--- saved entries on top and `MonetizationService` mutates this via
-		--- `OilStateService:GrantShipSkin` after a verified receipt.
-		ownedShipSkinIds = { DefaultTanker = true } :: { [string]: boolean },
+		equippedBoatId = "Tier1Boat",
+		--- See `buildDefaultPersisted` — same field, runtime side.
+		--- Seeded from `BoatCatalog.GetStarterBoatIds()` (Step 3 of
+		--- the boat-progression refactor); `_applyPersistedIntoState`
+		--- overlays saved entries + re-runs the starter backfill so
+		--- legacy v<8 profiles converge to the data-driven starter set.
+		--- `OilStateService:GrantBoat` (Robux receipts) and
+		--- `:TryUnlockBoat` (cash unlocks) mutate this set at runtime.
+		ownedBoatIds = BoatCatalog.GetStarterBoatIds() :: { [string]: boolean },
 		chunksById = chunksById,
 		drillsById = {},         -- each record is a placed PUMP (center pumps + legacy migrated)
 		activeDrills = {},       -- in-progress drills; also persisted (wall-clock start/end)
@@ -2681,9 +2743,8 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		--- in lockstep with the persisted column via
 		--- `_applyPersistedIntoState` / `_buildPersistedFromState`.
 		purchasedOneTimeItemIds = {} :: { [string]: boolean },
-		--- See `buildDefaultPersisted` — runtime mirror of the persisted `WaitDocksUpgradeShip`
-		--- sub-step (`Dockman` / `CargoBuy` / `CloseModal`) so rejoin restores the right beam + pointer.
-		ftueDocksUpgradeSubStep = nil :: string?,
+		-- `ftueDocksUpgradeSubStep` runtime mirror was deleted by Step 4
+		-- of the boat-progression refactor along with the upgrade leg.
 		--- See `buildDefaultPersisted` — runtime mirror of the persisted FTUE rejoin
 		--- anchor. Read by `PlotService` / `FtueService` to override the default
 		--- ClaimPad teleport on the **first** character spawn after rejoin and on
@@ -2702,7 +2763,7 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		pcall(function()
 			local plr = Players:GetPlayerByUserId(userId)
 			Telemetry.Track(plr, "first_join", {
-				oilProfileVersionAtCreate = 7,
+				oilProfileVersionAtCreate = 10,
 			})
 		end)
 	end
@@ -2778,6 +2839,55 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 	if typeof(persisted.cash) == "number" then
 		state.cash = floorPositive(persisted.cash)
 	end
+
+	-- ─── Legacy ship-upgrade cash refund (boat-progression Step 7+) ────
+	-- Step 4 of the boat-progression refactor (v8 → v9) deleted the
+	-- per-player `shipSpeedLevel` / `shipCapacityLevel` fields and the
+	-- speed/capacity upgrade ladder, in favor of stats baked per-boat in
+	-- `BoatCatalog`. That deletion stripped the level fields from saves
+	-- without refunding the cash players had spent on those upgrades.
+	--
+	-- This block runs **once per profile** and refunds the exact
+	-- cumulative cost from the surviving level fields:
+	--
+	--   refund = ShipUpgradeConfig.GetTotalSpeedUpgradeCost(L_speed)
+	--          + ShipUpgradeConfig.GetTotalCapacityUpgradeCost(L_cap)
+	--
+	-- where `GetTotal*` sums the published upgrade costs from L1 → L
+	-- (a level-1 ship paid nothing; level 10 paid every step's price).
+	-- Profiles that no longer carry the legacy fields (because they
+	-- already loaded post-Step-4 and saved without them) cannot be
+	-- retroactively reconstructed — the level data is gone — so they
+	-- silently flip the flag without granting any cash. The flag
+	-- `legacyShipUpgradeRefunded` persists via `_serializeState` so the
+	-- refund cannot be replayed even if a future bug somehow
+	-- re-introduced the legacy fields into the persisted blob.
+	local pAny = persisted :: any
+	if pAny.legacyShipUpgradeRefunded == true then
+		(state :: any).legacyShipUpgradeRefunded = true
+	else
+		local rawSpeed = pAny.shipSpeedLevel
+		local rawCap = pAny.shipCapacityLevel
+		local refund = 0
+		if typeof(rawSpeed) == "number" then
+			refund += ShipUpgradeConfig.GetTotalSpeedUpgradeCost(rawSpeed)
+		end
+		if typeof(rawCap) == "number" then
+			refund += ShipUpgradeConfig.GetTotalCapacityUpgradeCost(rawCap)
+		end
+		if refund > 0 then
+			state.cash = floorPositive((state.cash or 0) + refund)
+			DevLog.log(string.format(
+				"[boat-refund] userId=%d refunded $%d (speedLevel=%s capacityLevel=%s) from legacy upgrade ladder",
+				tonumber(state.ownerUserId) or -1,
+				refund,
+				tostring(rawSpeed),
+				tostring(rawCap)
+			))
+		end
+		(state :: any).legacyShipUpgradeRefunded = true
+	end
+
 	if typeof((persisted :: any).ftueEscortShipmentRemaining) == "number" then
 		state.ftueEscortShipmentRemaining = math.clamp(math.floor((persisted :: any).ftueEscortShipmentRemaining), 0, 1)
 	else
@@ -2793,11 +2903,10 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 	else
 		state.ftueTutorialCompleteCashGranted = false
 	end
-	if (persisted :: any).ftueFreeCargoCapacityUpgradeUsed == true then
-		(state :: any).ftueFreeCargoCapacityUpgradeUsed = true
-	else
-		(state :: any).ftueFreeCargoCapacityUpgradeUsed = false
-	end
+	-- `ftueFreeCargoCapacityUpgradeUsed` was deleted by Step 4 of the
+	-- boat-progression refactor (the free first cargo upgrade leg is
+	-- gone). Pre-Step-4 payloads still carrying the field are silently
+	-- ignored on load.
 	if (persisted :: any).ftueFreeDocksDrillUsed == true then
 		(state :: any).ftueFreeDocksDrillUsed = true
 	else
@@ -2901,21 +3010,10 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		(state :: any).purchasedOneTimeItemIds = out
 	end
 
-	-- Restore the persisted dock-ship sub-step (only valid while ftueStep ==
-	-- WaitDocksUpgradeShip; otherwise force-clear so a stale value can't bleed
-	-- through if the step was advanced from a save flush in between).
-	do
-		local subAny = (pFtue :: any).ftueDocksUpgradeSubStep
-		local sub = if typeof(subAny) == "string" then (subAny :: string) else nil
-		if sub ~= "Dockman" and sub ~= "CargoBuy" and sub ~= "CloseModal" then
-			sub = nil
-		end
-		if (state :: any).ftueStep == FtueConfig.Step.WaitDocksUpgradeShip then
-			(state :: any).ftueDocksUpgradeSubStep = sub
-		else
-			(state :: any).ftueDocksUpgradeSubStep = nil
-		end
-	end
+	-- `ftueDocksUpgradeSubStep` restore was deleted by Step 4 of the
+	-- boat-progression refactor — the entire `WaitDocksUpgradeShip` leg
+	-- is gone (TODO Step 6/7 may re-introduce a boat-inventory FTUE leg
+	-- that pairs with the new boat unlock + equip flow).
 
 	-- Restore the persisted FTUE rejoin anchor (only valid while the player is
 	-- still mid-FTUE; ignored once `ftueCompleted == true` so finished players
@@ -2952,7 +3050,6 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 				or fs == FtueConfig.Step.WaitWarehouseSell
 				or fs == FtueConfig.Step.WaitSell
 				or fs == FtueConfig.Step.WaitDocksShipUpgrade
-				or fs == FtueConfig.Step.WaitDocksUpgradeShip
 				or fs == FtueConfig.Step.WaitDocksHire
 				or fs == FtueConfig.Step.Done
 			then
@@ -3022,43 +3119,140 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		end
 	end
 
-	-- Player ship (v4): migrate from legacy `selectedBoatTypeId` when profile version < 4.
+	-- Player ship / boat: migrate the equipped boat id across all known
+	-- profile schema versions. The persisted `shipSpeedLevel` /
+	-- `shipCapacityLevel` fields were deleted by Step 4 of the boat-
+	-- progression refactor — per-boat speed/capacity now live in
+	-- `BoatCatalog.Boats[id]` (`speedLevel` / `capacityLevel`). Old
+	-- payloads that still carry those fields are silently discarded;
+	-- the boat catalog is the only source of truth for stats now.
+	--
+	-- ─── v10 → v11 migration (Step 7) ──────────────────────────────────
+	-- v11 retires the legacy boat ids (`DefaultTanker`, `Ship3Skin`,
+	-- `Ship4Skin`, `Ship5Skin`, `WhaleSkin`) in favor of the consolidated
+	-- `Tier1Boat`..`Tier10Boat` cash chain plus three Robux ids
+	-- (`PirateShip`, `Ducky`, `Moby`). Every persisted boat id (the
+	-- equipped one + every key in `ownedBoatIds` / `ownedShipSkinIds`)
+	-- runs through `BoatCatalog.RemapLegacyBoatId` BEFORE any catalog
+	-- gate, so:
+	--
+	--   * `DefaultTanker` → `Tier1Boat`     (old starter → new starter)
+	--   * `Ship4Skin`     → `PirateShip`    (Robux purchase preserved)
+	--   * `Ship5Skin`     → `Ducky`         (Robux purchase preserved)
+	--   * `WhaleSkin`     → `Moby`          (Robux purchase preserved)
+	--   * `Ship3Skin`     → DROPPED         (never sold for real money;
+	--                                        productId was always 0)
+	--
+	-- ─── v9 → v10 (Step 6) — STILL APPLIES ─────────────────────────────
+	-- v9 profiles persisted `shipSkinId` + `ownedShipSkinIds`; v10+ uses
+	-- `equippedBoatId` + `ownedBoatIds`. We read either set and prefer
+	-- the new names. The Step-6 policy still holds: Robux-purchased boats
+	-- from `ownedShipSkinIds` carry forward, cash-only entries reset, and
+	-- the equipped boat carries forward only if it was Robux-bought (or
+	-- already a v10+ id). All the Step-7 remap above happens FIRST so
+	-- `Ship4Skin` already reads as `PirateShip` by the time the Step-6
+	-- Robux gate runs.
+	--
+	-- The starter set is always re-granted via `GetStarterBoatIds()`
+	-- below so the player is never left without an equippable boat.
+	-- ───────────────────────────────────────────────────────────────────
 	local pVer = tonumber(persisted.version) or 1
+	local persistedEquippedId: string? = nil
+	if typeof(persisted.equippedBoatId) == "string" then
+		persistedEquippedId = persisted.equippedBoatId
+	elseif typeof(persisted.shipSkinId) == "string" then
+		persistedEquippedId = persisted.shipSkinId
+	end
+	-- Step 7: legacy id remap. `RemapLegacyBoatId` returns `nil` for ids
+	-- that should drop entirely (`Ship3Skin`); everything else either
+	-- maps to the new id or passes through unchanged.
+	local persistedEquippedIdRemapped = BoatCatalog.RemapLegacyBoatId(persistedEquippedId)
+
 	if pVer >= 4 then
-		if typeof(persisted.shipSkinId) == "string" and ShipSkinCatalog.Skins[persisted.shipSkinId] then
-			state.shipSkinId = persisted.shipSkinId
+		if
+			typeof(persistedEquippedIdRemapped) == "string"
+			and BoatCatalog.Boats[persistedEquippedIdRemapped]
+		then
+			-- v11 (or v10 with no remap needed): trust the saved equip if
+			-- it points at a real (non-placeholder) catalog entry.
+			-- For v9 reads via the legacy `shipSkinId` key, additionally
+			-- gate the equipped carry-forward on the Robux-only rule —
+			-- a v9 profile that equipped a cash-only boat should reset
+			-- to the starter so the player isn't equipped to a boat they
+			-- no longer own after the Robux-only ownership filter below.
+			local fromLegacyShipSkinId = typeof(persisted.equippedBoatId) ~= "string"
+			if fromLegacyShipSkinId then
+				if BoatCatalog.IsBoatRobuxOwned(persistedEquippedIdRemapped) then
+					state.equippedBoatId = persistedEquippedIdRemapped
+				else
+					state.equippedBoatId = "Tier1Boat"
+				end
+			else
+				state.equippedBoatId = persistedEquippedIdRemapped
+			end
 		else
-			state.shipSkinId = "DefaultTanker"
+			state.equippedBoatId = "Tier1Boat"
 		end
-		state.shipSpeedLevel = math.clamp(math.floor(tonumber(persisted.shipSpeedLevel) or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
-		state.shipCapacityLevel = math.clamp(math.floor(tonumber(persisted.shipCapacityLevel) or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
 	else
 		local legacyId = if typeof(persisted.selectedBoatTypeId) == "string" then persisted.selectedBoatTypeId else nil
 		local migrated = ShipProfileMigration.FromLegacyBoatTypeId(legacyId)
-		state.shipSkinId = migrated.skinId
-		state.shipSpeedLevel = math.clamp(migrated.speedLevel, 1, ShipUpgradeConfig.MaxSpeedLevel)
-		state.shipCapacityLevel = math.clamp(migrated.capacityLevel, 1, ShipUpgradeConfig.MaxCapacityLevel)
+		state.equippedBoatId = migrated.boatId
 	end
 
-	-- Restore the ship-skin ownership map (set in `buildDefaultPersisted`).
-	-- Pre-`ownedShipSkinIds` profiles still played the legacy "all skins
-	-- selectable" UX, so we honor whatever they had as `shipSkinId` at the
-	-- time of the migration: the starter tanker plus the equipped skin gets
-	-- seeded as owned. `MonetizationService` will only ever add to this set
-	-- on a verified DevProduct receipt — there's no way to lose a skin.
-	state.ownedShipSkinIds = { DefaultTanker = true } :: { [string]: boolean }
-	if typeof(persisted.ownedShipSkinIds) == "table" then
-		for skinId, owned in pairs(persisted.ownedShipSkinIds) do
-			if typeof(skinId) == "string" and skinId ~= "" and owned == true and ShipSkinCatalog.Skins[skinId] then
-				state.ownedShipSkinIds[skinId] = true
+	-- Restore the boat ownership map.
+	--
+	-- Always seed from `BoatCatalog.GetStarterBoatIds()` (entries with
+	-- `unlock.kind == "starter"`, placeholders excluded). Re-running this
+	-- on every load is also the v < 8 → v 8 migration safety net: pre-
+	-- Step-3 profiles only ever had the legacy starter seeded; this
+	-- picks up any additional starters added to the catalog post-launch.
+	--
+	-- Persisted entries are filtered: every key first runs through
+	-- `BoatCatalog.RemapLegacyBoatId` (Step 7 — drops `Ship3Skin`,
+	-- remaps `DefaultTanker` / `Ship4Skin` / `Ship5Skin` / `WhaleSkin` →
+	-- their v11 successors); the remapped id then passes through the
+	-- standard `IsBoatPurchasable` / `IsBoatRobuxOwned` gate so missing
+	-- catalog rows are dropped and `placeholder = true` entries cannot
+	-- be promoted to live equippable boats by a tampered profile.
+	--
+	-- v9 → v10 (Step 6) policy still applies: when the profile carries
+	-- the legacy `ownedShipSkinIds` key, ONLY entries whose catalog
+	-- `unlock.kind == "robux"` carry forward (cash boats reset). When
+	-- the profile carries the new `ownedBoatIds` key (v10+ save), every
+	-- owned id passes the standard `IsBoatPurchasable` filter
+	-- (Robux + cash both kept).
+	--
+	-- The currently-equipped boat is always re-granted as a defense
+	-- against an ownership map that drifted out of sync with
+	-- `equippedBoatId` (e.g. catalog rename mid-flight).
+	state.ownedBoatIds = BoatCatalog.GetStarterBoatIds() :: { [string]: boolean }
+	if typeof(persisted.ownedBoatIds) == "table" then
+		for boatId, owned in pairs(persisted.ownedBoatIds) do
+			local remapped = BoatCatalog.RemapLegacyBoatId(boatId)
+			if
+				typeof(remapped) == "string"
+				and remapped ~= ""
+				and owned == true
+				and BoatCatalog.IsBoatPurchasable(remapped)
+			then
+				state.ownedBoatIds[remapped] = true
+			end
+		end
+	elseif typeof(persisted.ownedShipSkinIds) == "table" then
+		for boatId, owned in pairs(persisted.ownedShipSkinIds) do
+			local remapped = BoatCatalog.RemapLegacyBoatId(boatId)
+			if
+				typeof(remapped) == "string"
+				and remapped ~= ""
+				and owned == true
+				and BoatCatalog.IsBoatRobuxOwned(remapped)
+			then
+				state.ownedBoatIds[remapped] = true
 			end
 		end
 	end
-	-- Always grant the equipped skin so a returning player can't be locked
-	-- out of the boat they last sailed if their saved ownership map drifted
-	-- (e.g. catalog rename, old profile written before this field existed).
-	if typeof(state.shipSkinId) == "string" and ShipSkinCatalog.Skins[state.shipSkinId] then
-		state.ownedShipSkinIds[state.shipSkinId] = true
+	if typeof(state.equippedBoatId) == "string" and BoatCatalog.IsBoatPurchasable(state.equippedBoatId) then
+		state.ownedBoatIds[state.equippedBoatId] = true
 	end
 
 	if typeof(persisted.unlockedChunkIds) == "table" then
@@ -3344,11 +3538,20 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 											end
 											return lb
 										end)(),
-										connected = rec.connected == true,
-										placementCost = floorPositive(tonumber(rec.placementCost) or tierCfg.cost or 0),
-										intakeAttachmentId = rec.intakeAttachmentId,
-										ftueFreeNoSellback = rec.ftueFreeNoSellback == true,
-									}
+			connected = rec.connected == true,
+									placementCost = floorPositive(tonumber(rec.placementCost) or tierCfg.cost or 0),
+									intakeAttachmentId = rec.intakeAttachmentId,
+									ftueFreeNoSellback = rec.ftueFreeNoSellback == true,
+									-- Restore the center-pump flag so the post-restore
+									-- `_ensurePlayerState` auto-place loop recognizes the
+									-- existing pump and does NOT spawn a fresh T1 on top
+									-- of it. Without this, reconnects silently reset every
+									-- upgraded pump back to T1 (the restored record is
+									-- shadowed by a new auto-placed one and then
+									-- overwritten on the next save). See save side ~line
+									-- 3767 — both sides must round-trip this flag.
+									isCenterPump = rec.isCenterPump == true,
+								}
 									state.activeDrillCount += 1
 									restored += 1
 			end
@@ -3360,6 +3563,85 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		end
 		DevLog.log(string.format("[RestoreDrills] restored=%d dropped=%d", restored, dropped))
 		state.nextDrillId = math.max(state.nextDrillId, maxDrillId + 1)
+	end
+
+	-- One-shot center-pump backfill (legacy profiles).
+	--
+	-- A prior bug omitted `isCenterPump` from the persisted/restored drill
+	-- record. After restore, `_ensurePlayerState`'s auto-place loop
+	-- (search: `_autoPlaceCenterPump`) saw no flagged pump for the chunk
+	-- and spawned a fresh **T1** record on top of the player's upgraded
+	-- one. Production + visuals key off `isCenterPump`, so the player's
+	-- T2/T3 upgrade silently disappeared on every reconnect (cash spent
+	-- was lost too — no audit log to refund from).
+	--
+	-- The fix (above) round-trips `isCenterPump` correctly going forward,
+	-- but profiles saved before the fix still have the upgraded record
+	-- without the flag. The duplicate-cell guard in the restore loop kept
+	-- the *highest-priority* (lowest `drillId`) record at each center
+	-- cell, so the upgraded tier is still in `state.drillsById` — it just
+	-- needs the flag re-attached so auto-place skips the chunk.
+	--
+	-- For each chunk, find the surviving T33 record(s), pick the highest
+	-- tier (ties → smallest drillId, the original pump), set the flag,
+	-- and drop any siblings (defensive — duplicate-cell guard normally
+	-- prevents siblings, but future restore changes shouldn't silently
+	-- recreate the bug). Idempotent: re-running on an already-fixed
+	-- profile is a no-op because `hasFlagged` short-circuits.
+	do
+		local CENTER_TILE_KEY = "T33"
+		local PUMP_TIER_RANK = { T1 = 1, T2 = 2, T3 = 3 }
+		local centerCandidates: { [string]: { number } } = {}
+		for drillId, drill in pairs(state.drillsById) do
+			if drill.tileKey == CENTER_TILE_KEY and typeof(drill.chunkId) == "string" then
+				local list = centerCandidates[drill.chunkId]
+				if not list then
+					list = {}
+					centerCandidates[drill.chunkId] = list
+				end
+				table.insert(list, drillId)
+			end
+		end
+		local repaired = 0
+		for chunkId, ids in pairs(centerCandidates) do
+			local hasFlagged = false
+			for _, id in ipairs(ids) do
+				if state.drillsById[id].isCenterPump == true then
+					hasFlagged = true
+					break
+				end
+			end
+			if not hasFlagged then
+				local bestId, bestRank = nil :: number?, -1
+				for _, id in ipairs(ids) do
+					local rank = PUMP_TIER_RANK[state.drillsById[id].tier or "T1"] or 1
+					if rank > bestRank or (rank == bestRank and (bestId == nil or id < bestId)) then
+						bestId = id
+						bestRank = rank
+					end
+				end
+				if bestId then
+					state.drillsById[bestId].isCenterPump = true
+					for _, id in ipairs(ids) do
+						if id ~= bestId then
+							state.drillsById[id] = nil
+							state.activeDrillCount = math.max(0, state.activeDrillCount - 1)
+						end
+					end
+					repaired += 1
+					DevLog.log(string.format(
+						"[CenterPumpBackfill] chunk=%s reflagged drillId=%d tier=%s (dropped %d shadow record(s))",
+						tostring(chunkId), bestId, tostring(state.drillsById[bestId].tier), #ids - 1
+					))
+				end
+			end
+		end
+		if repaired > 0 then
+			-- Mark dirty so the cleaned-up state (with flag set + shadow
+			-- records removed) gets written on the next save tick. New
+			-- save format includes `isCenterPump`, so this fix sticks.
+			self:_markDirty(state.ownerUserId)
+		end
 	end
 
 	-- (drills-only refactor) Removed: pipes / drums restore + nextPipeId / nextDrumId migration.
@@ -3513,12 +3795,12 @@ function OilStateService:_loadPersistedProfile(userId: number)
 	local MAX_LOAD_RETRIES = 3
 	local RETRY_DELAY = 1
 	for attempt = 1, MAX_LOAD_RETRIES do
-		local ok, profileOrErr = pcall(function()
-			return self._dataStore:GetAsync(key)
-		end)
-		if ok and typeof(profileOrErr) == "table" then
-			return profileOrErr
-		end
+	local ok, profileOrErr = pcall(function()
+		return self._dataStore:GetAsync(key)
+	end)
+	if ok and typeof(profileOrErr) == "table" then
+		return profileOrErr
+	end
 		-- Studio access error is permanent — stop retrying immediately.
 		if not ok and self._dataStore ~= nil and isDatastoreStudioAccessError(profileOrErr) then
 			if not self._dataStoreStudioFallbackWarned then
@@ -3576,7 +3858,13 @@ function OilStateService:_serializeState(state)
 	persisted.ftueEscortShipmentRemaining = math.clamp(math.floor(state.ftueEscortShipmentRemaining or 0), 0, 1)
 	persisted.ftueDispatchCashGranted = state.ftueDispatchCashGranted == true
 	persisted.ftueTutorialCompleteCashGranted = (state :: any).ftueTutorialCompleteCashGranted == true
-	(persisted :: any).ftueFreeCargoCapacityUpgradeUsed = (state :: any).ftueFreeCargoCapacityUpgradeUsed == true
+	-- Persist the legacy ship-upgrade refund one-shot so the v8 → v11
+	-- migration in `_applyPersistedIntoState` cannot replay the cash
+	-- grant on subsequent loads. See the field doc on
+	-- `buildDefaultPersisted` for the full migration story.
+	(persisted :: any).legacyShipUpgradeRefunded = (state :: any).legacyShipUpgradeRefunded == true
+	-- `ftueFreeCargoCapacityUpgradeUsed` removed by Step 4 — see the
+	-- companion comment in `_applyPersistedIntoState` for details.
 	(persisted :: any).ftueFreeDocksDrillUsed = (state :: any).ftueFreeDocksDrillUsed == true
 	(persisted :: any).ftueFirstRevealApplied = (state :: any).ftueFirstRevealApplied == true
 	(persisted :: any).ftueFirstBarrelGranted = (state :: any).ftueFirstBarrelGranted == true
@@ -3606,18 +3894,9 @@ function OilStateService:_serializeState(state)
 		end
 		(persisted :: any).purchasedOneTimeItemIds = out
 	end
-	-- Only persist the dock-ship sub-step while we're actually in that leg.
-	-- Anywhere else it's nil and `_applyPersistedIntoState` re-clears anyway.
-	if (state :: any).ftueStep == FtueConfig.Step.WaitDocksUpgradeShip then
-		local sub = (state :: any).ftueDocksUpgradeSubStep
-		if sub == "Dockman" or sub == "CargoBuy" or sub == "CloseModal" then
-			(persisted :: any).ftueDocksUpgradeSubStep = sub
-		else
-			(persisted :: any).ftueDocksUpgradeSubStep = nil
-		end
-	else
-		(persisted :: any).ftueDocksUpgradeSubStep = nil
-	end
+	-- `ftueDocksUpgradeSubStep` persistence removed by Step 4 of the
+	-- boat-progression refactor (the entire `WaitDocksUpgradeShip` leg
+	-- is gone).
 	-- FTUE rejoin anchor: only persist while still mid-FTUE so finished players
 	-- never carry a stale snapshot back into a fresh post-FTUE session.
 	do
@@ -3677,12 +3956,32 @@ function OilStateService:_serializeState(state)
 			flowBase = drill.flowBase,
 			placementCost = drill.placementCost,
 			ftueFreeNoSellback = drill.ftueFreeNoSellback == true,
+			-- Persist the center-pump flag so reconnects keep the upgraded
+			-- tier. Without this, the restore path at ~line 3413 rebuilds the
+			-- record without `isCenterPump`, then `_ensurePlayerState`
+			-- (~line 2767) thinks the chunk has no center pump and
+			-- auto-places a fresh T1 pump over it — the player's upgrade
+			-- visibly disappears. See restore side for the matching read.
+			isCenterPump = drill.isCenterPump == true,
 		})
 	end
 
 	-- (drills-only refactor) Removed: pipes / drums serialization + nextProspectId / nextPipeId / nextDrumId.
 	persisted.nextDrillId = state.nextDrillId
-	persisted.version = 7
+	-- Bumped 10 → 11 by Step 7 of the boat-progression refactor: the
+	-- legacy boat ids (`DefaultTanker`, `Ship3Skin`, `Ship4Skin`,
+	-- `Ship5Skin`, `WhaleSkin`) were retired in favor of the consolidated
+	-- `Tier1Boat`..`Tier10Boat` cash chain plus three Robux ids
+	-- (`PirateShip`, `Ducky`, `Moby`). Reads run every persisted boat id
+	-- through `BoatCatalog.RemapLegacyBoatId` BEFORE catalog gates so
+	-- Robux purchases survive; writes are always v11 + the new ids.
+	-- Earlier history:
+	--   * 9 → 10 (Step 6): `shipSkinId` → `equippedBoatId`,
+	--     `ownedShipSkinIds` → `ownedBoatIds`.
+	--   * 8 → 9 (Step 4): deleted the `shipSpeedLevel` /
+	--     `shipCapacityLevel` + `ftueDocksUpgradeSubStep` fields.
+	--   * 7 → 8 (Step 3): data-driven starter set.
+	persisted.version = 11
 
 	local activeDrillIds: { number } = {}
 	local seenActiveDrill: { [number]: boolean } = {}
@@ -3728,23 +4027,35 @@ function OilStateService:_serializeState(state)
 	end
 
 	-- (drills-only refactor) Removed: activeProspectors serialization.
-	persisted.shipSpeedLevel = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
-	persisted.shipCapacityLevel = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
-	persisted.shipSkinId = (typeof(state.shipSkinId) == "string" and state.shipSkinId) or "DefaultTanker"
+	-- Step 4 of the boat-progression refactor deleted the per-player
+	-- `shipSpeedLevel` / `shipCapacityLevel` fields — speed and capacity
+	-- are baked per-boat in `BoatCatalog`. Only the equipped boat id
+	-- + the ownership set (below) are persisted now.
+	persisted.equippedBoatId = (typeof(state.equippedBoatId) == "string" and state.equippedBoatId) or "Tier1Boat"
 
-	-- Persist the Robux-granted ship skin ownership set. Only emit known
-	-- catalog ids so a stale skin removed from `ShipSkinCatalog` doesn't
-	-- linger in DataStores and a typo in `GrantShipSkin` can't pollute
-	-- saves. DefaultTanker is always written so the seed is explicit.
-	local ownedOut: { [string]: boolean } = { DefaultTanker = true }
-	if typeof(state.ownedShipSkinIds) == "table" then
-		for skinId, owned in pairs(state.ownedShipSkinIds) do
-			if typeof(skinId) == "string" and skinId ~= "" and owned == true and ShipSkinCatalog.Skins[skinId] then
-				ownedOut[skinId] = true
+	-- Persist the boat ownership set. Only emit known catalog ids so a
+	-- stale boat removed from `BoatCatalog` doesn't linger in DataStores
+	-- and a typo in `GrantBoat` can't pollute saves. The starter is
+	-- always written so the seed is explicit.
+	local ownedOut: { [string]: boolean } = { Tier1Boat = true }
+	if typeof(state.ownedBoatIds) == "table" then
+		for boatId, owned in pairs(state.ownedBoatIds) do
+			if typeof(boatId) == "string" and boatId ~= "" and owned == true and BoatCatalog.Boats[boatId] then
+				ownedOut[boatId] = true
 			end
 		end
 	end
-	persisted.ownedShipSkinIds = ownedOut
+	persisted.ownedBoatIds = ownedOut
+
+	-- Step 6 cleanup: explicitly clear the v9 field names so a profile
+	-- that was loaded from a v9 row + then re-saved doesn't carry the
+	-- old keys forward in DataStore. Without this clear the legacy
+	-- `shipSkinId` / `ownedShipSkinIds` would round-trip from the
+	-- `_loadPersistedProfile` table indefinitely (defaults assign new
+	-- keys but never remove old ones). Costs nothing on a brand-new
+	-- profile (the keys are nil → still nil).
+	persisted.shipSkinId = nil
+	persisted.ownedShipSkinIds = nil
 
 	persisted.equipmentOwned = {}
 	for itemId, n in pairs(state.equipmentOwnedByItemId or {}) do
@@ -3769,25 +4080,28 @@ function OilStateService:SetBoatDockService(svc)
 	self._boatDockService = svc
 end
 
-function OilStateService:SetSkinChangedHandler(fn: (number, string) -> ())
-	self._skinChangedHandler = fn
+function OilStateService:SetEquippedBoatChangedHandler(fn: (number, string) -> ())
+	self._equippedBoatChangedHandler = fn
 end
 
-function OilStateService:OwnsShipSkin(userId: number, skinId: string?): boolean
-	if typeof(skinId) ~= "string" or skinId == "" then
+function OilStateService:OwnsBoat(userId: number, boatId: string?): boolean
+	if typeof(boatId) ~= "string" or boatId == "" then
 		return false
 	end
-	-- Starter tanker is always owned, even before state loads, so the UI
-	-- shouldn't briefly render "locked" on the very first frame after join.
-	if skinId == "DefaultTanker" then
+	-- Boat progression refactor (Step 3): starter boats are owned by
+	-- definition (data-driven via `unlock.kind == "starter"`) so the UI
+	-- doesn't briefly render "locked" on the very first frame after join,
+	-- even before the player's state loads.
+	local starters = BoatCatalog.GetStarterBoatIds()
+	if starters[boatId] == true then
 		return true
 	end
 	local state = self._statesByUserId[userId]
 	if not state then
 		return false
 	end
-	local owned = state.ownedShipSkinIds
-	return typeof(owned) == "table" and owned[skinId] == true
+	local owned = state.ownedBoatIds
+	return typeof(owned) == "table" and owned[boatId] == true
 end
 
 --- Idempotent — called by `MonetizationService` on a verified DevProduct
@@ -3872,148 +4186,178 @@ function OilStateService:MarkPurchasedOneTimeItem(userId: number, itemId: string
 	return true
 end
 
-function OilStateService:GrantShipSkin(userId: number, skinId: string): (boolean, string)
+--- Adds `boatId` to the player's owned set. Used by:
+---   * `MonetizationService` `_grantShip` / bundle `_grantShip` after a
+---     verified Robux receipt.
+---   * `OilStateService:TryUnlockBoat` after a successful cash debit
+---     (boat-progression refactor Step 3).
+---   * `_applyPersistedIntoState` when migrating a legacy profile that
+---     was missing the equipped boat from its ownership map.
+---
+--- Boat progression refactor (Step 3): now rejects `placeholder = true`
+--- catalog entries (`Tier1Boat` … `Tier10Boat`) via
+--- `BoatCatalog.IsBoatPurchasable` so a tampered receipt or future
+--- Monetization wiring error cannot promote a placeholder into an
+--- equippable boat. Returns `OK_ALREADY_OWNED` (not an error) when the
+--- boat is already in the set so callers can short-circuit silently.
+function OilStateService:GrantBoat(userId: number, boatId: string): (boolean, string)
 	local state = self._statesByUserId[userId]
 	if not state then
 		return false, "ERR_NO_STATE"
 	end
-	if typeof(skinId) ~= "string" or not ShipSkinCatalog.Skins[skinId] then
-		return false, "ERR_BAD_SKIN"
+	if not BoatCatalog.IsBoatPurchasable(boatId) then
+		return false, "ERR_BAD_BOAT"
 	end
-	if typeof(state.ownedShipSkinIds) ~= "table" then
-		state.ownedShipSkinIds = { DefaultTanker = true }
+	if typeof(state.ownedBoatIds) ~= "table" then
+		state.ownedBoatIds = BoatCatalog.GetStarterBoatIds()
 	end
-	if state.ownedShipSkinIds[skinId] == true then
+	if state.ownedBoatIds[boatId] == true then
 		return false, "OK_ALREADY_OWNED"
 	end
-	state.ownedShipSkinIds[skinId] = true
+	state.ownedBoatIds[boatId] = true
 	self:_markDirty(userId)
 	return true, "OK"
 end
 
-function OilStateService:SetShipSkinId(userId: number, skinId: string): (boolean, string)
+--- Boat progression refactor (Step 3). Atomic cash-debit + grant for
+--- catalog entries whose `unlock.kind == "starter"` is `"cash"`. The
+--- starter and Robux paths are explicitly rejected with codes that tell
+--- the caller (and ultimately the client) which path to use:
+---
+---   * `unlock.kind == "starter"` → `ERR_STARTER_AUTO_GRANTED` (the
+---     starter is granted on profile load by `_applyPersistedIntoState`;
+---     a client should not be calling this for the starter).
+---   * `unlock.kind == "robux"`   → `ERR_USE_ROBUX_PROMPT` (Robux
+---     unlocks flow through `MonetizationService` ProcessReceipt — the
+---     client should send `RequestPromptRobuxPurchase` with the
+---     matching `MonetizationCatalog` item id, e.g. `"ship.<lower>"`).
+---   * No `unlock` block / `cashCost` ≤ 0 → `ERR_NOT_PURCHASABLE`.
+---
+--- The boat is NOT auto-equipped on success — the equip flow stays in
+--- `SetEquippedBoatId` so the UI can confirm the unlock toast before
+--- swapping the equipped boat. Telemetry: emits a Sink economy event +
+--- a `boat_unlocked` design event so unlock rates can be tracked
+--- separately from equip frequency.
+function OilStateService:TryUnlockBoat(userId: number, boatId: string): (boolean, string, string)
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false, "ERR_NO_STATE", "State unavailable."
+	end
+	if typeof(boatId) ~= "string" or boatId == "" then
+		return false, "ERR_BAD_PAYLOAD", "Missing boatId."
+	end
+	if not BoatCatalog.IsBoatPurchasable(boatId) then
+		return false, "ERR_BAD_BOAT", "Unknown or unavailable boat."
+	end
+	local def = BoatCatalog.Boats[boatId]
+	local unlock = def and def.unlock
+	if typeof(unlock) ~= "table" then
+		return false, "ERR_NOT_PURCHASABLE", "Boat is not purchasable."
+	end
+	if unlock.kind == "starter" then
+		return false, "ERR_STARTER_AUTO_GRANTED", "Starter boats are granted automatically."
+	end
+	if unlock.kind == "robux" then
+		return false, "ERR_USE_ROBUX_PROMPT", "Use the Robux purchase prompt for this boat."
+	end
+	if unlock.kind ~= "cash" then
+		return false, "ERR_NOT_PURCHASABLE", "Boat is not purchasable."
+	end
+	local cost = tonumber(unlock.cashCost)
+	if not cost or cost <= 0 then
+		return false, "ERR_NOT_PURCHASABLE", "Boat has no valid cash cost."
+	end
+	if typeof(state.ownedBoatIds) ~= "table" then
+		state.ownedBoatIds = BoatCatalog.GetStarterBoatIds()
+	end
+	if state.ownedBoatIds[boatId] == true then
+		return false, "ERR_ALREADY_OWNED", "You already own this boat."
+	end
+	if not self:TrySpendCash(userId, cost) then
+		return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to unlock this boat.", cost)
+	end
+	-- Cash already debited; the grant must succeed at this point. Use
+	-- `GrantBoat` so any future ownership-side bookkeeping (e.g.
+	-- analytics on owned-set growth) flows through one chokepoint.
+	local granted, grantCode = self:GrantBoat(userId, boatId)
+	if not granted and grantCode ~= "OK_ALREADY_OWNED" then
+		-- Should be unreachable (we already verified `IsBoatPurchasable`
+		-- and not-already-owned above), but if it ever fires we'd be
+		-- charging the player without granting — surface loudly.
+		warn(string.format(
+			"[OilStateService] TryUnlockBoat: GrantBoat failed AFTER cash debit (userId=%d, boatId=%s, code=%s)",
+			userId, boatId, tostring(grantCode)
+		))
+		return false, "ERR_GRANT_FAILED", "Boat grant failed; contact support."
+	end
+	-- Telemetry: pair the cash sink with a boat_unlocked design event so
+	-- analytics can correlate unlock cost vs. unlock-to-equip latency
+	-- without joining tables.
+	pcall(function()
+		local plr = Players:GetPlayerByUserId(userId)
+		Telemetry.Economy(plr, "Sink", cost, "cash", "boat_unlock:" .. boatId, {
+			kind = "boat_unlock",
+			id = boatId,
+		})
+		Telemetry.Track(plr, "boat_unlocked", {
+			boatId = boatId,
+			source = "cash",
+			cost = cost,
+		})
+	end)
+	return true, "OK", "Boat unlocked."
+end
+
+function OilStateService:SetEquippedBoatId(userId: number, boatId: string): (boolean, string)
 	local state = self._statesByUserId[userId]
 	if not state then
 		return false, "ERR_NO_STATE"
 	end
-	if typeof(skinId) ~= "string" or not ShipSkinCatalog.Skins[skinId] then
-		return false, "ERR_BAD_SKIN"
+	-- Boat progression refactor (Step 3): `IsBoatPurchasable` rejects
+	-- both unknown ids AND `placeholder = true` entries
+	-- (`Tier1Boat` … `Tier10Boat`). Without this gate a malicious client
+	-- (or a stale, hand-edited profile) could equip a placeholder and
+	-- get the L1/L1 stats baked into it.
+	if not BoatCatalog.IsBoatPurchasable(boatId) then
+		return false, "ERR_BAD_BOAT"
 	end
-	-- Robux-gating: refuse to equip skins the player hasn't unlocked. Without
-	-- this check a malicious client could fire `RequestSetShipSkin` directly
-	-- and bypass `MonetizationService` entirely. `OwnsShipSkin` treats the
-	-- starter tanker as always-owned so the default flow is unaffected.
-	if not self:OwnsShipSkin(userId, skinId) then
+	-- Refuse to equip boats the player hasn't unlocked. Without this
+	-- check a malicious client could fire `RequestSetEquippedBoat` directly
+	-- and bypass both `MonetizationService` (Robux unlocks) and
+	-- `TryUnlockBoat` (cash unlocks). `OwnsBoat` treats data-driven
+	-- starter boats as always-owned so the default flow is unaffected.
+	if not self:OwnsBoat(userId, boatId) then
 		return false, "ERR_NOT_OWNED"
 	end
-	local prev = state.shipSkinId
-	state.shipSkinId = skinId
+	local prev = state.equippedBoatId
+	state.equippedBoatId = boatId
 	self:_markDirty(userId)
-	if prev ~= skinId and self._skinChangedHandler then
-		task.spawn(self._skinChangedHandler, userId, skinId)
+	if prev ~= boatId and self._equippedBoatChangedHandler then
+		task.spawn(self._equippedBoatChangedHandler, userId, boatId)
 	end
-	-- Telemetry §6.4 `ship_skin_equipped`. Fires on every equip call
-	-- (even no-op same-skin) so analytics can see equip frequency,
-	-- but `skinIdFrom == skinIdTo` lets queries filter for actual
-	-- changes vs idle re-equip clicks.
-	if prev ~= skinId then
+	-- Telemetry §6.4 `boat_equipped` (renamed from `ship_skin_equipped`
+	-- in Step 6). Fires on every equip call (even no-op same-boat) so
+	-- analytics can see equip frequency, but `boatIdFrom == boatIdTo`
+	-- lets queries filter for actual changes vs idle re-equip clicks.
+	if prev ~= boatId then
 		pcall(function()
 			local plr = Players:GetPlayerByUserId(userId)
-			Telemetry.Track(plr, "ship_skin_equipped", {
-				skinIdFrom = prev,
-				skinIdTo = skinId,
+			Telemetry.Track(plr, "boat_equipped", {
+				boatIdFrom = prev,
+				boatIdTo = boatId,
 			})
 		end)
 	end
 	return true, "OK"
 end
 
-function OilStateService:TryUpgradeShipSpeed(userId: number): (boolean, string, string)
-	local state = self._statesByUserId[userId]
-	if not state then
-		return false, "ERR_NO_STATE", "State unavailable."
-	end
-	local level = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
-	if level >= ShipUpgradeConfig.MaxSpeedLevel then
-		return false, "ERR_MAX_SPEED", "Ship speed is already maxed."
-	end
-	local cost = ShipUpgradeConfig.GetSpeedUpgradeCost(level)
-	if not cost then
-		return false, "ERR_MAX_SPEED", "Ship speed is already maxed."
-	end
-	if not self:TrySpendCash(userId, cost) then
-		return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to upgrade speed.", cost)
-	end
-	state.shipSpeedLevel = level + 1
-	self:_markDirty(userId)
-	-- Telemetry §6.4 `ship_speed_upgraded` (Sink). Fires after
-	-- `TrySpendCash` succeeds + level increment, so failure paths above
-	-- are filtered out and the row matches the actual ledger debit.
-	pcall(function()
-		local plr = Players:GetPlayerByUserId(userId)
-		Telemetry.Economy(plr, "Sink", cost, "cash", "ship_speed", { kind = "ship_upgrade", id = "ship_speed" })
-		Telemetry.Track(plr, "ship_speed_upgraded", {
-			levelFrom = level,
-			levelTo = level + 1,
-			cost = cost,
-		})
-	end)
-	return true, "OK", "Speed upgraded."
-end
-
-function OilStateService:TryUpgradeShipCapacity(userId: number): (boolean, string, string)
-	local state = self._statesByUserId[userId]
-	if not state then
-		return false, "ERR_NO_STATE", "State unavailable."
-	end
-	local level = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
-	if level >= ShipUpgradeConfig.MaxCapacityLevel then
-		return false, "ERR_MAX_CAPACITY", "Ship capacity is already maxed."
-	end
-	local cost = ShipUpgradeConfig.GetCapacityUpgradeCost(level)
-	if not cost then
-		return false, "ERR_MAX_CAPACITY", "Ship capacity is already maxed."
-	end
-	local plr = Players:GetPlayerByUserId(userId)
-	local ftueFree = false
-	if FtueConfig.Enabled and plr then
-		local fs = plr:GetAttribute(Constants.FtueStepAttribute)
-		local sub = plr:GetAttribute(Constants.FtueDocksUpgradeSubStepAttribute)
-		if
-			fs == FtueConfig.Step.WaitDocksUpgradeShip
-			and sub == "CargoBuy"
-			and (state :: any).ftueFreeCargoCapacityUpgradeUsed ~= true
-		then
-			ftueFree = true
-		end
-	end
-	if not ftueFree then
-	if not self:TrySpendCash(userId, cost) then
-		return false, "ERR_NOT_ENOUGH_CASH", string.format("Need $%d to upgrade capacity.", cost)
-		end
-	else
-		(state :: any).ftueFreeCargoCapacityUpgradeUsed = true
-	end
-	state.shipCapacityLevel = level + 1
-	self:_markDirty(userId)
-	-- Telemetry §6.4 `ship_capacity_upgraded` (Sink). Fires after
-	-- the level increment regardless of FTUE-free path so we can
-	-- segment FTUE-free from paid in queries (`cost = 0` when free).
-	pcall(function()
-		local effectiveCost = if ftueFree then 0 else cost
-		Telemetry.Economy(plr, "Sink", effectiveCost, "cash", "ship_capacity", { kind = "ship_upgrade", id = "ship_capacity" })
-		Telemetry.Track(plr, "ship_capacity_upgraded", {
-			levelFrom = level,
-			levelTo = level + 1,
-			cost = effectiveCost,
-			ftueFreeOverride = ftueFree,
-		})
-	end)
-	if ftueFree and _ftueService and typeof((_ftueService :: any).OnFtueShipCapacityUpgradeSuccess) == "function" then
-		(_ftueService :: any):OnFtueShipCapacityUpgradeSuccess(plr)
-	end
-	return true, "OK", "Capacity upgraded."
-end
+-- `TryUpgradeShipSpeed` and `TryUpgradeShipCapacity` were deleted by
+-- Step 4 of the boat-progression refactor. Speed and capacity are now
+-- baked per-boat in `BoatCatalog.Boats[boatId]` (`speedLevel` /
+-- `capacityLevel`); progression happens via the unlock flow
+-- (`TryUnlockBoat`) plus the equip flow (`SetEquippedBoatId`). Re-introducing
+-- per-boat upgrades would need a fresh design, fresh remotes, and fresh
+-- telemetry rows — do NOT revive the old paths in place.
 
 function OilStateService:AddShopEquipmentOwned(userId: number, itemId: string, count: number)
 	if typeof(itemId) ~= "string" or itemId == "" or count <= 0 then

@@ -12,10 +12,9 @@ local Workspace = game:GetService("Workspace")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
-local BoatConfig = require(Shared:WaitForChild("Config"):WaitForChild("BoatConfig"))
 local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
 local ShipUpgradeConfig = require(Shared:WaitForChild("Config"):WaitForChild("ShipUpgradeConfig"))
-local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
+local BoatCatalog = require(Shared:WaitForChild("Config"):WaitForChild("BoatCatalog"))
 local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
 local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
 local StraitEventCatalog = require(Shared:WaitForChild("Config"):WaitForChild("StraitEvents"):WaitForChild("Catalog"))
@@ -194,14 +193,14 @@ local function resolveRigForBoatInstance(boat: Instance): ShipRig.RigDef
 	if boat:IsA("Model") then
 		local templateName = boat:GetAttribute("ShipTemplateName")
 		if typeof(templateName) == "string" and templateName ~= "" then
-			return ShipSkinCatalog.GetRigForTemplate(templateName)
+			return BoatCatalog.GetRigForTemplate(templateName)
 		end
-		local skinId = boat:GetAttribute("ShipSkinId")
-		if typeof(skinId) == "string" and skinId ~= "" then
-			return ShipSkinCatalog.GetRigForSkin(skinId)
+		local boatId = boat:GetAttribute("BoatId")
+		if typeof(boatId) == "string" and boatId ~= "" then
+			return BoatCatalog.GetRigForBoat(boatId)
 		end
 	end
-	return ShipSkinCatalog.GetRigForTemplate("Tanker")
+	return BoatCatalog.GetRigForTemplate("Tanker")
 end
 
 local function findBoatSeat(boat: Instance): Seat?
@@ -511,42 +510,63 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 	noCollidePair("MapDecor")
 	noCollidePair(STRAIT_FX_NPC_GROUP)
 
-	-- Belt-and-suspenders against residual cosmetic-NPC pushes during a
-	-- strait event cinematic. With only the rule above, the player character
-	-- in `Default` should already be no-collide vs `StraitWaypointFxNpc`. In
-	-- practice (logged 2026-04-18 CG run), HRP velocity still spiked to
-	-- 16-24 studs/s in bursts every ~1s while officers were parked in
-	-- inspection zones near the player — i.e. *some* contact pair was still
-	-- being resolved each physics step (likely a cosmetic part that briefly
-	-- slipped the per-frame ghost sweep, or whose CollisionGroup write on
-	-- the client raced replication of `STRAIT_FX_NPC_GROUP` registration).
+	-- Owner character collision group while on a voyage. Group name is
+	-- legacy ("PlayerInStraitEvent") — it originally only covered the
+	-- strait-event freeze cinematic to defend against residual pushes
+	-- from cosmetic NPC ships / officers / pirates whose own group tagging
+	-- on the client could race or fail. The same isolation now applies for
+	-- the **entire voyage** (apply at dispatch in `_runShipment` after
+	-- `TeleportOwnerToSeat`, restore at completion / total loss): the
+	-- product rule is "while sailing, the player should only collide with
+	-- the boat deck they're standing on (and other players' decks they
+	-- might board) — never with docks, MapDecor props, parked boats, or
+	-- cosmetic NPCs the engine spawns into the lane".
 	--
-	-- We add a dedicated `PLAYER_IN_STRAIT_EVENT_GROUP` group and during
-	-- the freeze (`_freezeShipForStraitEventCinematic`) the SERVER reassigns
-	-- the owner player's character body parts into it. Server writes to
-	-- `BasePart.CollisionGroup` are authoritative and replicate to every
-	-- client (including the local player simulating their own character),
-	-- so the no-collide rule is enforced at the engine level regardless of
-	-- whether the cosmetic-NPC parts are correctly tagged. The new group
-	-- collides with everything else by default (decks, world, other players)
-	-- so walking on the deck still works.
+	-- IMPORTANT: server-side writes to `BasePart.CollisionGroup` are
+	-- authoritative and replicate to every client, so the no-collide
+	-- rules below are enforced at the engine level regardless of whether
+	-- the cosmetic-NPC parts are correctly tagged on the client.
 	local PLAYER_IN_STRAIT_EVENT_GROUP = "PlayerInStraitEvent"
 	safeRegister(PLAYER_IN_STRAIT_EVENT_GROUP)
+	-- Cosmetic strait-event NPCs (Coast Guard officers, pirate ships, etc.)
+	-- never push the voyaging player.
 	pcall(function()
 		PhysicsService:CollisionGroupSetCollidable(PLAYER_IN_STRAIT_EVENT_GROUP, STRAIT_FX_NPC_GROUP, false)
 	end)
-	-- Mirror the regular `Default ↔ IdleBoat = false` rule for the temporary
-	-- strait-event character group. Without this, an event freeze that ends
-	-- with the player near the dock would suddenly re-collide them with a
-	-- parked hull (the docked boat would be the only thing in
-	-- `IdleBoat` they'd touch). `BoatDockService:Init` also writes this
+	-- Parked / docked boats: voyaging players walk THROUGH them. Without
+	-- this, a returning voyage that anchors near a parked hull would shove
+	-- the player off the deck. `BoatDockService:Init` also writes this
 	-- pair (via `applyIdleBoatCollisionRules`); we re-assert here in case
 	-- this Init runs before BoatDockService and `PLAYER_IN_STRAIT_EVENT_GROUP`
 	-- wasn't yet registered when that earlier write happened.
 	pcall(function()
 		PhysicsService:CollisionGroupSetCollidable(PLAYER_IN_STRAIT_EVENT_GROUP, BoatCollisionContract.IdleGroup, false)
 	end)
+	-- Pier geometry (`MarinaDock`): the voyaging player must never clip on
+	-- the dock that the ship sails past on departure / docks against on
+	-- return. Static dock collision while on the deck would yank the
+	-- character off the moving hull; while waiting at dispatch / dock
+	-- approach the dock collider catching the character heel-first would
+	-- knock them off the boat into the water.
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(PLAYER_IN_STRAIT_EVENT_GROUP, "MarinaDock", false)
+	end)
+	-- Map decor (`MapDecor`): buoys, lane markers, ambient world props
+	-- in the strait route. The hull already ignores them
+	-- (`ShipmentShip ↔ MapDecor = false`); the voyaging player must too,
+	-- otherwise a low-floating decor part that brushes the deck would
+	-- punt them.
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(PLAYER_IN_STRAIT_EVENT_GROUP, "MapDecor", false)
+	end)
 	self._playerInStraitEventGroup = PLAYER_IN_STRAIT_EVENT_GROUP
+
+	-- Per-userId map of `CharacterAdded` connections wired up while a
+	-- voyage is active. Currently only used as a defensive cleanup hook
+	-- (we do NOT auto-reapply the voyage group on respawn — a player who
+	-- dies mid-voyage typically respawns at warehouse / plot, where the
+	-- `Default` group is correct). See `_applyOwnerOnVoyageCollisionGroup`.
+	self._voyageCharRespawnConnByUserId = {} :: { [number]: RBXScriptConnection? }
 
 	-- Verification: confirm registration + the critical no-collide pair so
 	-- we can tell from a log whether the engine has the rule before any
@@ -557,15 +577,22 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 		local idleRegistered = PhysicsService:IsCollisionGroupRegistered(BoatCollisionContract.IdleGroup)
 		local fxVsDefault = PhysicsService:CollisionGroupsAreCollidable(STRAIT_FX_NPC_GROUP, "Default")
 		local pieVsFx = PhysicsService:CollisionGroupsAreCollidable(PLAYER_IN_STRAIT_EVENT_GROUP, STRAIT_FX_NPC_GROUP)
+		local pieVsMarinaDock = PhysicsService:CollisionGroupsAreCollidable(PLAYER_IN_STRAIT_EVENT_GROUP, "MarinaDock")
+		local pieVsMapDecor = PhysicsService:CollisionGroupsAreCollidable(PLAYER_IN_STRAIT_EVENT_GROUP, "MapDecor")
+		local pieVsShipmentShip = PhysicsService:CollisionGroupsAreCollidable(PLAYER_IN_STRAIT_EVENT_GROUP, "ShipmentShip")
 		local idleVsDefault = PhysicsService:CollisionGroupsAreCollidable(BoatCollisionContract.IdleGroup, "Default")
 		local idleVsShipmentShip = PhysicsService:CollisionGroupsAreCollidable(BoatCollisionContract.IdleGroup, "ShipmentShip")
+		local shipVsShip = PhysicsService:CollisionGroupsAreCollidable("ShipmentShip", "ShipmentShip")
 		print(string.format(
-			"[OilShipmentService] CollisionGroups: %s registered=%s, %s registered=%s, %s registered=%s, fxVsDefault collidable=%s, pieVsFx collidable=%s, idleVsDefault collidable=%s, idleVsShipmentShip collidable=%s",
+			"[OilShipmentService] CollisionGroups: %s registered=%s, %s registered=%s, %s registered=%s, fxVsDefault collidable=%s, pieVsFx collidable=%s, pieVsMarinaDock collidable=%s, pieVsMapDecor collidable=%s, pieVsShipmentShip collidable=%s, idleVsDefault collidable=%s, idleVsShipmentShip collidable=%s, shipVsShip collidable=%s",
 			STRAIT_FX_NPC_GROUP, tostring(fxRegistered),
 			PLAYER_IN_STRAIT_EVENT_GROUP, tostring(pieRegistered),
 			BoatCollisionContract.IdleGroup, tostring(idleRegistered),
 			tostring(fxVsDefault), tostring(pieVsFx),
-			tostring(idleVsDefault), tostring(idleVsShipmentShip)
+			tostring(pieVsMarinaDock), tostring(pieVsMapDecor),
+			tostring(pieVsShipmentShip),
+			tostring(idleVsDefault), tostring(idleVsShipmentShip),
+			tostring(shipVsShip)
 		))
 	end)
 
@@ -666,32 +693,86 @@ function OilShipmentService:_discoverLanes()
 	end
 
 	self._laneVoyageCounts = {}
+	-- Per-lane "last reserved" wall clock, used as the primary tie-break
+	-- among lanes with equal `_laneVoyageCounts`. Stamped in
+	-- `_reserveLaneSlot`. Initialized to 0 so on a fresh server every
+	-- lane is equally "stale" (and the secondary RNG tie-break in
+	-- `_pickLaneLeastLoaded` decides). See picker doc-comment for why
+	-- we prefer LRU over uniform random — same-time dispatches were
+	-- otherwise rolling the same lane and creating the player-mediated
+	-- ship-vs-ship contact described in `BoatCollisionContract`.
+	self._laneLastReservedClock = {} :: { [number]: number }
 	for i = 1, #self._lanes do
 		self._laneVoyageCounts[i] = 0
+		self._laneLastReservedClock[i] = 0
 	end
 
 	print(string.format("[OilShipmentService] Discovered %d lanes", #self._lanes))
 end
 
---- Prefer lanes with fewer boats currently on voyage (same `_lanes` indices). Tie-break uses `seed`.
+--- Pick the lane to assign this voyage to.
+---
+--- Aggressive separation policy (in priority order):
+---   1. Smallest `_laneVoyageCounts` — fewest active voyages on the lane.
+---      With N lanes and ≤ N concurrent voyages this guarantees one voyage
+---      per lane, so two ships should never share a path geometry.
+---   2. Among ties, smallest `_laneLastReservedClock` — least-recently
+---      reserved. This is what makes the spread "aggressive": when all
+---      lanes are at the same count (typical server quiet state, count=0
+---      for everyone), we prefer the lane that hasn't carried a voyage
+---      for the longest, which produces a near-perfect round-robin and
+---      avoids two near-simultaneous dispatches both rolling lane 1
+---      because their RNG seeds happen to collide.
+---   3. Among ties on BOTH count AND last-reserved clock (only happens on
+---      the first few dispatches after boot, when every lane's clock is
+---      still 0), break with a small seeded RNG so we don't lock into
+---      ascending lane order forever. `seed` is still derived from
+---      server clock + ownerUserId at the call site.
+---
+--- Returns the lane table + 1-based index, or `nil, nil` when no lanes
+--- were discovered (caller falls back to a straight-line voyage).
 function OilShipmentService:_pickLaneLeastLoaded(seed: number): (any, number?)
 	if #self._lanes == 0 then
 		return nil, nil
 	end
 	local counts = self._laneVoyageCounts
+	local lastReserved = self._laneLastReservedClock or {}
+
 	local minCount = math.huge
-	local candidates: { number } = {}
 	for i = 1, #self._lanes do
 		local c = if counts[i] ~= nil then counts[i] :: number else 0
 		if c < minCount then
 			minCount = c
-			candidates = { i }
-		elseif c == minCount then
-			table.insert(candidates, i)
 		end
 	end
-	local rng = Random.new(seed)
-	local pickIdx = candidates[rng:NextInteger(1, #candidates)]
+
+	-- Collect lanes with the smallest count, then refine to those with
+	-- the smallest last-reserved clock among that subset.
+	local minClock = math.huge
+	local candidates: { number } = {}
+	for i = 1, #self._lanes do
+		local c = if counts[i] ~= nil then counts[i] :: number else 0
+		if c == minCount then
+			local clk = if lastReserved[i] ~= nil then lastReserved[i] :: number else 0
+			if clk < minClock then
+				minClock = clk
+				candidates = { i }
+			elseif clk == minClock then
+				table.insert(candidates, i)
+			end
+		end
+	end
+
+	local pickIdx: number
+	if #candidates == 1 then
+		pickIdx = candidates[1]
+	else
+		-- Should only hit on a fresh server when multiple lanes still have
+		-- last-reserved clock = 0. Random tie-break prevents lane 1 from
+		-- always winning the first ever dispatch.
+		local rng = Random.new(seed)
+		pickIdx = candidates[rng:NextInteger(1, #candidates)]
+	end
 	return self._lanes[pickIdx], pickIdx
 end
 
@@ -701,6 +782,12 @@ function OilShipmentService:_reserveLaneSlot(laneIndex: number)
 		return
 	end
 	self._laneVoyageCounts[laneIndex] = (self._laneVoyageCounts[laneIndex] or 0) + 1
+	-- Stamp the last-reserved clock so the next picker call treats this
+	-- lane as "freshly used" and prefers any lane with an older clock
+	-- among ties on count. See picker doc-comment.
+	if self._laneLastReservedClock then
+		self._laneLastReservedClock[laneIndex] = workspace:GetServerTimeNow()
+	end
 end
 
 function OilShipmentService:_releaseLaneSlotForShipment(shipment: { [string]: any })
@@ -1001,8 +1088,8 @@ function OilShipmentService:QueueOrInjectForActiveShipment(victimUserId: number,
 	return self:QueueOrTriggerForcedPirateHit(victimUserId, contractorUserId, contractId)
 end
 
-function OilShipmentService:GetShipSkinCatalogForClient()
-	return ShipSkinCatalog.ListForClient()
+function OilShipmentService:GetBoatCatalogForClient()
+	return BoatCatalog.ListForClient()
 end
 
 function OilShipmentService:_handleDispatch(player: Player, payload)
@@ -1039,24 +1126,33 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		return
 	end
 
-	local skinId = (typeof(state.shipSkinId) == "string" and ShipSkinCatalog.Skins[state.shipSkinId] and state.shipSkinId)
-		or "DefaultTanker"
-	local speedL = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
-	local capL = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
+	local boatId = (typeof(state.equippedBoatId) == "string" and BoatCatalog.Boats[state.equippedBoatId] and state.equippedBoatId)
+		or "Tier1Boat"
+	-- Boat progression refactor (Step 2/4): stats are derived from the
+	-- equipped boat's catalog entry. The legacy per-player
+	-- `shipSpeedLevel` / `shipCapacityLevel` profile fields and the
+	-- `TryUpgradeShipSpeed` / `TryUpgradeShipCapacity` paths were
+	-- deleted by Step 4. `speedL` / `capL` extracted here mirror the
+	-- boat-baked levels so the shipment payload, telemetry, and
+	-- downstream FX have a single coherent source of truth.
+	local speedL, capL = ShipStats.LevelsForBoat(boatId)
 	local stats = ShipStats.Resolve(speedL, capL)
 	-- Apply server-wide global event boosts (Express Convoy, future events).
-	-- Layered AFTER `ShipStats.Resolve` so the boost composes with the
-	-- player's upgrade levels (maxed ship + Express Convoy = ~150% capacity
-	-- of max, half travel time). Clamp `travelSeconds` to a fraction of the
-	-- maxed-stats voyage so a future misconfigured `speedMul` (e.g. 100)
-	-- can't produce a 0.1s voyage that breaks lane traversal animation.
+	-- Layered AFTER stat resolution so the boost composes with the player's
+	-- equipped boat (e.g. a maxed boat + Express Convoy = ~150% capacity of
+	-- the boat's max, half travel time). Clamp `travelSeconds` to a fraction
+	-- of the theoretically fastest voyage so a future misconfigured
+	-- `speedMul` (e.g. 100) can't produce a 0.1s voyage that breaks lane
+	-- traversal animation. The clamp uses `MaxSpeedLevel` directly because
+	-- it represents a global hypothetical floor, not the equipped boat's
+	-- specific stats.
 	if self._globalEventService then
 		local boost = self._globalEventService:GetShipStatsBoost()
 		if boost then
 			local speedMul = tonumber(boost.speedMul) or 1
 			local capacityMul = tonumber(boost.capacityMul) or 1
 			if speedMul > 0 and speedMul ~= 1 then
-				local minTravel = ShipStats.Resolve(ShipUpgradeConfig.MaxSpeedLevel, capL).travelSeconds * 0.4
+				local minTravel = ShipStats.Resolve(ShipUpgradeConfig.MaxSpeedLevel, ShipUpgradeConfig.MaxCapacityLevel).travelSeconds * 0.4
 				stats.travelSeconds = math.max(minTravel, stats.travelSeconds / speedMul)
 			end
 			if capacityMul > 0 and capacityMul ~= 1 then
@@ -1073,11 +1169,20 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		and ftueStepNow == FtueConfig.Step.WaitPlotShipment
 	then
 		tutorialEscort = true
-		local maxStats = ShipStats.Resolve(ShipUpgradeConfig.MaxSpeedLevel, capL)
+		-- Tutorial escort uses the fastest theoretically possible voyage
+		-- time (MaxSpeedLevel projection) scaled by a tutorial-specific
+		-- multiplier. Capacity level doesn't affect `travelSeconds`, so we
+		-- pass `MaxCapacityLevel` here purely for symmetry / intent ("max
+		-- stats projection").
+		local maxStats = ShipStats.Resolve(ShipUpgradeConfig.MaxSpeedLevel, ShipUpgradeConfig.MaxCapacityLevel)
 		travelSeconds = maxStats.travelSeconds * (tonumber(FtueConfig.FtueTutorialShipmentTravelTimeScale) or 0.5)
 		local tutSkin = FtueConfig.FtueTutorialShipmentSkinId
-		if typeof(tutSkin) == "string" and ShipSkinCatalog.Skins[tutSkin] then
-			skinId = tutSkin
+		if typeof(tutSkin) == "string" and BoatCatalog.Boats[tutSkin] then
+			boatId = tutSkin
+			-- Refresh `speedL` / `capL` to mirror the swapped tutorial
+			-- boat so the shipment payload below stays internally
+			-- consistent (boat id and recorded levels match).
+			speedL, capL = ShipStats.LevelsForBoat(boatId)
 		end
 		state.ftueEscortShipmentRemaining = 0
 		self._oilStateService:_markDirty(player.UserId)
@@ -1125,7 +1230,7 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 	local shipment = {
 		shipmentId = HttpService:GenerateGUID(false),
 		ownerUserId = player.UserId,
-		shipSkinId = skinId,
+		boatId = boatId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
 		manifest = normalizedManifest,
@@ -1160,7 +1265,7 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 
 	self:_sendActionResult(player, true, "OK", "Shipment dispatched.", {
 		shipmentId = shipment.shipmentId,
-		shipSkinId = skinId,
+		boatId = boatId,
 		totalLoaded = totalRequested,
 	})
 
@@ -1183,7 +1288,7 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 			dispatchFee = dispatchFee,
 			shipSpeedLevel = speedL,
 			shipCapacityLevel = capL,
-			shipSkinId = skinId,
+			boatId = boatId,
 			straitEngineStateAtDispatch = self:_getStraitEngineState(),
 			autoShip = autoShipFlag,
 			securityPersonnelActive = (shipment :: any).eventImmunity == true,
@@ -1320,7 +1425,7 @@ function OilShipmentService:_runShipment(shipment)
 	if boat:IsA("Model") then
 		boat:SetAttribute("ShipmentId", shipment.shipmentId)
 		boat:SetAttribute("OwnerUserId", ownerUserId)
-		boat:SetAttribute("ShipSkinId", shipment.shipSkinId)
+		boat:SetAttribute("BoatId", shipment.boatId)
 		-- HUD: arc-length progress along lane polyline (see voyage loop: s_hull / totalPathLen).
 		boat:SetAttribute("RouteProgress01", 0)
 	end
@@ -1348,11 +1453,11 @@ function OilShipmentService:_runShipment(shipment)
 
 	local dockHoldBeforeVoyage = 1.2
 	local tNow = workspace:GetServerTimeNow()
-	local shipLabel = ShipSkinCatalog.GetSkin(shipment.shipSkinId).displayName
+	local shipLabel = BoatCatalog.GetBoat(shipment.boatId).displayName
 	self:_emitShipmentEvent("ShipmentStarted", {
 		ownerUserId = ownerUserId,
 		shipmentId = shipment.shipmentId,
-		shipSkinId = shipment.shipSkinId,
+		boatId = shipment.boatId,
 		shipDisplayName = shipLabel,
 		boatTypeId = shipLabel,
 		loaded = shipment.totalLoaded,
@@ -1374,6 +1479,16 @@ function OilShipmentService:_runShipment(shipment)
 		if ownerPlayer then
 			pcall(function()
 				self._boatDockService:TeleportOwnerToSeat(ownerPlayer)
+			end)
+			-- Owner is now standing on the ship deck. Reassign their
+			-- character to the voyage collision group (`PlayerInStraitEvent`
+			-- — see `Init` for the pair-rule matrix) so they don't clip on
+			-- docks, MapDecor, parked boats, or cosmetic NPCs while sailing.
+			-- Restored at voyage end in `_handleOwnerAfterSuccessfulShipmentFinish`
+			-- and the `voyageAborted` branch below. Skipped when AutoShip is
+			-- active because the player never boards.
+			pcall(function()
+				self:_applyOwnerOnVoyageCollisionGroup(ownerPlayer)
 			end)
 		end
 	end
@@ -1588,6 +1703,13 @@ function OilShipmentService:_runShipment(shipment)
 				boardConnection:Disconnect()
 			end
 			self:_unseatPlayersFromBoat(boat)
+			-- Total loss: restore the owner's collision group BEFORE the boat
+			-- is destroyed and the death / respawn flow takes over. Symmetric
+			-- with the success path; safe even if the owner has gone offline
+			-- or the apply was skipped (AutoShip).
+			pcall(function()
+				self:_restoreOwnerOnVoyageCollisionGroup(ownerUserId)
+			end)
 			self:_teardownShip(shipment.shipmentId)
 			self._boatDockService:CheckinBoat(ownerUserId, { destroyed = true })
 			self:_finishShipmentWithoutPayout(shipment, "Strait event: total loss")
@@ -1676,7 +1798,7 @@ function OilShipmentService:_runShipment(shipment)
 			barrelsLost = shipment.totalLoaded - totalDelivered,
 			deliveredByTier = deliveredManifest,
 			voyageSeconds = voyageSeconds,
-			shipSkinId = shipment.shipSkinId,
+			boatId = shipment.boatId,
 		})
 		if not _firstDeliveredByUserId[ownerUserId] then
 			_firstDeliveredByUserId[ownerUserId] = true
@@ -1688,11 +1810,11 @@ function OilShipmentService:_runShipment(shipment)
 		(self._ftueService :: any):OnShipmentDeliveredToWarehouse(ownerUserId, totalDelivered)
 	end
 
-	local shipLabelR = ShipSkinCatalog.GetSkin(shipment.shipSkinId).displayName
+	local shipLabelR = BoatCatalog.GetBoat(shipment.boatId).displayName
 	self:_emitShipmentEvent("ShipmentResolved", {
 		ownerUserId = ownerUserId,
 		shipmentId = shipment.shipmentId,
-		shipSkinId = shipment.shipSkinId,
+		boatId = shipment.boatId,
 		shipDisplayName = shipLabelR,
 		boatTypeId = shipLabelR,
 		loaded = shipment.totalLoaded,
@@ -1733,6 +1855,16 @@ end
 --- **FTUE override:** if the player just advanced to **`WaitWarehouseSell`** via this delivery, force-teleport to
 --- their warehouse regardless of where they are (on plot, in town, on the boat) so the next leg's pointers line up.
 function OilShipmentService:_handleOwnerAfterSuccessfulShipmentFinish(boat: Instance, ownerUserId: number)
+	-- Restore the voyage collision group BEFORE any post-voyage teleport.
+	-- Done unconditionally up front (even when the player has gone offline
+	-- or the character is missing) so the per-userId connection slot is
+	-- always cleared and the next dispatch starts from a clean slate.
+	-- The restore helper no-ops on un-stamped parts and on offline players,
+	-- so this is safe even when the apply at dispatch was skipped (e.g.
+	-- AutoShip).
+	pcall(function()
+		self:_restoreOwnerOnVoyageCollisionGroup(ownerUserId)
+	end)
 	local player = Players:GetPlayerByUserId(ownerUserId)
 	if not player then
 		return
@@ -2262,11 +2394,11 @@ function OilShipmentService:_finishShipmentWithoutPayout(shipment, reason: strin
 	self:_releaseLaneSlotForShipment(shipment :: any)
 	self._oilStateService:DecrementShipmentCount(shipment.ownerUserId)
 	self._oilStateService:PushState(shipment.ownerUserId)
-	local shipLabelF = ShipSkinCatalog.GetSkin(shipment.shipSkinId).displayName
+	local shipLabelF = BoatCatalog.GetBoat(shipment.boatId).displayName
 	self:_emitShipmentEvent("ShipmentResolved", {
 		ownerUserId = shipment.ownerUserId,
 		shipmentId = shipment.shipmentId,
-		shipSkinId = shipment.shipSkinId,
+		boatId = shipment.boatId,
 		shipDisplayName = shipLabelF,
 		boatTypeId = shipLabelF,
 		loaded = shipment.totalLoaded,
@@ -2505,7 +2637,7 @@ function OilShipmentService:_executeForcedContractPirateRaid(
 ): boolean
 	local pc = StraitEventCatalog.PirateRaidConfig
 	local log = self:_straitDebugLogEnabled()
-	local skinFx = ShipSkinCatalog.GetSkin(shipment.shipSkinId).fxParticleScale
+	local skinFx = BoatCatalog.GetBoat(shipment.boatId).fxParticleScale
 	local particleFxScale = ParticleFxScale.ComputePayloadScale(boat, skinFx)
 
 	local barrelsStolen, stolenByTier = self:_applyLooseBarrelLoss(shipment, FORCED_CONTRACT_PIRATE_LOSS_FRACTION)
@@ -2805,6 +2937,62 @@ local function restorePlayerCharacterCollisionGroup(char: Model?)
 	end
 end
 
+--- Apply the voyage collision group (`PlayerInStraitEvent`) to the owner's
+--- current character. Called from `_runShipment` after `TeleportOwnerToSeat`
+--- so the owner walks the deck normally but ignores docks, MapDecor props,
+--- parked boats, and cosmetic strait-event NPCs for the entire voyage. The
+--- pair-rule matrix is registered in `Init`; this method only stamps the
+--- group on character parts.
+---
+--- We deliberately DO NOT auto-reapply on respawn. A player who dies
+--- mid-voyage typically respawns at warehouse / plot, not back on the
+--- deck — re-tagging that land character with `PlayerInStraitEvent` would
+--- make them clip THROUGH the dock pier on land, which is wrong. We just
+--- track a placeholder connection slot so the cleanup symmetry in
+--- `_restoreOwnerOnVoyageCollisionGroup` can disconnect it without a
+--- nil check on every call site.
+---
+--- Idempotent: a second call won't double-stamp the prior-group attribute
+--- (see `applyPlayerCharacterCollisionGroup`). Safe to call from both
+--- `_runShipment` and `_freezeShipForStraitEventCinematic` — the latter
+--- is now redundant (voyage-wide application covers it) but kept as a
+--- belt-and-suspenders write in case `_runShipment` skipped the apply
+--- (e.g. owner offline at dispatch).
+function OilShipmentService:_applyOwnerOnVoyageCollisionGroup(player: Player)
+	local pieGroup = self._playerInStraitEventGroup
+	if not pieGroup then return end
+	local char = player and player.Character
+	if not char then return end
+	applyPlayerCharacterCollisionGroup(char, pieGroup)
+	-- Slot the connection table even though we don't currently wire a
+	-- `CharacterAdded` re-apply. Keeps `_restoreOwnerOnVoyageCollisionGroup`
+	-- unconditional and prevents a future "wire respawn re-apply" patch
+	-- from leaking connections if it forgets to disconnect on cleanup.
+	if self._voyageCharRespawnConnByUserId then
+		self._voyageCharRespawnConnByUserId[player.UserId] = nil
+	end
+end
+
+--- Restore the owner character's prior collision group at voyage end.
+--- Called from `_handleOwnerAfterSuccessfulShipmentFinish` (success) and
+--- from the `voyageAborted` branch in `_runShipment` (total loss). Safe
+--- to call when no apply ever happened (the per-part attribute check
+--- inside `restorePlayerCharacterCollisionGroup` no-ops on un-stamped
+--- parts) and when the player has gone offline.
+function OilShipmentService:_restoreOwnerOnVoyageCollisionGroup(userId: number)
+	local conn = self._voyageCharRespawnConnByUserId and self._voyageCharRespawnConnByUserId[userId]
+	if conn then
+		conn:Disconnect()
+	end
+	if self._voyageCharRespawnConnByUserId then
+		self._voyageCharRespawnConnByUserId[userId] = nil
+	end
+	local player = Players:GetPlayerByUserId(userId)
+	if player then
+		restorePlayerCharacterCollisionGroup(player.Character)
+	end
+end
+
 function OilShipmentService:_freezeShipForStraitEventCinematic(
 	shipmentId: string,
 	durationSec: number
@@ -2857,24 +3045,21 @@ function OilShipmentService:_freezeShipForStraitEventCinematic(
 		rootPart.Anchored = true
 	end
 
-	-- Move the owner character into a collision group that is no-collide
-	-- with the cosmetic-NPC group (registered in `Init`). This is the
-	-- authoritative defense against residual pushes from cosmetic ships /
-	-- officers / pirates whose own collision-group tagging on the client
-	-- might race or fail. Re-resolve the character right before applying
-	-- in case the player respawned during the brake wait.
+	-- Voyage collision group (`PlayerInStraitEvent`) is now applied for
+	-- the entire voyage in `_runShipment` after `TeleportOwnerToSeat` and
+	-- restored at voyage completion / total loss — see
+	-- `_applyOwnerOnVoyageCollisionGroup`. The cinematic used to do its
+	-- own apply / restore here because the group only existed for the
+	-- freeze window, but voyage-wide application covers it (and a
+	-- restore at cinematic end would now incorrectly drop the group
+	-- mid-voyage, re-colliding the player with docks / MapDecor).
+	-- Re-assert the group as a belt-and-suspenders write in case the
+	-- voyage-start apply was skipped (e.g. owner went offline at
+	-- dispatch then reconnected mid-voyage). Idempotent.
 	local pieGroup = self._playerInStraitEventGroup
 	ownerChar = ownerPlayer and ownerPlayer.Character or nil
 	if pieGroup and ownerChar then
 		applyPlayerCharacterCollisionGroup(ownerChar, pieGroup)
-	end
-	-- Handle respawn mid-cinematic: apply the group to the new character too.
-	-- We disconnect on exit so we don't leak across shipments.
-	local respawnConn: RBXScriptConnection? = nil
-	if pieGroup and ownerPlayer then
-		respawnConn = ownerPlayer.CharacterAdded:Connect(function(newChar)
-			applyPlayerCharacterCollisionGroup(newChar, pieGroup)
-		end)
 	end
 
 	if snapshotEnabled and ownerChar then
@@ -2923,16 +3108,13 @@ function OilShipmentService:_freezeShipForStraitEventCinematic(
 		end
 	end
 
-	-- Restore the player character to its prior collision group (typically
-	-- "Default"). Disconnect the respawn handler before restoring so a
-	-- post-cinematic respawn doesn't get re-tagged.
-	if respawnConn then
-		respawnConn:Disconnect()
-		respawnConn = nil
-	end
-	if ownerPlayer then
-		restorePlayerCharacterCollisionGroup(ownerPlayer.Character)
-	end
+	-- DO NOT restore the voyage collision group here. The player is still
+	-- on a voyage at this point (the cinematic is a sub-phase of the
+	-- voyage, not the end of it). Restoring back to `Default` would
+	-- re-collide them with docks, MapDecor, and parked boats for the
+	-- remainder of the trip. The voyage-end handlers
+	-- (`_handleOwnerAfterSuccessfulShipmentFinish` and the
+	-- `voyageAborted` branch of `_runShipment`) own the restore.
 
 	if snapshotEnabled then
 		print(string.format("[FreezeShip] <<< EXIT shipment=%s", tostring(shipmentId)))
@@ -3189,7 +3371,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 
 	local playtestTitle = StraitEventCatalog.GetPlaytestTitle(def)
 
-	local skinFx = ShipSkinCatalog.GetSkin(shipment.shipSkinId).fxParticleScale
+	local skinFx = BoatCatalog.GetBoat(shipment.boatId).fxParticleScale
 	local particleFxScale = ParticleFxScale.ComputePayloadScale(boat, skinFx)
 
 	-- Special missile event handling: rapid barrage of missiles all around the ship
@@ -3730,7 +3912,9 @@ end
 -- =================== SHIP LIFECYCLE (Physics-Driven) ===================
 
 function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, startPosition: Vector3, lookDirection: Vector3)
-	-- 1. Find root part (largest volume BasePart)
+	-- 1. Find root part (largest volume BasePart). Kept as the welded
+	-- assembly's root so the assembly mass / inertia remain consistent
+	-- with how voyages have always behaved.
 	local root: BasePart? = nil
 	local bestVol = 0
 	for _, d in ipairs(boatModel:GetDescendants()) do
@@ -3887,7 +4071,7 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 	local wlNowY = waterlineAnchorPart and waterlineAnchorPart.Position.Y or math.huge
 	print(string.format(
 		"[ShipSetup] skin=%s template=%s wlToRootY=%.2f startY_req=%.2f rootY=%.2f wlY=%.2f (delta-from-target=%.2f)",
-		tostring(boatModel:GetAttribute("ShipSkinId")),
+		tostring(boatModel:GetAttribute("BoatId")),
 		tostring(boatModel:GetAttribute("ShipTemplateName")),
 		waterlineToRootY,
 		startPosition.Y,
@@ -4039,32 +4223,9 @@ function OilShipmentService:_teardownShip(shipmentId: string)
 	self._activeShips[shipmentId] = nil
 end
 
-function OilShipmentService:_createFallbackBoat(): Model
-	local model = Instance.new("Model")
-	model.Name = "FallbackTanker"
-
-	local body = Instance.new("Part")
-	body.Name = "FallbackShipBody"
-	body.Size = Vector3.new(14, 3, 30)
-	body.Material = Enum.Material.Metal
-	body.Color = Color3.fromRGB(58, 72, 88)
-	body.Anchored = true
-	body.CanCollide = false
-	body.Parent = model
-
-	local deck = Instance.new("Part")
-	deck.Name = "Deck"
-	deck.Size = Vector3.new(10, 2, 16)
-	deck.Material = Enum.Material.Metal
-	deck.Color = Color3.fromRGB(90, 96, 106)
-	deck.Anchored = true
-	deck.CanCollide = false
-	deck.CFrame = body.CFrame * CFrame.new(0, 2.0, 0)
-	deck.Parent = model
-
-	model.PrimaryPart = body
-	return model
-end
+-- `_createFallbackBoat` was deleted by Step 4 of the boat-progression
+-- refactor — it was unreferenced (last caller removed long before; see
+-- `_spawnBoat` for the live `BoatCatalog` clone-with-warn path).
 
 function OilShipmentService:_emitShipmentEvent(kind: string, payload)
 	local event = self._remoteService:GetEvent(RemoteNames.ShipmentVisualEvent)
@@ -4084,6 +4245,15 @@ function OilShipmentService:_sendActionResult(player: Player, ok: boolean, code:
 	})
 end
 
+--- Debug-dispatch helpers (`DebugDispatchMissile` through
+--- `DebugDispatchUSShipSlap`) all share the same per-shipment shape:
+--- pull the player's equipped skin, derive `(speedL, capL)` from the
+--- boat's catalog entry via `ShipStats.LevelsForBoat(boatId)` (Step 2/4
+--- of the boat-progression refactor — stats are baked per-boat in
+--- `BoatCatalog`; per-player upgrade ladders are gone), then
+--- resolve and dispatch. Keep the shape uniform across all 7 helpers so
+--- live and debug shipments stay byte-for-byte comparable in
+--- telemetry / FX.
 function OilShipmentService:DebugDispatchMissile(player: Player)
 	local userId = player.UserId
 	local plot = self._plotService:GetOwnedPlot(userId)
@@ -4101,15 +4271,14 @@ function OilShipmentService:DebugDispatchMissile(player: Player)
 
 	local manifest = { Crude = 30, Refined = 0, Premium = 0 }
 	local st = self._oilStateService:GetState(userId)
-	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
-	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
-	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
+	local boatId = if st and typeof(st.equippedBoatId) == "string" and BoatCatalog.Boats[st.equippedBoatId] then st.equippedBoatId else "Tier1Boat"
+	local speedL, capL = ShipStats.LevelsForBoat(boatId)
 	local stats = ShipStats.Resolve(speedL, capL)
 
 	local shipment = {
 		shipmentId = HttpService:GenerateGUID(false),
 		ownerUserId = userId,
-		shipSkinId = skinId,
+		boatId = boatId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
 		manifest = manifest,
@@ -4148,15 +4317,14 @@ function OilShipmentService:DebugDispatchMine(player: Player)
 
 	local manifest = { Crude = 30, Refined = 0, Premium = 0 }
 	local st = self._oilStateService:GetState(userId)
-	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
-	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
-	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
+	local boatId = if st and typeof(st.equippedBoatId) == "string" and BoatCatalog.Boats[st.equippedBoatId] then st.equippedBoatId else "Tier1Boat"
+	local speedL, capL = ShipStats.LevelsForBoat(boatId)
 	local stats = ShipStats.Resolve(speedL, capL)
 
 	local shipment = {
 		shipmentId = HttpService:GenerateGUID(false),
 		ownerUserId = userId,
-		shipSkinId = skinId,
+		boatId = boatId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
 		manifest = manifest,
@@ -4193,15 +4361,14 @@ function OilShipmentService:DebugDispatchPirate(player: Player)
 
 	local manifest = { Crude = 25, Refined = 5, Premium = 0 }
 	local st = self._oilStateService:GetState(userId)
-	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
-	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
-	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
+	local boatId = if st and typeof(st.equippedBoatId) == "string" and BoatCatalog.Boats[st.equippedBoatId] then st.equippedBoatId else "Tier1Boat"
+	local speedL, capL = ShipStats.LevelsForBoat(boatId)
 	local stats = ShipStats.Resolve(speedL, capL)
 
 	local shipment = {
 		shipmentId = HttpService:GenerateGUID(false),
 		ownerUserId = userId,
-		shipSkinId = skinId,
+		boatId = boatId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
 		manifest = manifest,
@@ -4237,15 +4404,14 @@ function OilShipmentService:DebugDispatchStorm(player: Player)
 	dbg.ForceStorm = true
 
 	local st = self._oilStateService:GetState(userId)
-	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
-	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
-	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
+	local boatId = if st and typeof(st.equippedBoatId) == "string" and BoatCatalog.Boats[st.equippedBoatId] then st.equippedBoatId else "Tier1Boat"
+	local speedL, capL = ShipStats.LevelsForBoat(boatId)
 	local stats = ShipStats.Resolve(speedL, capL)
 
 	local shipment = {
 		shipmentId = HttpService:GenerateGUID(false),
 		ownerUserId = userId,
-		shipSkinId = skinId,
+		boatId = boatId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
 		manifest = { Crude = 28, Refined = 6, Premium = 2 },
@@ -4281,15 +4447,14 @@ function OilShipmentService:DebugDispatchTornado(player: Player)
 	dbg.ForceTornado = true
 
 	local st = self._oilStateService:GetState(userId)
-	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
-	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
-	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
+	local boatId = if st and typeof(st.equippedBoatId) == "string" and BoatCatalog.Boats[st.equippedBoatId] then st.equippedBoatId else "Tier1Boat"
+	local speedL, capL = ShipStats.LevelsForBoat(boatId)
 	local stats = ShipStats.Resolve(speedL, capL)
 
 	local shipment = {
 		shipmentId = HttpService:GenerateGUID(false),
 		ownerUserId = userId,
-		shipSkinId = skinId,
+		boatId = boatId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
 		manifest = { Crude = 32, Refined = 8, Premium = 4 },
@@ -4325,15 +4490,14 @@ function OilShipmentService:DebugDispatchCoastGuard(player: Player)
 	dbg.ForceCoastGuardInspection = true
 
 	local st = self._oilStateService:GetState(userId)
-	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
-	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
-	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
+	local boatId = if st and typeof(st.equippedBoatId) == "string" and BoatCatalog.Boats[st.equippedBoatId] then st.equippedBoatId else "Tier1Boat"
+	local speedL, capL = ShipStats.LevelsForBoat(boatId)
 	local stats = ShipStats.Resolve(speedL, capL)
 
 	local shipment = {
 		shipmentId = HttpService:GenerateGUID(false),
 		ownerUserId = userId,
-		shipSkinId = skinId,
+		boatId = boatId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
 		manifest = { Crude = 25, Refined = 5, Premium = 0 },
@@ -4369,15 +4533,14 @@ function OilShipmentService:DebugDispatchUSShipSlap(player: Player)
 	dbg.ForceUSShipSlap = true
 
 	local st = self._oilStateService:GetState(userId)
-	local speedL = if st then math.clamp(math.floor(st.shipSpeedLevel or 3), 1, ShipUpgradeConfig.MaxSpeedLevel) else 3
-	local capL = if st then math.clamp(math.floor(st.shipCapacityLevel or 5), 1, ShipUpgradeConfig.MaxCapacityLevel) else 5
-	local skinId = if st and typeof(st.shipSkinId) == "string" and ShipSkinCatalog.Skins[st.shipSkinId] then st.shipSkinId else "DefaultTanker"
+	local boatId = if st and typeof(st.equippedBoatId) == "string" and BoatCatalog.Boats[st.equippedBoatId] then st.equippedBoatId else "Tier1Boat"
+	local speedL, capL = ShipStats.LevelsForBoat(boatId)
 	local stats = ShipStats.Resolve(speedL, capL)
 
 	local shipment = {
 		shipmentId = HttpService:GenerateGUID(false),
 		ownerUserId = userId,
-		shipSkinId = skinId,
+		boatId = boatId,
 		shipSpeedLevel = speedL,
 		shipCapacityLevel = capL,
 		manifest = { Crude = 25, Refined = 5, Premium = 0 },

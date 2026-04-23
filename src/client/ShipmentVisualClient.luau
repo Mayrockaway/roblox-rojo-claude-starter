@@ -313,7 +313,7 @@ function ShipmentVisualClient.connect(deps: ShipmentVisualDeps, shipmentVisualEv
 		if kind == "ShipmentStarted" then
 			local shipLabel = if typeof(data.shipDisplayName) == "string" and (data :: any).shipDisplayName ~= ""
 				then (data :: any).shipDisplayName
-				else tostring((data :: any).shipSkinId or (data :: any).boatTypeId or "Ship")
+				else tostring((data :: any).boatId or (data :: any).shipSkinId or (data :: any).boatTypeId or "Ship")
 			setStatus(string.format("Shipment out: %s (%d barrels)", shipLabel, tonumber(data.loaded) or 0), true)
 		elseif kind == "ShipmentResolved" then
 			local delivered = tonumber(data.delivered) or 0

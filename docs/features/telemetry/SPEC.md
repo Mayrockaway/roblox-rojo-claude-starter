@@ -431,7 +431,9 @@ The funnel ordinal comes from `FtueConfig.Order` (1 = `Intro`, 2 = `WaitDrillOil
 | `oil_tank_upgraded` (Sink) | `resource` (Sink, `cash`, `item_type="oil_tank_upgrade:<oilType>"`) | `OilTankService` upgrade handler | `"cash"` | `oilType`, `tierFrom`, `tierTo`, `cost` |
 | `ship_speed_upgraded` (Sink) | `resource` (Sink, `cash`, `item_type="ship_speed"`) | `OilStateService:TryUpgradeShipSpeed` success | `"cash"` | `levelFrom`, `levelTo`, `cost` |
 | `ship_capacity_upgraded` (Sink) | `resource` (Sink, `cash`, `item_type="ship_capacity"`) | `OilStateService:TryUpgradeShipCapacity` success | `"cash"` | `levelFrom`, `levelTo`, `cost` |
-| `ship_skin_equipped` | `design` (`ship:skin_equipped:<skinId>`) | `OilStateService:SetShipSkinId` | n/a | `skinIdFrom`, `skinIdTo` |
+| `ship_skin_equipped` | `design` (`ship:skin_equipped:<skinId>`) | **DEPRECATED** — replaced by `boat_equipped` in Step 6 of the boat-progression refactor. Catalog entry retained for back-compat with pre-refactor dashboards; live code no longer emits. | n/a | `skinIdFrom`, `skinIdTo` |
+| `boat_equipped` | `design` (`boat:equipped:<boatId>`) | `OilStateService:SetEquippedBoatId` | n/a | `boatIdFrom`, `boatIdTo` |
+| `boat_unlocked` | `design` (`boat:unlocked:<boatId>`) | `OilStateService:TryUnlockBoat` (cash path; starter boats are auto-granted on profile load and Robux boats are tracked under `monetization_purchase_committed`) | `"cash"` | `boatId`, `cost`, `unlockKind = "cash"` |
 | `equipment_shop_rotated` | `design` (`shop:rotation`) | `EquipmentShopService:_rollShopStock` | n/a | `rotationId`, `itemsInStock = #stockMap` |
 
 ### 6.5 Strait / world events
@@ -529,7 +531,8 @@ For the gameplay engineer: where exactly to drop `Telemetry.*` calls. **No code 
 
 - **`OilStateService:TryUpgradeShipSpeed` / `TryUpgradeShipCapacity`** success: `ship_speed_upgraded` / `ship_capacity_upgraded` Sink.
 
-- **`OilStateService:SetShipSkinId`**: `ship_skin_equipped`.
+- **`OilStateService:SetEquippedBoatId`**: `boat_equipped` (post Step 6 boat-progression rename; `ship_skin_equipped` retained in the catalog for back-compat but no longer emitted).
+- **`OilStateService:TryUnlockBoat`** success on the cash path: `boat_unlocked`.
 
 - **`OilTankService`** upgrade handler success: `oil_tank_upgraded` Sink.
 

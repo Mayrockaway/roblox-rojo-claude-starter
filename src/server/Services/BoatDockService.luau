@@ -19,7 +19,7 @@ local RunService = game:GetService("RunService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 local BoatCollisionContract = require(script.Parent.Parent.Utils.BoatCollisionContract)
-local ShipSkinCatalog = require(Shared:WaitForChild("Config"):WaitForChild("ShipSkinCatalog"))
+local BoatCatalog = require(Shared:WaitForChild("Config"):WaitForChild("BoatCatalog"))
 local ShipRig = require(Shared:WaitForChild("Utils"):WaitForChild("ShipRig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local Telemetry = require(Shared:WaitForChild("Telemetry"))
@@ -64,6 +64,14 @@ local function applyMarinaDockCollisionRules()
 	pcall(function()
 		PhysicsService:CollisionGroupSetCollidable(MARINA_DOCK_GROUP, "Players", true)
 	end)
+	-- Voyaging player (`PlayerInStraitEvent`) clips through the dock pier
+	-- so the static dock collider doesn't yank them off the moving hull
+	-- as the boat sails past on departure or docks against the pier on
+	-- return. Mirror of the `OilShipmentService:Init` write — defensive
+	-- assertion in case BoatDockService:Init runs first.
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(MARINA_DOCK_GROUP, "PlayerInStraitEvent", false)
+	end)
 end
 
 local function applyMapDecorVersusShipmentShipRules()
@@ -80,6 +88,13 @@ local function applyMapDecorVersusShipmentShipRules()
 	end)
 	pcall(function()
 		PhysicsService:CollisionGroupSetCollidable(MAP_DECOR_GROUP, "Players", true)
+	end)
+	-- Voyaging player (`PlayerInStraitEvent`) clips through MapDecor props
+	-- (buoys, lane markers) — the hull already ignores them, the player on
+	-- deck must too or a low-floating decor part that brushes the deck
+	-- would punt them. Mirror of the `OilShipmentService:Init` write.
+	pcall(function()
+		PhysicsService:CollisionGroupSetCollidable(MAP_DECOR_GROUP, "PlayerInStraitEvent", false)
 	end)
 end
 
@@ -294,13 +309,13 @@ end
 local function rigForBoatModel(boat: Model): ShipRig.RigDef
 	local templateName = boat:GetAttribute("ShipTemplateName")
 	if typeof(templateName) == "string" and templateName ~= "" then
-		return ShipSkinCatalog.GetRigForTemplate(templateName)
+		return BoatCatalog.GetRigForTemplate(templateName)
 	end
-	local skinId = boat:GetAttribute("ShipSkinId")
-	if typeof(skinId) == "string" and skinId ~= "" then
-		return ShipSkinCatalog.GetRigForSkin(skinId)
+	local boatId = boat:GetAttribute("BoatId")
+	if typeof(boatId) == "string" and boatId ~= "" then
+		return BoatCatalog.GetRigForBoat(boatId)
 	end
-	return ShipSkinCatalog.GetRigForTemplate("Tanker")
+	return BoatCatalog.GetRigForTemplate("Tanker")
 end
 
 local function findSeatForBoat(boat: Model): Seat?
@@ -596,24 +611,24 @@ local function getDockWaterSurfaceY(): number?
 	return nil
 end
 
-function BoatDockService:_resolveTemplate(skinId: string): (Instance?, string, ShipRig.RigDef)
+function BoatDockService:_resolveTemplate(boatId: string): (Instance?, string, ShipRig.RigDef)
 	local assetsFolder = ReplicatedStorage:FindFirstChild("Assets")
-	local fallbackRig = ShipSkinCatalog.GetRigForTemplate("Tanker")
+	local fallbackRig = BoatCatalog.GetRigForTemplate("Tanker")
 	if not assetsFolder then
 		return nil, "Tanker", fallbackRig
 	end
-	local skin = ShipSkinCatalog.GetSkin(skinId)
-	local templateName = skin and skin.templateName or "Tanker"
-	local rig = ShipSkinCatalog.GetRigForTemplate(templateName)
+	local def = BoatCatalog.GetBoat(boatId)
+	local templateName = def and def.templateName or "Tanker"
+	local rig = BoatCatalog.GetRigForTemplate(templateName)
 	local tpl = templateName and assetsFolder:FindFirstChild(templateName)
 	if not (tpl and (tpl:IsA("Model") or tpl:IsA("BasePart"))) then
 		warn(string.format(
-			"[BoatDockService] Missing template '%s' for skin=%s; falling back to Tanker.",
+			"[BoatDockService] Missing template '%s' for boat=%s; falling back to Tanker.",
 			tostring(templateName),
-			tostring(skinId)
+			tostring(boatId)
 		))
 		templateName = "Tanker"
-		rig = ShipSkinCatalog.GetRigForTemplate(templateName)
+		rig = BoatCatalog.GetRigForTemplate(templateName)
 		tpl = assetsFolder:FindFirstChild("Tanker") -- fallback
 	end
 	return tpl, templateName, rig
@@ -743,12 +758,12 @@ local function addPlayerFlag(root: Instance, ownerUserId: number, rig: any)
 	nameLabel.Parent = nameGui
 end
 
-function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinId: string): Model?
+function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, boatId: string): Model?
 	local slotPart = self._slotsByIndex[slotIndex]
 	if not slotPart then return nil end
-	local tpl, templateName, rig = self:_resolveTemplate(skinId)
+	local tpl, templateName, rig = self:_resolveTemplate(boatId)
 	if not tpl then
-		warn(string.format("[BoatDockService] No boat template resolvable for user=%d skin=%s", userId, tostring(skinId)))
+		warn(string.format("[BoatDockService] No boat template resolvable for user=%d boat=%s", userId, tostring(boatId)))
 		return nil
 	end
 
@@ -765,24 +780,24 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 
 	local boat = cloneTemplateAsModel(tpl :: Instance)
 	boat.Name = "IdleBoat_" .. tostring(userId)
-	boat:SetAttribute("ShipSkinId", skinId)
+	boat:SetAttribute("BoatId", boatId)
 	boat:SetAttribute("ShipTemplateName", templateName)
 
 	local rigOk, rigErrors, rigWarnings = ShipRig.ValidateCore(boat, rig)
 	for _, warningMsg in ipairs(rigWarnings) do
 		warn(string.format(
-			"[BoatDockService] Rig warning user=%d skin=%s template=%s: %s",
+			"[BoatDockService] Rig warning user=%d boat=%s template=%s: %s",
 			userId,
-			tostring(skinId),
+			tostring(boatId),
 			tostring(templateName),
 			warningMsg
 		))
 	end
 	if not rigOk then
 		warn(string.format(
-			"[BoatDockService] Rig invalid user=%d skin=%s template=%s: %s",
+			"[BoatDockService] Rig invalid user=%d boat=%s template=%s: %s",
 			userId,
-			tostring(skinId),
+			tostring(boatId),
 			tostring(templateName),
 			table.concat(rigErrors, " | ")
 		))
@@ -795,18 +810,18 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 					boat:Destroy()
 				end)
 				templateName = "Tanker"
-				rig = ShipSkinCatalog.GetRigForTemplate(templateName)
+				rig = BoatCatalog.GetRigForTemplate(templateName)
 				boat = cloneTemplateAsModel(tankerTemplate)
 				boat.Name = "IdleBoat_" .. tostring(userId)
-				boat:SetAttribute("ShipSkinId", skinId)
+				boat:SetAttribute("BoatId", boatId)
 				boat:SetAttribute("ShipTemplateName", templateName)
 
 				rigOk, rigErrors, rigWarnings = ShipRig.ValidateCore(boat, rig)
 				for _, warningMsg in ipairs(rigWarnings) do
 					warn(string.format(
-						"[BoatDockService] Rig warning (fallback) user=%d skin=%s template=%s: %s",
+						"[BoatDockService] Rig warning (fallback) user=%d boat=%s template=%s: %s",
 						userId,
-						tostring(skinId),
+						tostring(boatId),
 						tostring(templateName),
 						warningMsg
 					))
@@ -816,9 +831,9 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 
 		if not rigOk then
 			warn(string.format(
-				"[BoatDockService] Cannot spawn idle boat user=%d skin=%s; rig errors after fallback: %s",
+				"[BoatDockService] Cannot spawn idle boat user=%d boat=%s; rig errors after fallback: %s",
 				userId,
-				tostring(skinId),
+				tostring(boatId),
 				table.concat(rigErrors, " | ")
 			))
 			pcall(function()
@@ -911,10 +926,10 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, skinI
 		local seatY = if seatAfter then seatAfter.Position.Y else math.huge
 		local waterSurfaceYDebug = getDockWaterSurfaceY()
 		warn(string.format(
-			"[BoatDockService][DockDebug] user=%d slot=%d skin=%s template=%s pivotY=%.2f slotY=%.2f dockY=%.2f dockDelta=%.2f wlY=%s wlToSlot=%s wlToWater=%s waterY=%s seatY=%s",
+			"[BoatDockService][DockDebug] user=%d slot=%d boat=%s template=%s pivotY=%.2f slotY=%.2f dockY=%.2f dockDelta=%.2f wlY=%s wlToSlot=%s wlToWater=%s waterY=%s seatY=%s",
 			userId,
 			slotIndex,
-			tostring(skinId),
+			tostring(boatId),
 			tostring(templateName),
 			pivotPos.Y,
 			slotY,
@@ -995,13 +1010,13 @@ function BoatDockService:_pushSnapshot(userId: number)
 	end
 end
 
-function BoatDockService:_getSkinId(userId: number): string
+function BoatDockService:_getBoatId(userId: number): string
 	local state = self._oilStateService and self._oilStateService:GetState(userId)
-	local sid = state and state.shipSkinId
-	if typeof(sid) == "string" and ShipSkinCatalog.Skins[sid] then
+	local sid = state and state.equippedBoatId
+	if typeof(sid) == "string" and BoatCatalog.Boats[sid] then
 		return sid
 	end
-	return "DefaultTanker"
+	return "Tier1Boat"
 end
 
 --- Public queries ---
@@ -1102,7 +1117,7 @@ function BoatDockService:CheckinBoat(userId: number, opts: { destroyed: boolean?
 			return
 		end
 		self._slotOwner[slotIndex] = userId
-		self:_spawnIdleBoat(userId, slotIndex, self:_getSkinId(userId))
+		self:_spawnIdleBoat(userId, slotIndex, self:_getBoatId(userId))
 		self:_fireBoatBecameIdle(userId)
 		return
 	end
@@ -1128,7 +1143,7 @@ function BoatDockService:CheckinBoat(userId: number, opts: { destroyed: boolean?
 			return
 		end
 		self._slotOwner[idx] = userId
-		self:_spawnIdleBoat(userId, idx, self:_getSkinId(userId))
+		self:_spawnIdleBoat(userId, idx, self:_getBoatId(userId))
 		self:_fireBoatBecameIdle(userId)
 	end)
 end
@@ -1263,8 +1278,8 @@ function BoatDockService:_onPlayerAdded(player: Player)
 		end
 		self._slotOwner[slotIndex] = userId
 		self._slotByUser[userId] = slotIndex
-		local skinId = self:_getSkinId(userId)
-		self:_spawnIdleBoat(userId, slotIndex, skinId)
+		local boatId = self:_getBoatId(userId)
+		self:_spawnIdleBoat(userId, slotIndex, boatId)
 	end)
 end
 
@@ -1303,14 +1318,15 @@ function BoatDockService:Start()
 		self:_onPlayerAdded(p)
 	end
 
-	-- Expose self to OilStateService for snapshot + skin-change callback.
+	-- Expose self to OilStateService for snapshot + equipped-boat-change
+	-- callback.
 	if self._oilStateService then
 		if self._oilStateService.SetBoatDockService then
 			self._oilStateService:SetBoatDockService(self)
 		end
-		if self._oilStateService.SetSkinChangedHandler then
-			self._oilStateService:SetSkinChangedHandler(function(userId, newSkinId)
-				self:RequestSkinSwap(userId, newSkinId)
+		if self._oilStateService.SetEquippedBoatChangedHandler then
+			self._oilStateService:SetEquippedBoatChangedHandler(function(userId, newBoatId)
+				self:RequestSkinSwap(userId, newBoatId)
 			end)
 		end
 	end

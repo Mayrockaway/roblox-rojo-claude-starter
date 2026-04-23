@@ -45,15 +45,30 @@ function PlotResourceService:Start()
 		self:_handlePickupBarrelRequest(player, payload)
 	end))
 
-	local function resolveSkinIdFromPayload(payload: any): string?
+	-- Resolve the boat id from the wire payload. Accepts (in priority order):
+	--   1. `payload.boatId`     — the v10+ canonical key (Step 6 rename).
+	--   2. `payload.skinId`     — legacy v9 key still emitted by
+	--                              `requestSetSelectedBoat` from older clients.
+	--   3. `payload.boatTypeId` — pre-v4 legacy key, mapped through
+	--                              `ShipProfileMigration` (kept so a player
+	--                              who hasn't reloaded the place since the
+	--                              old boat-type API can still equip).
+	-- We intentionally do NOT accept `payload.equippedBoatId` — the wire
+	-- contract for the new `RequestSetEquippedBoat` remote uses `boatId`
+	-- (matches `RequestUnlockBoat`); the `equippedBoatId` name is a
+	-- *server* state field, not the request payload key.
+	local function resolveBoatIdFromPayload(payload: any): string?
 		if typeof(payload) ~= "table" then
 			return nil
+		end
+		if typeof(payload.boatId) == "string" then
+			return payload.boatId
 		end
 		if typeof(payload.skinId) == "string" then
 			return payload.skinId
 		end
 		if typeof(payload.boatTypeId) == "string" then
-			local mapped = ShipProfileMigration.SkinIdForLegacyBoatTypeId(payload.boatTypeId)
+			local mapped = ShipProfileMigration.BoatIdForLegacyBoatTypeId(payload.boatTypeId)
 			if mapped then
 				return mapped
 			end
@@ -64,53 +79,69 @@ function PlotResourceService:Start()
 
 	local setBoatEvent = self._remoteService:GetEvent(RemoteNames.RequestSetSelectedBoat)
 	table.insert(self._connections, setBoatEvent.OnServerEvent:Connect(function(player, payload)
-		local skinId = resolveSkinIdFromPayload(payload)
-		if not skinId then
+		local boatId = resolveBoatIdFromPayload(payload)
+		if not boatId then
 			return
 		end
-		local ok, _err = self._oilStateService:SetShipSkinId(player.UserId, skinId)
+		local ok, _err = self._oilStateService:SetEquippedBoatId(player.UserId, boatId)
 		if ok then
 			self._oilStateService:PushState(player.UserId)
 		end
 	end))
 
-	local setSkinEvent = self._remoteService:GetEvent(RemoteNames.RequestSetShipSkin)
-	table.insert(self._connections, setSkinEvent.OnServerEvent:Connect(function(player, payload)
-		local skinId = resolveSkinIdFromPayload(payload)
-		if not skinId then
-			self:_sendResult(player, false, "ERR_BAD_PAYLOAD", "Missing skinId.")
+	-- Step 6: `RequestSetShipSkin` was renamed to `RequestSetEquippedBoat`.
+	-- The handler accepts the new `payload.boatId` shape (and back-compat
+	-- payload shapes via `resolveBoatIdFromPayload`). The result payload
+	-- echoes the canonical `boatId` so the planned boat-inventory UI can
+	-- flip its "equipped" card without re-deriving it from the snapshot.
+	local setEquippedBoatEvent = self._remoteService:GetEvent(RemoteNames.RequestSetEquippedBoat)
+	table.insert(self._connections, setEquippedBoatEvent.OnServerEvent:Connect(function(player, payload)
+		local boatId = resolveBoatIdFromPayload(payload)
+		if not boatId then
+			self:_sendResult(player, false, "ERR_BAD_PAYLOAD", "Missing boatId.")
 			return
 		end
-		local ok, err = self._oilStateService:SetShipSkinId(player.UserId, skinId)
+		local ok, err = self._oilStateService:SetEquippedBoatId(player.UserId, boatId)
 		if ok then
 			self._oilStateService:PushState(player.UserId)
-			self:_sendResult(player, true, "OK", "Ship skin updated.", { skinId = skinId })
+			self:_sendResult(player, true, "OK", "Equipped boat updated.", { boatId = boatId })
 		else
-			self:_sendResult(player, false, err, "Could not update ship skin.")
+			self:_sendResult(player, false, err, "Could not update equipped boat.")
 		end
 	end))
 
-	local upSpeed = self._remoteService:GetEvent(RemoteNames.RequestUpgradeShipSpeed)
-	table.insert(self._connections, upSpeed.OnServerEvent:Connect(function(player)
-		if not self:_allow(player.UserId, "upgradeShipSpeed", 25, 10) then
-			self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many upgrade requests.", nil, "UpgradeShipSpeed")
-			return
-		end
-		local ok, code, msg = self._oilStateService:TryUpgradeShipSpeed(player.UserId)
-		self:_sendResult(player, ok, code, msg, nil, "UpgradeShipSpeed")
-		if ok then
-			self._oilStateService:PushState(player.UserId)
-		end
-	end))
+	-- `RequestUpgradeShipSpeed` / `RequestUpgradeShipCapacity` handlers
+	-- were deleted by Step 4 of the boat-progression refactor. Stats are
+	-- now baked per-boat in `BoatCatalog`; the equip flow
+	-- (`RequestSetEquippedBoat`) and the unlock flow (`RequestUnlockBoat`,
+	-- below) replace the old upgrade ladder entirely.
 
-	local upCap = self._remoteService:GetEvent(RemoteNames.RequestUpgradeShipCapacity)
-	table.insert(self._connections, upCap.OnServerEvent:Connect(function(player)
-		if not self:_allow(player.UserId, "upgradeShipCapacity", 25, 10) then
-			self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many upgrade requests.", nil, "UpgradeShipCapacity")
+	-- Boat progression refactor (Step 3). Cash-unlock entry point for
+	-- boats whose `BoatCatalog.Boats[boatId].unlock.kind == "cash"`.
+	-- The starter and Robux paths are explicitly rejected by
+	-- `OilStateService:TryUnlockBoat` with codes that tell the client
+	-- which path to use instead (auto-grant on join / Robux prompt).
+	-- On success the boat is added to `ownedBoatIds` but NOT
+	-- equipped — the UI should follow up with `RequestSetEquippedBoat`
+	-- if the player wants to swap immediately. Snapshot is pushed so the
+	-- ship-select panel can flip the card to "Owned" without waiting
+	-- for the next periodic sync.
+	local unlockBoatEvent = self._remoteService:GetEvent(RemoteNames.RequestUnlockBoat)
+	table.insert(self._connections, unlockBoatEvent.OnServerEvent:Connect(function(player, payload)
+		if not self:_allow(player.UserId, "unlockBoat", 25, 10) then
+			self:_sendResult(player, false, "ERR_RATE_LIMIT", "Too many unlock requests.", nil, "UnlockBoat")
 			return
 		end
-		local ok, code, msg = self._oilStateService:TryUpgradeShipCapacity(player.UserId)
-		self:_sendResult(player, ok, code, msg, nil, "UpgradeShipCapacity")
+		local boatId: string? = nil
+		if typeof(payload) == "table" and typeof(payload.boatId) == "string" then
+			boatId = payload.boatId
+		end
+		if not boatId then
+			self:_sendResult(player, false, "ERR_BAD_PAYLOAD", "Missing boatId.", nil, "UnlockBoat")
+			return
+		end
+		local ok, code, msg = self._oilStateService:TryUnlockBoat(player.UserId, boatId)
+		self:_sendResult(player, ok, code, msg, { boatId = boatId }, "UnlockBoat")
 		if ok then
 			self._oilStateService:PushState(player.UserId)
 		end
@@ -144,7 +175,7 @@ function PlotResourceService:Start()
 					cols = OilConfig.Chunks.GridCols,
 					startingCenterSize = OilConfig.Chunks.StartingCenterSize,
 				},
-				shipSkinCatalog = self._oilShipmentService and self._oilShipmentService:GetShipSkinCatalogForClient() or {},
+				boatCatalog = self._oilShipmentService and self._oilShipmentService:GetBoatCatalogForClient() or {},
 			},
 		}
 	end

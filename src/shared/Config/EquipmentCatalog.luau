@@ -34,6 +34,29 @@ export type EquipmentRow = {
 	--- name stub. The Tool template's `TextureId` should be set in Studio
 	--- to the same id so the native backpack icon stays in sync.
 	iconAssetId: string?,
+	--- (Drill) When `true`, this drill can be placed on a tile that has
+	--- already been drilled (any state — dead, productive, mid-reveal).
+	--- The tile is wiped back to "pre-drilled" state and the standard
+	--- drill → shovel → reveal flow runs again, rolling a fresh vein
+	--- against the chunk's `GroundRarityWeights`. Drills without this
+	--- flag continue to reject already-drilled tiles. Center-pump tile
+	--- (`tile.hasCenterPump = true`) is **always** rejected regardless
+	--- of this flag — that pump is permanent. Currently set on T4-T6;
+	--- T1-T3 stay strictly first-drill only. See `OilStateService:TryStartDrill`.
+	canRedrill: boolean?,
+	--- (Drill) Per-rarity multiplier applied to `GroundRarityWeights` at
+	--- roll time inside `VeinCrateConfig.RollVeinType`. Multipliers
+	--- default to `1.0` for any rarity not listed (no change). Values
+	--- `< 1` shrink that rarity's slice (less likely), `> 1` grow it
+	--- (more likely), `0` removes it entirely. Applies to **every** drill
+	--- placed with this tier, not just rerolls — so e.g. T6 rolls the
+	--- biased weights even on first drills. See `OilStateService:_completeDrill`.
+	---
+	--- Currently set only on T6 (Option 3 from chat 2026-04 "T6 reroll
+	--- bias"): half dud rate + 1.5× boost to Epic+ rarities. Future
+	--- Robux-gated drills can ship their own bias here (e.g. `Unlucky = 0`,
+	--- larger Mythic boost) without changing the roll function.
+	rerollWeightBias: { [string]: number }?,
 }
 
 --- Edit this list only. Keep `tierKey` as "T1"|"T2"|"T3" for active drills; T4-T6 are
@@ -54,6 +77,27 @@ export type EquipmentRow = {
 --- Same number drives placement cost (`TryStartDrill`) since `shopPrice`
 --- is `nil` everywhere; if a designer ever wants the shop and placement
 --- to diverge, set `shopPrice` on that row.
+---
+--- Drill **redrill** capability (`canRedrill`) and rarity bias
+--- (`rerollWeightBias`):
+---   * T1 / T2 / T3 — strict first-drill only. Reject already-drilled tiles.
+---   * T4 / T5     — `canRedrill = true`, no bias. Player can re-drill any
+---                    productive / dead / mid-reveal tile (except the
+---                    chunk's permanent center pump). Wipes the tile back
+---                    to pre-drilled and re-rolls against the same
+---                    `GroundRarityWeights` — same odds as a fresh tile.
+---   * T6          — `canRedrill = true` **and** `rerollWeightBias` set
+---                    (Option 3 from chat 2026-04 "T6 reroll bias"):
+---                    `Unlucky = 0.5` (half dud rate) and Epic / Exotic /
+---                    Legendary / Ascendant / Transcendent / Mythic each
+---                    `× 1.5`. Bias applies on **every** T6 drill, not
+---                    only rerolls — so a stocked T6 is meaningfully
+---                    more enticing to buy at $50k vs. T4 at $5k. Future
+---                    Robux drills can ship `Unlucky = 0` + larger boosts.
+---
+--- Net Bronze T6 rates (vs. base `2000/4500/2500/1500/800/500/200`):
+---   Unlucky 16.7% → 8.5%  •  Epic 4.17% → 6.4%  •  Legendary 1.67% → 2.6%
+--- Net Diamond T6 rates: Unlucky 2.3% → 1.2%  •  Mythic 3.4% → 4.1%
 local ITEMS: { EquipmentRow } = {
 	{
 		id = "drill_t1",
@@ -121,9 +165,14 @@ local ITEMS: { EquipmentRow } = {
 		sortOrder = 4.1,
 		drillTimeDivisor = 100,
 		drillFallbackSeconds = 10,
-		-- shopSubtitle auto-derived → "100 meters/sec • 0.10 sec/tile"
+		--- Manual subtitle (overrides `formatDrillStatsLine`) so we can
+		--- advertise the T4+ re-drill capability alongside the speed stat.
+		--- Edit freely; if you set this back to nil, the auto-derived
+		--- "100 meters/sec • 0.10 sec/tile" line returns.
+		shopSubtitle = "100 m/s • 0.10 sec/tile • can RE-DRILL ANY TILE!",
 		rarity = "EPIC",
 		iconAssetId = "rbxassetid://123969726593017",
+		canRedrill = true,
 	},
 	{
 		id = "drill_t5",
@@ -137,9 +186,12 @@ local ITEMS: { EquipmentRow } = {
 		sortOrder = 4.2,
 		drillTimeDivisor = 300,
 		drillFallbackSeconds = 10,
-		-- shopSubtitle auto-derived → "300 meters/sec • 0.03 sec/tile"
+		--- Manual subtitle (overrides `formatDrillStatsLine`). Edit freely;
+		--- set to nil to fall back to "300 meters/sec • 0.03 sec/tile".
+		shopSubtitle = "300 m/s • 0.03 sec/tile • can RE-DRILL ANY TILE!",
 		rarity = "LEGENDARY",
 		iconAssetId = "rbxassetid://129251905585363",
+		canRedrill = true,
 	},
 	{
 		id = "drill_t6",
@@ -153,9 +205,31 @@ local ITEMS: { EquipmentRow } = {
 		sortOrder = 4.3,
 		drillTimeDivisor = 1000,
 		drillFallbackSeconds = 10,
-		-- shopSubtitle auto-derived → "1000 meters/sec • 0.01 sec/tile"
+		--- Manual subtitle (overrides `formatDrillStatsLine`). Calls out
+		--- both T6's re-drill capability AND its rarity bias (Option 3:
+		--- half dud rate + ×1.5 to Epic+) so the $50k price tag /
+		--- ~20% in-stock rate read as premium even before purchase.
+		--- Edit freely; set to nil to fall back to
+		--- "1000 meters/sec • 0.01 sec/tile" (loses the bias callout).
+		shopSubtitle = "1000 m/s • 0.01 sec/tile • RE-DRILLS AND BETTER ODDS!",
 		rarity = "MYTHIC",
 		iconAssetId = "rbxassetid://135865747560987",
+		canRedrill = true,
+		--- Option 3 from chat 2026-04 "T6 reroll bias": halve dud rate,
+		--- bump Epic+ rarities ×1.5. Bias applies on every T6 placement
+		--- (first drill OR reroll), not just rerolls — makes T6's $50k
+		--- price + scarce stock rotation feel premium even on a fresh tile.
+		--- Future Robux drills can override these multipliers (e.g. set
+		--- `Unlucky = 0` to never dig dry, or larger Mythic boost).
+		rerollWeightBias = {
+			Unlucky = 0.5,
+			Epic = 1.5,
+			Exotic = 1.5,
+			Legendary = 1.5,
+			Ascendant = 1.5,
+			Transcendent = 1.5,
+			Mythic = 1.5,
+		},
 	},
 }
 
@@ -395,6 +469,9 @@ function EquipmentCatalog.buildShopItems(): { ShopCatalogRow }
 end
 
 --- Shape expected by `OilConfig.DrillTiers` / `OilStateService:TryStartDrill`.
+--- `canRedrill` and `rerollWeightBias` are surfaced here so the drill server
+--- can branch on tile-already-drilled placement (T4+) and apply the per-rarity
+--- weight bias at vein roll time (T6) without re-reading `EquipmentCatalog`.
 function EquipmentCatalog.getDrillTiersMap(): {
 	[string]: {
 		cost: number,
@@ -402,6 +479,8 @@ function EquipmentCatalog.getDrillTiersMap(): {
 		fallbackSeconds: number,
 		templateName: string,
 		displayName: string,
+		canRedrill: boolean?,
+		rerollWeightBias: { [string]: number }?,
 	},
 }
 	local m: any = {}
@@ -413,6 +492,8 @@ function EquipmentCatalog.getDrillTiersMap(): {
 				fallbackSeconds = r.drillFallbackSeconds or 10,
 				templateName = r.toolName,
 				displayName = r.displayName,
+				canRedrill = r.canRedrill,
+				rerollWeightBias = r.rerollWeightBias,
 			}
 		end
 	end

@@ -54,7 +54,7 @@ local config = {
 	removeDrillHoldSeconds = 2,
 	removeDrillRangeStuds = 18,
 	chunks = { size = 8, rows = 10, cols = 10, startingCenterSize = 4 },
-	shipSkinCatalog = {},
+	boatCatalog = {},
 }
 
 local ownedPlot: Model? = nil

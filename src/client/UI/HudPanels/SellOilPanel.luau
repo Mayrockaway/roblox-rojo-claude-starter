@@ -4,6 +4,7 @@
 -- `WarehouseHeader.WarehouseTitle` = strait **`WarehouseService`** used/total capacity (`WarehouseStateUpdate`).
 -- Crude (Tier 1) row = `Crude` only (no blending of refined / premium product).
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
@@ -316,10 +317,18 @@ end
 
 --- For `FtueUiPointers` during the **Sell** FTUE step.
 function SellOilPanel.peekOpenAndBarrelsForSellFtue(): (boolean, number)
-	if not wiredScreen or not wiredScreen.Parent then
-		return false, 0
+	--- Same race as `ShipOilPanel.peekOpenAndBarrelsForFtue` — see there.
+	if not (wiredScreen and wiredScreen.Parent) then
+		local plr = Players.LocalPlayer
+		local pg = plr and plr:FindFirstChildOfClass("PlayerGui")
+		if pg then
+			SellOilPanel.bind(pg)
+		end
 	end
-	return wiredScreen.Enabled, sumSelectedSellBarrels()
+	if wiredScreen and wiredScreen.Parent then
+		return wiredScreen.Enabled, sumSelectedSellBarrels()
+	end
+	return false, 0
 end
 
 local function maybeFireFtueSellPointerRefresh()

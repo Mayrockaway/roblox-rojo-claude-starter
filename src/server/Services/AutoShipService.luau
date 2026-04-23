@@ -17,7 +17,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
-local ShipUpgradeConfig = require(Shared:WaitForChild("Config"):WaitForChild("ShipUpgradeConfig"))
+local BoatCatalog = require(Shared:WaitForChild("Config"):WaitForChild("BoatCatalog"))
 local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local TIER_MOST_VALUABLE = { "Premium", "Refined", "Crude" }
@@ -157,10 +157,14 @@ function AutoShipService:_buildAutoManifest(userId: number, priority: string): {
 	local oilByTier = state.oilByTier
 	if typeof(oilByTier) ~= "table" then return nil end
 
-	-- Ship capacity
-	local speedL = math.clamp(math.floor(state.shipSpeedLevel or 1), 1, ShipUpgradeConfig.MaxSpeedLevel)
-	local capL = math.clamp(math.floor(state.shipCapacityLevel or 1), 1, ShipUpgradeConfig.MaxCapacityLevel)
-	local stats = ShipStats.Resolve(speedL, capL)
+	-- Ship capacity. Boat progression refactor (Step 2): capacity is read
+	-- from the equipped boat's catalog entry via `ResolveForBoat` instead
+	-- of the legacy profile `shipCapacityLevel` (which is stat-inert
+	-- post-Step 2). This keeps the auto-dispatch capacity check in sync
+	-- with the dispatch-time check inside `OilShipmentService._handleDispatch`.
+	local boatId = (typeof(state.equippedBoatId) == "string" and BoatCatalog.Boats[state.equippedBoatId] and state.equippedBoatId)
+		or "Tier1Boat"
+	local stats = ShipStats.ResolveForBoat(boatId)
 	local shipCap = stats.capacity
 
 	-- Warehouse remaining room

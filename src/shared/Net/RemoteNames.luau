@@ -47,9 +47,36 @@ local RemoteNames = {
 	RequestWarehouseSnapshot = "RequestWarehouseSnapshot",
 	RequestDispatchShipment = "RequestDispatchShipment",
 	RequestSetSelectedBoat = "RequestSetSelectedBoat",
-	RequestSetShipSkin = "RequestSetShipSkin",
-	RequestUpgradeShipSpeed = "RequestUpgradeShipSpeed",
-	RequestUpgradeShipCapacity = "RequestUpgradeShipCapacity",
+	-- `RequestSetShipSkin` was renamed to `RequestSetEquippedBoat` in
+	-- Step 6 of the boat-progression refactor. The wire id changed
+	-- intentionally (no string back-compat) so legacy clients with
+	-- stale handlers will simply not find the remote — they were never
+	-- shipped firing it (the only consumer was the planned boat-
+	-- inventory UI). Do NOT revive `RequestSetShipSkin` as a string id.
+	RequestSetEquippedBoat = "RequestSetEquippedBoat",
+	-- `RequestUpgradeShipSpeed` / `RequestUpgradeShipCapacity` were
+	-- deleted by Step 4 of the boat-progression refactor. Per-boat
+	-- speed and capacity are now baked into `BoatCatalog` and selected
+	-- via the boat-equip flow (`RequestSetEquippedBoat` plus the
+	-- `RequestUnlockBoat` below). Re-introducing per-boat upgrades
+	-- would require a fresh remote name; do NOT revive the old ids
+	-- because some legacy clients may still have stale handlers.
+	--- Boat progression refactor (Step 3). Client → server: spend cash
+	--- to unlock a boat from `BoatCatalog.Boats[boatId].unlock` when
+	--- `unlock.kind == "cash"`. Payload `{ boatId = string }`. Server
+	--- replies on `OilActionResult` with action `"UnlockBoat"` and one of:
+	---   * `OK`                     — boat granted (added to `ownedBoatIds`)
+	---   * `ERR_BAD_PAYLOAD`        — missing / non-string boatId
+	---   * `ERR_BAD_BOAT`           — boatId not in catalog or placeholder
+	---   * `ERR_NOT_PURCHASABLE`    — entry has no `unlock` block / 0 cost
+	---   * `ERR_STARTER_AUTO_GRANTED` — `unlock.kind == "starter"` (already owned)
+	---   * `ERR_USE_ROBUX_PROMPT`   — `unlock.kind == "robux"`; use `RequestPromptRobuxPurchase` instead
+	---   * `ERR_ALREADY_OWNED`      — already in `ownedBoatIds`
+	---   * `ERR_NOT_ENOUGH_CASH`    — cash debit failed
+	---   * `ERR_RATE_LIMIT`         — bucket exhausted
+	--- The boat is NOT auto-equipped on success — the UI fires a
+	--- separate `RequestSetEquippedBoat` after the unlock confirms.
+	RequestUnlockBoat = "RequestUnlockBoat",
 	MarketPriceUpdate = "MarketPriceUpdate",
 	RequestSellWarehouseType = "RequestSellWarehouseType",
 	RequestSellWarehouseBarrels = "RequestSellWarehouseBarrels",
