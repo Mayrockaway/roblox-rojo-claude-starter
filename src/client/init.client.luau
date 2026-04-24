@@ -11,6 +11,7 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local mouse = player:GetMouse()
 
+
 --- Custom hotbar lives at `PlayerGui.HUD.Canvas.EquipmentHotbar` — the
 --- default Roblox `Backpack` CoreGui must never render. The loading
 --- bootstrap (`replicated_first/init.client.luau`) disables it first, this

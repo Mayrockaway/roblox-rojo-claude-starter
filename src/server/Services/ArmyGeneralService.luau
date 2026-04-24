@@ -351,6 +351,18 @@ function ArmyGeneralService:_handleAirstrike(player: Player, payload)
 		return
 	end
 
+	-- Security Personnel immunity: if the victim's shipment has eventImmunity,
+	-- the airstrike is deflected. Refund the attacker.
+	if (victimShipment :: any).eventImmunity == true then
+		self._oilStateService:AddCash(player.UserId, AIRSTRIKE_COST, { skipMultiplier = true })
+		self._oilStateService:PushState(player.UserId)
+		resultEvent:FireClient(player, {
+			ok = false,
+			message = "Target has Security Personnel — airstrike deflected! Cash refunded.",
+		})
+		return
+	end
+
 	-- General airstrike = GUARANTEED HIT (instakill).
 	--- The branches below (log line, post-animation `if hit then ForceDestroyShipment`)
 	--- read a local `hit`. Without this it was nil → falsy → ship was never actually
