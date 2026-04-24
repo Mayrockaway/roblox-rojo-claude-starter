@@ -9,3 +9,6 @@
 .DS_Store
 Thumbs.db
 .vscode/settings.json
+
+# Claude Code per-user overrides (settings.json is the team-shared file)
+.claude/settings.local.json
