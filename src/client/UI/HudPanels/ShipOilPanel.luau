@@ -173,6 +173,7 @@ local rowBindings: { [string]: {
 	amountField: AmountField,
 	minus: GuiButton,
 	plus: GuiButton,
+	maxButton: GuiButton?,
 } } = {}
 
 -- Raw oil units at home refinery (same keys / semantics as `OilStateService` server state).
@@ -704,6 +705,59 @@ local function bumpTier(tier: string, delta: number)
 	selected[tier] = nextSel
 	refreshRowUi()
 	refreshFooter()
+end
+
+--- One-shot Max button: stage every legal barrel of `tier` the player owns,
+--- clamped to whichever cap binds first (refinery inventory, ship cargo room
+--- after the OTHER tiers, or warehouse headroom). When the cap pulls below
+--- inventory we surface a per-cause toast + deny SFX so the player understands
+--- why the count didn't reach the refinery total. Quiet success only when
+--- nothing was held back.
+local function setMaxForTier(tier: string)
+	local inv = maxBarrelsInRefineryForTier(tier)
+	local per = perBarrelOilUnits()
+	local otherOil = sumSelectedOilUnits() - (selected[tier] or 0) * per
+	local shipRoomBarrels = math.max(0, math.floor((maxShipCapacityOilUnits() - otherOil) / per))
+
+	local warehouseRoomBarrels: number
+	if hasWarehouseTotals and warehouseCapTotal > 0 then
+		local otherStaged = sumSelectedBarrels() - (selected[tier] or 0)
+		warehouseRoomBarrels = math.max(0, warehouseCapTotal - warehouseStoredTotal - otherStaged)
+	else
+		warehouseRoomBarrels = math.huge
+	end
+
+	local actualMax = math.min(inv, shipRoomBarrels, warehouseRoomBarrels)
+	local cur = selected[tier] or 0
+	local changed = actualMax ~= cur
+
+	if changed then
+		selected[tier] = actualMax
+		refreshRowUi()
+		refreshFooter()
+	end
+
+	-- Quiet success: Max gave the player every barrel they own.
+	if actualMax >= inv and changed then
+		return
+	end
+
+	-- Either a no-op tap at the current cap or a successful-but-clamped Max
+	-- with inventory still on the dock. Both deserve a message + deny SFX so
+	-- the player sees the binding constraint. Ship-vs-warehouse precedence
+	-- mirrors the implicit ordering elsewhere in the file (ship cap is the
+	-- harder limit; warehouse safety is the secondary guard).
+	local tierDisplay = (QualityConfig.Tiers[tier :: any] and QualityConfig.Tiers[tier :: any].displayName) or tier
+	local message: string
+	if actualMax >= inv then
+		message = string.format("All %d %s barrels already loaded.", inv, tierDisplay)
+	elseif shipRoomBarrels <= warehouseRoomBarrels then
+		message = string.format("Ship cargo full — %s capped at %d barrels.", tierDisplay, actualMax)
+	else
+		message = string.format("Warehouse near full — %s capped at %d barrels.", tierDisplay, actualMax)
+	end
+	showErrorNotification(message, 4)
+	UiSfx.playUiDenied()
 end
 
 local function tryDispatch()
@@ -1315,6 +1369,7 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 			emphasizeInventoryCountLabel(invLabel :: TextLabel)
 			local minus = stepper:FindFirstChild("MinusButton", true)
 			local plus = stepper:FindFirstChild("PlusButton", true)
+			local maxBtnRaw = stepper:FindFirstChild("MaxButton", true)
 			local amt = stepper:FindFirstChild("AmountLabel", true)
 			if not (minus and minus:IsA("GuiButton") and plus and plus:IsA("GuiButton") and amt) then
 				continue
@@ -1327,12 +1382,14 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 				amt.ClearTextOnFocus = false
 				shipAmountTextBoxTier[amt :: TextBox] = tier
 			end
+			local maxButton: GuiButton? = (maxBtnRaw and maxBtnRaw:IsA("GuiButton")) and (maxBtnRaw :: GuiButton) or nil
 			rowBindings[ch.Name] = {
 				tier = tier,
 				inventoryLabel = invLabel :: TextLabel,
 				amountField = amountField,
 				minus = minus :: GuiButton,
 				plus = plus :: GuiButton,
+				maxButton = maxButton,
 			}
 			StepperHold.bind(minus :: GuiButton, function()
 				bumpTier(tier, -1)
@@ -1340,6 +1397,13 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 			StepperHold.bind(plus :: GuiButton, function()
 				bumpTier(tier, 1)
 			end, connections)
+			if maxButton then
+				-- Single-tap Activated (no StepperHold accel — Max is one-shot).
+				table.insert(connections, maxButton.Activated:Connect(function()
+					setMaxForTier(tier)
+				end))
+				attachColorFadeHover(maxButton, connections)
+			end
 			if amt:IsA("TextBox") then
 				table.insert(connections, amt.FocusLost:Connect(function()
 					applyTypedBarrelsForTier(tier, amt.Text)
