@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "Bash(claude mcp *)",
+      "Bash(gh release *)",
+      "PowerShell(Get-NetTCPConnection -State Listen -LocalPort 58741,58742,58743 -ErrorAction SilentlyContinue | Select-Object LocalAddress, LocalPort, OwningProcess, @{Name=\"Process\";Expression={\\(Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue\\).ProcessName}} | Format-Table -AutoSize)",
+      "PowerShell(Get-Command claude, npx, node, gh -ErrorAction SilentlyContinue)",
+      "PowerShell($pluginsPath = \"$env:LOCALAPPDATA\\\\Roblox\\\\Plugins\"; \"Path: $pluginsPath\"; \"Exists: $\\(Test-Path $pluginsPath\\)\"; if \\(Test-Path $pluginsPath\\) { Get-ChildItem $pluginsPath | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize })",
+      "PowerShell($node15980 = Get-Process -Id 15980 -ErrorAction SilentlyContinue; $node26200 = Get-Process -Id 26200 -ErrorAction SilentlyContinue; \"PID 15980 \\(port 58742\\): $\\($node15980.Path\\)\"; \"PID 26200 \\(port 58741\\): $\\($node26200.Path\\)\"; \"---\"; Get-CimInstance Win32_Process -Filter \"ProcessId = 15980 OR ProcessId = 26200\" | Select-Object ProcessId, CommandLine | Format-List)",
+      "PowerShell($candidates = @\\(\"$env:ProgramFiles\\\\nodejs\\\\node.exe\", \"$env:ProgramFiles\\\\nodejs\\\\npx.cmd\", \"$env:APPDATA\\\\npm\\\\claude.cmd\", \"$env:APPDATA\\\\npm\\\\claude.ps1\", \"$env:LOCALAPPDATA\\\\Programs\\\\nodejs\\\\node.exe\"\\); foreach \\($c in $candidates\\) { \"$c -> $\\(Test-Path $c\\)\" })",
+      "PowerShell($h = @{ \"User-Agent\" = \"claude-setup\" }; $r = Invoke-RestMethod -Uri \"https://api.github.com/repos/boshyxd/robloxstudio-mcp/releases/latest\" -Headers $h; \"Tag: $\\($r.tag_name\\)\"; \"Published: $\\($r.published_at\\)\"; \"---Assets---\"; $r.assets | Select-Object name, size, browser_download_url | Format-List)",
+      "mcp__robloxstudio-mcp__get_place_info"
+    ]
+  }
+}
