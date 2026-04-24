@@ -1308,14 +1308,11 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		ftueTutorialSuppressStraitIncidents = tutorialEscort,
 	}
 
-	-- Run-upgrade hooks. When a player owns a stackable single-shipment
-	-- upgrade (currently just Security Personnel), consume one stack here
-	-- so the very next voyage carries the buff. Order matters: this MUST
-	-- happen before `_runShipment` spawns, otherwise the strait waypoint
-	-- handler can't see the flag in time. Each hook stamps a shipment-
-	-- scoped boolean (`eventImmunity`, future `damageReduction`, …) that
-	-- the corresponding gameplay path reads.
-	if self._securityPersonnelService and self._securityPersonnelService:TryConsumeForDispatch(player.UserId) then
+	-- Run-upgrade hooks. Security Personnel is opt-in: the client sends
+	-- `useSecurityPersonnel = true` in the dispatch payload when the player
+	-- explicitly toggled it on. AutoShip always skips (no auto-consume).
+	local wantSecurity = typeof(payload) == "table" and payload.useSecurityPersonnel == true
+	if wantSecurity and self._securityPersonnelService and self._securityPersonnelService:TryConsumeForDispatch(player.UserId) then
 		(shipment :: any).eventImmunity = true
 		pcall(function()
 			local remaining = 0

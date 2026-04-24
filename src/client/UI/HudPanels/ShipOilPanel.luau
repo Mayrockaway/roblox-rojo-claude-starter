@@ -197,6 +197,8 @@ local selected: { [string]: number } = {
 	Refined = 0,
 	Premium = 0,
 }
+local _useSecurityPersonnel = false
+local _securityOwnedCount = 0
 local latestCash = 0
 local shipmentCostLabel: TextLabel? = nil
 local totalBarrelsLabel: TextLabel? = nil
@@ -810,6 +812,7 @@ local function tryDispatch()
 	end
 	ClientRemotes.requestDispatchShipment:FireServer({
 		manifest = manifest,
+		useSecurityPersonnel = _useSecurityPersonnel == true,
 	})
 end
 
@@ -1039,7 +1042,11 @@ local RUN_UPGRADE_INVENTORY_ID = "security_personnel"
 local runUpgradeCard1Binding: {
 	titleLabel: TextLabel,
 	descriptionLabel: TextLabel?,
+	costPill: GuiObject?,
+	costPillGradient: UIGradient?,
 	costLabel: TextLabel?,
+	toggleDisplay: TextLabel?,
+	toggleButton: TextButton?,
 	buyButton: GuiButton,
 	baseTitle: string,
 	baseDescription: string,
@@ -1071,8 +1078,59 @@ local function refreshRunUpgradeCard1(ownedCount: number)
 	if not b then
 		return
 	end
+	_securityOwnedCount = math.max(0, math.floor(ownedCount))
+	if _securityOwnedCount <= 0 then
+		_useSecurityPersonnel = false
+	end
 	if b.descriptionLabel then
-		b.descriptionLabel.Text = formatRunUpgradeDescription(math.max(0, math.floor(ownedCount)))
+		if _useSecurityPersonnel then
+			b.descriptionLabel.Text = string.format("ON — 1/%d will be used on dispatch", _securityOwnedCount)
+		elseif _securityOwnedCount > 0 then
+			b.descriptionLabel.Text = string.format("OFF — %d available", _securityOwnedCount)
+		else
+			b.descriptionLabel.Text = "Protects your ship from all events on next run"
+		end
+	end
+	-- CostPill = OFF/ON toggle display
+	if b.costLabel and b.costLabel:IsA("TextLabel") then
+		b.costLabel.Text = _useSecurityPersonnel and "ON" or "OFF"
+		-- Hide coin icon so OFF/ON text is visible
+		local coinIcon = b.costLabel.Parent and b.costLabel.Parent:FindFirstChild("CoinIcon")
+		if coinIcon and coinIcon:IsA("GuiObject") then
+			coinIcon.Visible = false
+		end
+	end
+end
+
+refreshRunUpgradeCard1 = function(ownedCount: number)
+	local b = runUpgradeCard1Binding
+	if not b then
+		return
+	end
+	_securityOwnedCount = math.max(0, math.floor(ownedCount))
+	if _securityOwnedCount <= 0 then
+		_useSecurityPersonnel = false
+	end
+	if b.descriptionLabel then
+		if _useSecurityPersonnel then
+			b.descriptionLabel.Text = string.format("ON - 1/%d will be used on dispatch", _securityOwnedCount)
+		elseif _securityOwnedCount > 0 then
+			b.descriptionLabel.Text = string.format("OFF - %d available", _securityOwnedCount)
+		else
+			b.descriptionLabel.Text = b.baseDescription
+		end
+	end
+	if b.costPill and b.costPill.Parent then
+		b.costPill.BackgroundColor3 = if _useSecurityPersonnel
+			then Color3.fromRGB(46, 166, 74)
+			else Color3.fromRGB(196, 64, 102)
+		b.costPill.BackgroundTransparency = 0
+	end
+	if b.costPillGradient and b.costPillGradient.Parent then
+		b.costPillGradient.Enabled = false
+	end
+	if b.toggleDisplay and b.toggleDisplay.Parent then
+		b.toggleDisplay.Text = _useSecurityPersonnel and "ON" or "OFF"
 	end
 end
 
@@ -1163,7 +1221,13 @@ local function wireRunUpgradeCard1(screen: ScreenGui, conns: { RBXScriptConnecti
 	runUpgradeCard1Binding = {
 		titleLabel = titleLabel :: TextLabel,
 		descriptionLabel = (descLabel and descLabel:IsA("TextLabel")) and (descLabel :: TextLabel) or nil,
+		costPill = costPill,
+		costPillGradient = (costPill and costPill:FindFirstChild("UIGradient") and costPill:FindFirstChild("UIGradient"):IsA("UIGradient"))
+			and (costPill:FindFirstChild("UIGradient") :: UIGradient)
+			or nil,
 		costLabel = (costLabel and costLabel:IsA("TextLabel")) and (costLabel :: TextLabel) or nil,
+		toggleDisplay = nil,
+		toggleButton = nil,
 		buyButton = buyButton :: GuiButton,
 		baseTitle = titleLabel.Text,
 		baseDescription = baseDescription,
@@ -1173,9 +1237,83 @@ local function wireRunUpgradeCard1(screen: ScreenGui, conns: { RBXScriptConnecti
 	-- `wireShipOil` will overwrite this within the same wire pass.
 	refreshRunUpgradeCard1(0)
 
+	-- BUY button: always buy more
 	table.insert(conns, (buyButton :: GuiButton).Activated:Connect(function()
 		ClientRemotes.requestPromptRobuxPurchase:FireServer({ itemId = RUN_UPGRADE_ITEM_ID })
 	end))
+
+	-- CostPill = OFF/ON toggle. Keep the authored pill as the visible base,
+	-- then layer a display label plus a transparent hit target over it.
+	local costPill = buyButton.Parent and buyButton.Parent:FindFirstChild("CostPill")
+	if costPill and costPill:IsA("GuiObject") and costLabel and costLabel:IsA("TextLabel") then
+		costLabel.Text = ""
+		costLabel.ClipsDescendants = false
+		local coinIcon = costPill:FindFirstChild("CoinIcon")
+		if coinIcon and coinIcon:IsA("GuiObject") then
+			coinIcon.Visible = false
+		end
+
+		local toggleDisplay = costLabel:FindFirstChild("SecurityToggleDisplay")
+		if toggleDisplay and not toggleDisplay:IsA("TextLabel") then
+			toggleDisplay:Destroy()
+			toggleDisplay = nil
+		end
+		if not toggleDisplay then
+			local display = Instance.new("TextLabel")
+			display.Name = "SecurityToggleDisplay"
+			display.AnchorPoint = Vector2.new(0, 0.5)
+			display.Position = UDim2.new(-0.5, 0, 0.5, 0)
+			display.Size = UDim2.new(2, 0, 1, 0)
+			display.BorderSizePixel = 0
+			display.TextColor3 = Color3.fromRGB(255, 255, 255)
+			display.TextScaled = true
+			display.BackgroundTransparency = 1
+			display.Font = Enum.Font.GothamBold
+			display.TextXAlignment = Enum.TextXAlignment.Center
+			display.TextYAlignment = Enum.TextYAlignment.Center
+			display.ZIndex = math.max(costPill.ZIndex + 2, costLabel.ZIndex + 2, buyButton.ZIndex + 1)
+			display.Parent = costLabel
+
+			local textConstraint = Instance.new("UITextSizeConstraint")
+			textConstraint.MaxTextSize = 20
+			textConstraint.MinTextSize = 12
+			textConstraint.Parent = display
+
+			toggleDisplay = display
+		end
+
+		local toggleButton = costLabel:FindFirstChild("ToggleHit")
+		if toggleButton and not toggleButton:IsA("TextButton") then
+			toggleButton:Destroy()
+			toggleButton = nil
+		end
+		if not toggleButton then
+			local hit = Instance.new("TextButton")
+			hit.Name = "ToggleHit"
+			hit.AnchorPoint = Vector2.new(0, 0.5)
+			hit.Position = UDim2.new(-0.5, 0, 0.5, 0)
+			hit.Size = UDim2.new(2, 0, 1, 0)
+			hit.BackgroundTransparency = 1
+			hit.AutoButtonColor = false
+			hit.BorderSizePixel = 0
+			hit.Text = ""
+			hit.ZIndex = math.max(costPill.ZIndex + 3, costLabel.ZIndex + 3, buyButton.ZIndex + 2)
+			hit.Parent = costLabel
+			toggleButton = hit
+		end
+
+		runUpgradeCard1Binding.toggleDisplay = toggleDisplay :: TextLabel
+		runUpgradeCard1Binding.toggleButton = toggleButton :: TextButton
+		table.insert(conns, (toggleButton :: TextButton).Activated:Connect(function()
+			if _securityOwnedCount > 0 then
+				_useSecurityPersonnel = not _useSecurityPersonnel
+			else
+				ClientRemotes.requestPromptRobuxPurchase:FireServer({ itemId = RUN_UPGRADE_ITEM_ID })
+			end
+			refreshRunUpgradeCard1(_securityOwnedCount)
+		end))
+		refreshRunUpgradeCard1(_securityOwnedCount)
+	end
 
 	-- Surface failure codes for this card's prompt to the console only
 	-- (mirrors `RobuxShopPanel`'s policy — there's no per-card error toast,

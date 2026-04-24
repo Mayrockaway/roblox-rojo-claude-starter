@@ -311,8 +311,8 @@ local ShopRotation = {
 		drill_t2   = { min = 3,  max = 5,  perPlayer = 1.0  } :: ShopStockBand,
 		drill_t3   = { min = 2,  max = 3,  perPlayer = 0.5  } :: ShopStockBand,
 		drill_t4   = { min = 1,  max = 2,  perPlayer = 0.35 } :: ShopStockBand,
-		drill_t5   = { min = 0,  max = 1,  perPlayer = 0.20 } :: ShopStockBand,
-		drill_t6   = { min = 0,  max = 1,  perPlayer = 0.10, appearChance = 0.20 } :: ShopStockBand,
+		drill_t5   = { min = 0,  max = 3,  perPlayer = 0.20 } :: ShopStockBand,
+		drill_t6   = { min = 0,  max = 2,  perPlayer = 0.10, appearChance = 0.30 } :: ShopStockBand,
 	} :: { [string]: ShopStockBand },
 	CoreFloor = {
 		drill_t1 = 3,
