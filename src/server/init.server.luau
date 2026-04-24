@@ -598,11 +598,7 @@ do
 		elseif cmd == "/wipedata" or cmd == "/dev_wipeme" then
 			devWipePersistedForUser(player.UserId)
 			player:Kick("[Dev] Persisted data wiped — rejoin for a fresh profile.")
-		elseif cmd == "/wipealldata" or cmd == "/dev_wipeall" then
-			for _, p in ipairs(Players:GetPlayers()) do
-				devWipePersistedForUser(p.UserId)
-				p:Kick("[Dev] Persisted data wiped — rejoin for a fresh profile.")
-			end
+		-- /wipealldata and /dev_wipeall REMOVED — too dangerous, could wipe all players.
 		elseif cmd == "/hideui" then
 			-- Toggle all client-side UI for marketing footage capture.
 			local ev = RemoteService:GetEvent(RemoteNames.DevHideUI)
@@ -663,7 +659,7 @@ do
 		"/missile", "/mine", "/pirate", "/storm", "/tornado", "/coastguard", "/slap", "/nuke", "/airstrike",
 		"/fighterwave", "/fighters", "/fighterhere", "/jethere",
 		"/fighterretarget", "/jetretarget",
-		"/grant500", "/givecash", "/wipedata", "/dev_wipeme", "/wipealldata", "/dev_wipeall",
+		"/grant500", "/givecash", "/wipedata", "/dev_wipeme",
 		"/giveall", "/testvein", "/givedrills",
 		"/straitopen", "/straitclose",
 		"/unlockboats", "/unlockallboats", "/giveallboats",

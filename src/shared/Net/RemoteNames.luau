@@ -106,6 +106,9 @@ local RemoteNames = {
 	-- Fires on join + after claim so client can render the shop card.
 	DailyDrillUpdate = "DailyDrillUpdate",
 
+	-- Mobile drill hint: one-time dismissal (persisted so it never shows again).
+	RequestDismissMobileDrillHint = "RequestDismissMobileDrillHint",
+
 	-- One-shot equipment shop (Tools cloned into `Player.Backpack`; cash via `OilStateService`).
 	RequestPurchaseEquipment = "RequestPurchaseEquipment",
 	RequestEquipmentShopCatalog = "RequestEquipmentShopCatalog",

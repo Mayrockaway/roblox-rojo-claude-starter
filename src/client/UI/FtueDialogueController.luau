@@ -279,6 +279,33 @@ function FtueDialogueController.start(
 		return
 	end
 
+	-- Mobile: scale up FTUE dialogue to stretch across screen for readability.
+	local UserInputService = game:GetService("UserInputService")
+	local RunService = game:GetService("RunService")
+	local isMobile = UserInputService.TouchEnabled
+		or (RunService:IsStudio()
+			and workspace.CurrentCamera
+			and workspace.CurrentCamera.ViewportSize.Y < 500
+			and workspace.CurrentCamera.ViewportSize.X < 900
+			and workspace.CurrentCamera.ViewportSize.X > 1)
+	if isMobile then
+		local panelHost = sg:FindFirstChild("PanelHost", true)
+		if panelHost and panelHost:IsA("GuiObject") then
+			-- Stretch to ~95% width, taller, centered at bottom
+			panelHost.Size = UDim2.new(0.95, 0, 0.28, 0)
+			panelHost.Position = UDim2.new(0.5, 0, 0.85, 0)
+			panelHost.AnchorPoint = Vector2.new(0.5, 1)
+		end
+		-- Scale up text
+		for _, desc in ipairs(sg:GetDescendants()) do
+			if desc:IsA("TextLabel") or desc:IsA("TextButton") then
+				if not desc.TextScaled then
+					desc.TextScaled = true
+				end
+			end
+		end
+	end
+
 	local continueBtnNames = { "ContinueButton", "Continue", "OkButton", "OK", "NextButton" }
 	local skipBtnNames = {
 		"SkipButton",

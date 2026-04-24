@@ -147,6 +147,27 @@ local function resolveHotbar(playerGui: PlayerGui): (Frame?, GuiObject?)
 	if not strip or not template then
 		return nil, nil
 	end
+	-- Mobile: scale up slot icons for easier tapping.
+	local RunService = game:GetService("RunService")
+	local isMobile = UserInputService.TouchEnabled
+		or (RunService:IsStudio()
+			and workspace.CurrentCamera
+			and workspace.CurrentCamera.ViewportSize.Y < 500
+			and workspace.CurrentCamera.ViewportSize.X < 900
+			and workspace.CurrentCamera.ViewportSize.X > 1)
+	if isMobile then
+		local MOBILE_SCALE = 1.6
+		local tplSize = template.Size
+		template.Size = UDim2.new(
+			tplSize.X.Scale * MOBILE_SCALE, math.floor(tplSize.X.Offset * MOBILE_SCALE),
+			tplSize.Y.Scale * MOBILE_SCALE, math.floor(tplSize.Y.Offset * MOBILE_SCALE)
+		)
+		local hbSize = hotbar.Size
+		hotbar.Size = UDim2.new(
+			hbSize.X.Scale, hbSize.X.Offset,
+			hbSize.Y.Scale * MOBILE_SCALE, math.floor(hbSize.Y.Offset * MOBILE_SCALE)
+		)
+	end
 	-- Keep above other Canvas siblings (teleports, stacks) so slots receive input.
 	hotbar.ZIndex = math.max(hotbar.ZIndex, 25)
 	strip.ZIndex = math.max(strip.ZIndex, hotbar.ZIndex)

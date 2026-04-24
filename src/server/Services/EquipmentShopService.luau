@@ -807,6 +807,16 @@ function EquipmentShopService:_startDailyDrill()
 		self:_handleClaimDailyDrill(player)
 	end)
 
+	-- Mobile drill hint dismissal (one-time persistence)
+	local dismissHintRemote = self._remoteService:GetEvent(RemoteNames.RequestDismissMobileDrillHint)
+	if dismissHintRemote then
+		dismissHintRemote.OnServerEvent:Connect(function(player: Player)
+			if self._oilStateService then
+				self._oilStateService:SetMobileDrillHintDismissed(player.UserId)
+			end
+		end)
+	end
+
 	table.insert(self._connections, Players.PlayerAdded:Connect(function(player: Player)
 		task.defer(function()
 			task.wait(3)

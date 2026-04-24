@@ -844,6 +844,178 @@ PlacementClient.init({
 	estimateRefundForTarget = estimateRefundForTarget,
 })
 
+local _isMobileDevice = UserInputService.TouchEnabled
+if not _isMobileDevice and RunService:IsStudio() then
+	local cam = Workspace.CurrentCamera
+	if cam and cam.ViewportSize.X <= 1 then
+		cam:GetPropertyChangedSignal("ViewportSize"):Wait()
+	end
+	if cam and cam.ViewportSize.Y < 500 and cam.ViewportSize.X < 900 then
+		_isMobileDevice = true
+	end
+end
+
+-- ═══════════════════════════════════════════════════════════════════
+-- FTUE first shipment: lock player on boat during WaitShipment.
+-- Prevents walking off the deck. Failsafe timeout prevents softlock.
+-- ═══════════════════════════════════════════════════════════════════
+do
+	local FTUE_SHIP_LOCK_TIMEOUT = 180 -- 3 min max, prevents softlock
+	local locked = false
+	local savedWalkSpeed: number? = nil
+	local savedJumpHeight: number? = nil
+	local savedJumpPower: number? = nil
+
+	local function lockPlayer()
+		if locked then return end
+		local char = player.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if not hum then return end
+		savedWalkSpeed = hum.WalkSpeed
+		savedJumpHeight = hum.JumpHeight
+		savedJumpPower = hum.JumpPower
+		hum.WalkSpeed = 0
+		hum.JumpHeight = 0
+		hum.JumpPower = 0
+		locked = true
+	end
+
+	local function unlockPlayer()
+		if not locked then return end
+		local char = player.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if hum then
+			hum.WalkSpeed = savedWalkSpeed or 16
+			hum.JumpHeight = savedJumpHeight or 7.2
+			hum.JumpPower = savedJumpPower or 50
+		end
+		locked = false
+		savedWalkSpeed = nil
+		savedJumpHeight = nil
+		savedJumpPower = nil
+	end
+
+	local function checkStep()
+		local step = player:GetAttribute(Constants.FtueStepAttribute)
+		if step == "WaitShipment" then
+			lockPlayer()
+		else
+			unlockPlayer()
+		end
+	end
+
+	player:GetAttributeChangedSignal(Constants.FtueStepAttribute):Connect(checkStep)
+	-- Also handle respawn during WaitShipment
+	player.CharacterAdded:Connect(function(char)
+		local hum = char:WaitForChild("Humanoid", 5)
+		if not hum then return end
+		task.wait(0.5)
+		if locked then
+			hum.WalkSpeed = 0
+			hum.JumpHeight = 0
+			hum.JumpPower = 0
+		end
+	end)
+
+	-- Failsafe: if locked for longer than timeout, force unlock
+	task.spawn(function()
+		while true do
+			task.wait(1)
+			if locked then
+				local step = player:GetAttribute(Constants.FtueStepAttribute)
+				if step ~= "WaitShipment" then
+					unlockPlayer()
+				end
+			end
+		end
+	end)
+
+	-- Also add a hard timeout
+	player:GetAttributeChangedSignal(Constants.FtueStepAttribute):Connect(function()
+		if player:GetAttribute(Constants.FtueStepAttribute) == "WaitShipment" then
+			task.delay(FTUE_SHIP_LOCK_TIMEOUT, function()
+				if locked then
+					unlockPlayer()
+				end
+			end)
+		end
+	end)
+
+	-- Check on startup in case we loaded into WaitShipment
+	task.defer(checkStep)
+end
+
+-- ═══════════════════════════════════════════════════════════════════
+-- Mobile drill hint: "Tap any tile to drill" banner above hotbar.
+-- Visible when drill is equipped, disappears after 2 successful placements.
+-- ═══════════════════════════════════════════════════════════════════
+local _mobileDrillHintBanner: TextLabel? = nil
+local _mobileDrillPlacementsRemaining = 3
+local _lastDrillHintCountdown: number? = nil
+
+if _isMobileDevice then
+	-- Wait for oil state to check if hint was already dismissed
+	task.spawn(function()
+		task.wait(4) -- wait for state to load
+		local oilSnapshot = requestOilSnapshot:InvokeServer()
+		if typeof(oilSnapshot) == "table" and (oilSnapshot :: any).mobileDrillHintDismissed == true then
+			_mobileDrillPlacementsRemaining = 0
+			return
+		end
+
+		local banner = Instance.new("TextLabel")
+		banner.Name = "MobileDrillHint"
+		banner.Size = UDim2.new(0.7, 0, 0, 36)
+		banner.Position = UDim2.new(0.5, 0, 1, -70)
+		banner.AnchorPoint = Vector2.new(0.5, 1)
+		banner.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+		banner.BackgroundTransparency = 0.3
+		banner.BorderSizePixel = 0
+		banner.Text = "  Tap any unlocked tile to place drill  "
+		banner.TextColor3 = Color3.fromRGB(255, 255, 100)
+		banner.Font = Enum.Font.GothamBold
+		banner.TextScaled = true
+		banner.Visible = false
+		banner.ZIndex = 40
+
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 8)
+		corner.Parent = banner
+
+		local hud = playerGui:FindFirstChild("HUD")
+		local canvas = hud and hud:FindFirstChild("Canvas")
+		banner.Parent = canvas or playerGui
+		_mobileDrillHintBanner = banner
+
+		-- Show/hide based on drill equip + remaining placements + FTUE done
+		while true do
+			if _mobileDrillPlacementsRemaining <= 0 then
+				break
+			end
+			local kind, _ = getEquippedToolInfo()
+			if kind == nil and getEquippedToolName() == TOOL_DRILL then
+				kind = "Drill"
+			end
+			local ftueStep = player:GetAttribute(Constants.FtueStepAttribute)
+			local ftueActive = typeof(ftueStep) == "string" and ftueStep ~= "" and ftueStep ~= "Done"
+			banner.Visible = (kind == "Drill" and _mobileDrillPlacementsRemaining > 0 and not ftueActive)
+			task.wait(0.15)
+		end
+		banner.Visible = false
+
+		-- Persist dismissal so it never shows again
+		local dismissRemote = game.ReplicatedStorage:FindFirstChild("Shared")
+			and game.ReplicatedStorage.Shared:FindFirstChild("Remotes")
+			and game.ReplicatedStorage.Shared.Remotes:FindFirstChild("RequestDismissMobileDrillHint")
+		if dismissRemote then
+			dismissRemote:FireServer()
+		end
+
+		task.wait(1)
+		banner:Destroy()
+	end)
+end
+
 local function tryPrimaryAction()
 	local kind, tier = getEquippedToolInfo()
 	if kind == nil and getEquippedToolName() == TOOL_DRILL then
@@ -863,12 +1035,14 @@ local function tryPrimaryAction()
 
 	if kind ~= "Drill" then return end
 
-	-- `getDesiredPlacementHit` returns the **facing-projection** preview on
-	-- pure-touch devices (one tile ahead of the player along their
-	-- HumanoidRootPart LookVector, snapped to tile center) and the live
-	-- `mouse.Hit` on desktop / hybrid devices. Either way the placement
-	-- coord matches the visible ghost the player just confirmed.
-	local chunkId, hitPos, previewTileName = PlacementClient.getDesiredPlacementHit()
+	-- On mobile: use direct mouse hit (player taps the tile they want).
+	-- On PC: use getDesiredPlacementHit (follows ghost projection).
+	local chunkId, hitPos, previewTileName
+	if _isMobileDevice then
+		chunkId, hitPos, previewTileName = PlacementClient.getChunkHitFromMouse()
+	else
+		chunkId, hitPos, previewTileName = PlacementClient.getDesiredPlacementHit()
+	end
 	if not (hitPos and chunkId) then return end
 	if not isChunkUnlocked(chunkId) then
 		setStatus("That chunk is locked.", false)
@@ -888,6 +1062,15 @@ local function tryPrimaryAction()
 		z = hitPos.Z,
 		tier = tier or "T1",
 	}
+	-- Chunk-level FTUE restriction (WaitDrillOil_WIP)
+	local wantChunk = readLocalFtueCellKey(Constants.FtueRestrictDrillChunkIdAttribute)
+	if wantChunk and wantChunk ~= "" then
+		if chunkId ~= wantChunk then
+			setStatus("Place the drill in the highlighted area.", false)
+			return
+		end
+	end
+	-- Single-cell FTUE restriction (WaitReveal / legacy)
 	local wantDrill = readLocalFtueCellKey(Constants.FtueRestrictDrillCellKeyAttribute)
 	if wantDrill and ownedPlot then
 		local ch = chunkStateById[chunkId]
@@ -905,6 +1088,94 @@ local function tryPrimaryAction()
 		end
 	end
 	requestStartDrill:FireServer(payload)
+
+	-- Count down drill hint (debounce: only count once per second, only after FTUE)
+	if _mobileDrillPlacementsRemaining > 0 then
+		local ftueStep = player:GetAttribute(Constants.FtueStepAttribute)
+		local ftueActive = typeof(ftueStep) == "string" and ftueStep ~= "" and ftueStep ~= "Done"
+		if not ftueActive then
+			local now = os.clock()
+			if not _lastDrillHintCountdown or (now - _lastDrillHintCountdown) > 1 then
+				_lastDrillHintCountdown = now
+				_mobileDrillPlacementsRemaining -= 1
+			end
+		end
+	end
+
+	-- Mobile: placement confirmation VFX (pulse ring + sparkle burst)
+	if _isMobileDevice then
+		task.spawn(function()
+			local Debris = game:GetService("Debris")
+			local effectPos = Vector3.new(payload.x, payload.y + 0.1, payload.z)
+
+			-- 1. Green pulse ring expanding outward on the tile surface
+			local ring = Instance.new("Part")
+			ring.Name = "DrillPlaceRing"
+			ring.Shape = Enum.PartType.Cylinder
+			ring.Size = Vector3.new(0.05, 0.5, 0.5)
+			ring.CFrame = CFrame.new(effectPos) * CFrame.Angles(0, 0, math.rad(90))
+			ring.Anchored = true
+			ring.CanCollide = false
+			ring.CanQuery = false
+			ring.CanTouch = false
+			ring.Material = Enum.Material.Neon
+			ring.Color = Color3.fromRGB(80, 255, 120)
+			ring.Transparency = 0.3
+			ring.Parent = Workspace
+
+			-- 2. Sparkle burst particles
+			local sparkleAnchor = Instance.new("Part")
+			sparkleAnchor.Name = "DrillPlaceSparkle"
+			sparkleAnchor.Size = Vector3.new(1, 1, 1)
+			sparkleAnchor.Position = effectPos
+			sparkleAnchor.Anchored = true
+			sparkleAnchor.CanCollide = false
+			sparkleAnchor.CanQuery = false
+			sparkleAnchor.CanTouch = false
+			sparkleAnchor.Transparency = 1
+			sparkleAnchor.Parent = Workspace
+
+			local emitter = Instance.new("ParticleEmitter")
+			emitter.Rate = 0
+			emitter.Speed = NumberRange.new(8, 15)
+			emitter.Lifetime = NumberRange.new(0.3, 0.5)
+			emitter.SpreadAngle = Vector2.new(60, 60)
+			emitter.Size = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.4),
+				NumberSequenceKeypoint.new(1, 0),
+			})
+			emitter.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0),
+				NumberSequenceKeypoint.new(0.7, 0.3),
+				NumberSequenceKeypoint.new(1, 1),
+			})
+			emitter.Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, Color3.fromRGB(100, 255, 140)),
+				ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 255, 100)),
+			})
+			emitter.LightEmission = 1
+			emitter.LightInfluence = 0
+			emitter.EmissionDirection = Enum.NormalId.Top
+			emitter.Parent = sparkleAnchor
+			emitter:Emit(18)
+
+			-- Animate ring expanding
+			local duration = 0.35
+			local t0 = os.clock()
+			while true do
+				local alpha = math.min((os.clock() - t0) / duration, 1)
+				local ease = alpha * (2 - alpha) -- ease out quad
+				local diameter = 0.5 + ease * 7
+				ring.Size = Vector3.new(0.05, diameter, diameter)
+				ring.Transparency = 0.3 + alpha * 0.7
+				if alpha >= 1 then break end
+				task.wait()
+			end
+
+			ring:Destroy()
+			Debris:AddItem(sparkleAnchor, 0.6)
+		end)
+	end
 end
 
 local function clearRemoveHold()
@@ -1000,6 +1271,9 @@ end)
 -- Desktop mouse path is untouched: `Mouse.Button1Down` still places on
 -- click, `getDesiredPlacementHit` only swaps to projection on **pure-touch
 -- devices** (`UserInputService.TouchEnabled and not MouseEnabled`).
+-- Mobile drill placement: tap any tile to place directly. No ghost preview.
+-- Uses mouse.Target (updates on touch) to find the tapped tile.
+-- If placement is invalid, shows error via setStatus. If valid, places immediately.
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then
 		return
@@ -1014,22 +1288,10 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if kind ~= "Drill" then
 		return
 	end
-	-- Snapshot the ghost's current projected hit. Same source as
-	-- `updateGhost`, so the tap-target check below sees exactly what the
-	-- player sees on screen.
-	local chunkId, hitPos, tileName = PlacementClient.getDesiredPlacementHit()
-	if not (chunkId and hitPos) then
-		return
-	end
-	if not PlacementClient.isPlacementValid(chunkId, hitPos, "Drill", tileName) then
-		return
-	end
-	local touchPos = Vector2.new(input.Position.X, input.Position.Y)
-	if not PlacementClient.isTouchOverGhostOrHostTile(touchPos, chunkId, tileName) then
-		return
-	end
+	-- Use the mouse target (updates on tap for touch devices)
 	tryPrimaryAction()
 end)
+
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then
@@ -1235,7 +1497,11 @@ GlobalEventBanner.start()
 
 RunService.RenderStepped:Connect(function()
 	updateFocusUi()
-	updateGhost()
+	-- Mobile: no ghost preview — player taps the tile directly.
+	-- PC: ghost preview follows mouse as before.
+	if not _isMobileDevice then
+		updateGhost()
+	end
 	updateHammerHover()
 
 	if removeHoldDrillId ~= nil and removeHoldStart > 0 then

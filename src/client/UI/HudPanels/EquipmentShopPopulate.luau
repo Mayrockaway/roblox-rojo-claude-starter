@@ -264,6 +264,8 @@ local function applyRoles(
 	if costLbl and costLbl:IsA("TextLabel") then
 		if isFtueFreeFreebie(item.id) then
 			costLbl.Text = pickText(costLbl, "FreeText", defaults and defaults.CostFreeText, "FREE")
+			-- Stamp the card so FtueUiPointers can dynamically position the BuyDrillPointer on it
+			card:SetAttribute("IsFtueFreeDrillCard", true)
 		else
 			local format = costLbl:GetAttribute("Format")
 			if typeof(format) ~= "string" or format == "" then

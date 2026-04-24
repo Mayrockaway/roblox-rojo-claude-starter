@@ -337,6 +337,14 @@ local function isPlacementValid(chunkId: string, hitPos: Vector3, equipKind: str
 	local chunkStateById = ClientPlotGrid.getChunkStateById()
 	local readLocalFtueCellKey = ClientPlotGrid.readLocalFtueCellKey
 	if kind == "Drill" then
+		-- Chunk-level FTUE restriction (WaitDrillOil_WIP): any tile in starter chunk is valid.
+		local wantChunk = readLocalFtueCellKey(Constants.FtueRestrictDrillChunkIdAttribute)
+		if wantChunk and wantChunk ~= "" then
+			if chunkId ~= wantChunk then
+				return false
+			end
+		end
+		-- Single-cell FTUE restriction (WaitReveal / legacy)
 		local want = readLocalFtueCellKey(Constants.FtueRestrictDrillCellKeyAttribute)
 		if want and ownedPlot then
 			local ch = chunkStateById[chunkId]
@@ -1122,5 +1130,42 @@ M.isPureTouchDevice = isPureTouchDevice
 M.resolveProjectedTileFromCharacter = resolveProjectedTileFromCharacter
 M.resolveTouchGhostVisualHit = resolveTouchGhostVisualHit
 M.isTouchOverGhostOrHostTile = isTouchOverGhostOrHostTile
+
+--- Returns the current ghost drill Model (or nil if hidden).
+function M.getGhostDrill(): Model?
+	return ghostDrill
+end
+
+--- Direct mouse-target hit for mobile (no ghost projection).
+--- Returns chunkId, snapped hit position, and tile name from whatever
+--- tile the player tapped on.
+function M.getChunkHitFromMouse(): (string?, Vector3?, string?)
+	local target = mouse.Target
+	if not (target and target:IsA("BasePart")) then
+		return nil, nil, nil
+	end
+	local ownedPlot = ClientPlotGrid.getOwnedPlot()
+	if not ownedPlot then
+		return nil, nil, nil
+	end
+	-- Walk up parents looking for ChunkId
+	local cursor: Instance? = target
+	local chunkId: string? = nil
+	while cursor do
+		local cid = cursor:GetAttribute("ChunkId")
+		if typeof(cid) == "string" then
+			chunkId = cid
+			break
+		end
+		cursor = cursor.Parent
+	end
+	if not chunkId then
+		return nil, nil, nil
+	end
+	-- Snap to tile center
+	local hitPos = tileCenterHitFromPart(target)
+	local tileName = target.Name
+	return chunkId, hitPos, tileName
+end
 
 return M

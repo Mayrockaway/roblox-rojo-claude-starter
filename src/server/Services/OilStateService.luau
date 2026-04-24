@@ -854,6 +854,15 @@ function OilStateService:GetDailyDrillClaimCycle(userId: number): number?
 	return nil
 end
 
+--- Mobile drill hint persistence: mark as dismissed so it never shows again.
+function OilStateService:SetMobileDrillHintDismissed(userId: number)
+	local state = self:GetState(userId)
+	if state then
+		(state :: any).mobileDrillHintDismissed = true
+		self:_markDirty(userId)
+	end
+end
+
 --- Fired after a plot profile is loaded into memory: `(userId, drillCompletions)`.
 --- Used to replay completed timers that finished while offline and to schedule remaining delays.
 function OilStateService:SetStateReadyForTimersCallback(cb: (number, { any }) -> ())
@@ -1923,6 +1932,13 @@ function OilStateService:TryStartDrill(userId: number, payload): (boolean, strin
 	if ftueDrillCell and ftueDrillCell ~= ck then
 		return false, "ERR_FTUE_WRONG_TILE", FtueConfig.WrongTileDrill, nil
 	end
+	-- Chunk-level FTUE restriction (WaitDrillOil_WIP): any tile in the starter chunk is valid.
+	local ftueChunkId = readFtueCellAttribute(userId, Constants.FtueRestrictDrillChunkIdAttribute)
+	if ftueChunkId and ftueChunkId ~= "" then
+		if payload.chunkId ~= ftueChunkId then
+			return false, "ERR_FTUE_WRONG_TILE", FtueConfig.WrongTileDrill, nil
+		end
+	end
 	-- Block placing a drill where a pump or another drill already is
 	for _, pump in pairs(state.drillsById) do
 		if pump.cellKey == ck then
@@ -1949,10 +1965,12 @@ function OilStateService:TryStartDrill(userId: number, payload): (boolean, strin
 	local ftueStep = plr and plr:GetAttribute(Constants.FtueStepAttribute)
 	local ftueFreeNoSellback = (
 		FtueConfig.Enabled == true
-		and ftueDrillCell ~= nil
-		and ftueDrillCell == ck
 		and typeof(ftueStep) == "string"
 		and ftueStep == FtueConfig.Step.WaitDrillOil_WIP
+		and (
+			(ftueDrillCell ~= nil and ftueDrillCell == ck)
+			or (ftueChunkId ~= nil and ftueChunkId ~= "")
+		)
 	)
 	if ftueFreeNoSellback then
 		effectiveSeconds = math.max(0.5, tonumber(FtueConfig.FtueTutorialDrillSeconds) or 5)
@@ -4511,6 +4529,27 @@ end
 
 --- FTUE drill tile: **adjacent to the auto-placed center pump** (T33 of the starting chunk).
 --- Pumps now spawn automatically at section center, so the tutorial tile sits one cell next to
+--- Returns the starter chunk's section ID (e.g. "S04_02") based on OilConfig.
+function OilStateService:GetStarterChunkSectionId(): string
+	return string.format("S%02d_%02d", OilConfig.Chunks.StartingRow, OilConfig.Chunks.StartingCol)
+end
+
+--- Returns true if ANY tile in the given section has been drilled.
+--- Used by FTUE rejoin logic to detect if the player already placed a drill
+--- during WaitDrillOil_WIP before disconnecting.
+function OilStateService:IsAnyTileInChunkDrilled(state: any, sectionId: string): boolean
+	local chunks = (state :: any).chunksById
+	if not chunks then return false end
+	local chunk = chunks[sectionId]
+	if not chunk or not chunk.tiles then return false end
+	for _, tile in pairs(chunk.tiles) do
+		if typeof(tile) == "table" and tile.drilled == true then
+			return true
+		end
+	end
+	return false
+end
+
 --- it (preferred direction = toward the `Lab Machine` if present, so the pipe path the player
 --- sees from spawn flows naturally; falls back to the cell directly "below" the pump otherwise).
 function OilStateService:GetFtueDrillTargetCellKeyForPlot(plot: Model, _state: any, _userId: number): string?

@@ -495,6 +495,30 @@ function FtueUiPointers.start(player: Player, playerGui: PlayerGui, ftueStateUpd
 			local fr = frAny :: GuiObject
 			local show = activeRootName ~= nil and activeRootName == rootName
 			local tweenTarget = findTweenTarget(fr)
+			-- Dynamic positioning for BuyDrillPointerRoot: find the FTUE free drill card
+			-- and position the pointer above its BUY button.
+			if show and rootName == "BuyDrillPointerRoot" then
+				local shopGui = playerGui:FindFirstChild("ShopPanelGui")
+				if shopGui then
+					for _, desc in ipairs(shopGui:GetDescendants()) do
+						if desc:IsA("GuiObject") and desc:GetAttribute("IsFtueFreeDrillCard") == true then
+							-- Position pointer relative to PanelHost, pointing at the card's right side (BUY button area)
+							local panelHost = fr.Parent and fr.Parent.Parent
+							if panelHost and panelHost:IsA("GuiObject") and panelHost.AbsoluteSize.X > 0 then
+								local cardAbsPos = desc.AbsolutePosition
+								local cardAbsSize = desc.AbsoluteSize
+								local hostAbsPos = panelHost.AbsolutePosition
+								local hostAbsSize = panelHost.AbsoluteSize
+								-- Target: to the right of the BUY button, vertically centered on card
+								local targetX = (cardAbsPos.X + cardAbsSize.X + 5 - hostAbsPos.X) / hostAbsSize.X
+								local targetY = (cardAbsPos.Y + cardAbsSize.Y * 0.35 - hostAbsPos.Y) / hostAbsSize.Y
+								fr.Position = UDim2.new(targetX, 0, targetY, 0)
+							end
+							break
+						end
+					end
+				end
+			end
 			fr.Visible = show
 			--- Studio often leaves the inner `*Pointer` image `Visible = false` while the `*PointerRoot` is true; the root alone shows nothing.
 			if show and tweenTarget ~= fr then
