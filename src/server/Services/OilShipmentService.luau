@@ -1691,23 +1691,6 @@ function OilShipmentService:_runShipment(shipment)
 			local samplePos = if boat:IsA("Model") then getBoatPathSampleWorldPosition(boat) else boat:GetPivot().Position
 			local s_raw = projectWorldPosToArcLength(path, segDists, samplePos)
 			s_hull = math.max(s_hull_prev, math.min(s_raw, totalPathLen))
-			-- DEBUG: detailed stall diagnostics
-			if RunService:IsStudio() and math.abs(s_hull - s_hull_prev) < 0.01 and s_hull < totalPathLen - 20 then
-				local wl = boat:FindFirstChild("WaterlineAnchor", true)
-				local wlPos = (wl and wl:IsA("BasePart")) and wl.Position or Vector3.zero
-				local pivotPos = boat:GetPivot().Position
-				local rootPart = boat.PrimaryPart
-				local rootPos = rootPart and rootPart.Position or Vector3.zero
-				local rootVel = rootPart and rootPart.AssemblyLinearVelocity or Vector3.zero
-				local rootAnchored = rootPart and rootPart.Anchored or false
-				local boatId = boat:GetAttribute("BoatId") or "?"
-				warn(string.format(
-					"[VoyageStall] boatId=%s s_hull=%.1f s_raw=%.1f s_lead=%.1f samplePos=%s wlPos=%s pivotPos=%s rootPos=%s rootVel=%s rootAnchored=%s mass=%.0f pathLen=%.0f",
-					boatId, s_hull, s_raw, s_lead, tostring(samplePos), tostring(wlPos), tostring(pivotPos), tostring(rootPos), tostring(rootVel), tostring(rootAnchored),
-					rootPart and rootPart.AssemblyMass or 0, totalPathLen
-				))
-			end
-
 
 			if s_hull > peakProgress + 0.25 then
 				peakProgress = s_hull
