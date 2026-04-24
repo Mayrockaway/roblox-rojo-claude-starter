@@ -43,6 +43,11 @@ local RemoteNames = {
 	RequestUpgradeWarehouse = "RequestUpgradeWarehouse",
 	RequestSellAllWarehouse = "RequestSellAllWarehouse",
 	RequestTeleportToWarehouse = "RequestTeleportToWarehouse",
+	--- Server → **one** client (warehouse owner): play gate open/close SFX
+	--- locally only (`Sound` parented to `CurrentCamera`), so dock gate audio
+	--- is not spatial / server-replicated to the whole server. Payload:
+	--- `{ kind = "open" | "close" }`. See `WarehouseService:_wireWarehouseGateInteractions`.
+	WarehouseGateLocalSfx = "WarehouseGateLocalSfx",
 	WarehouseStateUpdate = "WarehouseStateUpdate",
 	RequestWarehouseSnapshot = "RequestWarehouseSnapshot",
 	RequestDispatchShipment = "RequestDispatchShipment",

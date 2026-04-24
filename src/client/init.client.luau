@@ -172,6 +172,8 @@ local StraitWaypointWorldFx = requireStraitWaypointWorldFx()
 
 local getClientRemotes = require(resolveClientModule(script, "GetClientRemotes")) :: () -> any
 local Remotes = getClientRemotes()
+local WarehouseGateSfxClient = require(resolveClientModule(script, "WarehouseGateSfxClient"))
+WarehouseGateSfxClient.start(Remotes)
 
 local requestOilSnapshot = Remotes.requestOilSnapshot :: RemoteFunction
 local requestStartDrill = Remotes.requestStartDrill :: RemoteEvent
@@ -738,6 +740,12 @@ local function startHudModalWiring()
 			ProximityPanelOpener.start()
 		end
 
+		local freeDrillMod = uiFolder:FindFirstChild("FreeDailyDrillController")
+		if freeDrillMod and freeDrillMod:IsA("ModuleScript") then
+			local FreeDailyDrillController = require(freeDrillMod) :: { start: (PlayerGui) -> () }
+			FreeDailyDrillController.start(playerGui)
+		end
+
 		local tpMod = uiFolder:WaitForChild("HudTeleportRouter", 30)
 		if tpMod and tpMod:IsA("ModuleScript") then
 			local HudTeleportRouter = require(tpMod) :: { start: (PlayerGui) -> () }
@@ -1206,7 +1214,7 @@ ShipmentVisualClient.connect({
 -- Drill animation + super tile pulse live in DrillAnimationClient
 DrillAnimationClient.start()
 
--- Server-wide global events (Cash Frenzy, Pirate Wave, Express Convoy).
+-- Server-wide global events (Cash Frenzy, Express Convoy).
 -- `GlobalEventClientState` owns the single `GlobalEventStateUpdate`
 -- subscription and exposes a tiny query API (cash multiplier, "any
 -- active?", `Changed` signal) so multiple UIs (banner + SellOilPanel

@@ -148,7 +148,7 @@ ArmyGeneralService:SetMonetizationService(MonetizationService)
 SecurityPersonnelService:SetMonetizationService(MonetizationService)
 EquipmentShopService:SetMonetizationService(MonetizationService)
 -- GlobalEventService runs the server-wide buff/threat rotation
--- (`cash_frenzy`, `pirate_wave`, `express_convoy`). Inject into the two
+-- (`cash_frenzy`, `express_convoy`). Inject into the two
 -- consumer services AFTER `Init` so the query API is available before
 -- `Start`. Effects are pulled at narrow hook sites:
 --   * `OilStateService:AddCash` — `GetMultiplier("Cash")` stacks AFTER
@@ -158,8 +158,9 @@ EquipmentShopService:SetMonetizationService(MonetizationService)
 --     overrides resolved ship stats (Express Convoy = ÷2 travel time +
 --     ×1.5 capacity).
 --   * `OilShipmentService:_handleStraitWaypointTrigger` —
---     `GetForcedStraitEventId()` replaces the rolled strait event with
---     the forced one (Pirate Wave = `PirateRaid`) AFTER the
+--     `GetForcedStraitEventId()` replaces the rolled strait event with a
+--     forced catalog id when a `ForceStraitEvent` is active (none in the
+--     current catalog) AFTER the
 --     `eventImmunity` (Security Personnel) and bracket allow-list
 --     gates, so defended runs and Open straits stay proportional.
 GlobalEventService:Init(RemoteService)
@@ -450,7 +451,7 @@ do
 			--   /event endall            -> force-end ALL active events
 			-- Examples:
 			--   /event cash_frenzy
-			--   /event pirate_wave 30
+			--   /event express_convoy 45
 			--   /event end cash_frenzy
 			-- Same `isAuthorizedDev` gate as the rest of `onDebugChat` — safe
 			-- in live builds because randoms can't trigger it.

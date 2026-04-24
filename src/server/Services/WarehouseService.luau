@@ -101,9 +101,47 @@ local function stripAllProximityPromptsInWarehouse(visual: Model)
 	-- Prompts authored on the template (e.g. SellOilPrompt on UpgradeTerminal) opt out
 	-- of the legacy strip via attribute `KeepProximityPrompt = true`. See
 	-- `src/client/UI/ProximityPanelOpener.luau` for the trigger contract.
+	--
+	-- `GateKeyPrompt` on each `Gate.Gate_2` leaf is the warehouse door affordance
+	-- ("Open" / "Close"); keep it so `_wireWarehouseGateInteractions` can attach
+	-- owner-only server handlers + local SFX (template `Script1`/`Script2` are
+	-- disabled so they don't strip the prompt after spawn or play world Sounds).
 	for _, d in ipairs(visual:GetDescendants()) do
 		if d:IsA("ProximityPrompt") and d:GetAttribute("KeepProximityPrompt") ~= true then
+			if d.Name == "GateKeyPrompt" then
+				continue
+			end
 			d:Destroy()
+		end
+	end
+end
+
+--- Embedded `Gate.Gate_2.Script1` / `Script2` play world `Sound` objects (everyone
+--- hears) and race `stripAllProximityPromptsInWarehouse` for the prompt. Disable
+--- before the clone is parented to `Workspace` so they never start.
+local function disableEmbeddedWarehouseGateScripts(visual: Model)
+	local gate = visual:FindFirstChild("Gate", true)
+	if not gate then
+		return
+	end
+	for _, d in ipairs(gate:GetDescendants()) do
+		if d:IsA("Script") and (d.Name == "Script1" or d.Name == "Script2") then
+			d.Disabled = true
+		end
+	end
+end
+
+--- Remove template `Open` / `Close` Sounds under `Gate` so nothing server-side
+--- can spatial-play them; the owner client plays clones from known asset ids.
+local function destroyWarehouseGateSpatialSounds(visual: Model)
+	local gate = visual:FindFirstChild("Gate", true)
+	if not gate then
+		return
+	end
+	for _, name in ipairs({ "Open", "Close" }) do
+		local s = gate:FindFirstChild(name)
+		if s and s:IsA("Sound") then
+			s:Destroy()
 		end
 	end
 end
@@ -745,6 +783,119 @@ function WarehouseService:_ensureWarehouseWoodSign(visual: Model, userId: number
 	end
 end
 
+--- Owner-only gate open/close: matches legacy `Gate.Gate_2.Script1`/`Script2`
+--- CFrame stepping, but SFX is `FireClient` → `WarehouseGateSfxClient` (non-spatial).
+function WarehouseService:_wireSingleWarehouseGateLeaf(gateLeaf: Model, ownerPlayer: Player, gateSfxEvent: RemoteEvent)
+	local mp1 = gateLeaf:FindFirstChild("MeshPart1")
+	local mp0 = gateLeaf:FindFirstChild("MeshPart0")
+	local mp2 = gateLeaf:FindFirstChild("MeshPart2")
+	local mp3 = gateLeaf:FindFirstChild("MeshPart3")
+	local mp4 = gateLeaf:FindFirstChild("MeshPart4")
+	if not (mp1 and mp0 and mp2 and mp3 and mp4) then
+		return
+	end
+	if not (mp1:IsA("BasePart") and mp0:IsA("BasePart") and mp2:IsA("BasePart") and mp3:IsA("BasePart") and mp4:IsA("BasePart")) then
+		return
+	end
+	local mp1b = mp1 :: BasePart
+	local mp0b = mp0 :: BasePart
+	local mp2b = mp2 :: BasePart
+	local mp3b = mp3 :: BasePart
+	local mp4b = mp4 :: BasePart
+
+	local promptInst = mp1b:FindFirstChild("GateKeyPrompt")
+	local prompt: ProximityPrompt
+	if promptInst and promptInst:IsA("ProximityPrompt") then
+		prompt = promptInst
+	else
+		local p = Instance.new("ProximityPrompt")
+		p.Name = "GateKeyPrompt"
+		p.Parent = mp1b
+		prompt = p
+	end
+	prompt.ActionText = "Open"
+	prompt.ObjectText = "Gate"
+	prompt.HoldDuration = 0
+	prompt.MaxActivationDistance = 12
+	prompt.KeyboardKeyCode = Enum.KeyCode.E
+	prompt.RequiresLineOfSight = false
+	prompt.Enabled = true
+
+	gateLeaf:SetAttribute("GateIsOpen", false)
+	local busy = false
+
+	local function playLocal(kind: string)
+		pcall(function()
+			gateSfxEvent:FireClient(ownerPlayer, { kind = kind })
+		end)
+	end
+
+	local function runOpen()
+		if busy or gateLeaf:GetAttribute("GateIsOpen") == true then
+			return
+		end
+		busy = true
+		playLocal("open")
+		prompt.ActionText = "Close"
+		task.wait(0.1)
+		mp1b.CFrame = mp2b.CFrame
+		task.wait(0.1)
+		mp1b.CFrame = mp3b.CFrame
+		task.wait(0.1)
+		mp1b.CFrame = mp4b.CFrame
+		gateLeaf:SetAttribute("GateIsOpen", true)
+		busy = false
+	end
+
+	local function runClose()
+		if busy or gateLeaf:GetAttribute("GateIsOpen") ~= true then
+			return
+		end
+		busy = true
+		task.wait(0.1)
+		mp1b.CFrame = mp3b.CFrame
+		task.wait(0.1)
+		mp1b.CFrame = mp2b.CFrame
+		task.wait(0.1)
+		playLocal("close")
+		mp1b.CFrame = mp0b.CFrame
+		prompt.ActionText = "Open"
+		gateLeaf:SetAttribute("GateIsOpen", false)
+		busy = false
+	end
+
+	-- Intentionally not tracked on `self._connections` — the prompt is destroyed
+	-- with the warehouse visual; the handler dies with it.
+	prompt.Triggered:Connect(function(player: Player)
+		if player ~= ownerPlayer then
+			return
+		end
+		if gateLeaf:GetAttribute("GateIsOpen") == true then
+			runClose()
+		else
+			runOpen()
+		end
+	end)
+end
+
+function WarehouseService:_wireWarehouseGateInteractions(visual: Model, ownerUserId: number)
+	local ownerPlayer = Players:GetPlayerByUserId(ownerUserId)
+	if not ownerPlayer then
+		return
+	end
+	local gateRoot = visual:FindFirstChild("Gate", true)
+	if not gateRoot then
+		return
+	end
+	destroyWarehouseGateSpatialSounds(visual)
+	local gateSfxEvent = self._remoteService:GetEvent(RemoteNames.WarehouseGateLocalSfx)
+	for _, gateLeaf in ipairs(gateRoot:GetChildren()) do
+		if gateLeaf:IsA("Model") and gateLeaf.Name == "Gate_2" then
+			self:_wireSingleWarehouseGateLeaf(gateLeaf, ownerPlayer, gateSfxEvent)
+		end
+	end
+end
+
 function WarehouseService:_spawnWarehouseVisual(userId: number)
 	local state = self._stateByUserId[userId]
 	if not state or not state.slotId then return end
@@ -772,6 +923,10 @@ function WarehouseService:_spawnWarehouseVisual(userId: number)
 
 	local visual = self._template:Clone()
 	visual.Name = orphanName
+	-- Gate template `Script1`/`Script2` + world `Sound` parents are legacy;
+	-- we disable scripts before `Workspace` parenting so they never connect,
+	-- then re-wire prompts + local-only SFX after the prompt strip pass.
+	disableEmbeddedWarehouseGateScripts(visual)
 	-- Place + flip about Y so the gate side faces the ocean (template ships
 	-- with gates pointing inland). See `WAREHOUSE_Y_ROTATION_RADIANS` doc.
 	visual:PivotTo(CFrame.new(pos) * CFrame.Angles(0, WAREHOUSE_Y_ROTATION_RADIANS, 0))
@@ -823,6 +978,7 @@ function WarehouseService:_spawnWarehouseVisual(userId: number)
 
 	self:_ensureWarehouseWoodSign(visual, userId, terminalForWoodSign)
 	stripAllProximityPromptsInWarehouse(visual)
+	self:_wireWarehouseGateInteractions(visual, userId)
 
 	-- Owner plate ("<Name>'s Warehouse") — must run after the lift above so
 	-- the attachment world-position lands on the *final* AABB top.

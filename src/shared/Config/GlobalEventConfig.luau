@@ -2,7 +2,7 @@
 --- GlobalEventConfig
 ---
 --- Single source of truth for **server-wide** timed events that affect every
---- player at once (Cash Frenzy, Pirate Wave, Express Convoy, …). Mirrors the
+--- player at once (Cash Frenzy, Express Convoy, …). Mirrors the
 --- pattern of `MonetizationCatalog` / `StraitEventConfig`: pure data, no
 --- behavior — `GlobalEventService` consumes it.
 ---
@@ -63,20 +63,15 @@ local GlobalEventConfig = {}
 ---     stat change). Post-Step-2 of the boat-progression refactor the
 ---     resolver reads directly from the equipped boat's catalog entry.
 ---
-	---   * `ForceStraitEvent` → `GlobalEventService:GetForcedStraitEventId()`
----     Returns the `StraitEventCatalog` id ("PirateRaid", "CoastGuardInspection",
----     etc.) to force at every reachable waypoint while the event is
----     active. `_handleStraitWaypointTrigger` resolves this BEFORE the
----     bracket allow-list and occurrence-chance gates so the event
----     actually fires on every waypoint (Open strait alone is ~0.75
----     events per voyage organically — gating Pirate Wave through that
----     would make it invisible). Severity still pulls from the engine
----     bracket so impact scales naturally (Open Pirate Wave = light
----     raids, Closed Pirate Wave = brutal). Read AFTER the
----     `eventImmunity` (Security Personnel) and FTUE-suppress checks so
----     defensive purchases still work — Pirate Wave is a "spike up the
----     value of Security Personnel" lever, not a "punish everyone
----     equally" lever.
+---   * `ForceStraitEvent` → `GlobalEventService:GetForcedStraitEventId()`
+---     Returns a `StraitEventCatalog` id to force at every reachable
+---     waypoint while the event is active. `_handleStraitWaypointTrigger`
+---     resolves this before the bracket allow-list and occurrence-chance
+---     gates so a forced event is felt across voyages (sparse organic rolls
+---     alone would often show nothing on short trips). Severity still pulls
+---     from the engine bracket. The hook runs after `eventImmunity`
+---     (Security Personnel) and FTUE-suppress short-circuits so defended
+---     runs stay clean.
 export type EffectKind = "CashMultiplier" | "ShipStatsBoost" | "ForceStraitEvent"
 
 --- Banner kinds drive UI flavor on the client. Server passes the kind in the
@@ -84,8 +79,8 @@ export type EffectKind = "CashMultiplier" | "ShipStatsBoost" | "ForceStraitEvent
 ---
 ---   * `Buff`        — green-tinted banner, friendly SFX (Cash Frenzy,
 ---                     Express Convoy).
----   * `Threat`      — red-tinted banner, ominous SFX (Pirate Wave). Players
----                     should think "defend or wait" not "go fast".
+---   * `Threat`      — red-tinted banner, ominous SFX (reserved for future
+---                     forced-strait or hazard-style events).
 ---   * `Cooperative` — gold-tinted banner with progress bar (future: Server
 ---                     Goal events). Listed here so the client banner
 ---                     module's switch covers all three from day one.
@@ -112,12 +107,10 @@ export type EventEffect = {
 	--- to 1.5 to make the speed boost feel more dangerous.
 	eventRiskMul: number?,
 
-	--- "ForceStraitEvent" — id from `StraitEventCatalog` to force at every
-	--- waypoint trigger that *would have* rolled an event. We do NOT bypass
-	--- the bracket gate (`IsTriggerEnabledForBracket`) so a Pirate Wave
-	--- during `Open` strait fires only on the Open allow-list waypoints,
-	--- which keeps the "more events overall" feeling proportional to the
-	--- current strait state.
+	--- "ForceStraitEvent" — id from `StraitEventCatalog` to force when a
+	--- waypoint occurrence hits. Bracket gate (`IsTriggerEnabledForBracket`)
+	--- still applies to which lane indices can fire; the global force then
+	--- replaces the rolled catalog pick.
 	straitEventId: string?,
 }
 
@@ -181,13 +174,10 @@ GlobalEventConfig.Events = {
 	--- `AddCash(uid, n, { skipMultiplier = true })` so neither the Frenzy
 	--- nor the GamePass apply to those credits — same contract as today.
 	---
-	--- Tuning intent: lower frequency than Express Convoy (weight 6 vs
-	--- 10) — Cash Frenzy is the highest-impact `Buff` (literal ×2 on
-	--- every earning hook including sales, contracts, and oil-tank
-	--- payouts), so making it the rarer of the two `Buff` events keeps
-	--- it feeling like a payday moment instead of the default state. Was
-	--- weight 10; reduced after playtesters reported it eclipsing
-	--- Express Convoy in roll frequency. 8-min self-cooldown still
+	--- Tuning intent: ~30% vs Express Convoy ~70% when both are eligible
+	--- (`weight` 30 vs 70). Cash Frenzy is the highest-impact buff (literal
+	--- ×2 on every earning hook), so it stays rarer than the shipping boost.
+	--- 8-min self-cooldown still
 	--- prevents the same player from seeing two Cash Frenzies
 	--- back-to-back. Duration was 60s → 30s to make the buff feel like
 	--- a "scramble window" — long enough to dispatch a shipment / sell
@@ -200,44 +190,12 @@ GlobalEventConfig.Events = {
 		bannerKind = "Buff",
 		effect = { kind = "CashMultiplier", value = 2 },
 		durationSeconds = 30,
-		weight = 6,
+		weight = 30,
 		cooldownSeconds = 480,
 		helpText = "Sell oil, ship cargo, or finish contracts NOW for double cash!",
 	},
 
-	--- Pirate Wave — every strait waypoint event roll for the next 30
-	--- seconds is forced to `PirateRaid`. Players who own the
-	--- `Security Personnel` consumable (`OilStateService:GetRunUpgradeOwned(
-	--- userId, "security_personnel") > 0`) still get full deflection on
-	--- their next dispatched shipment — the override fires AFTER the
-	--- `eventImmunity` short-circuit in `_handleStraitWaypointTrigger`.
-	---
-	--- Bracket gate (`StraitEventConfig.IsTriggerEnabledForBracket`) is
-	--- preserved so a Pirate Wave during `Open` strait still uses the
-	--- sparse Open waypoint allow-list — the goal is "spike Pirate
-	--- frequency", not "make the strait feel like Closed for the
-	--- duration of the event".
-	---
-	--- Tuning intent: this is the only `Threat`-flavor event today, so it's
-	--- intentionally the rarest of the three (weight 3 vs Cash Frenzy's
-	--- 10 / Express Convoy's 8 → ~14% of rolls). Lowered from weight 6
-	--- after playtesters reported it landing too often relative to the
-	--- two `Buff` events. Duration was 60s → 30s for the same reason —
-	--- shorter window means a single Pirate Wave doesn't dominate a
-	--- rotation slot if the player happens to have a shipment in flight.
-	pirate_wave = {
-		id = "pirate_wave",
-		displayName = "Pirate Wave",
-		subtitle = "Pirates raiding all shipments!",
-		bannerKind = "Threat",
-		effect = { kind = "ForceStraitEvent", straitEventId = "PirateRaid" },
-		durationSeconds = 30,
-		weight = 3,
-		cooldownSeconds = 720,
-		helpText = "Ship now and get raided, or wait it out. Security Personnel still defends.",
-	},
-
-	--- Express Convoy — ship speed ×2 + cargo capacity ×1.5 for 90 seconds.
+	--- Express Convoy — ship speed ×2 + cargo capacity ×1.5 for 60 seconds.
 	---
 	--- Speed multiplier is applied as `travelSeconds := travelSeconds /
 	--- speedMul` in `OilShipmentService:_handleDispatch` (so ×2 speed = half
@@ -266,7 +224,7 @@ GlobalEventConfig.Events = {
 			eventRiskMul = 1.0,
 		},
 		durationSeconds = 60,
-		weight = 10,
+		weight = 70,
 		cooldownSeconds = 600,
 		helpText = "Dispatch big shipments now — they arrive in half the time.",
 	},
@@ -286,23 +244,19 @@ GlobalEventConfig.RotationConfig = {
 	maxSecondsBetweenEvents = 240, -- 4 min
 
 	--- Skip rotation when fewer than this many players are in the server.
-	--- Avoids "you joined an empty server, here's a Pirate Wave for you
-	--- alone" feel. Set to 1 if you want events to always rotate.
+	--- Avoids solo-server event spam. Set to 1 if you want events to always rotate.
 	minPlayersToActivate = 2,
 
 	--- Hard cap on simultaneously active events. Today there's no real
 	--- "stack two events" use case — the rotation picks one at a time —
-	--- but a future "Boss Convoy + Pirate Wave double feature" could lift
+	--- but a future "stack two global buffs" mode could lift
 	--- this. The service refuses to activate beyond the cap.
 	maxConcurrentEvents = 1,
 
 	--- Pairs of event ids that must NEVER coexist (server enforces by
 	--- rejecting a pick that would activate while a member of the same
-	--- group is already active). Empty today since the 3 starter events
-	--- are fine to compose with each other (Cash Frenzy + Pirate Wave is
-	--- intentionally a great moment — "earn 2x but defend!"); add entries
-	--- when adding mutually-exclusive future events (e.g.
-	--- `{"calm_seas", "storm_front"}`).
+	--- group is already active). Empty today; add entries when events must
+	--- not coexist (e.g. `{"calm_seas", "storm_front"}`).
 	mutuallyExclusiveGroups = {} :: { { string } },
 
 	--- Wall-clock seconds to delay the FIRST event after server start. Lets

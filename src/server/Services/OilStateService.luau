@@ -827,6 +827,33 @@ end
 -- progression refactor along with the entire `WaitDocksUpgradeShip`
 -- FTUE leg.
 
+--- Daily Free Drill claim-cycle accessors. The value is the UTC cycle-start
+--- timestamp the player has already claimed in (see
+--- `DailyDrillConfig.GetCurrentCycleStart`). `EquipmentShopService` uses this
+--- to gate `_handleClaimDailyDrill` + to rehydrate the in-memory claim map
+--- when a player joins. Scope today is **per-session in-memory** (not
+--- persisted to the DataStore profile); a cross-session persistence pass
+--- can land later by routing through `_applyPersistedIntoState` /
+--- `_buildPersistedFromState` like the other profile fields.
+function OilStateService:SetDailyDrillClaimCycle(userId: number, cycleStart: number)
+	local state = self:GetState(userId)
+	if state then
+		(state :: any).dailyDrillClaimCycle = cycleStart
+	end
+end
+
+function OilStateService:GetDailyDrillClaimCycle(userId: number): number?
+	local state = self:GetState(userId)
+	if not state then
+		return nil
+	end
+	local v = (state :: any).dailyDrillClaimCycle
+	if typeof(v) == "number" then
+		return v
+	end
+	return nil
+end
+
 --- Fired after a plot profile is loaded into memory: `(userId, drillCompletions)`.
 --- Used to replay completed timers that finished while offline and to schedule remaining delays.
 function OilStateService:SetStateReadyForTimersCallback(cb: (number, { any }) -> ())

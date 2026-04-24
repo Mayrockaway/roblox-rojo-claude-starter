@@ -670,8 +670,8 @@ end
 
 --- Set by `init.server` after `GlobalEventService` is constructed. Optional
 --- — without it `_handleDispatch` skips the Express Convoy stat boost and
---- `_handleStraitWaypointTrigger` skips the Pirate Wave override (effective
---- behavior is "no global events", same as the rotation being idle).
+--- `_handleStraitWaypointTrigger` skips any `ForceStraitEvent` override
+--- (effective behavior is "no global events", same as the rotation being idle).
 ---
 --- Two hook sites depend on this:
 ---   * `_handleDispatch` reads `GetShipStatsBoost()` AFTER `ShipStats.Resolve`
@@ -683,7 +683,7 @@ end
 ---   * `_handleStraitWaypointTrigger` reads `GetForcedStraitEventId()`
 ---     AFTER the eventImmunity (Security Personnel) and FTUE-suppress
 ---     short-circuits, AND after the bracket allow-list / occurrence
----     roll — so Pirate Wave only replaces the *event picked*, not
+---     roll — so a force only replaces the *event picked*, not
 ---     *whether* an event fires. Players who own Security Personnel still
 ---     get full deflection.
 function OilShipmentService:SetGlobalEventService(globalEventService: any)
@@ -3259,20 +3259,19 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		bracketNote = string.format("  [FORCE] event bracket overridden → %s (engine maps to %s)", tostring(dbg.ForceBracket), bracketFromEngine)
 	end
 
-	-- Server-wide global event override (Pirate Wave, future ForceStraitEvent
-	-- events). Resolved BEFORE the bracket allow-list and occurrence-chance
+	-- Server-wide global event override (`ForceStraitEvent` when present in
+	-- the catalog). Resolved BEFORE the bracket allow-list and occurrence-chance
 	-- gates because the design intent is "spike this event's frequency for
 	-- the duration" — gating it through the per-bracket sparse roll would
-	-- make Pirate Wave essentially invisible during `Open` strait
+	-- make a forced strait event essentially invisible during `Open` strait
 	-- (3 trigger waypoints × 25% = ~0.75 events/voyage, most short voyages
 	-- see zero). Treat an active force the same way as the dev
 	-- `ForceOccurrenceAtWaypoint` flag: every reachable waypoint fires.
 	--
 	-- We DO still respect:
 	--   * `(shipment :: any).eventImmunity` (Security Personnel) above — a
-	--     defended run still sees no event during a Pirate Wave, which is
-	--     exactly the design intent (Pirate Wave is a "spike defensive
-	--     monetization" lever, not "punish everyone equally").
+	--     defended run still sees no strait incident during a global force,
+	--     which is the design intent (defensive purchases still work).
 	--   * `ftueTutorialSuppressStraitIncidents` above — tutorial escort
 	--     shipments stay clean.
 	--
@@ -3293,7 +3292,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	-- *current* bracket short-circuits before rolling occurrence. Debug
 	-- `ForceOccurrenceAtWaypoint` still fires every reachable waypoint
 	-- regardless of bracket so QA can validate any slot. An active global
-	-- ForceStraitEvent (Pirate Wave) bypasses for the same reason — the
+	-- An active global ForceStraitEvent bypasses for the same reason — the
 	-- event must be felt across the whole voyage.
 	local triggerEnabled = StraitEventConfig.IsTriggerEnabledForBracket(bracket, laneWaypointIndex)
 	if not triggerEnabled and not dbg.ForceOccurrenceAtWaypoint and not globalForcedStraitEventId then
@@ -3366,8 +3365,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 
 	-- Apply the global event override now that occurrence has been forced.
 	-- Severity stays bracket-derived so the gameplay impact still scales
-	-- with the current strait state (Open Pirate Wave = lighter raids, Closed
-	-- Pirate Wave = brutal). If the forced id is missing from the catalog
+	-- with the current strait state. If the forced id is missing from the catalog
 	-- we fall back to the rolled `def` so the event still feels alive
 	-- rather than silently no-op'ing.
 	if globalForcedStraitEventId then

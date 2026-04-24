@@ -167,6 +167,11 @@ function EquipmentShopService:Start()
 			self:_rollShopStock()
 		end
 	end)
+
+	-- Wire the daily-free-drill remotes + per-player state push. Safe to call
+	-- once here; `_startDailyDrill` creates both RemoteEvents and registers
+	-- the claim handler + PlayerAdded state-push.
+	self:_startDailyDrill()
 end
 
 --- Player-count is sampled at roll time (every `RefreshIntervalSeconds`), NOT
@@ -750,9 +755,10 @@ end
 function EquipmentShopService:_handleClaimDailyDrill(player: Player)
 	local userId = player.UserId
 	local cycleStart = DailyDrillConfig.GetCurrentCycleStart()
+	local resultEvent = self._remoteService:GetEvent(RemoteNames.OilActionResult)
 
 	if _dailyDrillClaimed[userId] == cycleStart then
-		self:_fireActionResult(player, {
+		resultEvent:FireClient(player, {
 			action = "ClaimDailyDrill",
 			ok = false,
 			code = "ERR_ALREADY_CLAIMED",
@@ -765,12 +771,12 @@ function EquipmentShopService:_handleClaimDailyDrill(player: Player)
 	self:GrantFreeOwnedEquipment(player, itemId, 1)
 	_dailyDrillClaimed[userId] = cycleStart
 
-	if self._oilState then
-		self._oilState:SetDailyDrillClaimCycle(userId, cycleStart)
-		self._oilState:PushState(userId)
+	if self._oilStateService then
+		self._oilStateService:SetDailyDrillClaimCycle(userId, cycleStart)
+		self._oilStateService:PushState(userId)
 	end
 
-	self:_fireActionResult(player, {
+	resultEvent:FireClient(player, {
 		action = "ClaimDailyDrill",
 		ok = true,
 		code = "OK",
@@ -786,14 +792,15 @@ function EquipmentShopService:_handleClaimDailyDrill(player: Player)
 end
 
 --- Wire daily drill remotes. Call from EquipmentShopService:Start().
+--- `RemoteService:Init()` (in `init.server.luau`) already pre-creates every
+--- `RemoteNames` entry as a `RemoteEvent` under `ReplicatedStorage.Shared.Remotes`
+--- — the client's `ClientRemotes.waitRemote` pulls from there. We MUST reuse
+--- those (via `self._remoteService:GetEvent`) rather than `Instance.new`-ing
+--- new ones at the ReplicatedStorage root, or client → server fires land on
+--- an orphan duplicate that has no handler connected.
 function EquipmentShopService:_startDailyDrill()
-	local claimRemote = Instance.new("RemoteEvent")
-	claimRemote.Name = RemoteNames.RequestClaimDailyDrill
-	claimRemote.Parent = ReplicatedStorage
-
-	local updateRemote = Instance.new("RemoteEvent")
-	updateRemote.Name = RemoteNames.DailyDrillUpdate
-	updateRemote.Parent = ReplicatedStorage
+	local claimRemote = self._remoteService:GetEvent(RemoteNames.RequestClaimDailyDrill)
+	local updateRemote = self._remoteService:GetEvent(RemoteNames.DailyDrillUpdate)
 	self._dailyDrillRemote = updateRemote
 
 	claimRemote.OnServerEvent:Connect(function(player: Player)
@@ -804,8 +811,8 @@ function EquipmentShopService:_startDailyDrill()
 		task.defer(function()
 			task.wait(3)
 			if not player.Parent then return end
-			if self._oilState then
-				local savedCycle = self._oilState:GetDailyDrillClaimCycle(player.UserId)
+			if self._oilStateService then
+				local savedCycle = self._oilStateService:GetDailyDrillClaimCycle(player.UserId)
 				if savedCycle then
 					_dailyDrillClaimed[player.UserId] = savedCycle
 				end
@@ -816,8 +823,8 @@ function EquipmentShopService:_startDailyDrill()
 
 	for _, player in ipairs(Players:GetPlayers()) do
 		task.defer(function()
-			if self._oilState then
-				local savedCycle = self._oilState:GetDailyDrillClaimCycle(player.UserId)
+			if self._oilStateService then
+				local savedCycle = self._oilStateService:GetDailyDrillClaimCycle(player.UserId)
 				if savedCycle then
 					_dailyDrillClaimed[player.UserId] = savedCycle
 				end

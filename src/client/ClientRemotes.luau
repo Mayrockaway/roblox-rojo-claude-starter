@@ -42,6 +42,7 @@ export type ClientRemotes = {
 	requestUpgradeWarehouse: RemoteEvent,
 	requestSellAllWarehouse: RemoteEvent,
 	requestTeleportToWarehouse: RemoteEvent,
+	warehouseGateLocalSfx: RemoteEvent,
 	warehouseStateUpdate: RemoteEvent,
 	requestWarehouseSnapshot: RemoteFunction,
 	biomeRevealEvent: RemoteEvent,
@@ -101,6 +102,8 @@ export type ClientRemotes = {
 	gamePassEffectsUpdate: RemoteEvent,
 	requestSetAutoShip: RemoteEvent,
 	autoShipStateUpdate: RemoteEvent,
+	requestClaimDailyDrill: RemoteEvent,
+	dailyDrillUpdate: RemoteEvent,
 }
 
 local Remotes: ClientRemotes = {
@@ -120,6 +123,7 @@ local Remotes: ClientRemotes = {
 	requestUpgradeWarehouse = waitRemote(RemoteNames.RequestUpgradeWarehouse) :: RemoteEvent,
 	requestSellAllWarehouse = waitRemote(RemoteNames.RequestSellAllWarehouse) :: RemoteEvent,
 	requestTeleportToWarehouse = waitRemote(RemoteNames.RequestTeleportToWarehouse) :: RemoteEvent,
+	warehouseGateLocalSfx = waitRemote(RemoteNames.WarehouseGateLocalSfx) :: RemoteEvent,
 	warehouseStateUpdate = waitRemote(RemoteNames.WarehouseStateUpdate) :: RemoteEvent,
 	requestWarehouseSnapshot = waitRemote(RemoteNames.RequestWarehouseSnapshot) :: RemoteFunction,
 	biomeRevealEvent = waitRemote(RemoteNames.BiomeRevealEvent) :: RemoteEvent,
@@ -170,6 +174,8 @@ local Remotes: ClientRemotes = {
 	gamePassEffectsUpdate = waitRemote(RemoteNames.GamePassEffectsUpdate) :: RemoteEvent,
 	requestSetAutoShip = waitRemote(RemoteNames.RequestSetAutoShip) :: RemoteEvent,
 	autoShipStateUpdate = waitRemote(RemoteNames.AutoShipStateUpdate) :: RemoteEvent,
+	requestClaimDailyDrill = waitRemote(RemoteNames.RequestClaimDailyDrill) :: RemoteEvent,
+	dailyDrillUpdate = waitRemote(RemoteNames.DailyDrillUpdate) :: RemoteEvent,
 }
 
 local devLogEvent = waitRemote(RemoteNames.DevLog) :: RemoteEvent

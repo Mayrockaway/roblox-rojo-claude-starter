@@ -7,6 +7,8 @@
 --     (e.g. `SellOilPanelGui`, `ShipManagementPanelGui`, `ShopPanelGui`).
 --   - For prompts inside `WarehouseTemplate`, also set `KeepProximityPrompt = true` so
 --     `WarehouseService` does not strip them when cloning the warehouse per player.
+--     Exception: `GateKeyPrompt` on warehouse gates is always preserved and
+--     re-wired server-side (`WarehouseService:_wireWarehouseGateInteractions`).
 --
 -- This module never calls `Instance.new` into `StarterGui` and never wires HUD buttons —
 -- it only forwards the trigger to `HudPanelRouter.openScreen(screenName)`. Per
