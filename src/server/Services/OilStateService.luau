@@ -839,6 +839,7 @@ function OilStateService:SetDailyDrillClaimCycle(userId: number, cycleStart: num
 	local state = self:GetState(userId)
 	if state then
 		(state :: any).dailyDrillClaimCycle = cycleStart
+		self:_markDirty(userId)
 	end
 end
 
