@@ -3268,7 +3268,11 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		local PHASE_STEAL = 7.0
 		local PHASE_ESCAPE = 4.0
 		local RETURN_WINDOW = 1.25 -- overlap: last pirates return vs escape drive (was undefined)
-		local PIRATE_COUNT = 5
+		-- Scale pirate count by how many barrels were stolen (fewer pirates for small raids).
+		-- 0 stolen = 1 pirate (minimum visual), full 25%+ = 5 pirates.
+		local totalLoaded = math.max(1, tonumber(data.totalLoaded) or 1)
+		local lossFrac = barrelsStolen / totalLoaded
+		local PIRATE_COUNT = math.clamp(math.ceil(lossFrac * 20), 1, 5)
 		local PIRATE_SPACING = 1.5
 		local deckY = getBoatDeckY(playerBoat, rootPos.Y)
 		-- Lift by NPC pivot-to-feet offset so pirates' feet land on deck (not buried).

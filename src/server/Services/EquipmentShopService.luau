@@ -718,4 +718,117 @@ function EquipmentShopService:SetMonetizationService(monetizationService)
 	end)
 end
 
+-- ═══════════════════════════════════════════════════════════════════
+-- Daily Free Drill
+-- ═══════════════════════════════════════════════════════════════════
+
+local DailyDrillConfig = require(Shared:WaitForChild("Config"):WaitForChild("DailyDrillConfig"))
+
+-- Per-player in-memory cache of last claim cycle.
+local _dailyDrillClaimed: { [number]: number } = {}
+
+--- Push current daily drill state to a single player.
+function EquipmentShopService:_pushDailyDrillState(player: Player)
+	local userId = player.UserId
+	local cycleStart = DailyDrillConfig.GetCurrentCycleStart()
+	local itemId = DailyDrillConfig.GetCurrentDrill()
+	local claimed = _dailyDrillClaimed[userId] == cycleStart
+	local secondsRemaining = DailyDrillConfig.GetSecondsRemaining()
+
+	local remote = self._dailyDrillRemote
+	if remote then
+		remote:FireClient(player, {
+			itemId = itemId,
+			cycleStart = cycleStart,
+			claimed = claimed,
+			secondsRemaining = secondsRemaining,
+		})
+	end
+end
+
+--- Try to claim the current daily drill for `player`.
+function EquipmentShopService:_handleClaimDailyDrill(player: Player)
+	local userId = player.UserId
+	local cycleStart = DailyDrillConfig.GetCurrentCycleStart()
+
+	if _dailyDrillClaimed[userId] == cycleStart then
+		self:_fireActionResult(player, {
+			action = "ClaimDailyDrill",
+			ok = false,
+			code = "ERR_ALREADY_CLAIMED",
+			message = "You already claimed today's free drill!",
+		})
+		return
+	end
+
+	local itemId = DailyDrillConfig.GetCurrentDrill()
+	self:GrantFreeOwnedEquipment(player, itemId, 1)
+	_dailyDrillClaimed[userId] = cycleStart
+
+	if self._oilState then
+		self._oilState:SetDailyDrillClaimCycle(userId, cycleStart)
+		self._oilState:PushState(userId)
+	end
+
+	self:_fireActionResult(player, {
+		action = "ClaimDailyDrill",
+		ok = true,
+		code = "OK",
+		message = "Free drill claimed!",
+		data = { itemId = itemId },
+	})
+
+	self:_pushDailyDrillState(player)
+
+	if RunService:IsStudio() then
+		print(string.format("[DailyDrill] %s claimed %s (cycle %d)", player.Name, itemId, cycleStart))
+	end
+end
+
+--- Wire daily drill remotes. Call from EquipmentShopService:Start().
+function EquipmentShopService:_startDailyDrill()
+	local claimRemote = Instance.new("RemoteEvent")
+	claimRemote.Name = RemoteNames.RequestClaimDailyDrill
+	claimRemote.Parent = ReplicatedStorage
+
+	local updateRemote = Instance.new("RemoteEvent")
+	updateRemote.Name = RemoteNames.DailyDrillUpdate
+	updateRemote.Parent = ReplicatedStorage
+	self._dailyDrillRemote = updateRemote
+
+	claimRemote.OnServerEvent:Connect(function(player: Player)
+		self:_handleClaimDailyDrill(player)
+	end)
+
+	table.insert(self._connections, Players.PlayerAdded:Connect(function(player: Player)
+		task.defer(function()
+			task.wait(3)
+			if not player.Parent then return end
+			if self._oilState then
+				local savedCycle = self._oilState:GetDailyDrillClaimCycle(player.UserId)
+				if savedCycle then
+					_dailyDrillClaimed[player.UserId] = savedCycle
+				end
+			end
+			self:_pushDailyDrillState(player)
+		end)
+	end))
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		task.defer(function()
+			if self._oilState then
+				local savedCycle = self._oilState:GetDailyDrillClaimCycle(player.UserId)
+				if savedCycle then
+					_dailyDrillClaimed[player.UserId] = savedCycle
+				end
+			end
+			self:_pushDailyDrillState(player)
+		end)
+	end
+
+	table.insert(self._connections, Players.PlayerRemoving:Connect(function(player: Player)
+		_dailyDrillClaimed[player.UserId] = nil
+	end))
+end
+
 return EquipmentShopService

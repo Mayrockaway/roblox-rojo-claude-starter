@@ -3705,8 +3705,12 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 		local barrelsStolen = 0
 		local stolenByTier: { [string]: number } = {}
 		local stolenDeckBarrels = {}
-		if def.looseBarrelLossFraction and def.looseBarrelLossFraction > 0 then
-			barrelsStolen, stolenByTier = self:_applyLooseBarrelLoss(shipment, def.looseBarrelLossFraction)
+		local resolvedLossFrac = def.looseBarrelLossFraction
+		if def.looseBarrelLossFractionMin and def.looseBarrelLossFractionMax then
+			resolvedLossFrac = rng:NextNumber(def.looseBarrelLossFractionMin, def.looseBarrelLossFractionMax)
+		end
+		if resolvedLossFrac and resolvedLossFrac > 0 then
+			barrelsStolen, stolenByTier = self:_applyLooseBarrelLoss(shipment, resolvedLossFrac)
 			stolenDeckBarrels = self:_snapshotLostDeckBarrels(boat, stolenByTier, barrelsStolen)
 		end
 		if barrelsStolen > 0 then
@@ -3730,6 +3734,7 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			playtestTitle = playtestTitle,
 			severity = severity,
 			barrelsStolen = barrelsStolen,
+			totalLoaded = shipment.totalLoaded,
 			stolenDeckBarrels = stolenDeckBarrels,
 			approachSide = approachSide,
 			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
@@ -3833,7 +3838,11 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	end
 
 	if def.tornadoEvent then
-		local tc = StraitEventCatalog.TornadoConfig
+		-- High Winds (Low severity) uses a softer config with a BarrelLossChance gate;
+		-- full Tornado (High severity) always strips barrels with no gate.
+		local tc = if def.id == "HighWinds" and StraitEventCatalog.HighWindsConfig
+			then StraitEventCatalog.HighWindsConfig
+			else StraitEventCatalog.TornadoConfig
 		local baseSequenceSeconds = math.max(0, tonumber(tc.BaseSequenceSeconds) or 0)
 
 		local didDelay = rng:NextNumber() < clamp01(tonumber(tc.DelayChance) or 0)
@@ -3844,12 +3853,13 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 			delaySeconds = rng:NextNumber(delayMin, delayMax)
 		end
 
-		-- Tornado always rolls a fraction + enforces a minimum barrel floor —
-		-- no `BarrelLossChance` gate (that's storm behavior). Every tornado bites.
+		-- High Winds has a BarrelLossChance gate (50% chance of no loss at all).
+		-- Full Tornado always rolls a fraction + enforces a minimum barrel floor.
+		local skipLoss = tc.BarrelLossChance and rng:NextNumber() >= clamp01(tonumber(tc.BarrelLossChance) or 1)
 		local lossMin = clamp01(tonumber(tc.BarrelLossFractionMin) or 0)
 		local lossMax = math.max(lossMin, clamp01(tonumber(tc.BarrelLossFractionMax) or lossMin))
-		local barrelLossFraction = clamp01(rng:NextNumber(lossMin, lossMax))
-		local minFloor = math.max(0, tonumber(tc.MinBarrelsLost) or 0)
+		local barrelLossFraction = if skipLoss then 0 else clamp01(rng:NextNumber(lossMin, lossMax))
+		local minFloor = if skipLoss then 0 else math.max(0, tonumber(tc.MinBarrelsLost) or 0)
 		local barrelsLost, tornadoLossByTier = self:_applyLooseBarrelLoss(shipment, barrelLossFraction, minFloor)
 		local didBarrelLoss = barrelsLost > 0
 		local lostDeckBarrels = self:_snapshotLostDeckBarrels(boat, tornadoLossByTier, barrelsLost)
@@ -3944,8 +3954,12 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 
 	local barrelsLost = 0
 	local waypointLossByTier: { [string]: number } = {}
-	if def.looseBarrelLossFraction and def.looseBarrelLossFraction > 0 then
-		barrelsLost, waypointLossByTier = self:_applyLooseBarrelLoss(shipment, def.looseBarrelLossFraction)
+	local resolvedWpLossFrac = def.looseBarrelLossFraction
+	if def.looseBarrelLossFractionMin and def.looseBarrelLossFractionMax then
+		resolvedWpLossFrac = rng:NextNumber(def.looseBarrelLossFractionMin, def.looseBarrelLossFractionMax)
+	end
+	if resolvedWpLossFrac and resolvedWpLossFrac > 0 then
+		barrelsLost, waypointLossByTier = self:_applyLooseBarrelLoss(shipment, resolvedWpLossFrac)
 	end
 	if barrelsLost > 0 then
 		self:_emitManifestHudSnapshot(shipment, {

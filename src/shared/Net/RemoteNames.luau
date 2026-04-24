@@ -94,6 +94,13 @@ local RemoteNames = {
 	PirateHireResult = "PirateHireResult",
 	PirateHitAlert = "PirateHitAlert",
 
+	-- Daily free drill: claim the current cycle's random drill (same for all players).
+	-- Server replies on `OilActionResult` with action `"ClaimDailyDrill"`.
+	RequestClaimDailyDrill = "RequestClaimDailyDrill",
+	-- Server → client: current daily drill state (itemId, cycleStart, claimed).
+	-- Fires on join + after claim so client can render the shop card.
+	DailyDrillUpdate = "DailyDrillUpdate",
+
 	-- One-shot equipment shop (Tools cloned into `Player.Backpack`; cash via `OilStateService`).
 	RequestPurchaseEquipment = "RequestPurchaseEquipment",
 	RequestEquipmentShopCatalog = "RequestEquipmentShopCatalog",
