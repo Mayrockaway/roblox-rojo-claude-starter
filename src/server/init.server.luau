@@ -599,6 +599,64 @@ do
 			devWipePersistedForUser(player.UserId)
 			player:Kick("[Dev] Persisted data wiped — rejoin for a fresh profile.")
 		-- /wipealldata and /dev_wipeall REMOVED — too dangerous, could wipe all players.
+		elseif cmd:sub(1, 10) == "/givedrill" then
+			-- Usage: /givedrill <username> <tier> <count>
+			-- e.g. /givedrill sen t3 5
+			local args = cmd:sub(11):gsub("^%s+", "")
+			local nameArg, tierArg, countArg = args:match("^(%S+)%s+(%S+)%s*(%d*)")
+			if not nameArg or not tierArg then
+				warn("[Dev] /givedrill usage: /givedrill <username> <tier> <count>")
+				return
+			end
+			local tier = tierArg:lower()
+			local count = tonumber(countArg) or 1
+			local itemId = "drill_" .. tier
+			local nameLower = nameArg:lower()
+			local target: Player? = nil
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p.Name:lower() == nameLower then target = p; break end
+			end
+			if not target then
+				for _, p in ipairs(Players:GetPlayers()) do
+					if p.Name:lower():sub(1, #nameLower) == nameLower then target = p; break end
+				end
+			end
+			if not target then
+				warn(string.format("[Dev] /givedrill: no online player matches '%s'", nameArg))
+				return
+			end
+			EquipmentShopService:GrantFreeOwnedEquipment(target, itemId, count)
+			print(string.format("[Dev] /givedrill by %s -> gave %s x%d %s drills", player.Name, target.Name, count, tier:upper()))
+		elseif cmd:sub(1, 9) == "/giveboat" then
+			-- Usage: /giveboat <username> <boatId>
+			-- e.g. /giveboat sen PirateShip
+			local args = cmd:sub(10):gsub("^%s+", "")
+			local nameArg, boatIdArg = args:match("^(%S+)%s+(%S+)")
+			if not nameArg or not boatIdArg then
+				warn("[Dev] /giveboat usage: /giveboat <username> <boatId>")
+				return
+			end
+			local nameLower = nameArg:lower()
+			local target: Player? = nil
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p.Name:lower() == nameLower then target = p; break end
+			end
+			if not target then
+				for _, p in ipairs(Players:GetPlayers()) do
+					if p.Name:lower():sub(1, #nameLower) == nameLower then target = p; break end
+				end
+			end
+			if not target then
+				warn(string.format("[Dev] /giveboat: no online player matches '%s'", nameArg))
+				return
+			end
+			local ok, code = OilStateService:GrantBoat(target.UserId, boatIdArg)
+			if ok then
+				OilStateService:PushState(target.UserId)
+				print(string.format("[Dev] /giveboat by %s -> granted %s boat '%s'", player.Name, target.Name, boatIdArg))
+			else
+				warn(string.format("[Dev] /giveboat by %s -> failed for %s boat '%s': %s", player.Name, target.Name, boatIdArg, tostring(code)))
+			end
 		elseif cmd == "/hideui" then
 			-- Toggle all client-side UI for marketing footage capture.
 			local ev = RemoteService:GetEvent(RemoteNames.DevHideUI)
@@ -660,7 +718,7 @@ do
 		"/fighterwave", "/fighters", "/fighterhere", "/jethere",
 		"/fighterretarget", "/jetretarget",
 		"/grant500", "/givecash", "/wipedata", "/dev_wipeme",
-		"/giveall", "/testvein", "/givedrills",
+		"/giveall", "/testvein", "/givedrills", "/givedrill", "/giveboat",
 		"/straitopen", "/straitclose",
 		"/unlockboats", "/unlockallboats", "/giveallboats",
 		"/hideui",
