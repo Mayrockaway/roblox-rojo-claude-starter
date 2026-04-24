@@ -191,11 +191,10 @@ local function reapplyFtueRestrictionAttributes(self: any, player: Player)
 	end
 	local step = (st :: any).ftueStep
 	if step == FtueConfig.Step.WaitDrillOil_WIP then
-		local drillCk = self._oilState:GetFtueDrillTargetCellKeyForPlot(plot, st, player.UserId)
-		if typeof(drillCk) == "string" and drillCk ~= "" then
-			if not self._oilState:IsFtueDrillTutorialCellDrilled(st, drillCk) then
-				player:SetAttribute(Constants.FtueRestrictDrillCellKeyAttribute, drillCk)
-			end
+		-- Chunk-level restriction: allow drilling ANY tile in the starter chunk.
+		local starterChunk = self._oilState:GetStarterChunkSectionId()
+		if not self._oilState:IsAnyTileInChunkDrilled(st, starterChunk) then
+			player:SetAttribute(Constants.FtueRestrictDrillChunkIdAttribute, starterChunk)
 		end
 	elseif step == FtueConfig.Step.WaitReveal then
 		--- Reveal leg: keep the same cell key set so the per-plot beam target
@@ -247,8 +246,9 @@ function FtueService:_setStep(player: Player, step: string?)
 	--- Stamped **before** `FtueStepAttribute` is replicated so the client's
 	--- `PlayerToPoiBeamBootstrap` refresh sees the BasePart attribute on first try.
 	if self._oilState and typeof((self._oilState :: any).SetFtueTutorialTileMarker) == "function" then
-		local enableMarker = (step == FtueConfig.Step.WaitDrillOil_WIP)
-			or (step == FtueConfig.Step.WaitReveal)
+		-- WaitDrillOil_WIP uses chunk-level highlight (client-side), no single-tile marker.
+		-- Only stamp tile marker during WaitReveal (beam/highlight points at the drilled tile).
+		local enableMarker = (step == FtueConfig.Step.WaitReveal)
 		;(self._oilState :: any):SetFtueTutorialTileMarker(player.UserId, enableMarker)
 	end
 	player:SetAttribute(Constants.FtueStepAttribute, step)
@@ -355,6 +355,7 @@ end
 
 function FtueService:_clearRestrictionAttributes(player: Player)
 	player:SetAttribute(Constants.FtueRestrictDrillCellKeyAttribute, nil)
+	player:SetAttribute(Constants.FtueRestrictDrillChunkIdAttribute, nil)
 end
 
 --- Public hook for other services (drill complete, dispatch, warehouse sell, …).
@@ -504,8 +505,7 @@ function FtueService:SyncFromOilState(userId: number)
 	--- Re-stamp the BasePart marker on rejoin so the per-plot WaitReveal beam and
 	--- tile highlight resolve to the correct tile without waiting for a step change.
 	if self._oilState and typeof((self._oilState :: any).SetFtueTutorialTileMarker) == "function" then
-		local enableMarker = (step == FtueConfig.Step.WaitDrillOil_WIP)
-			or (step == FtueConfig.Step.WaitReveal)
+		local enableMarker = (step == FtueConfig.Step.WaitReveal)
 		;(self._oilState :: any):SetFtueTutorialTileMarker(userId, enableMarker)
 	end
 	player:SetAttribute(Constants.FtueStepAttribute, step)
@@ -549,10 +549,9 @@ local function applyWaitDrillEntry(self: any, player: Player)
 		if not st then
 			return false
 		end
-		local ck = self._oilState:GetFtueDrillTargetCellKeyForPlot(plot, st, player.UserId)
-		if ck then
-			player:SetAttribute(Constants.FtueRestrictDrillCellKeyAttribute, ck)
-		end
+		-- Chunk-level restriction: allow drilling ANY tile in the starter chunk.
+		local starterChunk = self._oilState:GetStarterChunkSectionId()
+		player:SetAttribute(Constants.FtueRestrictDrillChunkIdAttribute, starterChunk)
 		self._equipmentShop:GrantFreeOwnedEquipment(player, FtueConfig.DrillItemId, 1)
 		self._oilState:PushState(player.UserId)
 		return true
@@ -724,12 +723,27 @@ function FtueService:OnFtueTutorialDrillFinished(userId: number, done: any?)
 	if persistedStep ~= FtueConfig.Step.WaitDrillOil_WIP and player:GetAttribute(Constants.FtueStepAttribute) ~= FtueConfig.Step.WaitDrillOil_WIP then
 		return
 	end
+	-- Chunk-level restriction: validate drilled tile is in starter chunk.
+	local wantChunk = player:GetAttribute(Constants.FtueRestrictDrillChunkIdAttribute)
+	if typeof(wantChunk) == "string" and wantChunk ~= "" then
+		local drilledChunk = if typeof(done) == "table" then (done :: any).chunkId else nil
+		if typeof(drilledChunk) == "string" and drilledChunk ~= wantChunk then
+			return
+		end
+	end
+	-- Legacy single-cell check (for backward compat with old profiles mid-FTUE)
 	local wantDrill = player:GetAttribute(Constants.FtueRestrictDrillCellKeyAttribute)
 	if typeof(wantDrill) == "string" and wantDrill ~= "" then
 		local ck = if typeof(done) == "table" then (done :: any).cellKey else nil
 		if typeof(ck) == "string" and ck ~= wantDrill then
 			return
 		end
+	end
+	-- Clear chunk restriction, set cell key for WaitReveal beam/highlight
+	player:SetAttribute(Constants.FtueRestrictDrillChunkIdAttribute, nil)
+	local drilledCellKey = if typeof(done) == "table" then (done :: any).cellKey else nil
+	if typeof(drilledCellKey) == "string" and drilledCellKey ~= "" then
+		player:SetAttribute(Constants.FtueRestrictDrillCellKeyAttribute, drilledCellKey)
 	end
 	self:SetStep(player, FtueConfig.Step.WaitReveal)
 end

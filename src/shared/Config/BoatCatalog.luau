@@ -222,6 +222,26 @@ local TEMPLATE_RIG_OVERRIDES: { [string]: RigOverride } = {
 	Whale = {
 		deckYOffsetFallback = 15,
 	},
+	--- Tier10Boat (Normandy): the DEFAULT_RIG `(-5, +4)` stand offsets
+	--- landed the player on a sloped / deflecting section of the hull at
+	--- dock teleport, immediately sliding them off. Zeroed offsets (same
+	--- shape as Tanker) place the player directly at the `DeckAnchor` XZ
+	--- on a flat area of the deck. If the slide persists, the next step
+	--- is to reposition `DeckSeat` / `DeckAnchor` in the template to a
+	--- verified-flat deck footprint.
+	Tier10Boat = {
+		deckYOffsetFallback = 15,
+		standForwardOffset = 0,
+		standRightOffset = 0,
+	},
+	--- Tier3Boat (lifeboat): small inflatable deck; default `(-5, +4)` sidesteps
+	--- can land the owner on tube slope / thin colliders and feels like hull
+	--- "collision" bugs. Match Tanker/Tier10: stand at authored `DeckAnchor` XZ.
+	Tier3Boat = {
+		deckYOffsetFallback = 15,
+		standForwardOffset = 0,
+		standRightOffset = 0,
+	},
 }
 
 local function applyRigOverride(rig: RigDef, over: RigOverride?)
@@ -295,29 +315,30 @@ end
 --- legacy saves drop to the starter (Tier1Boat). See the v10 → v11
 --- block in `OilStateService` for the full mapping.
 ---
----  | idx | id          | display name    | template     | spd/cap | rarity     | unlock                       |
----  |-----|-------------|-----------------|--------------|---------|------------|------------------------------|
----  |  1  | Tier1Boat   | Raft            | Tier1Boat    | 1 / 1   | Common     | starter (auto-grant)         |
----  |  2  | Tier2Boat   | Row Row Row     | Tier2Boat    | 2 / 2   | Common     | cash $1,000                  |
----  |  3  | Tier3Boat   | Lifeboat        | Tier3Boat    | 3 / 3   | Uncommon   | cash $5,000                  |
----  |  4  | Tier4Boat   | SAIL            | Tier4Boat    | 4 / 4   | Uncommon   | cash $15,000                 |
----  |  5  | Tier5Boat   | Farmboat        | Tier5Boat    | 5 / 5   | Uncommon   | cash $50,000                 |
----  |  6  | Tier6Boat   | Big Blue        | Tier6Boat    | 4 / 7   | Rare       | cash $175,000                |
----  |  7  | Tier7Boat   | Green Machine   | Tier7Boat    | 6 / 5   | Rare       | cash $600,000                |
----  |  8  | Tier8Boat   | Daddy's Money   | Tier8Boat    | 7 / 6   | Rare       | cash $900,000               |
----  |  9  | Tier9Boat   | Da Rig          | Tanker       | 6 / 8   | Epic       | cash $2,200,000             |
----  | 10  | Tier10Boat  | Normandy        | Tier10Boat   | 7 / 8   | Epic       | cash $5,500,000             |
----  | 11  | PirateShip  | The Sparrow     | PirateShip   | 8 / 8   | Epic       | robux R$149  (DP 3578818285) |
----  | 12  | Ducky       | Jet Duck        | Ducky        | 9 / 9   | Legendary  | robux R$299  (DP 3578818474) |
----  | 13  | Moby        | Moby            | Whale        | 9 / 9   | Legendary  | robux R$299  (DP 3578818669) |
+---  | idx | id                | display name    | template          | spd/cap | rarity     | unlock                       |
+---  |-----|-------------------|-----------------|-------------------|---------|------------|------------------------------|
+---  |  1  | Tier1Boat         | Raft            | Tier1Boat         | 1 / 1   | Common     | starter (auto-grant)         |
+---  |  2  | Tier2Boat         | Row Row Row     | Tier2Boat         | 2 / 2   | Common     | cash $1,000                  |
+---  |  3  | Tier3Boat         | Lifeboat        | Tier3Boat         | 3 / 3   | Uncommon   | cash $5,000                  |
+---  |  4  | Tier4Boat         | SAIL            | Tier4Boat         | 4 / 4   | Uncommon   | cash $15,000                 |
+---  |  5  | Tier5Boat         | Farmboat        | Tier5Boat         | 5 / 5   | Uncommon   | cash $50,000                 |
+---  |  6  | Tier6Boat         | Big Blue        | Tier6Boat         | 4 / 7   | Rare       | cash $175,000                |
+---  |  7  | Tier7Boat         | Green Machine   | Tier7Boat         | 6 / 5   | Rare       | cash $600,000                |
+---  |  8  | Tier8Boat         | Daddy's Money   | Tier8Boat         | 7 / 6   | Rare       | cash $900,000                |
+---  |  9  | Tier9Boat         | Da Rig          | Tanker            | 6 / 8   | Epic       | cash $2,200,000              |
+---  | 10  | Tier10Boat        | Normandy        | Tier10Boat        | 7 / 8   | Epic       | cash $5,500,000              |
+---  | 11  | PirateShip        | The Sparrow     | PirateShip        | 8 / 8   | Epic       | robux R$149  (DP 3578818285) |
+---  | 12  | Ducky             | Jet Duck        | Ducky             | 9 / 9   | Legendary  | robux R$299  (DP 3578818474) |
+---  | 13  | Moby              | Moby            | Whale             | 9 / 10  | Legendary  | robux R$299  (DP 3578818669) |
+---  | 14  | AmericanEagleBoat | The Patriot  | AmericanEagleBoat | 10 / 10   | Mythic  | robux R$499  (DP 3580438808)   |
 ---
 --- Stat shape:
 ---   * T1..T5 are linear straight upgrades.
 ---   * T6..T10 are deliberate sidegrades (speed ↔ capacity tradeoffs)
 ---     so the late-game player picks a hull that matches their farming
 ---     pattern rather than always equipping the most expensive one.
----   * Robux speed/capacity top out at 9/9 — the 10/10 slot is reserved
----     for a future "Mythic" tier (user decision 2026-04-22).
+---   * Robux speed/capacity go up to 9/9 on the mid-premium boats; the
+---     `AmericanEagleBoat` (The Patriot) Mythic hull is 10/10.
 ---
 --- Cost curve: cheap early (T2..T4 unlock fast in the first session), then
 --- steeper steps through T7. T8–T10 stay aspirational but sit in the same
@@ -364,10 +385,22 @@ local BoatCatalog = {
 			fxParticleScale = 1.2,
 			rarityDisplay = "Legendary",
 			icon = "rbxassetid://77447218245868",
-			progressionIndex = 10,
-			speedLevel = 10,
+			progressionIndex = 13,
+			speedLevel = 9,
 			capacityLevel = 10,
 			unlock = { kind = "robux", devProductId = 3578818669 },
+		},
+
+		AmericanEagleBoat = {
+			displayName = "The Patriot",
+			templateName = "AmericanEagleBoat",
+			fxParticleScale = 1,
+			rarityDisplay = "Mythic",
+			icon = "rbxassetid://121375807397511",
+			progressionIndex = 14,
+			speedLevel = 10,
+			capacityLevel = 10,
+			unlock = { kind = "robux", devProductId = 3580438808 },
 		},
 
 		-- ─────────────────────────────────────────────────────────────────
@@ -397,9 +430,7 @@ local BoatCatalog = {
 			templateName = "Tier1Boat",
 			fxParticleScale = 1,
 			rarityDisplay = "Common",
-			-- icon: not yet authored — the slot renders as the empty grey
-			-- shell so a missing icon is visually obvious in Studio. Wire
-			-- the real Tier1 art in a later content pass.
+			icon = "rbxassetid://118810475637842",
 			progressionIndex = 1,
 			speedLevel = 1,
 			capacityLevel = 1,
@@ -410,6 +441,7 @@ local BoatCatalog = {
 			templateName = "Tier2Boat",
 			fxParticleScale = 1,
 			rarityDisplay = "Common",
+			icon = "rbxassetid://90595303892828",
 			progressionIndex = 2,
 			speedLevel = 2,
 			capacityLevel = 2,
@@ -420,6 +452,7 @@ local BoatCatalog = {
 			templateName = "Tier3Boat",
 			fxParticleScale = 1,
 			rarityDisplay = "Uncommon",
+			icon = "rbxassetid://101499902955059",
 			progressionIndex = 3,
 			speedLevel = 3,
 			capacityLevel = 3,
@@ -430,6 +463,7 @@ local BoatCatalog = {
 			templateName = "Tier4Boat",
 			fxParticleScale = 1,
 			rarityDisplay = "Uncommon",
+			icon = "rbxassetid://78390804508152",
 			progressionIndex = 4,
 			speedLevel = 4,
 			capacityLevel = 4,
@@ -440,6 +474,7 @@ local BoatCatalog = {
 			templateName = "Tier5Boat",
 			fxParticleScale = 1,
 			rarityDisplay = "Uncommon",
+			icon = "rbxassetid://134264640685366",
 			progressionIndex = 5,
 			speedLevel = 5,
 			capacityLevel = 5,
@@ -452,6 +487,7 @@ local BoatCatalog = {
 			templateName = "Tier6Boat",
 			fxParticleScale = 1,
 			rarityDisplay = "Rare",
+			icon = "rbxassetid://72538035960778",
 			progressionIndex = 6,
 			speedLevel = 4,
 			capacityLevel = 7,
@@ -464,6 +500,7 @@ local BoatCatalog = {
 			templateName = "Tier7Boat",
 			fxParticleScale = 1,
 			rarityDisplay = "Rare",
+			icon = "rbxassetid://137061133395778",
 			progressionIndex = 7,
 			speedLevel = 6,
 			capacityLevel = 5,
@@ -475,6 +512,7 @@ local BoatCatalog = {
 			templateName = "Tier8Boat",
 			fxParticleScale = 1,
 			rarityDisplay = "Rare",
+			icon = "rbxassetid://93752019688739",
 			progressionIndex = 8,
 			speedLevel = 7,
 			capacityLevel = 6,
@@ -482,11 +520,13 @@ local BoatCatalog = {
 		},
 		Tier9Boat = {
 			-- Cap-focused late-game hull (templateName intentionally
-			-- reuses `Tanker`).
+			-- reuses `Tanker`). List icon: classic tanker preview (same
+			-- art direction as the loaded `Tanker` 3D template).
 			displayName = "Da Rig",
 			templateName = "Tanker",
 			fxParticleScale = 1,
 			rarityDisplay = "Epic",
+			icon = "rbxassetid://110257950618296",
 			progressionIndex = 9,
 			speedLevel = 6,
 			capacityLevel = 8,
@@ -499,6 +539,7 @@ local BoatCatalog = {
 			templateName = "Tier10Boat",
 			fxParticleScale = 1.2,
 			rarityDisplay = "Epic",
+			icon = "rbxassetid://105632153359221",
 			progressionIndex = 10,
 			speedLevel = 7,
 			capacityLevel = 8,

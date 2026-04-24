@@ -33,10 +33,14 @@ local function toImageUri(raw: string?): string?
 	if typeof(raw) ~= "string" or raw == "" then
 		return nil
 	end
-	if raw:match("^rbxthumb://") or raw:match("^rbxasset://") or raw:match("^http") then
+	-- `rbxassetid://` is passed through so `ContentProvider:PreloadAsync` warms
+	-- the same URL string `ImageLabel.Image` / `ImageButton.Image` use at runtime.
+	-- Converting to `rbxthumb://` here made boot preloads miss the cache key Fleet
+	-- and other panels use, so list icons could fetch again on first open.
+	if raw:match("^rbxthumb://") or raw:match("^rbxasset://") or raw:match("^rbxassetid://") or raw:match("^http") then
 		return raw
 	end
-	local id = raw:match("rbxassetid://(%d+)") or raw:match("^(%d+)$")
+	local id = raw:match("^(%d+)$")
 	if id then
 		return string.format("rbxthumb://type=Asset&id=%s&w=150&h=150", id)
 	end

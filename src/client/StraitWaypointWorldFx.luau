@@ -1997,7 +1997,6 @@ function StraitWaypointWorldFx.OnMissileStrikePayload(data: { [string]: any })
 			glow.Color = Color3.fromRGB(255, 160, 40)
 			glow.Parent = trailHost
 		end
-
 		-- The `Missile` asset's nose points along its local +X, not the LookVector
 		-- axis produced by `CFrame.lookAt`, so apply a yaw -90° correction so
 		-- the nose points along the flight direction instead of sideways.
@@ -2941,7 +2940,21 @@ function StraitWaypointWorldFx.OnMineStrikePayload(data: { [string]: any })
 			mineImpactHitSfx.RollOffMode = Enum.RollOffMode.InverseTapered
 			mineImpactHitSfx.RollOffMaxDistance = 2000
 			mineImpactHitSfx.Parent = mineSfxAnchor
-			mineImpactHitSfx:Play()
+			-- Same as missile impact: `Play()` before the asset finishes loading
+			-- often no-ops. Defer + `Loaded:Wait()` (pcall — load can fail).
+			task.defer(function()
+				if not mineImpactHitSfx.Parent then
+					return
+				end
+				if not mineImpactHitSfx.IsLoaded then
+					pcall(function()
+						mineImpactHitSfx.Loaded:Wait()
+					end)
+				end
+				if mineImpactHitSfx.Parent then
+					mineImpactHitSfx:Play()
+				end
+			end)
 			Debris:AddItem(mineSfxAnchor, 30)
 
 			-- Roblox shockwave
@@ -3255,7 +3268,11 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		local PHASE_STEAL = 7.0
 		local PHASE_ESCAPE = 4.0
 		local RETURN_WINDOW = 1.25 -- overlap: last pirates return vs escape drive (was undefined)
-		local PIRATE_COUNT = 5
+		-- Scale pirate count by how many barrels were stolen (fewer pirates for small raids).
+		-- 0 stolen = 1 pirate (minimum visual), full 25%+ = 5 pirates.
+		local totalLoaded = math.max(1, tonumber(data.totalLoaded) or 1)
+		local lossFrac = barrelsStolen / totalLoaded
+		local PIRATE_COUNT = math.clamp(math.ceil(lossFrac * 20), 1, 5)
 		local PIRATE_SPACING = 1.5
 		local deckY = getBoatDeckY(playerBoat, rootPos.Y)
 		-- Lift by NPC pivot-to-feet offset so pirates' feet land on deck (not buried).
@@ -3710,14 +3727,20 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 			setObjCF(officer.npc, targetCF)
 		end
 
-		local function runPar(tasks: { () -> () }, minDur: number)
+		-- Deadline-aware parallel runner. When tasks exceed minDur + grace,
+		-- onDeadline is called (if provided) so callers can snap stragglers
+		-- before the next phase begins.
+		local function runPar(tasks: { () -> () }, minDur: number, onDeadline: (() -> ())?)
 			local done = 0
 			if #tasks == 0 then task.wait(minDur); return end
 			for _, fn in ipairs(tasks) do
 				task.spawn(function() fn(); done += 1 end)
 			end
 			local t0 = os.clock()
-			while done < #tasks do task.wait() end
+			while done < #tasks and (os.clock() - t0) < minDur + 2 do task.wait() end
+			if done < #tasks and onDeadline then
+				onDeadline()
+			end
 			local left = minDur - (os.clock() - t0)
 			if left > 0 then task.wait(left) end
 		end
@@ -3898,21 +3921,30 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 
 		-- Phase 2: Board + Inspect — each officer independently
 		-- Officer walks to zipline, slides across, then immediately walks to their zones
-		print(string.format("[CG] Inspection start: officers=%d zones=%d altZones=%d zipFrom=%s zipTo=%s",
-			#officers, #zones, #altZones, tostring(zipFromPos), tostring(zipToPos)))
+		local cgLog = RunService:IsStudio()
+		if cgLog then
+			print(string.format("[CG] Inspection start: officers=%d zones=%d altZones=%d zipFrom=%s zipTo=%s",
+				#officers, #zones, #altZones, tostring(zipFromPos), tostring(zipToPos)))
+		end
 		local rng = Random.new()
 		local boardInspTasks: { () -> () } = {}
 		for i, off in ipairs(officers) do
 			local idx = i
 			table.insert(boardInspTasks, function()
-				print(string.format("[CG] officer[%d] start cf=%s", idx, tostring(off.cf.Position)))
+				if cgLog then
+					print(string.format("[CG] officer[%d] start cf=%s", idx, tostring(off.cf.Position)))
+				end
 				-- Stagger boarding
 				task.wait((idx - 1) * BOARD_STAGGER)
 
 				-- Walk to zipline anchor on CG boat side
-				print(string.format("[CG] officer[%d] walking to zipFrom", idx))
+				if cgLog then
+					print(string.format("[CG] officer[%d] walking to zipFrom", idx))
+				end
 				walkNpc(off, flatLookAt(zipFromPos, zipToPos), WALK_SPEED)
-				print(string.format("[CG] officer[%d] zipline slide", idx))
+				if cgLog then
+					print(string.format("[CG] officer[%d] zipline slide", idx))
+				end
 
 				-- Slide across zipline
 				local t0 = os.clock()
@@ -3929,7 +3961,9 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 				-- Immediately walk to primary inspection zone (clamp idx to available zones).
 				local z1 = zones[((idx - 1) % math.max(1, #zones)) + 1]
 				local z2 = altZones[((idx - 1) % math.max(1, #altZones)) + 1]
-				print(string.format("[CG] officer[%d] walking to zone1=%s", idx, tostring(z1)))
+				if cgLog then
+					print(string.format("[CG] officer[%d] walking to zone1=%s", idx, tostring(z1)))
+				end
 				if not z1 then return end
 				walkNpc(off, flatLookAt(z1, z1 + fwd * (if idx % 2 == 0 then 1 else -1)), WALK_SPEED)
 				task.wait(rng:NextNumber(0.3, 0.5))
@@ -3939,7 +3973,15 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 				task.wait(rng:NextNumber(0.2, 0.4))
 			end)
 		end
-		runPar(boardInspTasks, PHASE_BOARD_INSP)
+		runPar(boardInspTasks, PHASE_BOARD_INSP, function()
+			-- Deadline: snap any straggling officers to zipline landing so the
+			-- return phase can zipline them back cleanly.
+			for _, off in ipairs(officers) do
+				local snapCF = CFrame.new(zipToPos, zipToPos + fwd)
+				off.cf = snapCF
+				setObjCF(off.npc, snapCF)
+			end
+		end)
 
 		-- Phase 3: Officers zipline straight back to CG boat, then disappear — so it
 		-- reads as "they went inside" and the CG boat leaves empty-looking.

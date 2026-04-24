@@ -43,6 +43,11 @@ local RemoteNames = {
 	RequestUpgradeWarehouse = "RequestUpgradeWarehouse",
 	RequestSellAllWarehouse = "RequestSellAllWarehouse",
 	RequestTeleportToWarehouse = "RequestTeleportToWarehouse",
+	--- Server → **one** client (warehouse owner): play gate open/close SFX
+	--- locally only (`Sound` parented to `CurrentCamera`), so dock gate audio
+	--- is not spatial / server-replicated to the whole server. Payload:
+	--- `{ kind = "open" | "close" }`. See `WarehouseService:_wireWarehouseGateInteractions`.
+	WarehouseGateLocalSfx = "WarehouseGateLocalSfx",
 	WarehouseStateUpdate = "WarehouseStateUpdate",
 	RequestWarehouseSnapshot = "RequestWarehouseSnapshot",
 	RequestDispatchShipment = "RequestDispatchShipment",
@@ -93,6 +98,16 @@ local RemoteNames = {
 	PirateHireOpen = "PirateHireOpen",
 	PirateHireResult = "PirateHireResult",
 	PirateHitAlert = "PirateHitAlert",
+
+	-- Daily free drill: claim the current cycle's random drill (same for all players).
+	-- Server replies on `OilActionResult` with action `"ClaimDailyDrill"`.
+	RequestClaimDailyDrill = "RequestClaimDailyDrill",
+	-- Server → client: current daily drill state (itemId, cycleStart, claimed).
+	-- Fires on join + after claim so client can render the shop card.
+	DailyDrillUpdate = "DailyDrillUpdate",
+
+	-- Mobile drill hint: one-time dismissal (persisted so it never shows again).
+	RequestDismissMobileDrillHint = "RequestDismissMobileDrillHint",
 
 	-- One-shot equipment shop (Tools cloned into `Player.Backpack`; cash via `OilStateService`).
 	RequestPurchaseEquipment = "RequestPurchaseEquipment",

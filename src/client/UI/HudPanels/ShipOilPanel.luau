@@ -1022,13 +1022,16 @@ local function refreshRunUpgradeCard1(ownedCount: number)
 	end
 end
 
-local function readRunUpgradeOwnedFromSnapshot(snap: any): number?
+--- Always returns a non-negative int. Missing / malformed
+--- `runUpgradeOwnedByItemId` (e.g. stale client payloads) is treated as
+--- 0 so we still repaint the card — never skip refresh with `nil`.
+local function readRunUpgradeOwnedFromSnapshot(snap: any): number
 	if typeof(snap) ~= "table" then
-		return nil
+		return 0
 	end
 	local owned = (snap :: any).runUpgradeOwnedByItemId
 	if typeof(owned) ~= "table" then
-		return nil
+		return 0
 	end
 	local n = (owned :: { [string]: any })[RUN_UPGRADE_INVENTORY_ID]
 	if typeof(n) ~= "number" then
@@ -1375,6 +1378,13 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 		attachColorFadeHover(dispatchButton, connections)
 	end
 
+	-- Security Personnel run-upgrade card — MUST wire before `oilStateUpdate` and
+	-- before the `requestOilSnapshot` block so `runUpgradeCard1Binding` exists when
+	-- those refresh the description (bundle grants +5 stacks were losing the first
+	-- push because the binding was still nil, then `refreshRunUpgradeCard1(0)` in
+	-- the late wire clobbered the right count until a second purchase re-pushed).
+	wireRunUpgradeCard1(screen, connections)
+
 	table.insert(connections, ClientRemotes.warehouseStateUpdate.OnClientEvent:Connect(function(data: any)
 		if mergeWarehouseTotalsFromPayload(data) then
 			refreshFooter()
@@ -1403,12 +1413,8 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 		end
 		-- Run-upgrade owned counts ride on the same packet so the
 		-- RunUpgradeCard1 "Ready ×N" badge updates in the same frame as a
-		-- successful Robux receipt OR a dispatch consume. Skips silently
-		-- when the card isn't wired yet (Studio template missing).
-		local owned = readRunUpgradeOwnedFromSnapshot(snap)
-		if owned ~= nil then
-			refreshRunUpgradeCard1(owned)
-		end
+		-- successful Robux receipt OR a dispatch consume.
+		refreshRunUpgradeCard1(readRunUpgradeOwnedFromSnapshot(snap))
 		refreshFooter()
 	end))
 
@@ -1518,10 +1524,7 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 				if mergeOilByTierFromSnapshot(st) then
 					clampSelectionsToInventory()
 				end
-				local owned = readRunUpgradeOwnedFromSnapshot(st)
-				if owned ~= nil then
-					refreshRunUpgradeCard1(owned)
-				end
+				refreshRunUpgradeCard1(readRunUpgradeOwnedFromSnapshot(st))
 			end
 		end
 	end
@@ -1704,11 +1707,6 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 		-- the first time the player opens it.
 		refreshInstantSellRowsAndTotals()
 	end
-
-	-- Run upgrades — only RunUpgradeCard1 (Security Personnel) is live;
-	-- cards 2/3 still carry their `ComingSoonOverlay` in Studio so they're
-	-- intentionally left unwired here.
-	wireRunUpgradeCard1(screen, connections)
 
 	-- InstantSell open button lives on the main panel (`InstantSellSection.InstantSellButton`).
 	local instantSellSection = screen:FindFirstChild("InstantSellSection", true)

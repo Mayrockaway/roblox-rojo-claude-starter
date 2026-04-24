@@ -17,6 +17,7 @@ export type StraitMarketRemotes = {
 	requestMarketSnapshot: RemoteFunction,
 }
 
+local RunService = game:GetService("RunService")
 local MARKET_TYPE_MULS = { Crude = 0.8, Refined = 1.4, Premium = 2.0 }
 
 local warehouseState: any = nil
@@ -184,7 +185,9 @@ function StraitMarketHudClient.connect(deps: StraitMarketHudDeps, remotes: Strai
 			end
 
 			if stateChanged then
-				print("[StraitSFX] State changed: " .. tostring(prev) .. " -> " .. tostring(snapshot.state))
+				if RunService:IsStudio() then
+					print("[StraitSFX] State changed: " .. tostring(prev) .. " -> " .. tostring(snapshot.state))
+				end
 				local newState = snapshot.state
 				if newState == "Closed" then
 					playEventSFX("StraitClosed")

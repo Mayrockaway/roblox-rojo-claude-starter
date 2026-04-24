@@ -264,6 +264,8 @@ local function applyRoles(
 	if costLbl and costLbl:IsA("TextLabel") then
 		if isFtueFreeFreebie(item.id) then
 			costLbl.Text = pickText(costLbl, "FreeText", defaults and defaults.CostFreeText, "FREE")
+			-- Stamp the card so FtueUiPointers can dynamically position the BuyDrillPointer on it
+			card:SetAttribute("IsFtueFreeDrillCard", true)
 		else
 			local format = costLbl:GetAttribute("Format")
 			if typeof(format) ~= "string" or format == "" then
@@ -340,9 +342,14 @@ function M.PopulateCategoryRow(panelGui: Instance, shopCategory: string, byId: {
 	-- First populate of this row: also wipe any leftover hand-authored cards
 	-- (the DrillCard1 preview we left in Studio for visual reference). After
 	-- that, only `IsShopCardClone` clones get cleared.
+	--
+	-- Exception: cards tagged `IsPinnedShopCard = true` survive the initial
+	-- wipe. These are intentionally hand-authored static slots that live
+	-- alongside the rotating clones (e.g. the Daily Free Drill card, whose
+	-- claim / timer lifecycle is owned outside the regular populate flow).
 	if row:GetAttribute("ShopRowEverPopulated") ~= true then
 		for _, child in ipairs(row:GetChildren()) do
-			if child:IsA("GuiObject") and child ~= template then
+			if child:IsA("GuiObject") and child ~= template and child:GetAttribute("IsPinnedShopCard") ~= true then
 				child:Destroy()
 			end
 		end

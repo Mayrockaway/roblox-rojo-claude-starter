@@ -7,6 +7,8 @@
 --     (e.g. `SellOilPanelGui`, `ShipManagementPanelGui`, `ShopPanelGui`).
 --   - For prompts inside `WarehouseTemplate`, also set `KeepProximityPrompt = true` so
 --     `WarehouseService` does not strip them when cloning the warehouse per player.
+--     Exception: `GateKeyPrompt` on warehouse gates is always preserved and
+--     re-wired server-side (`WarehouseService:_wireWarehouseGateInteractions`).
 --
 -- This module never calls `Instance.new` into `StarterGui` and never wires HUD buttons —
 -- it only forwards the trigger to `HudPanelRouter.openScreen(screenName)`. Per
@@ -16,6 +18,7 @@
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 -- `Constants` / `FtueConfig` / `getClientRemotes` requires are needed
 -- again for the `WaitDocksFleetPanel` → `FleetPanelOpened` FTUE bridge
@@ -81,7 +84,9 @@ function ProximityPanelOpener.start()
 		end
 	end)
 
-	print("[Client] ProximityPanelOpener: listening for `OpensPanel` ProximityPrompts.")
+	if RunService:IsStudio() then
+		print("[Client] ProximityPanelOpener: listening for `OpensPanel` ProximityPrompts.")
+	end
 end
 
 return ProximityPanelOpener

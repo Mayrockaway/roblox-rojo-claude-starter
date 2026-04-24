@@ -137,6 +137,81 @@ local function currentFtueCellKey(player: Player): string?
 	return nil
 end
 
+local function currentFtueChunkId(player: Player): string?
+	local d = player:GetAttribute(Constants.FtueRestrictDrillChunkIdAttribute)
+	if typeof(d) == "string" and d ~= "" then
+		return (d :: string):gsub("^%s+", ""):gsub("%s+$", "") :: any
+	end
+	return nil
+end
+
+--- Find the chunk section Model inside PlotGround.
+local function findChunkSectionModel(plot: Model, chunkId: string): Model?
+	local ground = plot:FindFirstChild("PlotGround")
+	if not (ground and ground:IsA("Model")) then return nil end
+	local section = ground:FindFirstChild(chunkId)
+	if section and section:IsA("Model") then return section end
+	return nil
+end
+
+--- Compute a bounding box from all T## tiles in a chunk section.
+--- Returns CFrame, Size or nil if no tiles found.
+local function chunkBoundsFromSection(section: Model): (CFrame?, Vector3?)
+	local minX, minZ = math.huge, math.huge
+	local maxX, maxZ = -math.huge, -math.huge
+	local refY, refSizeY = 0, 0
+	local count = 0
+	for _, d in ipairs(section:GetDescendants()) do
+		if d:IsA("BasePart") and string.match(d.Name, "^T%d%d$") then
+			local pos = d.Position
+			local half = d.Size / 2
+			if pos.X - half.X < minX then minX = pos.X - half.X end
+			if pos.X + half.X > maxX then maxX = pos.X + half.X end
+			if pos.Z - half.Z < minZ then minZ = pos.Z - half.Z end
+			if pos.Z + half.Z > maxZ then maxZ = pos.Z + half.Z end
+			refY = pos.Y
+			refSizeY = d.Size.Y
+			count += 1
+		end
+	end
+	if count == 0 then return nil, nil end
+	local cx = (minX + maxX) / 2
+	local cz = (minZ + maxZ) / 2
+	return CFrame.new(cx, refY, cz), Vector3.new(maxX - minX, refSizeY, maxZ - minZ)
+end
+
+--- Create raised neon border from a CFrame + Size (used for chunk-level highlight).
+local function createRaisedBorderFromBounds(cf: CFrame, sz: Vector3, parent: Instance): Folder
+	local folder = Instance.new("Folder")
+	folder.Name = "FtueTutorialZoneBorder"
+	folder.Parent = parent
+
+	local hx = sz.X / 2
+	local hz = sz.Z / 2
+	local yMid = sz.Y / 2 + WALL_HEIGHT / 2
+
+	local function addWall(localOffset: Vector3, size: Vector3)
+		local p = Instance.new("Part")
+		p.Name = "FtueZoneEdge"
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanQuery = false
+		p.CanTouch = false
+		p.Material = Enum.Material.Neon
+		p.Color = EDGE_COLOR
+		p.Size = size
+		p.CFrame = cf * CFrame.new(localOffset) * CFrame.new(0, yMid, 0)
+		p.Parent = folder
+	end
+
+	addWall(Vector3.new(0, 0, hz + WALL_THICK / 2), Vector3.new(sz.X + WALL_THICK, WALL_HEIGHT, WALL_THICK))
+	addWall(Vector3.new(0, 0, -hz - WALL_THICK / 2), Vector3.new(sz.X + WALL_THICK, WALL_HEIGHT, WALL_THICK))
+	addWall(Vector3.new(hx + WALL_THICK / 2, 0, 0), Vector3.new(WALL_THICK, WALL_HEIGHT, sz.Z))
+	addWall(Vector3.new(-hx - WALL_THICK / 2, 0, 0), Vector3.new(WALL_THICK, WALL_HEIGHT, sz.Z))
+
+	return folder
+end
+
 local function destroyBorder(folder: Folder?)
 	if folder and folder.Parent then
 		folder:Destroy()
@@ -261,6 +336,24 @@ function FtueTutorialTileHighlight.start(player: Player)
 			return
 		end
 
+		-- Chunk-level highlight (WaitDrillOil_WIP): border around entire 5x5 area.
+		local chunkId = currentFtueChunkId(player)
+		if chunkId then
+			local section = findChunkSectionModel(plot, chunkId)
+			if not section then
+				watchPlotInternals(plot)
+				return
+			end
+			local cf, sz = chunkBoundsFromSection(section)
+			if not cf or not sz then
+				watchPlotInternals(plot)
+				return
+			end
+			borderFolder = createRaisedBorderFromBounds(cf, sz, Workspace)
+			return
+		end
+
+		-- Single-tile highlight (WaitReveal): border around the drilled tile.
 		local ck = currentFtueCellKey(player)
 		if not ck then
 			return
@@ -268,8 +361,6 @@ function FtueTutorialTileHighlight.start(player: Player)
 		local row, col = parseCellKey(ck)
 		local tile = findTilePart(plot, row, col)
 		if not tile then
-			--- Plot exists but the marked tile / cell-key tile isn't replicated
-			--- yet. Watch the plot for tile streaming + marker stamping.
 			watchPlotInternals(plot)
 			return
 		end
@@ -284,6 +375,7 @@ function FtueTutorialTileHighlight.start(player: Player)
 		table.clear(attrConn)
 		table.insert(attrConn, player:GetAttributeChangedSignal("PlotId"):Connect(refresh))
 		table.insert(attrConn, player:GetAttributeChangedSignal(Constants.FtueRestrictDrillCellKeyAttribute):Connect(refresh))
+		table.insert(attrConn, player:GetAttributeChangedSignal(Constants.FtueRestrictDrillChunkIdAttribute):Connect(refresh))
 		table.insert(attrConn, player:GetAttributeChangedSignal(Constants.FtueStepAttribute):Connect(function()
 			local st = player:GetAttribute(Constants.FtueStepAttribute)
 			if typeof(st) ~= "string" then

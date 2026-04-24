@@ -566,11 +566,15 @@ function SkyMissileAmbience.Start()
 		return
 	end
 	running = true
-	print("[SkyMissileAmbience] started — ambient sky missiles active")
+	if RunService:IsStudio() then
+		print("[SkyMissileAmbience] started — ambient sky missiles active")
+	end
 
 	task.spawn(function()
 		task.wait(1.0)
-		print("[SkyMissileAmbience] loop entering, MAX_CONCURRENT=" .. MAX_CONCURRENT)
+		if RunService:IsStudio() then
+			print("[SkyMissileAmbience] loop entering, MAX_CONCURRENT=" .. MAX_CONCURRENT)
+		end
 		while running do
 			if activeCount < MAX_CONCURRENT then
 				local ok, err = pcall(launchMissile)

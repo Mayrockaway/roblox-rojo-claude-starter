@@ -68,6 +68,9 @@ local Constants = {
 	-- FTUE: set on `Player` while onboarding. Global plot cell key, same format as server (`R{row}C{col}`).
 	-- Empty / unset = no restriction. Server + client enforce drill placement to that cell only.
 	FtueRestrictDrillCellKeyAttribute = "FtueRestrictDrillCellKey",
+	-- FTUE: chunk-level restriction (WaitDrillOil_WIP). Value = section ID like "S04_02".
+	-- When set, drill placement is allowed on ANY tile within that chunk.
+	FtueRestrictDrillChunkIdAttribute = "FtueRestrictDrillChunkId",
 	--- Replicated FTUE step id for `FtueDialogueController` (e.g. Intro, WaitDrill). Cleared when done.
 	FtueStepAttribute = "FtueStep",
 	-- `FtueDocksUpgradeSubStepAttribute` (`"FtueDocksUpgradeSubStep"`) was
@@ -105,6 +108,7 @@ local Constants = {
 
 	-- Dev strait UI (3 buttons). Server accepts only in Studio unless this is true.
 	StraitDevUiEnabled = false,
+	StraitDevUiDisabled = true, -- Suppress the Strait (dev) panel even in Studio
 	-- After dev UI sets strait, delay automatic state rolls this many seconds (testing).
 	StraitDevStateHoldSeconds = 86400,
 }

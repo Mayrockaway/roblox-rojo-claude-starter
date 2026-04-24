@@ -3,11 +3,12 @@
 -- this controller exposes Open/Close/IsOpen so `HudPanelRouter` includes it in the
 -- modal-exclusivity group.
 --
--- It also wires the three featured ship cards (`Ships/Ship1`, `Ship2`, `Ship3`) to the
--- monetization pipeline:
---   * Each card's `Template/Buy` ImageButton fires `RequestPromptRobuxPurchase` with the
---     matching `MonetizationCatalog` item id (`ship.ship4skin`, `ship.ship5skin`,
---     `ship.whaleskin`). The server's `MonetizationService` opens the Roblox prompt
+-- It also wires the three ship cards under `Ships` (`Ship1`..`Ship3`), the Patriot
+-- under `Ships2` (`Ship1` only), the Featured starter pack (`Featured.Tab.EquipBest`),
+-- and the Early Supporter bundle (`Featured2.Tab.EquipBest`):
+--   * Each `Template/Buy` ImageButton fires `RequestPromptRobuxPurchase` with the
+--     matching `MonetizationCatalog` item id (`ship.pirateship`, `ship.ducky`, …). The
+--     server's `MonetizationService` opens the Roblox prompt
 --     and on receipt grants the boat via `OilStateService:GrantBoat`.
 --   * The Buy pill text is repainted from the catalog's `robuxPrice` so the displayed
 --     price stays in sync with `MonetizationCatalog.SHIP_PLACEHOLDER_PRICE` without
@@ -21,6 +22,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local BoatCatalog = require(Shared:WaitForChild("Config"):WaitForChild("BoatCatalog"))
 local MonetizationCatalog = require(Shared:WaitForChild("Config"):WaitForChild("MonetizationCatalog"))
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
@@ -30,13 +32,17 @@ local getClientRemotes = require(script.Parent.Parent.Parent:WaitForChild("GetCl
 local SCREEN_NAME = "RobuxShop"
 
 --- UI slot name -> MonetizationCatalog item id. Keep in sync with the Studio
---- card layout under `Canvas.Container.Main.Container.Ships`. Order maps to
---- the visible order on the panel: Ship1=Pirate, Ship2=Ducky, Ship3=Whale.
+--- card layout under `…Main.Container.Ships` (`buildShipItem` uses
+--- `ship.` .. lower(boatId)) — legacy `ship.ship4skin` ids are invalid.
+--- Order: Ship1=PirateShip, Ship2=Ducky, Ship3=Moby.
 local SHIP_SLOT_TO_ITEM_ID: { [string]: string } = {
-	Ship1 = "ship.ship4skin",
-	Ship2 = "ship.ship5skin",
-	Ship3 = "ship.whaleskin",
+	Ship1 = "ship.pirateship",
+	Ship2 = "ship.ducky",
+	Ship3 = "ship.moby",
 }
+
+--- `Ships2` in the same Main container: single premium hull (The Patriot).
+local SHIP2_SHIP1_ITEM_ID = "ship.americaneagleboat"
 
 --- The Featured starter pack card lives at
 --- `Canvas.Container.Main.Container.Featured.Tab.EquipBest` (Studio author
@@ -52,6 +58,8 @@ local SHIP_SLOT_TO_ITEM_ID: { [string]: string } = {
 ---     the server's `_handlePromptRequest` rejects with `ERR_ALREADY_PURCHASED`
 ---     anyway, so a double-charge is impossible even if hide fails.
 local STARTER_PACK_ITEM_ID = "starter_pack"
+--- `Featured2.Tab.EquipBest` — Early Supporter Bundle (see `MonetizationCatalog`).
+local EARLY_SUPPORTER_ITEM_ID = "early_supporter_bundle"
 
 local RobuxShopPanel = {}
 
@@ -65,6 +73,9 @@ local cardRefs: { { slotName: string, itemId: string, buy: ImageButton, label: T
 --- the whole Featured row without re-walking the tree on every snapshot.
 local featuredRoot: Instance? = nil
 local featuredBuyRef: ImageButton? = nil
+--- Same contract as `Featured` / `starter_pack`, for `Featured2` (Early Supporter).
+local featured2Root: Instance? = nil
+local featured2BuyRef: ImageButton? = nil
 
 local function disconnectAll()
 	for _, c in ipairs(connections) do
@@ -76,21 +87,51 @@ local function disconnectAll()
 	table.clear(purchasedOneTimeSet)
 	featuredRoot = nil
 	featuredBuyRef = nil
+	featured2Root = nil
+	featured2BuyRef = nil
 	wiredScreen = nil
 end
 
-local function findShipsContainer(screen: ScreenGui): Instance?
-	-- Prefer the canonical authored path; fall back to recursive lookup so a
-	-- minor Studio reorg (e.g. extra wrapper Frame) doesn't silently break wiring.
+local function findMainInnerContainer(screen: ScreenGui): Instance?
 	local canvas = screen:FindFirstChild("Canvas")
 	local container = canvas and canvas:FindFirstChild("Container")
 	local main = container and container:FindFirstChild("Main")
-	local inner = main and main:FindFirstChild("Container")
-	local ships = inner and inner:FindFirstChild("Ships")
+	return main and main:FindFirstChild("Container")
+end
+
+local function findShipsContainer(screen: ScreenGui, folderName: string): Instance?
+	-- Prefer the canonical authored path; fall back to recursive lookup so a
+	-- minor Studio reorg (e.g. extra wrapper Frame) doesn't silently break wiring.
+	local inner = findMainInnerContainer(screen)
+	local ships = inner and inner:FindFirstChild(folderName)
 	if ships then
 		return ships
 	end
-	return screen:FindFirstChild("Ships", true)
+	return screen:FindFirstChild(folderName, true)
+end
+
+--- Paints the list icon on a shop card to match `BoatCatalog` (list + hero
+--- icons are the same asset; larger frame in Studio = larger preview).
+local function applyShipSlotIconFromBoatId(slot: Instance, boatId: string)
+	local def = BoatCatalog.GetBoat(boatId)
+	local url = def and def.icon
+	if typeof(url) ~= "string" or url == "" then
+		return
+	end
+	local template = slot:FindFirstChild("Template")
+	if template and template:IsA("Instance") then
+		local icon = template:FindFirstChild("Icon")
+		if icon and icon:IsA("ImageLabel") then
+			icon.Image = url
+			icon.ScaleType = Enum.ScaleType.Fit
+			return
+		end
+	end
+	local any = slot:FindFirstChild("Icon", true)
+	if any and any:IsA("ImageLabel") then
+		any.Image = url
+		any.ScaleType = Enum.ScaleType.Fit
+	end
 end
 
 local function findBuyLabel(buy: ImageButton): TextLabel?
@@ -154,11 +195,23 @@ local function repaintFeatured()
 	end
 end
 
+local function repaintFeatured2()
+	local owned = purchasedOneTimeSet[EARLY_SUPPORTER_ITEM_ID] == true
+	if featured2Root and featured2Root:IsA("GuiObject") then
+		(featured2Root :: GuiObject).Visible = not owned
+	end
+	if featured2BuyRef then
+		featured2BuyRef.Active = not owned
+		featured2BuyRef.AutoButtonColor = not owned
+	end
+end
+
 local function repaintAllCards()
 	for _, card in ipairs(cardRefs) do
 		repaintCard(card)
 	end
 	repaintFeatured()
+	repaintFeatured2()
 end
 
 local function readOwnedBoats(st: any): { [string]: boolean }
@@ -206,7 +259,7 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 	disconnectAll()
 	wiredScreen = screen
 
-	local ships = findShipsContainer(screen)
+	local ships = findShipsContainer(screen, "Ships")
 	if not ships then
 		warn("[RobuxShopPanel] Ships container not found under " .. screen:GetFullName() .. " — Buy buttons will not be wired.")
 		return
@@ -246,35 +299,65 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 		end))
 	end
 
-	-- Featured starter pack — separate path because the card lives outside
-	-- the Ships container and the buy button has a quirky author name.
-	-- Re-buyable: bundle ship is idempotent, currency + drills accumulate.
-	local function findFeaturedBuy(): ImageButton?
-		local canvas = screen:FindFirstChild("Canvas")
-		local container = canvas and canvas:FindFirstChild("Container")
-		local main = container and container:FindFirstChild("Main")
-		local inner = main and main:FindFirstChild("Container")
-		local featured = inner and inner:FindFirstChild("Featured")
+	-- Ships2: The Patriot (`AmericanEagleBoat`) — `Ships2.Ship1.Template.Buy`
+	local ships2 = findShipsContainer(screen, "Ships2")
+	if ships2 then
+		local slot = ships2:FindFirstChild("Ship1")
+		if slot then
+			applyShipSlotIconFromBoatId(slot, "AmericanEagleBoat")
+		end
+		local template = slot and slot:FindFirstChild("Template")
+		local buy2 = template and template:FindFirstChild("Buy")
+		if buy2 and buy2:IsA("ImageButton") then
+			local img2 = buy2 :: ImageButton
+			img2.Active = true
+			img2.AutoButtonColor = true
+			local label2 = findBuyLabel(img2)
+			local card2 = { slotName = "Ships2_Ship1", itemId = SHIP2_SHIP1_ITEM_ID, buy = img2, label = label2 }
+			table.insert(cardRefs, card2)
+			table.insert(connections, img2.Activated:Connect(function()
+				if img2:GetAttribute("Owned") == true then
+					return
+				end
+				local now = os.clock()
+				local last = lastPromptFireByItemId[SHIP2_SHIP1_ITEM_ID] or 0
+				if now - last < 0.6 then
+					return
+				end
+				lastPromptFireByItemId[SHIP2_SHIP1_ITEM_ID] = now
+				remotes.requestPromptRobuxPurchase:FireServer({ itemId = SHIP2_SHIP1_ITEM_ID })
+			end))
+		else
+			warn(
+				"[RobuxShopPanel] Ships2/Ship1/Template/Buy not found or not an ImageButton under "
+					.. screen:GetFullName()
+					.. " — Patriot buy will not be wired."
+			)
+		end
+	else
+		warn(
+			"[RobuxShopPanel] Ships2 container not found under "
+				.. screen:GetFullName()
+				.. " — Patriot row will not be wired."
+		)
+	end
+
+	local function findTabEquipBest(featuredFolderName: string): (ImageButton?, Instance?)
+		local inner = findMainInnerContainer(screen)
+		local featured = inner and inner:FindFirstChild(featuredFolderName)
 		local tab = featured and featured:FindFirstChild("Tab")
 		local buy = tab and tab:FindFirstChild("EquipBest")
 		if buy and buy:IsA("ImageButton") then
-			return buy :: ImageButton
+			return buy :: ImageButton, featured
 		end
-		return nil
+		return nil, nil
 	end
-	local starterBuy = findFeaturedBuy()
-	if starterBuy then
+
+	-- Featured starter pack — `Featured.Tab.EquipBest`
+	local starterBuy, featRoot = findTabEquipBest("Featured")
+	if starterBuy and featRoot then
 		featuredBuyRef = starterBuy
-		-- Walk up to the `Featured` Frame so `repaintFeatured` can hide the
-		-- entire row (label, art, Buy button, padding) on a successful
-		-- one-time purchase. We climb until we find the ancestor literally
-		-- named `Featured`; if the artist re-parents the card later this
-		-- still works as long as the wrapper keeps that name.
-		local cursor: Instance? = starterBuy.Parent
-		while cursor and cursor.Name ~= "Featured" do
-			cursor = cursor.Parent
-		end
-		featuredRoot = cursor
+		featuredRoot = featRoot
 		starterBuy.Active = true
 		starterBuy.AutoButtonColor = true
 		local starterLabel = findBuyLabel(starterBuy)
@@ -285,10 +368,6 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 			end
 		end
 		table.insert(connections, starterBuy.Activated:Connect(function()
-			-- Defensive: server-side `_handlePromptRequest` is the
-			-- authoritative gate (`ERR_ALREADY_PURCHASED`), but bailing
-			-- here avoids a needless network round-trip when our snapshot
-			-- already shows the buyer owns the bundle.
 			if purchasedOneTimeSet[STARTER_PACK_ITEM_ID] == true then
 				return
 			end
@@ -302,6 +381,40 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 		end))
 	else
 		warn("[RobuxShopPanel] Featured/Tab/EquipBest not found under " .. screen:GetFullName() .. " — Starter Pack will not be wired.")
+	end
+
+	-- Featured2 — Early Supporter bundle (`Featured2.Tab.EquipBest`)
+	local earlyBuy, f2root = findTabEquipBest("Featured2")
+	if earlyBuy and f2root then
+		featured2BuyRef = earlyBuy
+		featured2Root = f2root
+		earlyBuy.Active = true
+		earlyBuy.AutoButtonColor = true
+		local earlyLabel = findBuyLabel(earlyBuy)
+		if earlyLabel then
+			local price = priceForItemId(EARLY_SUPPORTER_ITEM_ID)
+			if typeof(price) == "number" then
+				earlyLabel.Text = string.format("R$%d", price)
+			end
+		end
+		table.insert(connections, earlyBuy.Activated:Connect(function()
+			if purchasedOneTimeSet[EARLY_SUPPORTER_ITEM_ID] == true then
+				return
+			end
+			local now = os.clock()
+			local last = lastPromptFireByItemId[EARLY_SUPPORTER_ITEM_ID] or 0
+			if now - last < 0.6 then
+				return
+			end
+			lastPromptFireByItemId[EARLY_SUPPORTER_ITEM_ID] = now
+			remotes.requestPromptRobuxPurchase:FireServer({ itemId = EARLY_SUPPORTER_ITEM_ID })
+		end))
+	else
+		warn(
+			"[RobuxShopPanel] Featured2/Tab/EquipBest not found under "
+				.. screen:GetFullName()
+				.. " — Early Supporter bundle will not be wired."
+		)
 	end
 
 	snapshotInitialOwnership(remotes)

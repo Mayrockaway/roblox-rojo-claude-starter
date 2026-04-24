@@ -10,6 +10,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
@@ -109,10 +110,14 @@ function DrillingService:ReplayUnrevealedTiles(userId: number)
 		-- Query AFTER the wait so plot geometry is fully loaded
 		local unrevealed = self._oilStateService:GetUnrevealedTiles(userId)
 		if #unrevealed == 0 then return end
-		print(string.format("[DrillingService] Replaying %d unrevealed tiles for user %d", #unrevealed, userId))
+		if RunService:IsStudio() then
+			print(string.format("[DrillingService] Replaying %d unrevealed tiles for user %d", #unrevealed, userId))
+		end
 		for _, done in ipairs(unrevealed) do
 			local p = done.position
-			print(string.format("[DrillingService] Replay tile %s/%s pos=(%s, %s, %s)", tostring(done.chunkId), tostring(done.tileKey), tostring(p and p.x), tostring(p and p.y), tostring(p and p.z)))
+			if RunService:IsStudio() then
+				print(string.format("[DrillingService] Replay tile %s/%s pos=(%s, %s, %s)", tostring(done.chunkId), tostring(done.tileKey), tostring(p and p.x), tostring(p and p.y), tostring(p and p.z)))
+			end
 			self:_fireDrillCompleted(userId, done)
 		end
 	end)

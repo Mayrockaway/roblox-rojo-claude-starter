@@ -111,7 +111,7 @@ local FtueConfig = {
 		},
 		WaitDrillOil_WIP = {
 			title = "FIRST STRIKE!",
-			body = "Here's your first drill on the house - slap that baby on that tile over there and get to drilling! Your pump will automatically collect it for you.",
+			body = "Here's your first drill on the house - slap that drill on any tile over there and get to drilling! Your pump will automatically collect it for you.",
 		},
 		WaitReveal = {
 			title = "STRUCK GOLD!",
@@ -157,10 +157,10 @@ local FtueConfig = {
 		},
 	} :: { [string]: { title: string, body: string } },
 
-	WrongTileDrill = "Drill only the highlighted tile.",
+	WrongTileDrill = "Place the drill in the highlighted area.",
 
 	--- Shipment HUD `Hint` line when placement is blocked to wrong cell (see `init.client` setStatus).
-	ClientHintPlaceDrillOnTile = "Place the drill on the marked tile.",
+	ClientHintPlaceDrillOnTile = "Place the drill in the highlighted area.",
 	--- `FtueDialogueController`: label on Continue when step is Done.
 	DoneContinueButtonText = "Complete!",
 

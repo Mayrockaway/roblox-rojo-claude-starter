@@ -13,6 +13,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
@@ -104,7 +105,9 @@ function AutoShipService:_onSetAutoShip(player: Player, payload: any)
 		-- Toggle off
 		self._autoShipByUser[userId] = nil
 		self:_pushState(userId)
-		print(string.format("[AutoShip] %s disabled AutoShip", player.Name))
+		if RunService:IsStudio() then
+			print(string.format("[AutoShip] %s disabled AutoShip", player.Name))
+		end
 		return
 	end
 
@@ -121,7 +124,9 @@ function AutoShipService:_onSetAutoShip(player: Player, payload: any)
 
 	self._autoShipByUser[userId] = { enabled = true, priority = priority }
 	self:_pushState(userId)
-	print(string.format("[AutoShip] %s enabled AutoShip (priority=%s)", player.Name, priority))
+	if RunService:IsStudio() then
+		print(string.format("[AutoShip] %s enabled AutoShip (priority=%s)", player.Name, priority))
+	end
 	-- Telemetry §6.7 `auto_ship_engaged`. Fires only when the toggle
 	-- transitions to `enabled = true` AND the gamepass / dev-bypass
 	-- gates pass, so we don't log a row for a denied-without-gamepass
@@ -275,7 +280,9 @@ function AutoShipService:_tryAutoDispatch(userId: number)
 		})
 	end)
 
-	print(string.format("[AutoShip] Auto-dispatched for %s (priority=%s)", player.Name, entry.priority))
+	if RunService:IsStudio() then
+		print(string.format("[AutoShip] Auto-dispatched for %s (priority=%s)", player.Name, entry.priority))
+	end
 end
 
 --- Returns true if this user has an active AutoShip session. Used by
@@ -305,7 +312,9 @@ function AutoShipService:_stopAutoShip(userId: number, reason: string)
 		end
 		local ev = self._remoteService:GetEvent(RemoteNames.OilActionResult)
 		ev:FireClient(player, { ok = false, code = reason, message = msg })
-		print(string.format("[AutoShip] Stopped for %s: %s", player.Name, reason))
+		if RunService:IsStudio() then
+			print(string.format("[AutoShip] Stopped for %s: %s", player.Name, reason))
+		end
 	end
 end
 

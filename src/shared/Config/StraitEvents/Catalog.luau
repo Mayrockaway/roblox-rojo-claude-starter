@@ -30,6 +30,9 @@ export type StraitEventDef = {
 	totalLoss: boolean?,
 	-- Whole barrels lost: ceil(manifestTotal * fraction), removed Crude → Refined → Premium.
 	looseBarrelLossFraction: number?,
+	-- Range variant: server rolls uniform between min and max instead of using flat fraction.
+	looseBarrelLossFractionMin: number?,
+	looseBarrelLossFractionMax: number?,
 	-- If true, server handles missile flight with hit/smallHit/miss outcomes instead of instant totalLoss.
 	missileEvent: boolean?,
 	-- If true, server handles mine surfacing with hit/miss outcomes.
@@ -124,6 +127,20 @@ Catalog.StormConfig = {
 	BarrelLossChance = 0.45,
 	BarrelLossFractionMin = 0.05,
 	BarrelLossFractionMax = 0.16,
+}
+
+-- High Winds (Low severity) — softer version of tornado. 50% chance of no
+-- barrel loss at all; when it does hit, 0-20% loss with no minimum floor.
+Catalog.HighWindsConfig = {
+	BaseSequenceSeconds = 11.5,
+	DelayChance = 0.5,
+	DelaySecondsMin = 4.0,
+	DelaySecondsMax = 9.0,
+	BarrelLossChance = 0.5,
+	BarrelLossFractionMin = 0.0,
+	BarrelLossFractionMax = 0.2,
+	MinBarrelsLost = 0,
+	MaxVisualBarrels = 10,
 }
 
 -- Tornado visual + gameplay config. Unlike storms, tornadoes always strip
@@ -221,7 +238,8 @@ Catalog.Events = {
 		severity = "Medium",
 		displayName = "Pirate raid",
 		weight = 1,
-		looseBarrelLossFraction = 0.25,
+		looseBarrelLossFractionMin = 0.05,
+		looseBarrelLossFractionMax = 0.25,
 		pirateEvent = true,
 	} :: StraitEventDef,
 	-- Medium: storm cinematic + storm gameplay rolls (replaces old fixed-fraction `TurbulentSeas` barrel spill)

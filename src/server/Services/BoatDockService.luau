@@ -33,8 +33,27 @@ local IDLE_Y_OFFSET = 0 -- DockAnchor lands exactly on the slot part's red squar
 local DEBUG_DOCK_SPAWN = false
 
 --- Pier / spawn geometry under `dOCKS` (excluding `dOCKS.Boats`). `OilShipmentService` voyage hull uses
---- `ShipmentShip`; those parts do not collide with `MarinaDock`, but still collide with `Default` (character).
+--- `ShipmentShip`; those parts do not collide with `MarinaDock`, but **still collide with `Default`**.
+--- Any pier plank / pile left on **`Default`** will physically wedge a voyage hull (`AlignPosition` cannot
+--- escape). Tag every collidable pier chunk as `MarinaDock` (this service) or `MapDecor` (whole folder),
+--- or set Boolean attribute **`MarinaDockGeometry = true`** on a folder/model that wraps stray pier art
+--- parented beside `dOCKS` under `Workspace.Map`.
 local MARINA_DOCK_GROUP = "MarinaDock"
+
+--- When `true` on any Instance under `Workspace.Map`, every `BasePart` descendant uses `MarinaDock`
+--- (same collision matrix as `dOCKS` pier). Use for T-junction / gangway meshes not under `dOCKS`.
+local MARINA_DOCK_GEOMETRY_ATTR = "MarinaDockGeometry"
+
+--- Optional direct children of `Workspace.Map` that are entirely pier/collision shells (not plots).
+--- Add a folder name here if your dock T lives next to `dOCKS` instead of inside it.
+local MARINA_DOCK_MAP_DIRECT_CHILD_NAMES: { [string]: boolean } = {
+	MarinaPier = true,
+	DockPier = true,
+	TownPier = true,
+	MainPier = true,
+	DockGeometry = true,
+	MarinaDockParts = true,
+}
 
 --- `Workspace.Map.MapDecor` props (buoys, etc.): voyage hulls (`ShipmentShip`) ignore them; characters still collide.
 local MAP_DECOR_GROUP = "MapDecor"
@@ -200,6 +219,13 @@ function BoatDockService:_tagMarinaDockParts(docksRoot: Instance)
 	for _, d in ipairs(docksRoot:GetDescendants()) do
 		tagIfDockPart(d)
 	end
+	if not self._marinaDockSubtreeConnWired then
+		self._marinaDockSubtreeConnWired = {} :: { [Instance]: boolean }
+	end
+	if self._marinaDockSubtreeConnWired[docksRoot] then
+		return
+	end
+	self._marinaDockSubtreeConnWired[docksRoot] = true
 	local dockDescendantConn = docksRoot.DescendantAdded:Connect(function(inst)
 		task.defer(function()
 			if inst.Parent == nil then
@@ -209,6 +235,45 @@ function BoatDockService:_tagMarinaDockParts(docksRoot: Instance)
 		end)
 	end)
 	table.insert(self._connections, dockDescendantConn)
+end
+
+function BoatDockService:_tagMarinaDockExtraMapPierRoots(map: Instance)
+	for _, child in ipairs(map:GetChildren()) do
+		if MARINA_DOCK_MAP_DIRECT_CHILD_NAMES[child.Name] == true then
+			self:_tagMarinaDockParts(child)
+		end
+	end
+end
+
+--- Parts under `Workspace.Map` whose ancestor (including self) has `MarinaDockGeometry = true`.
+function BoatDockService:_wireMarinaDockAttrUnderMap(map: Instance)
+	local function tagIfScoped(inst: Instance)
+		if not inst:IsA("BasePart") then
+			return
+		end
+		local n: Instance? = inst
+		while n and n ~= map do
+			if n:GetAttribute(MARINA_DOCK_GEOMETRY_ATTR) == true then
+				pcall(function()
+					(inst :: BasePart).CollisionGroup = MARINA_DOCK_GROUP
+				end)
+				return
+			end
+			n = n.Parent
+		end
+	end
+	for _, d in ipairs(map:GetDescendants()) do
+		tagIfScoped(d)
+	end
+	local conn = map.DescendantAdded:Connect(function(inst)
+		task.defer(function()
+			if inst.Parent == nil then
+				return
+			end
+			tagIfScoped(inst)
+		end)
+	end)
+	table.insert(self._connections, conn)
 end
 
 export type BoatState = "idle" | "sailing" | "cooldown" | "swapping"
@@ -237,6 +302,7 @@ end
 function BoatDockService:Init(remoteService, oilStateService)
 	self._remoteService = remoteService
 	self._oilStateService = oilStateService
+	self._marinaDockSubtreeConnWired = nil :: { [Instance]: boolean }?
 	self._connections = {} :: { RBXScriptConnection }
 	self._cameraSnapEvent = nil :: RemoteEvent?
 	self._slotsByIndex = {} :: { [number]: BasePart }
@@ -275,6 +341,20 @@ function BoatDockService:Init(remoteService, oilStateService)
 		self:_tagMapDecorFolder(mapDecor)
 	else
 		warn("[BoatDockService] No Workspace.Map.MapDecor — MapDecor collision tagging skipped.")
+	end
+
+	-- `MapDecor` stamps **every** BasePart under the folder (including nested `dOCKS` when authored
+	-- at `Map.MapDecor.dOCKS`). Re-apply `MarinaDock` to `dOCKS` so slot/pier colliders under the dock
+	-- root stay in the pier group; also covers any init-order expectation in docs.
+	if docksRoot then
+		self:_tagMarinaDockParts(docksRoot)
+	end
+
+	-- Stray T-pier / gangway art parented as a **sibling** of `dOCKS` under `Map` stays on `Default`
+	-- and will **wedge** `ShipmentShip` + `AlignPosition` at voyage start — tag known roots + attr.
+	if map then
+		self:_tagMarinaDockExtraMapPierRoots(map)
+		self:_wireMarinaDockAttrUnderMap(map)
 	end
 
 	self:_discoverSlots()
@@ -518,6 +598,105 @@ local function teleportCharacterToBoatDeck(
 
 	local supportCFrame = resolveBoatSupportStandCFrame(boat, targetCFrame)
 	CharacterTeleport.teleportWithUnseat(character, supportCFrame, logLabel)
+	-- DEBUG: log teleport placement details
+	if RunService:IsStudio() then
+		local hrp = character:FindFirstChild("HumanoidRootPart")
+		local hrpPos = hrp and hrp.Position or Vector3.zero
+		local boatId = boat:GetAttribute("BoatId") or "?"
+		local rig = rigForBoatModel(boat)
+		local liveDeckY = ShipRig.ResolveDeckWorldY(boat, rig, targetCFrame.Position.Y)
+		warn(string.format(
+			"[BoatTeleportDebug] boatId=%s targetY=%.1f supportY=%.1f hrpY=%.1f liveDeckY=%.1f label=%s",
+			boatId, targetCFrame.Position.Y, supportCFrame.Position.Y, hrpPos.Y, liveDeckY, logLabel or "?"
+		))
+		-- DEBUG: velocity watchdog — sample HRP + boat-root velocity + floor over the
+		-- first ~1s after teleport to localise where the backward push comes from.
+		if hrp and hrp:IsA("BasePart") then
+			local hum = character:FindFirstChildOfClass("Humanoid")
+			local rootPart = boat.PrimaryPart
+			if not rootPart then
+				for _, d in ipairs(boat:GetDescendants()) do
+					if d:IsA("BasePart") then rootPart = d; break end
+				end
+			end
+			-- One-shot dump of the boat's physical state so we can see why root
+			-- is moving while "idle".
+			do
+				local anchoredN, unanchoredN = 0, 0
+				local movingN = 0
+				local weldN, wcN, alignN = 0, 0, 0
+				local firstUnanchored = {}
+				for _, d in ipairs(boat:GetDescendants()) do
+					if d:IsA("BasePart") then
+						if d.Anchored then anchoredN += 1 else unanchoredN += 1; if #firstUnanchored < 5 then table.insert(firstUnanchored, d) end end
+						if d.AssemblyLinearVelocity.Magnitude > 0.5 then movingN += 1 end
+					elseif d:IsA("Weld") then weldN += 1
+					elseif d:IsA("WeldConstraint") then wcN += 1
+					elseif d:IsA("AlignPosition") or d:IsA("AlignOrientation") then alignN += 1
+					end
+				end
+				local primary = boat.PrimaryPart
+				local biggest, biggestVol = nil, -1
+				for _, d in ipairs(boat:GetDescendants()) do
+					if d:IsA("BasePart") then
+						local v = d.Size.X * d.Size.Y * d.Size.Z
+						if v > biggestVol then biggest, biggestVol = d, v end
+					end
+				end
+				warn(string.format(
+					"[BoatTeleportState] boat=%s pivot=%s primary=%s biggest=%s(anchored=%s,massless=%s,mass=%.0f,vel=|%.1f|) anchoredN=%d unanchoredN=%d moving=%d welds=%d weldCons=%d aligns=%d",
+					boat:GetFullName(),
+					tostring(boat:GetPivot().Position),
+					primary and primary:GetFullName() or "nil",
+					biggest and biggest:GetFullName() or "nil",
+					biggest and tostring(biggest.Anchored) or "?",
+					biggest and tostring(biggest.Massless) or "?",
+					biggest and biggest:GetMass() or 0,
+					biggest and biggest.AssemblyLinearVelocity.Magnitude or 0,
+					anchoredN, unanchoredN, movingN, weldN, wcN, alignN
+				))
+				for i, p in ipairs(firstUnanchored) do
+					warn(string.format(
+						"[BoatTeleportState]   unanchored[%d]: %s  massless=%s  mass=%.1f  vel=|%.1f|  pos=%s",
+						i, p:GetFullName(), tostring(p.Massless), p:GetMass(),
+						p.AssemblyLinearVelocity.Magnitude, tostring(p.Position)
+					))
+				end
+			end
+			local boatLook = boat:GetPivot().LookVector
+			local function sample(tag: string)
+				if not hrp.Parent or not boat.Parent then return end
+				local hv = hrp.AssemblyLinearVelocity
+				local bv = rootPart and rootPart.AssemblyLinearVelocity or Vector3.zero
+				local relV = hv - bv
+				local fwdDot = relV:Dot(boatLook)
+				local floorMat = hum and hum.FloorMaterial or Enum.Material.Air
+				-- Which part is directly under HRP
+				local params = RaycastParams.new()
+				params.FilterType = Enum.RaycastFilterType.Exclude
+				params.FilterDescendantsInstances = {character}
+				local hit = workspace:Raycast(hrp.Position, Vector3.new(0, -8, 0), params)
+				local below = hit and hit.Instance:GetFullName() or "air"
+				local belowY = hit and string.format("%.2f", hit.Position.Y) or "-"
+				local belowNormal = hit and tostring(hit.Normal) or "-"
+				warn(string.format(
+					"[BoatTeleportVel] %s hrpY=%.2f hv=|%.1f| (%.1f,%.1f,%.1f) bv=|%.1f| (%.1f,%.1f,%.1f) relFwd=%.1f floorMat=%s below=%s belowY=%s norm=%s",
+					tag,
+					hrp.Position.Y,
+					hv.Magnitude, hv.X, hv.Y, hv.Z,
+					bv.Magnitude, bv.X, bv.Y, bv.Z,
+					fwdDot,
+					tostring(floorMat):gsub("Enum.Material.", ""),
+					below, belowY, belowNormal
+				))
+			end
+			sample("T=0")
+			task.delay(0.1, function() sample("T=0.1") end)
+			task.delay(0.3, function() sample("T=0.3") end)
+			task.delay(0.6, function() sample("T=0.6") end)
+			task.delay(1.0, function() sample("T=1.0") end)
+		end
+	end
 
 	--- Post-teleport safety re-snap: an unanchored boat may have bobbed UP
 	--- in the 1+ physics steps between when we sampled `targetCFrame` and
@@ -538,6 +717,14 @@ local function teleportCharacterToBoatDeck(
 		end
 		local rig = rigForBoatModel(boat)
 		local liveDeckY = ShipRig.ResolveDeckWorldY(boat, rig, supportCFrame.Position.Y)
+		if RunService:IsStudio() then
+			warn(string.format(
+				"[BoatTeleportResnap] hrpY=%.1f liveDeckY=%.1f threshold=%.1f needsCorrection=%s boatPos=%s",
+				hrp.Position.Y, liveDeckY, liveDeckY + 3 - 0.25, 
+				tostring(hrp.Position.Y < liveDeckY + 3 - 0.25),
+				tostring(boat:GetPivot().Position)
+			))
+		end
 		--- HRP center sits ~2 studs above feet (R15) — the player is "on the
 		--- deck" when HRP.Y >= liveDeckY + 3. Anything lower means feet have
 		--- clipped below the deck top. `+0.25` slack absorbs jitter from a
@@ -851,11 +1038,21 @@ function BoatDockService:_spawnIdleBoat(userId: number, slotIndex: number, boatI
 	-- + raft-pillar block-vs-cylinder mismatch). Authored `CanCollide` is the
 	-- source of truth; the `BoatCollisionContract.Apply` call below handles
 	-- the helper neutralization + `ShipmentShip` group tagging uniformly.
+	--
+	-- Zero `AssemblyLinearVelocity` / `AssemblyAngularVelocity` explicitly after
+	-- anchoring. Anchored parts with a non-zero assembly velocity behave as
+	-- conveyor belts / moving platforms — any character standing on one gets
+	-- its velocity imparted. Some boat templates (e.g. Tier10Boat) ship with
+	-- stale velocity on the hull root after editor-time physics manipulation,
+	-- which would otherwise launch the owner backward ~50 studs when teleporting
+	-- onto the deck.
 	for _, d in ipairs(boat:GetDescendants()) do
 		if d:IsA("BasePart") then
 			d.Anchored = true
 			d.CanTouch = true
 			d.CanQuery = true
+			d.AssemblyLinearVelocity = Vector3.zero
+			d.AssemblyAngularVelocity = Vector3.zero
 		end
 	end
 

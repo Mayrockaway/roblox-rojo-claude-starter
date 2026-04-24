@@ -7,6 +7,7 @@
 local Stats = game:GetService("Stats")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local PerfService = {}
@@ -160,47 +161,49 @@ function PerfService:_report()
 	end
 	table.sort(spanEntries, function(a, b) return a.totalMs > b.totalMs end)
 
-	print(string.format(
-		"[Perf] window=%.2fs players=%d | heartbeat=%.2fms physics=%.2fms | netSend=%.1fkbps netRecv=%.1fkbps",
-		elapsed,
-		playerCount,
-		okHeartbeat and heartbeatMs or -1,
-		okPhysics and physicsMs or -1,
-		okSend and sendKbps or -1,
-		okRecv and recvKbps or -1
-	))
-	print(string.format(
-		"[Perf]   physics: primitives=%d moving=%d contacts=%d",
-		okPrim and primitives or -1,
-		okMoving and movingPrim or -1,
-		okContacts and contacts or -1
-	))
-	print(string.format(
-		"[Perf]   memory: total=%.1fMB instances=%.1fMB",
-		okTotalMem and totalMemMb or -1,
-		okInst and instancesMb or -1
-	))
-	local memCats = memoryByTag()
-	for i, cat in ipairs(memCats) do
-		if i > 6 then break end
-		print(string.format("[Perf]   mem.%s=%.1fMB", cat.name, cat.mb))
-	end
-	print(string.format(
-		"[Perf]   objs: plots=%d idleBoats=%d activeBoats=%d drills=%d pipes=%d drums=%d barrels=%d sprays=%d",
-		objCounts.Plots, objCounts.IdleBoats, objCounts.ActiveShipmentBoat,
-		objCounts.Drills, objCounts.Pipes, objCounts.Drums,
-		objCounts.Barrels, objCounts.OilSprays
-	))
-	for i, entry in ipairs(spanEntries) do
-		if i > 8 then break end
-		local avg = entry.calls > 0 and entry.totalMs / entry.calls or 0
+	if RunService:IsStudio() then
 		print(string.format(
-			"[Perf]   %s: total=%.1fms calls=%d avg=%.2fms max=%.1fms",
-			entry.label, entry.totalMs, entry.calls, avg, entry.maxMs
+			"[Perf] window=%.2fs players=%d | heartbeat=%.2fms physics=%.2fms | netSend=%.1fkbps netRecv=%.1fkbps",
+			elapsed,
+			playerCount,
+			okHeartbeat and heartbeatMs or -1,
+			okPhysics and physicsMs or -1,
+			okSend and sendKbps or -1,
+			okRecv and recvKbps or -1
 		))
-	end
-	for _, k in ipairs(sortedKeys(self._counters)) do
-		print(string.format("[Perf]   counter %s=%d", k, self._counters[k]))
+		print(string.format(
+			"[Perf]   physics: primitives=%d moving=%d contacts=%d",
+			okPrim and primitives or -1,
+			okMoving and movingPrim or -1,
+			okContacts and contacts or -1
+		))
+		print(string.format(
+			"[Perf]   memory: total=%.1fMB instances=%.1fMB",
+			okTotalMem and totalMemMb or -1,
+			okInst and instancesMb or -1
+		))
+		local memCats = memoryByTag()
+		for i, cat in ipairs(memCats) do
+			if i > 6 then break end
+			print(string.format("[Perf]   mem.%s=%.1fMB", cat.name, cat.mb))
+		end
+		print(string.format(
+			"[Perf]   objs: plots=%d idleBoats=%d activeBoats=%d drills=%d pipes=%d drums=%d barrels=%d sprays=%d",
+			objCounts.Plots, objCounts.IdleBoats, objCounts.ActiveShipmentBoat,
+			objCounts.Drills, objCounts.Pipes, objCounts.Drums,
+			objCounts.Barrels, objCounts.OilSprays
+		))
+		for i, entry in ipairs(spanEntries) do
+			if i > 8 then break end
+			local avg = entry.calls > 0 and entry.totalMs / entry.calls or 0
+			print(string.format(
+				"[Perf]   %s: total=%.1fms calls=%d avg=%.2fms max=%.1fms",
+				entry.label, entry.totalMs, entry.calls, avg, entry.maxMs
+			))
+		end
+		for _, k in ipairs(sortedKeys(self._counters)) do
+			print(string.format("[Perf]   counter %s=%d", k, self._counters[k]))
+		end
 	end
 
 	self._windowStart = os.clock()

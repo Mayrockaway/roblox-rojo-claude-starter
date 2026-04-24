@@ -7,6 +7,7 @@
 -- Allowed runtime: **`Text`**, **`Visible`**, cloning + scroll host ensure (see `ui-architecture` world/manifest exception).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local StarterGui = game:GetService("StarterGui")
 
 local ActiveManifestHud = require(script.Parent.ActiveManifestHud)
@@ -915,15 +916,17 @@ function ActiveManifestController.start(playerGui: PlayerGui)
 					captureExpandedRenderedTopLeftFraction(panel)
 				end
 				setIdle(panel)
-				print(
-					string.format(
-						"[Client] ActiveManifestController: bound panel; collapsed=%s authoredSize=%s expandedTopLeftFrac=(%s, %s)",
-						tostring(isCollapsed),
-						tostring(authoredSize),
-						tostring(expandedTopLeftFracX),
-						tostring(expandedTopLeftFracY)
+				if RunService:IsStudio() then
+					print(
+						string.format(
+							"[Client] ActiveManifestController: bound panel; collapsed=%s authoredSize=%s expandedTopLeftFrac=(%s, %s)",
+							tostring(isCollapsed),
+							tostring(authoredSize),
+							tostring(expandedTopLeftFracX),
+							tostring(expandedTopLeftFracY)
+						)
 					)
-				)
+				end
 			end)
 		end
 	else

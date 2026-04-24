@@ -184,17 +184,14 @@ function GlobalEventService:GetShipStatsBoost(): { speedMul: number, capacityMul
 	return { speedMul = speed, capacityMul = cap, eventRiskMul = risk }
 end
 
---- Currently-forced strait waypoint event id (e.g. `"PirateRaid"`), or
---- `nil` when no `ForceStraitEvent` event is active. If multiple are
---- active (impossible today with `mutuallyExclusiveGroups` but allowed in
---- the schema), the lexicographically-first id wins for determinism.
+--- Currently-forced strait waypoint event id from an active
+--- `ForceStraitEvent`, or `nil` when none. If multiple are active (allowed
+--- in schema; none in the current catalog), the lexicographically-first id
+--- wins for determinism.
 ---
---- Hook site: `OilShipmentService:_handleStraitWaypointTrigger` reads this
---- AFTER the `eventImmunity` (Security Personnel) and FTUE-suppress
---- short-circuits, then AFTER the bracket allow-list and occurrence roll
---- — so the override only replaces the *event picked*, not the *whether
---- an event fires*. Pirate Wave during a low-occurrence Open strait is
---- still "more pirates than usual" without making every waypoint a hit.
+--- Hook site: `OilShipmentService:_handleStraitWaypointTrigger` consults
+--- this after FTUE suppress and Security Personnel immunity; see that
+--- function for how occurrence and catalog pick interact with the override.
 function GlobalEventService:GetForcedStraitEventId(): string?
 	local picked: string? = nil
 	for id, _ in pairs(self._activeById) do

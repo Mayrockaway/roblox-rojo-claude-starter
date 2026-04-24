@@ -13,6 +13,9 @@ local GUI_NAME = "StraitDevPanelGui"
 local StraitDevPanel = {}
 
 function StraitDevPanel.shouldShow(): boolean
+	if Constants.StraitDevUiDisabled == true then
+		return false
+	end
 	return RunService:IsStudio() or Constants.StraitDevUiEnabled == true
 end
 

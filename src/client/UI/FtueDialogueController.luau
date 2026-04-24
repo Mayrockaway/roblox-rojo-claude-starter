@@ -9,6 +9,7 @@
 --   Omit `PortraitFrame` / `PortraitImage` if unused. Code only sets `Image` + `Visible` on the image and frame.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
@@ -278,6 +279,33 @@ function FtueDialogueController.start(
 		return
 	end
 
+	-- Mobile: scale up FTUE dialogue to stretch across screen for readability.
+	local UserInputService = game:GetService("UserInputService")
+	local RunService = game:GetService("RunService")
+	local isMobile = UserInputService.TouchEnabled
+		or (RunService:IsStudio()
+			and workspace.CurrentCamera
+			and workspace.CurrentCamera.ViewportSize.Y < 500
+			and workspace.CurrentCamera.ViewportSize.X < 900
+			and workspace.CurrentCamera.ViewportSize.X > 1)
+	if isMobile then
+		local panelHost = sg:FindFirstChild("PanelHost", true)
+		if panelHost and panelHost:IsA("GuiObject") then
+			-- Stretch to ~95% width, taller, centered at bottom
+			panelHost.Size = UDim2.new(0.95, 0, 0.28, 0)
+			panelHost.Position = UDim2.new(0.5, 0, 0.85, 0)
+			panelHost.AnchorPoint = Vector2.new(0.5, 1)
+		end
+		-- Scale up text
+		for _, desc in ipairs(sg:GetDescendants()) do
+			if desc:IsA("TextLabel") or desc:IsA("TextButton") then
+				if not desc.TextScaled then
+					desc.TextScaled = true
+				end
+			end
+		end
+	end
+
 	local continueBtnNames = { "ContinueButton", "Continue", "OkButton", "OK", "NextButton" }
 	local skipBtnNames = {
 		"SkipButton",
@@ -358,17 +386,19 @@ function FtueDialogueController.start(
 		)
 	end
 
-	print(
-		string.format(
-			"[FTUE] wired under %s | Title=%s Body=%s Continue=%s Skip=%s | FtueConfig.Enabled=%s",
-			sg.Name,
-			titleHost and titleHost.Name or "nil",
-			bodyHost and bodyHost.Name or "nil",
-			continueBtn and continueBtn.Name or "nil",
-			skipBtn and skipBtn.Name or "nil",
-			tostring(FtueConfig.Enabled)
+	if RunService:IsStudio() then
+		print(
+			string.format(
+				"[FTUE] wired under %s | Title=%s Body=%s Continue=%s Skip=%s | FtueConfig.Enabled=%s",
+				sg.Name,
+				titleHost and titleHost.Name or "nil",
+				bodyHost and bodyHost.Name or "nil",
+				continueBtn and continueBtn.Name or "nil",
+				skipBtn and skipBtn.Name or "nil",
+				tostring(FtueConfig.Enabled)
+			)
 		)
-	)
+	end
 
 	local dismissedStep: string? = nil
 	local lastKachingStep: string? = nil
