@@ -1,45 +1,20 @@
 {
   "permissions": {
     "allow": [
-<<<<<<< HEAD
       "WebFetch(domain:github.com)",
       "Bash(claude mcp *)",
       "Bash(gh release *)",
-      "PowerShell(Get-NetTCPConnection -State Listen -LocalPort 58741,58742,58743 -ErrorAction SilentlyContinue | Select-Object LocalAddress, LocalPort, OwningProcess, @{Name=\"Process\";Expression={\\(Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue\\).ProcessName}} | Format-Table -AutoSize)",
-      "PowerShell(Get-Command claude, npx, node, gh -ErrorAction SilentlyContinue)",
-      "PowerShell($pluginsPath = \"$env:LOCALAPPDATA\\\\Roblox\\\\Plugins\"; \"Path: $pluginsPath\"; \"Exists: $\\(Test-Path $pluginsPath\\)\"; if \\(Test-Path $pluginsPath\\) { Get-ChildItem $pluginsPath | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize })",
-      "PowerShell($node15980 = Get-Process -Id 15980 -ErrorAction SilentlyContinue; $node26200 = Get-Process -Id 26200 -ErrorAction SilentlyContinue; \"PID 15980 \\(port 58742\\): $\\($node15980.Path\\)\"; \"PID 26200 \\(port 58741\\): $\\($node26200.Path\\)\"; \"---\"; Get-CimInstance Win32_Process -Filter \"ProcessId = 15980 OR ProcessId = 26200\" | Select-Object ProcessId, CommandLine | Format-List)",
-      "PowerShell($candidates = @\\(\"$env:ProgramFiles\\\\nodejs\\\\node.exe\", \"$env:ProgramFiles\\\\nodejs\\\\npx.cmd\", \"$env:APPDATA\\\\npm\\\\claude.cmd\", \"$env:APPDATA\\\\npm\\\\claude.ps1\", \"$env:LOCALAPPDATA\\\\Programs\\\\nodejs\\\\node.exe\"\\); foreach \\($c in $candidates\\) { \"$c -> $\\(Test-Path $c\\)\" })",
-      "PowerShell($h = @{ \"User-Agent\" = \"claude-setup\" }; $r = Invoke-RestMethod -Uri \"https://api.github.com/repos/boshyxd/robloxstudio-mcp/releases/latest\" -Headers $h; \"Tag: $\\($r.tag_name\\)\"; \"Published: $\\($r.published_at\\)\"; \"---Assets---\"; $r.assets | Select-Object name, size, browser_download_url | Format-List)",
-      "mcp__robloxstudio-mcp__get_place_info"
-    ]
-  }
-=======
-      "mcp__robloxstudio-mcp__get_instance_children",
-      "WebFetch(domain:github.com)",
-      "Bash(claude mcp *)",
-      "mcp__robloxstudio-mcp__get_place_info",
       "Bash(npm view *)",
-      "Bash(npx robloxstudio-mcp@latest --version)",
       "Bash(npm pack *)",
-      "Bash(cd /tmp)",
-      "Bash(tar -xzf robloxstudio-mcp-2.6.0.tgz)",
-      "Read(//tmp/**)",
+      "Bash(npx robloxstudio-mcp@latest --version)",
       "Bash(netstat -ano)",
-      "PowerShell(Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 58740,58741,58742,58743,58744,58745,3002 } | Select-Object LocalAddress,LocalPort,OwningProcess | Format-Table)",
-      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=27552 OR ProcessId=46920 OR ProcessId=30332\")",
-      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=7792 OR ProcessId=32040 OR ProcessId=26316\")",
-      "PowerShell(Stop-Process -Id 46920,27552 -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 58741,58742,58743,58744 } | Select-Object LocalPort,OwningProcess | Format-Table)",
-      "PowerShell(Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 58740..58750 } | Select-Object LocalPort,OwningProcess | Sort-Object LocalPort | Format-Table)",
-      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=35620 OR ProcessId=48132\")",
-      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=46916 OR ProcessId=31516\")",
-      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=46916 OR ProcessId=31516\" | ForEach-Object { $pp = Get-CimInstance Win32_Process -Filter \"ProcessId=$\\($_.ParentProcessId\\)\"; [PSCustomObject]@{CmdPID=$_.ProcessId; GrandparentPID=$pp.ProcessId; GrandparentName=$pp.Name; GrandparentCmd=$pp.CommandLine} } | Format-List)",
-      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=27536 OR ProcessId=26432\" | ForEach-Object { $pp = Get-CimInstance Win32_Process -Filter \"ProcessId=$\\($_.ParentProcessId\\)\"; [PSCustomObject]@{NpxPID=$_.ProcessId; ParentPID=$pp.ProcessId; ParentName=$pp.Name; ParentCmd=\\($pp.CommandLine | ForEach-Object { if\\($_\\){$_.Substring\\(0,[Math]::Min\\(200,$_.Length\\)\\)} }\\) } } | Format-List)"
+      "Read(//tmp/**)",
+      "mcp__robloxstudio-mcp__get_place_info",
+      "mcp__robloxstudio-mcp__get_instance_children"
     ]
   },
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "robloxstudio-mcp"
   ]
->>>>>>> 4f5598e3026211e5dd0bf0fb1f6bae5c1227feb7
 }
