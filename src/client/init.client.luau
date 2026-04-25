@@ -50,6 +50,10 @@ local ShopRefreshNotification = require(resolveClientModule(script, "ShopRefresh
 local OilSnapshotClient = require(resolveClientModule(script, "OilSnapshotClient"))
 local ClientAudioPreferences = require(resolveClientModule(script, "ClientAudioPreferences"))
 ClientAudioPreferences.init()
+local ClientPlotVfxPreferences = require(resolveClientModule(script, "ClientPlotVfxPreferences"))
+ClientPlotVfxPreferences.init()
+local PlotPerfVfxVisibility = require(resolveClientModule(script, "PlotPerfVfxVisibility"))
+task.spawn(PlotPerfVfxVisibility.start)
 local UiSfx = require(resolveClientModule(script, "UiSfx")) :: {
 	playKaching: () -> (),
 }

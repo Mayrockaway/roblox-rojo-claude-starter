@@ -8,14 +8,21 @@ local UserInputService = game:GetService("UserInputService")
 local DEBUG_SETTINGS_CLICKS = false
 
 local ClientAudioPreferences = require(script.Parent.Parent.Parent:WaitForChild("ClientAudioPreferences"))
+local ClientPlotVfxPreferences = require(script.Parent.Parent.Parent:WaitForChild("ClientPlotVfxPreferences"))
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
 
 --- Primary `ScreenGui` name; `SettingsPanelGui` is accepted as a Studio alias.
 local SCREEN_NAME = "Settings"
 local SCREEN_NAME_ALIAS = "SettingsPanelGui"
+local MY_PLOT_VFX_ROW_NAME = "MyPlotVfxRow"
+local MY_PLOT_VFX_TITLE = "My Plot FX"
+local MY_PLOT_VFX_DESC = "Show my tubes and conveyor"
+local OTHER_PLAYERS_VFX_ROW_NAME = "OtherPlayersPlotVfxRow"
+local OTHER_PLAYERS_VFX_TITLE = "Other Players Plot FX"
+local OTHER_PLAYERS_VFX_DESC = "Show other players' tubes and conveyor"
+local TOGGLE_ROW_WIRED_ATTR = "SettingsToggleRowWired"
 
-local wiredScreens: { [ScreenGui]: boolean } = {}
 local clickDebugConnection: RBXScriptConnection? = nil
 
 local function logSettings(msg: string)
@@ -499,7 +506,65 @@ local function resolveMusicAndSfxRows(screen: ScreenGui): (GuiObject?, GuiObject
 	return findTwoMinimalToggleRoots(screen)
 end
 
+local function collectRowTextLabels(textContainer: Instance?): { TextLabel }
+	local labels: { TextLabel } = {}
+	if not textContainer then
+		return labels
+	end
+	for _, child in ipairs(textContainer:GetChildren()) do
+		if child:IsA("TextLabel") then
+			table.insert(labels, child)
+		end
+	end
+	table.sort(labels, function(a, b)
+		if a.LayoutOrder ~= b.LayoutOrder then
+			return a.LayoutOrder < b.LayoutOrder
+		end
+		return a.AbsolutePosition.Y < b.AbsolutePosition.Y
+	end)
+	return labels
+end
+
+local function setRowTexts(row: GuiObject, title: string, description: string)
+	for _, stateName in ipairs({ "Active", "Inactive" }) do
+		local state = row:FindFirstChild(stateName)
+		if state and state:IsA("GuiObject") then
+			local textContainer = state:FindFirstChild("Text")
+			local labels = collectRowTextLabels(textContainer)
+			if labels[1] then
+				labels[1].Text = title
+			end
+			if labels[2] then
+				labels[2].Text = description
+			end
+		end
+	end
+end
+
+local function resolveOtherPlayersPlotVfxRow(screen: ScreenGui): GuiObject?
+	local existing = screen:FindFirstChild(OTHER_PLAYERS_VFX_ROW_NAME, true)
+	if existing and existing:IsA("GuiObject") then
+		setRowTexts(existing, OTHER_PLAYERS_VFX_TITLE, OTHER_PLAYERS_VFX_DESC)
+		return existing
+	end
+	return findRowByLabelKeywords(screen, { "other players plot fx", "other players' tubes and conveyor" })
+end
+
+local function resolveMyPlotVfxRow(screen: ScreenGui): GuiObject?
+	local existing = screen:FindFirstChild(MY_PLOT_VFX_ROW_NAME, true)
+	if existing and existing:IsA("GuiObject") then
+		setRowTexts(existing, MY_PLOT_VFX_TITLE, MY_PLOT_VFX_DESC)
+		return existing
+	end
+	return findRowByLabelKeywords(screen, { "my plot fx", "show my tubes and conveyor" })
+end
+
 local function wireToggleRow(tab: GuiObject, getEnabled: () -> boolean, setPreference: (boolean) -> ())
+	if tab:GetAttribute(TOGGLE_ROW_WIRED_ATTR) == true then
+		local activeF, inactiveF = findRowChromeActiveInactive(tab)
+		applyToggleVisual(activeF, inactiveF, getEnabled())
+		return
+	end
 	local activeF, inactiveF = findRowChromeActiveInactive(tab)
 	local primary = resolveToggleInputTarget(tab)
 	local targets = gatherAllToggleInputTargets(tab, primary)
@@ -561,14 +626,11 @@ local function wireToggleRow(tab: GuiObject, getEnabled: () -> boolean, setPrefe
 			end)
 		end
 	end
+
+	tab:SetAttribute(TOGGLE_ROW_WIRED_ATTR, true)
 end
 
 local function wireSettingsToggles(screen: ScreenGui)
-	if wiredScreens[screen] then
-		return
-	end
-	wiredScreens[screen] = true
-
 	local musicRow, sfxRow = resolveMusicAndSfxRows(screen)
 	logSettings("Resolved rows: musicRow=" .. (musicRow and musicRow:GetFullName() or "nil") .. " | sfxRow=" .. (sfxRow and sfxRow:GetFullName() or "nil"))
 	if not musicRow then
@@ -592,6 +654,28 @@ local function wireSettingsToggles(screen: ScreenGui)
 		end, function(on: boolean)
 			ClientAudioPreferences.setSfxEnabled(on)
 		end)
+	end
+
+	local otherPlayersVfxRow = resolveOtherPlayersPlotVfxRow(screen)
+	if otherPlayersVfxRow then
+		wireToggleRow(otherPlayersVfxRow, function()
+			return ClientPlotVfxPreferences.isOtherPlayersPlotVfxEnabled()
+		end, function(on: boolean)
+			ClientPlotVfxPreferences.setOtherPlayersPlotVfxEnabled(on)
+		end)
+	else
+		warn("[SettingsPanel] Could not find authored OtherPlayersPlotVfxRow.")
+	end
+
+	local myPlotVfxRow = resolveMyPlotVfxRow(screen)
+	if myPlotVfxRow then
+		wireToggleRow(myPlotVfxRow, function()
+			return ClientPlotVfxPreferences.isMyPlotVfxEnabled()
+		end, function(on: boolean)
+			ClientPlotVfxPreferences.setMyPlotVfxEnabled(on)
+		end)
+	else
+		warn("[SettingsPanel] Could not find authored MyPlotVfxRow.")
 	end
 
 	attachSettingsClickDebug(screen)

@@ -28,6 +28,10 @@ type BeamEntry = {
 local tubeCache: { [Instance]: TubeEntry } = {}
 local beamCache: { [Instance]: BeamEntry } = {}
 
+local function isClientHiddenTube(folder: Instance): boolean
+	return folder:GetAttribute("ClientTubeVfxHidden") == true
+end
+
 local function getRevealProgress(source: Instance): number
 	local startedAt = source:GetAttribute("RevealStartedAt")
 	if typeof(startedAt) ~= "number" then
@@ -188,6 +192,9 @@ RunService.Heartbeat:Connect(function(dt)
 	pruneCaches()
 
 	for folder, data in pairs(tubeCache) do
+		if isClientHiddenTube(folder) then
+			continue
+		end
 		local progress = applyTubeReveal(folder, data)
 		if progress <= 0 then
 			continue
