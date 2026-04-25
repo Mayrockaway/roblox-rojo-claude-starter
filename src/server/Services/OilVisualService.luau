@@ -14,6 +14,7 @@ local OIL_REVEAL_SPRAY_SECONDS = 2.0
 local OIL_TUBE_REVEAL_DURATION = 1.5
 local OIL_TUBE_VISIBLE_TRANSPARENCY = 0.5
 local OIL_TUBE_ENDPOINT_EPSILON = 0.05
+local OIL_TUBE_VISUAL_VERSION = 5 -- 8-cylinder chain with explicit segment endpoints
 local BARREL_CONVEYOR_MIN_EJECT_INTERVAL = 0.25
 local IGNORE_FOR_VISUAL_BOUNDS_ATTR = "IgnoreForVisualBounds"
 local TIER_ORDER = { "Crude", "Refined", "Premium" }
@@ -893,6 +894,11 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 							else
 								wantedTubes[sig] = info
 							end
+						elseif typeof(tile.revealedAt) == "number" and now >= (tile.revealedAt :: number) + OIL_REVEAL_SPRAY_SECONDS then
+							-- Recovery path: if the client/server missed the explicit
+							-- start-visuals transition, still allow the persistent tube
+							-- to appear after the reveal window instead of requiring a rejoin.
+							wantedTubes[sig] = info
 						end
 					end
 				end
@@ -967,12 +973,14 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 		local suffix = oilTypeOverride and ("_" .. oilTypeOverride) or ""
 		local childName = "Spray_" .. sig .. suffix
 		local part = folder:FindFirstChild(childName)
+		local oilType = oilTypeOverride or info.tile.oilType or "Crude"
+		local sprayColor = (OilConfig.OilSprayColors and OilConfig.OilSprayColors[oilType])
+			or Color3.fromRGB(30, 30, 30)
 		if part and not part:IsA("BasePart") then
 			part:Destroy()
 			part = nil
 		end
 		if not part then
-			local oilType = oilTypeOverride or info.tile.oilType or "Crude"
 			local templateName = "OilSpray_" .. tostring(oilType)
 			local template = self._assetsFolder and self._assetsFolder:FindFirstChild(templateName)
 			if template and template:IsA("BasePart") then
@@ -993,6 +1001,11 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 				part.CanQuery = false
 				part.CanTouch = false
 				part.Parent = folder
+			end
+		end
+		for _, emitter in ipairs(part:GetDescendants()) do
+			if emitter:IsA("ParticleEmitter") then
+				emitter.Color = ColorSequence.new(sprayColor)
 			end
 		end
 		local sectionModel = self._plotService:GetChunkModel(_plot, info.chunk.chunkId)
@@ -1026,7 +1039,6 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 		end
 		local baseOffset = offset or Vector3.new(0, 0, 0)
 		local tileTopY = tilePart.Position.Y + tilePart.Size.Y / 2
-		local startPos = Vector3.new(tilePart.Position.X, tileTopY, tilePart.Position.Z) + baseOffset
 		local endPos = getCenterPumpEndpoint(_plot, sectionModel, centerTile, snapshot.drills or {}, info.chunk.chunkId)
 		local oilType = oilTypeOverride or info.tile.oilType or "Crude"
 		--- Per-tier base color for the arc tube segments running from each
@@ -1037,13 +1049,15 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 		--- the legacy red base because the `isRainbow` flag layered on top
 		--- only reads correctly against a warm base — flipping Premium to a
 		--- flat purple here removes the shimmer effect's contrast.
-		local tubeColor = Color3.fromRGB(60, 50, 35)
+		local tubeColor = Color3.fromRGB(8, 8, 8)
 		local isRainbow = false
 		if oilType == "Refined" or oilType == "GoodOil" then
 			tubeColor = Color3.fromRGB(0, 255, 0)
-		elseif oilType == "Premium" or oilType == "GoldOil" then
+		elseif oilType == "Premium" then
+			tubeColor = Color3.fromRGB(170, 90, 255)
+		elseif oilType == "GoldOil" then
 			isRainbow = true
-			tubeColor = Color3.fromRGB(255, 100, 100)
+			tubeColor = Color3.fromRGB(255, 210, 90)
 		end
 		local streamType = streamTypeOverride or "Stream"
 		local veinResult = info.tile.veinResult
@@ -1054,20 +1068,23 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 		if streamType == "Dribble" then
 			actualDiameter = 0.25
 		elseif streamType == "Burst" then
-			actualDiameter = 3
+			actualDiameter = 2.1
 		elseif streamType == "Geyser" then
-			actualDiameter = 8
+			actualDiameter = 5.6
 		end
+		local startInsetY = math.max(0.28, actualDiameter * 0.58)
+		local startPos = Vector3.new(tilePart.Position.X, tileTopY - startInsetY, tilePart.Position.Z) + baseOffset
 		local arcMult = 1
 		if streamType == "Dribble" then
 			arcMult = 0.4
 		elseif streamType == "Burst" then
-			arcMult = 1.5
+			arcMult = 0.95
 		elseif streamType == "Geyser" then
-			arcMult = 6
+			arcMult = 3
 		end
 		local horizDist = (Vector3.new(startPos.X, 0, startPos.Z) - Vector3.new(endPos.X, 0, endPos.Z)).Magnitude
-		local arcHeight = math.clamp(horizDist * 1.5 * arcMult, 5, 120)
+		local minArcHeight = math.max(0.6, actualDiameter * 0.2)
+		local arcHeight = math.clamp(horizDist * 1.5 * arcMult, minArcHeight, 120)
 		local controlXZ = startPos:Lerp(endPos, 0.5)
 		local controlPos = Vector3.new(controlXZ.X, math.max(startPos.Y, endPos.Y) + arcHeight, controlXZ.Z)
 		local tubeName = "OilTube_" .. sig .. (oilTypeOverride and ("_" .. oilTypeOverride) or "")
@@ -1084,11 +1101,13 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 			local endZ = existing:GetAttribute("EndZ")
 			local storedReveal = existing:GetAttribute("RevealStartedAt")
 			local storedDuration = existing:GetAttribute("RevealDuration")
+			local storedVersion = existing:GetAttribute("VisualVersion")
 			if typeof(endX) == "number" and typeof(endY) == "number" and typeof(endZ) == "number" and typeof(storedReveal) == "number" and typeof(storedDuration) == "number" then
 				local storedEnd = Vector3.new(endX, endY, endZ)
 				needsRebuild = (storedEnd - endPos).Magnitude > OIL_TUBE_ENDPOINT_EPSILON
 					or math.abs((storedReveal :: number) - revealStartedAt) > 0.01
 					or math.abs((storedDuration :: number) - OIL_TUBE_REVEAL_DURATION) > 0.01
+					or storedVersion ~= OIL_TUBE_VISUAL_VERSION
 			end
 		end
 		if not needsRebuild then
@@ -1105,8 +1124,9 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 		tubeFolder:SetAttribute("EndX", endPos.X)
 		tubeFolder:SetAttribute("EndY", endPos.Y)
 		tubeFolder:SetAttribute("EndZ", endPos.Z)
+		tubeFolder:SetAttribute("VisualVersion", OIL_TUBE_VISUAL_VERSION)
 		tubeFolder.Parent = folder
-		local segCount = 16
+		local segCount = 8
 		local bezierPositions = {}
 		for i = 0, segCount do
 			local alpha = i / segCount
@@ -1150,6 +1170,12 @@ function OilVisualService:_syncOilSprays(_plot: Model, folder: Folder, snapshot)
 			seg.CanCollide = false
 			seg.CanQuery = false
 			seg.CanTouch = false
+			seg:SetAttribute("StartX", p0.X)
+			seg:SetAttribute("StartY", p0.Y)
+			seg:SetAttribute("StartZ", p0.Z)
+			seg:SetAttribute("EndX", p1.X)
+			seg:SetAttribute("EndY", p1.Y)
+			seg:SetAttribute("EndZ", p1.Z)
 			seg.CFrame = cf
 			seg.Parent = tubeFolder
 		end
@@ -2087,6 +2113,7 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 	local barrelConfig = OilConfig.Barrels or {}
 	local perBarrel = math.max(1, barrelConfig.PerBarrelOil or 10)
 	local maxPerTier = math.max(1, barrelConfig.MaxVisualPerTier or 20)
+	local maxOnConveyor = math.max(1, barrelConfig.MaxOnConveyor or maxPerTier)
 	local barrelHeight = barrelConfig.BarrelHeight or 3.5
 	local tweenSeconds = barrelConfig.ConveyorTweenSeconds or 4
 	local tierTemplates = barrelConfig.TierTemplates or {}
@@ -2152,6 +2179,15 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 			drumModel:SetAttribute("DrumFillLevel", avgFill)
 		end
 	end
+	local scheduledInFlight = 0
+	for _, tier in ipairs(TIER_ORDER) do
+		scheduledInFlight += math.max(0, math.floor(tonumber(barrelsFolder:GetAttribute("PendingEject_" .. tier)) or 0))
+	end
+	for _, child in ipairs(barrelsFolder:GetChildren()) do
+		if child:GetAttribute("OnConveyor") == true then
+			scheduledInFlight += 1
+		end
+	end
 	for _, tier in ipairs(TIER_ORDER) do
 		local oil = oilByTier[tier] or 0
 		local currentBarrels = math.max(0, math.floor(oil / perBarrel))
@@ -2163,9 +2199,16 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 		local revision = math.max(0, math.floor(tonumber(barrelsFolder:GetAttribute(revisionAttr)) or 0))
 		local delta = currentBarrels - scheduledCount
 		if delta > 0 then
+			local availableSlots = math.max(0, maxOnConveyor - scheduledInFlight)
+			if availableSlots <= 0 then
+				barrelsFolder:SetAttribute(scheduledAttr, currentBarrels)
+				continue
+			end
 			local remainingToRepresent = delta
 			local multiplier = if delta > maxPerTier then math.ceil(delta / maxPerTier) else 1
+			multiplier = math.max(multiplier, math.ceil(delta / availableSlots))
 			local spawnCount = math.ceil(delta / multiplier)
+			spawnCount = math.min(spawnCount, availableSlots)
 			barrelsFolder:SetAttribute(scheduledAttr, currentBarrels)
 			for _ = 1, spawnCount do
 				local representedUnits = math.min(multiplier, remainingToRepresent)
@@ -2178,6 +2221,7 @@ function OilVisualService:_syncBarrels(plot: Model, barrelsFolder: Folder, snaps
 				local capturedRevision = revision
 				nextEjectAt = scheduledEjectAt + ejectInterval
 				pendingCount += 1
+				scheduledInFlight += 1
 				barrelsFolder:SetAttribute(pendingAttr, pendingCount)
 
 				task.delay(math.max(0, scheduledEjectAt - now), function()

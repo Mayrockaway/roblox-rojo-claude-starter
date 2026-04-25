@@ -290,6 +290,134 @@ do
 	-- Studio command bar: `_G.__OTS_DEV_GRANT_ALL_CASH(500)`
 	_G.__OTS_DEV_GRANT_ALL_CASH = grantAllPlayersCash
 
+	local DEV_MAX_PLOT_GRANT_CASH = 1000000
+	local DEV_TILE_KEYS_IN_PLOT_ORDER = {
+		"T11", "T12", "T13", "T14", "T15",
+		"T21", "T22", "T23", "T24", "T25",
+		"T31", "T32", "T34", "T35",
+		"T41", "T42", "T43", "T44", "T45",
+		"T51", "T52", "T53", "T54", "T55",
+	}
+
+	local function devUnlockAllChunksForPlayer(player: Player): (number, number)
+		local state = OilStateService:GetState(player.UserId)
+		if not state then
+			warn(string.format("[Dev] /unlockplot by %s: no oil state loaded", player.Name))
+			return 0, 0
+		end
+
+		OilStateService:AddCash(player.UserId, DEV_MAX_PLOT_GRANT_CASH, { skipMultiplier = true })
+		OilStateService:PushState(player.UserId)
+
+		local orderedChunks = {}
+		for _, chunk in pairs(state.chunksById) do
+			table.insert(orderedChunks, chunk)
+		end
+		table.sort(orderedChunks, function(a, b)
+			if a.row == b.row then
+				return a.col < b.col
+			end
+			return a.row < b.row
+		end)
+
+		local unlockedNow = 0
+		local progressed = true
+		while progressed do
+			progressed = false
+			for _, chunk in ipairs(orderedChunks) do
+				if not chunk.unlocked then
+					local ok = OilStateService:TryBuyChunk(player.UserId, chunk.chunkId)
+					if ok then
+						unlockedNow += 1
+						progressed = true
+					end
+				end
+			end
+		end
+
+		local stillLocked = 0
+		for _, chunk in pairs(state.chunksById) do
+			if not chunk.unlocked then
+				stillLocked += 1
+			end
+		end
+
+		return unlockedNow, stillLocked
+	end
+
+	local function devSeedMaxPlotOilForPlayer(player: Player): number
+		local state = OilStateService:GetState(player.UserId)
+		if not state then
+			warn(string.format("[Dev] /maxplot by %s: no oil state loaded", player.Name))
+			return 0
+		end
+
+		local VeinConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
+		local oilCycle = { "DirtOil", "GoodOil", "GoldOil" }
+		local streamCycle = { "Dribble", "Stream", "Burst", "Geyser" }
+		local veinCounts = {
+			{ name = "Single", count = 1 },
+			{ name = "Double", count = 2 },
+			{ name = "Triple", count = 3 },
+		}
+
+		local seeded = 0
+		local tileIndex = 0
+		local now = workspace:GetServerTimeNow()
+		local orderedChunks = {}
+		for _, chunk in pairs(state.chunksById) do
+			if chunk.unlocked then
+				table.insert(orderedChunks, chunk)
+			end
+		end
+		table.sort(orderedChunks, function(a, b)
+			if a.row == b.row then
+				return a.col < b.col
+			end
+			return a.row < b.row
+		end)
+
+		for _, chunk in ipairs(orderedChunks) do
+			if chunk.tiles then
+				local groundType = chunk.groundType or chunk.biome or "Bronze"
+				for _, tileKey in ipairs(DEV_TILE_KEYS_IN_PLOT_ORDER) do
+					local tile = chunk.tiles[tileKey]
+					if tile then
+						tileIndex += 1
+						local veinDef = veinCounts[((tileIndex - 1) % #veinCounts) + 1]
+						local veins = {}
+						for i = 1, veinDef.count do
+							local oilType = oilCycle[((tileIndex + i - 2) % #oilCycle) + 1]
+							local streamType = streamCycle[((tileIndex + i - 2) % #streamCycle) + 1]
+							table.insert(veins, {
+								oilType = oilType,
+								streamType = streamType,
+							})
+						end
+						tile.drilled = true
+						tile.hasOil = true
+						tile.revealPending = nil
+						tile.revealedAt = now - 10
+						tile.visualsStartedAt = now - 10
+						tile.veinTypeId = nil
+						tile.veinResult = {
+							isDead = false,
+							veinCount = veinDef.name,
+							veins = veins,
+							groundType = groundType,
+						}
+						tile.oilType = VeinConfig.GetInternalOilName(veins[1].oilType)
+						seeded += 1
+					end
+				end
+			end
+		end
+
+		OilStateService:_markDirty(player.UserId)
+		OilStateService:PushState(player.UserId)
+		return seeded
+	end
+
 	local function devWipePersistedForUser(userId: number)
 		OilStateService:MarkDevSkipSaveOnNextDrop(userId)
 		WarehouseService:MarkDevSkipSaveOnNextDrop(userId)
@@ -405,6 +533,21 @@ do
 			local itemId = "drill_" .. tier
 			EquipmentShopService:GrantFreeOwnedEquipment(player, itemId, count)
 			print(string.format("[Dev] Gave %s x%d %s drills", player.Name, count, tier:upper()))
+		elseif cmd == "/unlockplot" or cmd == "/unlockallchunks" then
+			local unlockedNow, stillLocked = devUnlockAllChunksForPlayer(player)
+			if stillLocked == 0 then
+				print(string.format("[Dev] /unlockplot by %s -> unlocked %d chunk(s), plot fully unlocked", player.Name, unlockedNow))
+			else
+				warn(string.format("[Dev] /unlockplot by %s -> unlocked %d chunk(s), %d still locked", player.Name, unlockedNow, stillLocked))
+			end
+		elseif cmd == "/maxplot" or cmd == "/fillplot" then
+			local unlockedNow, stillLocked = devUnlockAllChunksForPlayer(player)
+			if stillLocked > 0 then
+				warn(string.format("[Dev] /maxplot by %s -> chunk unlock incomplete, %d still locked", player.Name, stillLocked))
+				return
+			end
+			local seeded = devSeedMaxPlotOilForPlayer(player)
+			print(string.format("[Dev] /maxplot by %s -> unlocked %d chunk(s), seeded %d tile(s)", player.Name, unlockedNow, seeded))
 		elseif cmd == "/unlockboats" or cmd == "/unlockallboats" or cmd == "/giveallboats" then
 			-- Dev-only: grant every boat in `BoatCatalog` (excluding placeholder
 			-- entries — those are filtered server-side by `GrantBoat`) to the
@@ -721,6 +864,7 @@ do
 		"/grant500", "/givecash", "/wipedata", "/dev_wipeme",
 		"/giveall", "/testvein", "/givedrills", "/givedrill", "/giveboat",
 		"/straitopen", "/straitclose",
+		"/unlockplot", "/unlockallchunks", "/maxplot", "/fillplot",
 		"/unlockboats", "/unlockallboats", "/giveallboats",
 		"/hideui",
 		"/autoship",

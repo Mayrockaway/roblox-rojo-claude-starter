@@ -10,9 +10,11 @@ local BEAM_VISIBLE_TRANSPARENCY = 0.1
 
 type TubeEntry = {
 	segments: { BasePart },
-	basePositions: { Vector3 },
+	baseStartPoints: { Vector3 },
+	baseEndPoints: { Vector3 },
 	startTime: number,
 	isRainbow: boolean,
+	wobbleScale: number,
 	prevAnimTangent: Vector3?,
 	prevAnimRot: CFrame?,
 }
@@ -76,12 +78,23 @@ local function tryRegisterTubeFolder(desc: Instance)
 		return
 	end
 	local segments: { BasePart } = {}
-	local basePositions: { Vector3 } = {}
+	local baseStartPoints: { Vector3 } = {}
+	local baseEndPoints: { Vector3 } = {}
 	for i = 0, 99 do
 		local seg = desc:FindFirstChild("Seg_" .. i)
 		if seg and seg:IsA("BasePart") then
-			table.insert(segments, seg)
-			table.insert(basePositions, seg.Position)
+			local sx = seg:GetAttribute("StartX")
+			local sy = seg:GetAttribute("StartY")
+			local sz = seg:GetAttribute("StartZ")
+			local ex = seg:GetAttribute("EndX")
+			local ey = seg:GetAttribute("EndY")
+			local ez = seg:GetAttribute("EndZ")
+			if typeof(sx) == "number" and typeof(sy) == "number" and typeof(sz) == "number"
+				and typeof(ex) == "number" and typeof(ey) == "number" and typeof(ez) == "number" then
+				table.insert(segments, seg)
+				table.insert(baseStartPoints, Vector3.new(sx, sy, sz))
+				table.insert(baseEndPoints, Vector3.new(ex, ey, ez))
+			end
 		end
 	end
 	if #segments == 0 then
@@ -94,9 +107,17 @@ local function tryRegisterTubeFolder(desc: Instance)
 	end
 	local entry: TubeEntry = {
 		segments = segments,
-		basePositions = basePositions,
+		baseStartPoints = baseStartPoints,
+		baseEndPoints = baseEndPoints,
 		startTime = if existing then existing.startTime else math.random() * 10,
 		isRainbow = desc:GetAttribute("Rainbow") == true,
+		wobbleScale = (function()
+			local totalLength = 0
+			for i = 1, #baseStartPoints do
+				totalLength += (baseEndPoints[i] - baseStartPoints[i]).Magnitude
+			end
+			return math.clamp(totalLength / 28, 0.12, 1)
+		end)(),
 		prevAnimTangent = if existing then existing.prevAnimTangent else nil,
 		prevAnimRot = if existing then existing.prevAnimRot else nil,
 	}
@@ -174,7 +195,9 @@ RunService.Heartbeat:Connect(function(dt)
 
 		local t = clock + data.startTime
 		local segs = data.segments
-		local bases = data.basePositions
+		local baseStartPoints = data.baseStartPoints
+		local baseEndPoints = data.baseEndPoints
+		local wobbleScale = data.wobbleScale
 
 		if data.isRainbow then
 			for i, seg in ipairs(segs) do
@@ -186,6 +209,11 @@ RunService.Heartbeat:Connect(function(dt)
 		data.prevAnimRot = nil
 		data.prevAnimTangent = nil
 		for i, seg in ipairs(segs) do
+			local baseStart = baseStartPoints[i]
+			local baseEnd = baseEndPoints[i]
+			if not baseStart or not baseEnd then
+				continue
+			end
 			local endFade = 1
 			if i <= 2 then
 				endFade = (i - 1) / 2
@@ -195,33 +223,33 @@ RunService.Heartbeat:Connect(function(dt)
 			endFade = math.clamp(endFade, 0, 1)
 
 			local phase = t * 3.5 - (i - 1) * 0.25
-			local offsetY = math.sin(phase) * 0.5 * endFade
-			local offsetZ = math.cos(phase * 0.8) * 0.4 * endFade
-			local bp = bases[i]
-			local newPos = Vector3.new(bp.X, bp.Y + offsetY, bp.Z + offsetZ)
+			local startOffsetY = math.sin(phase) * 0.5 * endFade * wobbleScale
+			local startOffsetZ = math.cos(phase * 0.8) * 0.4 * endFade * wobbleScale
+			local startPos = Vector3.new(baseStart.X, baseStart.Y + startOffsetY, baseStart.Z + startOffsetZ)
 
-			local nextI = math.min(i + 1, #segs)
-			local nextEndFade = 1
-			if nextI <= 2 then
-				nextEndFade = (nextI - 1) / 2
-			elseif nextI >= #segs - 2 then
-				nextEndFade = (#segs - nextI) / 3
+			local endIndex = i + 1
+			local endFadeFactor = endFade
+			if endIndex <= #segs then
+				endFadeFactor = 1
+				if endIndex <= 2 then
+					endFadeFactor = (endIndex - 1) / 2
+				elseif endIndex >= #segs - 2 then
+					endFadeFactor = (#segs - endIndex) / 3
+				end
+				endFadeFactor = math.clamp(endFadeFactor, 0, 1)
 			end
-			nextEndFade = math.clamp(nextEndFade, 0, 1)
+			local endPhase = t * 3.5 - i * 0.25
+			local endOffsetY = math.sin(endPhase) * 0.5 * endFadeFactor * wobbleScale
+			local endOffsetZ = math.cos(endPhase * 0.8) * 0.4 * endFadeFactor * wobbleScale
+			local endPos = Vector3.new(baseEnd.X, baseEnd.Y + endOffsetY, baseEnd.Z + endOffsetZ)
 
-			local nextPhase = t * 3.5 - (nextI - 1) * 0.25
-			local nbp = bases[nextI]
-			local nextPos = Vector3.new(
-				nbp.X,
-				nbp.Y + math.sin(nextPhase) * 0.5 * nextEndFade,
-				nbp.Z + math.cos(nextPhase * 0.8) * 0.4 * nextEndFade
-			)
-
-			local dir = nextPos - newPos
+			local dir = endPos - startPos
 			if dir.Magnitude > 0.05 then
+				local segLength = dir.Magnitude * 1.15
+				local midPos = (startPos + endPos) * 0.5
 				local tangent = dir.Unit
-				if i == 1 or not data.prevAnimTangent then
-					seg.CFrame = CFrame.lookAt(newPos, nextPos) * CFrame.Angles(0, math.rad(90), 0)
+				if wobbleScale <= 0.35 or i == 1 or not data.prevAnimTangent then
+					seg.CFrame = CFrame.lookAt(midPos, endPos) * CFrame.Angles(0, math.rad(90), 0)
 					data.prevAnimRot = seg.CFrame - seg.CFrame.Position
 				else
 					local prevTangent = data.prevAnimTangent
@@ -234,9 +262,10 @@ RunService.Heartbeat:Connect(function(dt)
 							prevRot = CFrame.fromAxisAngle(axis.Unit, angle) * prevRot
 						end
 						data.prevAnimRot = prevRot
-						seg.CFrame = CFrame.new(newPos) * prevRot
+						seg.CFrame = CFrame.new(midPos) * prevRot
 					end
 				end
+				seg.Size = Vector3.new(segLength, seg.Size.Y, seg.Size.Z)
 				data.prevAnimTangent = tangent
 			end
 		end
