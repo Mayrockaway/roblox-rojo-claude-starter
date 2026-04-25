@@ -32,35 +32,49 @@ function ArmyGeneralService:Init(remoteService, oilStateService, oilShipmentServ
 	self._armyGeneralStreamingHooked = {} :: { [Model]: boolean }
 end
 
---- Inject `MonetizationService` from `init.server.luau` and register the
---- `"nuke"` consumable handler. A successful Robux receipt for
---- `consumable.nuke_x1` lands here → cooldown gate → fire the nuke.
+--- Inject `MonetizationService` from `init.server.luau` and register both
+--- the pre-prompt cooldown gate AND the `"nuke"` consumable receipt
+--- handler.
 ---
---- Refund policy: returning `false` from this handler causes
---- `_processReceipt` to return `NotProcessedYet`, which Roblox treats as
---- "do not consume Robux" — the buyer is auto-refunded on next session.
---- That's the right behaviour when the cooldown is active or no player is
---- present (player left between prompt and receipt).
+--- Why split: previously the cooldown was checked at receipt time, which
+--- meant a stale client snapshot (or a same-window second buyer) could
+--- pay Robux only to have the receipt return `NotProcessedYet` — the
+--- player saw nothing happen. The cooldown is now enforced via
+--- `SetPromptPrecondition`, BEFORE `MarketplaceService:PromptProductPurchase`
+--- runs, so the player gets an "on cooldown" toast and Roblox is never
+--- asked to charge them. The receipt handler always grants — once the
+--- prompt opened, the player paid, the nuke MUST fire.
 function ArmyGeneralService:SetMonetizationService(monetizationService)
 	self._monetizationService = monetizationService
 	if not monetizationService then
 		return
 	end
+
+	-- Pre-prompt cooldown gate: the dialog won't open if a nuke is on
+	-- cooldown, so the player can't be charged for one they can't have.
+	monetizationService:SetPromptPrecondition("consumable.nuke_x1", function(_player: Player)
+		local now = workspace:GetServerTimeNow()
+		local elapsed = now - self._lastNukeTime
+		if elapsed < NUKE_COOLDOWN then
+			local remaining = math.ceil(NUKE_COOLDOWN - elapsed)
+			return false, "ERR_NUKE_COOLDOWN", string.format("Nuke is on cooldown for %ds.", remaining)
+		end
+		return true, nil, nil
+	end)
+
+	-- Receipt handler: always grants (the cooldown gate above already ran
+	-- before the prompt opened). The only failure modes left are "buyer
+	-- left between prompt and receipt" — which Roblox auto-refunds on
+	-- the next session via `NotProcessedYet`.
 	monetizationService:SetConsumableHandler("nuke", function(userId: number, _quantity: number): (boolean, string?)
 		local player = Players:GetPlayerByUserId(userId)
 		if not player then
 			return false, "ERR_NUKE_BUYER_OFFLINE"
 		end
-		local now = workspace:GetServerTimeNow()
-		if now - self._lastNukeTime < NUKE_COOLDOWN then
-			-- Reject: receipt will retry/refund. Client should have gated this
-			-- before prompting, but a race (two buyers) can land here.
-			return false, "ERR_NUKE_COOLDOWN"
-		end
-		-- Reserve the cooldown SYNCHRONOUSLY so a same-tick second buy can't
-		-- pass this gate before `_executeNuke` runs (it sets `_lastNukeTime`
-		-- again at its top, which is fine — same value).
-		self._lastNukeTime = now
+		-- Stamp the cooldown synchronously. `_executeNuke` re-stamps at its
+		-- top (same value, harmless) but reserving here means a Roblox-side
+		-- replay of the same receipt won't sneak past the prompt gate.
+		self._lastNukeTime = workspace:GetServerTimeNow()
 		-- The actual nuke runs `task.wait(NukeConfig.CountdownSeconds)` and
 		-- must NOT block the `ProcessReceipt` callback. Spawn it so the
 		-- receipt returns `PurchaseGranted` immediately and Roblox finalises

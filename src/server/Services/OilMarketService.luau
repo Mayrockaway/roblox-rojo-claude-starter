@@ -352,10 +352,22 @@ function OilMarketService:HandleSellAll(userId: number)
 	local totalPayout = 0
 	local totalSold = 0
 
+	-- Reject the sale if any held tier has no valid market price. Mirrors
+	-- the guard in `HandleSellWarehouseBarrels` / `HandleSellOilByType` —
+	-- without this, a race during cross-platform handoff (player joins
+	-- before `_rollPrice` populates `_currentPrices`) silently wipes the
+	-- warehouse for $0 because `count * 0 = 0` and the empty-warehouse
+	-- guard below only checks barrel count, not payout.
 	for _, oilType in ipairs(OIL_TYPES) do
 		local count = allBarrels[oilType] or 0
-		local price = self._currentPrices[oilType] or 0
-		totalPayout += count * price
+		if count > 0 then
+			local price = self._currentPrices[oilType] or 0
+			if price <= 0 then
+				resultEvent:FireClient(player, { ok = false, message = "Market not ready" })
+				return
+			end
+			totalPayout += count * price
+		end
 		totalSold += count
 	end
 

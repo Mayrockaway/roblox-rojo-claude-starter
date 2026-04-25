@@ -18,10 +18,12 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local SharedConfig = Shared:WaitForChild("Config")
 local EquipmentCatalog = require(SharedConfig:WaitForChild("EquipmentCatalog"))
 local ShopPanelTemplates = require(SharedConfig:WaitForChild("ShopPanelTemplates"))
+local MonetizationCatalog = require(SharedConfig:WaitForChild("MonetizationCatalog"))
 local Constants = require(Shared:WaitForChild("Constants"))
 local FtueConfig = require(SharedConfig:WaitForChild("FtueConfig"))
 
@@ -45,12 +47,114 @@ export type CatalogRow = {
 
 export type Slot = { card: GuiObject, itemId: string }
 
--- BuyButton background color states. Kept in sync with the Studio template's
--- authored "BUY" green so the ready state matches what designers see in
--- Edit mode; the sold-out tone is a muted slate that reads against the navy
--- card chrome without clashing with the rarity stripes.
-local READY_BUY_BG = Color3.fromRGB(56, 145, 70)
+-- BuyButton "ready" color is now snapshotted from the Studio template the
+-- first time we see a card (see `getAuthoredReadyBg` below) so designers can
+-- tweak the BUY color in Studio and have the runtime pick it up automatically
+-- — no code change needed. `READY_BUY_BG_FALLBACK` only kicks in if the
+-- template is missing or hasn't authored a BackgroundColor3 (defensive).
+-- The sold-out tone stays code-side: it's a muted slate that reads against
+-- the navy card chrome without clashing with the rarity stripes, and we
+-- don't expect designers to author a separate "sold out" color in Studio.
+local READY_BUY_BG_FALLBACK = Color3.fromRGB(56, 145, 70)
 local SOLD_BUY_BG = Color3.fromRGB(72, 80, 92)
+
+-- Hover-fade tuning — mirrors the ShipOilPanel stepper / dispatch button feel
+-- so the shop animation matches the rest of the UI vocabulary.
+local HOVER_TWEEN = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local HOVER_LIGHTEN = 0.18
+local PRESS_DARKEN = 0.22
+
+--- Idempotent color-fade hover for shop buttons. Reads its base color from
+--- the `HoverBaseColor` attribute on every event so callers can update the
+--- target by writing the attribute (e.g. when state transitions ready ↔ sold-out
+--- or when designers re-tweak the template). `AutoButtonColor` is disabled so
+--- the engine darken doesn't fight the tween.
+local function attachHoverFade(btn: GuiButton)
+	if btn:GetAttribute("HoverFadeBound") == true then
+		return
+	end
+	btn:SetAttribute("HoverFadeBound", true)
+	btn.AutoButtonColor = false
+
+	local function tweenTo(color: Color3)
+		TweenService:Create(btn, HOVER_TWEEN, { BackgroundColor3 = color }):Play()
+	end
+	local function getBase(): Color3
+		local v = btn:GetAttribute("HoverBaseColor")
+		if typeof(v) == "Color3" then
+			return v :: Color3
+		end
+		return btn.BackgroundColor3
+	end
+
+	btn.MouseEnter:Connect(function()
+		tweenTo(getBase():Lerp(Color3.new(1, 1, 1), HOVER_LIGHTEN))
+	end)
+	btn.MouseLeave:Connect(function()
+		tweenTo(getBase())
+	end)
+	btn.MouseButton1Down:Connect(function()
+		tweenTo(getBase():Lerp(Color3.new(0, 0, 0), PRESS_DARKEN))
+	end)
+	btn.MouseButton1Up:Connect(function()
+		tweenTo(getBase():Lerp(Color3.new(1, 1, 1), HOVER_LIGHTEN))
+	end)
+end
+
+--- Snapshot the `BuyButton`'s authored BackgroundColor3 the first time we
+--- see a freshly cloned card. The clone preserves whatever the Studio
+--- template specified, so reading `.BackgroundColor3` on first call gives
+--- us the design-time value before any sold-out / ready override runs.
+--- Subsequent applyRoles calls on the same card read from the attribute
+--- instead of the (possibly already-mutated) BG.
+local function getAuthoredReadyBg(buyButton: GuiObject): Color3
+	local cached = buyButton:GetAttribute("AuthoredReadyBg")
+	if typeof(cached) == "Color3" then
+		return cached :: Color3
+	end
+	local current = buyButton.BackgroundColor3
+	buyButton:SetAttribute("AuthoredReadyBg", current)
+	return current
+end
+
+--- Look up the Robux price for an equipment item via `MonetizationCatalog`.
+--- Convention: equipment id `"drill_t4"` maps to monetization id `"drill.t4"`
+--- (underscores → dot). Returns the positive `robuxPrice` if the row exists,
+--- `nil` otherwise — drives the dual-mode layout in `applyRoles` (cards with
+--- a price get the wide column + ROBUX button; cards without revert to the
+--- original cash-only narrow layout).
+local function findRobuxPriceForEquipment(equipmentId: string): number?
+	if typeof(equipmentId) ~= "string" or equipmentId == "" then
+		return nil
+	end
+	local catalogId = (string.gsub(equipmentId, "_", "."))
+	local item = MonetizationCatalog.GetItem(catalogId)
+	if not item then
+		return nil
+	end
+	local price = item.robuxPrice
+	if typeof(price) == "number" and price > 0 then
+		return price
+	end
+	return nil
+end
+
+-- ActionColumn / InfoColumn widths for the two layout modes. The "wide" mode
+-- (T4+ — Robux + Cash side-by-side) is what the Studio template authors;
+-- the "narrow" mode is the original geometry restored at runtime for
+-- cash-only tiers (T1-T3) so those cards look unchanged from before the
+-- Robux work.
+local LAYOUT_WIDE_ACTION = UDim2.new(0.20, 0, 1, 0)
+local LAYOUT_WIDE_INFO = UDim2.new(0.543, 0, 1, 0)
+local LAYOUT_NARROW_ACTION = UDim2.new(0.115, 0, 1, 0)
+local LAYOUT_NARROW_INFO = UDim2.new(0.628, 0, 1, 0)
+
+-- Within ButtonRow / CostRow, the half-width slot for each pair. When the
+-- Robux button is hidden the surviving Buy button + Cost label fill the
+-- whole row (a single Visible=false sibling drops out of UIListLayout).
+local SLOT_HALF = UDim2.new(0.48, 0, 1, 0)
+local SLOT_FULL_BUTTON = UDim2.new(1, 0, 1, 0)
+local SLOT_FULL_COST = UDim2.new(1, 0, 1, 0)
 
 local M = {}
 
@@ -294,7 +398,92 @@ local function applyRoles(
 			buyButton = buyButton.Parent
 		end
 		if buyButton and buyButton:IsA("GuiObject") then
-			buyButton.BackgroundColor3 = if soldOut then SOLD_BUY_BG else READY_BUY_BG
+			-- Source the "ready" color from the template (snapshotted on first
+			-- clone). Falls back to the hardcoded green only if reading the
+			-- attribute fails for some reason.
+			local readyBg = getAuthoredReadyBg(buyButton :: GuiObject)
+			if typeof(readyBg) ~= "Color3" then
+				readyBg = READY_BUY_BG_FALLBACK
+			end
+			buyButton.BackgroundColor3 = if soldOut then SOLD_BUY_BG else readyBg
+		end
+	end
+
+	-- Robux purchase row (visual + layout) -----------------------------------
+	-- Driven entirely by `MonetizationCatalog`: if the item has a positive
+	-- `robuxPrice`, this card renders the wide dual-button layout (Cash + Robux
+	-- side-by-side, ∞ above ROBUX). Otherwise the card reverts to the original
+	-- narrow cash-only geometry — Robux button + ∞ label hide and Buy/Cost
+	-- expand to fill their rows. UIListLayout drops invisible siblings so the
+	-- single visible child takes 100% of its row.
+	local robuxPrice = findRobuxPriceForEquipment(item.id)
+	local hasRobux = typeof(robuxPrice) == "number" and (robuxPrice :: number) > 0
+
+	local actionCol = findRole(card, "ActionColumn")
+	local infoCol = findRole(card, "InfoColumn")
+	local cashCostLbl = findRole(card, "Cost")
+	local buyBtnInst = findRole(card, "Buy")
+	local robuxBtnInst = findRole(card, "RobuxBuy")
+	local robuxStockLbl = findRole(card, "RobuxStockInfinity")
+
+	if hasRobux then
+		if actionCol and actionCol:IsA("GuiObject") then
+			actionCol.Size = LAYOUT_WIDE_ACTION
+		end
+		if infoCol and infoCol:IsA("GuiObject") then
+			infoCol.Size = LAYOUT_WIDE_INFO
+		end
+		if buyBtnInst and buyBtnInst:IsA("GuiObject") then
+			buyBtnInst.Size = SLOT_HALF
+		end
+		if cashCostLbl and cashCostLbl:IsA("GuiObject") then
+			cashCostLbl.Size = SLOT_HALF
+		end
+		if robuxStockLbl and robuxStockLbl:IsA("GuiObject") then
+			robuxStockLbl.Visible = true
+		end
+		if robuxBtnInst and robuxBtnInst:IsA("GuiObject") then
+			robuxBtnInst.Visible = true
+
+			-- Render the catalog price on the button.
+			local rTxt = findRole(robuxBtnInst, "RobuxBuyText")
+			if rTxt and rTxt:IsA("TextLabel") then
+				rTxt.Text = string.format("R$ %d", robuxPrice :: number)
+			end
+
+			-- Capture the template's authored BG so designers can re-tone the
+			-- purple in Studio without a code change. Refresh `HoverBaseColor`
+			-- every populate so the fade animation tracks the current target
+			-- (matches the BuyButton ready/sold-out pattern).
+			local cached = robuxBtnInst:GetAttribute("AuthoredRobuxBg")
+			local authored: Color3 = if typeof(cached) == "Color3"
+				then cached :: Color3
+				else robuxBtnInst.BackgroundColor3
+			if typeof(cached) ~= "Color3" then
+				robuxBtnInst:SetAttribute("AuthoredRobuxBg", authored)
+			end
+			robuxBtnInst:SetAttribute("HoverBaseColor", authored)
+			robuxBtnInst.BackgroundColor3 = authored
+			attachHoverFade(robuxBtnInst :: GuiButton)
+		end
+	else
+		if actionCol and actionCol:IsA("GuiObject") then
+			actionCol.Size = LAYOUT_NARROW_ACTION
+		end
+		if infoCol and infoCol:IsA("GuiObject") then
+			infoCol.Size = LAYOUT_NARROW_INFO
+		end
+		if buyBtnInst and buyBtnInst:IsA("GuiObject") then
+			buyBtnInst.Size = SLOT_FULL_BUTTON
+		end
+		if cashCostLbl and cashCostLbl:IsA("GuiObject") then
+			cashCostLbl.Size = SLOT_FULL_COST
+		end
+		if robuxBtnInst and robuxBtnInst:IsA("GuiObject") then
+			robuxBtnInst.Visible = false
+		end
+		if robuxStockLbl and robuxStockLbl:IsA("GuiObject") then
+			robuxStockLbl.Visible = false
 		end
 	end
 

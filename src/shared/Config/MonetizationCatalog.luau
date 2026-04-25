@@ -427,6 +427,49 @@ MonetizationCatalog.Items = {
 		grant = { kind = "Consumable", consumable = { id = "security_personnel", quantity = 1 } },
 	},
 
+	-- Drills (equipment-shop Robux purchase paths) ------------------------
+	-- Only T4 / T5 / T6 are sold for Robux. T1-T3 are cash-only and have NO
+	-- entry here on purpose — the EquipmentShopPopulate UI uses a
+	-- `MonetizationCatalog.GetItem("drill." .. tier)` lookup to decide
+	-- whether to show the ROBUX button on each card, so absence == hidden.
+	--
+	-- `productId = 0` placeholder: until the Roblox Creator Hub DevProduct
+	-- is created and pasted in, `IsBuyable` returns false, the button still
+	-- renders the price (UI is data-driven from `robuxPrice` here), but
+	-- `MonetizationService` will reject the prompt with
+	-- `ERR_PRODUCT_NOT_CONFIGURED` so no real Robux is charged. Set the real
+	-- id in here once the dashboard product is wired and the row goes live.
+	{
+		id = "drill.t4",
+		productKind = "DevProduct",
+		productId = 3580982600,
+		robuxPrice = 25,
+		displayName = "Sundae Driller",
+		subtitle = "Tier 4 Drill",
+		category = "Drills",
+		grant = { kind = "Equipment", equipment = { itemId = "drill_t4", quantity = 1 } },
+	},
+	{
+		id = "drill.t5",
+		productKind = "DevProduct",
+		productId = 3580982739,
+		robuxPrice = 35,
+		displayName = "Glizzy Grinder",
+		subtitle = "Tier 5 Drill",
+		category = "Drills",
+		grant = { kind = "Equipment", equipment = { itemId = "drill_t5", quantity = 1 } },
+	},
+	{
+		id = "drill.t6",
+		productKind = "DevProduct",
+		productId = 3580982932,
+		robuxPrice = 50,
+		displayName = "Ground Pounder",
+		subtitle = "Tier 6 Drill",
+		category = "Drills",
+		grant = { kind = "Equipment", equipment = { itemId = "drill_t6", quantity = 1 } },
+	},
+
 	-- Future categories — left as a commented template so adding the first
 	-- Currency entry is a one-liner and the contract stays visible at the
 	-- call site (Consumable / GamePassEffect contracts now demonstrated by

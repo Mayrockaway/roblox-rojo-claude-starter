@@ -82,6 +82,20 @@ local function firePurchase(requestPurchase: RemoteEvent, itemId: string)
 	})
 end
 
+-- Robux prompt debounce keyed per-monetization-id so a fast double-click can't
+-- open two Roblox prompt dialogs (engine drops the second prompt anyway, but
+-- the request still hits the server). Mirrors `RobuxShopPanel`'s 0.6s window.
+local lastRobuxPromptByItemId: { [string]: number } = {}
+local ROBUX_PROMPT_DEBOUNCE_SEC = 0.6
+
+--- Translate an EquipmentCatalog id into the matching MonetizationCatalog id
+--- (`"drill_t4"` → `"drill.t4"`). Mirrors the lookup convention used in
+--- `EquipmentShopPopulate.findRobuxPriceForEquipment`. Same rule: catalog
+--- absence means the row isn't sold for Robux.
+local function monetizationIdForEquipment(equipmentId: string): string
+	return (string.gsub(equipmentId, "_", "."))
+end
+
 local function catalogById(payload: CatalogPayload?): { [string]: EquipmentShopPopulate.CatalogRow }
 	local map: { [string]: EquipmentShopPopulate.CatalogRow } = {}
 	if not payload or typeof(payload.items) ~= "table" then
@@ -219,6 +233,34 @@ function EquipmentShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelCo
 				-- binding with `MouseButton1Click` caused same-frame double-fire
 				-- → double-charge on purchase.
 				table.insert(slotBuyConns, buy.Activated:Connect(onBuy))
+			end
+
+			-- Robux purchase path (T4-T6). The Robux button is hidden by
+			-- `EquipmentShopPopulate` for tiers without a `MonetizationCatalog`
+			-- entry, so we still defensively gate on `Visible` at click time —
+			-- and `monetizationIdForEquipment` is the same id the populate
+			-- code used to decide whether to show the button at all, so the
+			-- server lookup will resolve to the same row. Receipt → grant
+			-- already routes to `EquipmentShopService:GrantFreeOwnedEquipment`
+			-- via `MonetizationService:SetEquipmentHandler`, so no extra
+			-- server wiring is needed for the drill.
+			local robuxBuy = slot.card:FindFirstChild("RobuxBuyButton", true)
+			if robuxBuy and robuxBuy:IsA("GuiButton") then
+				passthroughBuyDecorations(robuxBuy)
+				local itemId = slot.itemId
+				table.insert(slotBuyConns, robuxBuy.Activated:Connect(function()
+					if not robuxBuy.Visible then
+						return
+					end
+					local catalogId = monetizationIdForEquipment(itemId)
+					local now = os.clock()
+					local last = lastRobuxPromptByItemId[catalogId] or 0
+					if now - last < ROBUX_PROMPT_DEBOUNCE_SEC then
+						return
+					end
+					lastRobuxPromptByItemId[catalogId] = now
+					ClientRemotes.requestPromptRobuxPurchase:FireServer({ itemId = catalogId })
+				end))
 			end
 		end
 	end

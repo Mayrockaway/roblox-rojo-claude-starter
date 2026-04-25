@@ -636,6 +636,11 @@ function OilStateService:Init(remoteService, plotService)
 	--- 2x what they paid (refund) or doubling a cash pack the price was set
 	--- against (Robux currency grant).
 	self._monetizationService = nil :: any
+	--- Set by `init.server` after `LeaderboardService` is constructed. Optional
+	--- — `AddCash` notifies it for **gameplay** credits only (`skipMultiplier` false)
+	--- so the docks board can track session + global “lifetime cash earned”
+	--- without counting refunds or Robux currency grants.
+	self._leaderboardService = nil :: any
 	local okStore, storeOrErr = pcall(function()
 			return DataStoreService:GetDataStore(DATASTORE_NAME)
 		end)
@@ -669,6 +674,11 @@ end
 --- don't have to thread a second opt-out flag through every caller.
 function OilStateService:SetGlobalEventService(globalEventService: any)
 	self._globalEventService = globalEventService
+end
+
+--- Set by `init.server` after `LeaderboardService` is constructed. Optional.
+function OilStateService:SetLeaderboardService(leaderboardService: any)
+	self._leaderboardService = leaderboardService
 end
 
 --- Clears tutorial-only placement flags so hammer sellback / removal works after FTUE (and old saves cannot keep protection).
@@ -1469,6 +1479,12 @@ function OilStateService:AddCash(userId: number, amount: number, opts: { skipMul
 	end
 	state.cash += value
 	self:_markDirty(userId)
+	if not skipMultiplier then
+		local lb = self._leaderboardService
+		if lb and typeof((lb :: any).OnCashEarned) == "function" then
+			(lb :: any):OnCashEarned(userId, value)
+		end
+	end
 	return true, value
 end
 

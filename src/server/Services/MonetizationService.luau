@@ -306,6 +306,24 @@ function MonetizationService:_handlePromptRequest(player: Player, payload: any)
 		return
 	end
 
+	-- Item-specific pre-prompt gate (cooldowns, lock conflicts, etc.). Runs
+	-- here so a server-known "not buyable right now" reason rejects the
+	-- prompt BEFORE Robux is charged — the receipt path should always grant
+	-- once the prompt opened. See `SetPromptPrecondition` for the contract.
+	if self._promptPreconditions then
+		local pre = self._promptPreconditions[item.id]
+		if pre then
+			local preOk, preCode, preMsg = pre(player)
+			if not preOk then
+				local code = preCode or "ERR_PROMPT_PRECONDITION"
+				local msg = preMsg or "Can't purchase that right now."
+				self:_sendResult(player, false, code, msg, { itemId = item.id })
+				emitPromptFailed(item.id, code, item.productKind, item.productId)
+				return
+			end
+		end
+	end
+
 	local ok, err = pcall(function()
 		if item.productKind == "GamePass" then
 			MarketplaceService:PromptGamePassPurchase(player, item.productId)
@@ -722,6 +740,32 @@ end
 --- Handler signature: `(userId, equipmentItemId, quantity) -> (ok, err?)`.
 function MonetizationService:SetEquipmentHandler(fn: (userId: number, itemId: string, quantity: number) -> (boolean, string?))
 	self._equipmentHandler = fn
+end
+
+--- Register a *pre-prompt* precondition for a specific monetization item.
+--- `_handlePromptRequest` calls the registered fn AFTER catalog validation
+--- but BEFORE `MarketplaceService:PromptProductPurchase`, so the Robux
+--- dialog never opens (and the player is never charged) when the item is
+--- temporarily unavailable. Use this for reasons that are server-known
+--- and time-bound: cooldowns, lock conflicts, "already in flight"
+--- guards. Anything that should *fail the receipt* (not the prompt)
+--- belongs in the consumable/equipment handler instead.
+---
+--- Handler signature: `(player) -> (ok, errCode?, userMessage?)`.
+--- `ok=false` rejects the prompt with the supplied code/message; the
+--- player gets a `MonetizationResult` toast and Roblox is never asked
+--- to charge them. `errCode` defaults to `ERR_PROMPT_PRECONDITION` and
+--- `userMessage` defaults to a generic "Cannot purchase right now."
+---
+--- Lives on `MonetizationService` so consumer services (`ArmyGeneralService`
+--- for `consumable.nuke_x1`, future Currency cooldowns, etc.) can plug in
+--- without `_handlePromptRequest` having to import every owner.
+function MonetizationService:SetPromptPrecondition(
+	id: string,
+	fn: (player: Player) -> (boolean, string?, string?)
+)
+	self._promptPreconditions = self._promptPreconditions or {}
+	self._promptPreconditions[id] = fn
 end
 
 -- =================== GAMEPASS LOOKUP ===================

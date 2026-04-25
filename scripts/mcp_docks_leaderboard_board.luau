@@ -1,16 +1,60 @@
 -- Run via Roblox Studio MCP `execute_luau`.
 --
 -- **Behavior**
+-- - On run: **deletes every extra** `StraitLeaderboardGui` in `Workspace` so only **one** sign remains
+--   (keeps the one under **`Workspace.DocksLeaderboard`…`Board`** when that exists, else the first
+--   by full name; removes the SurfaceGui and destroys the parent Part if it is left empty).
 -- - If **`Workspace.DocksLeaderboard.Board`** already has **`StraitLeaderboardGui`**, only **rebuilds the GUI**
 --   under the SurfaceGui (keeps **Board position/CFrame**). Use this after you move the board.
 -- - Otherwise creates **Folder + Board + SurfaceGui** at a default CFrame.
 --
 -- **Bind contract** (matches **`LeaderboardService`**, do not rename):
 --   `Root` → `Mode`, `Timer`, `CrossingsCol` / `BarrelsCol` → `Row_1`…`Row_8`
+--   Optional: `Header` / `CrossingsHeader` + `BarrelsHeader` (each with `LeftHeader` + `RightHeader`)
+--   so column titles can switch (crossings+barrels vs lifetime cash) when the service rotates
+--   between the **three** views: session C+B, global C+B, lifetime cash (this server | all servers).
 --
--- Decoration not touched by service: `TitleBar`, `Header`, column `ColHeader`, dividers.
+-- Decoration not touched by service: `TitleBar`, `Header` layout (if present, texts are set), dividers.
 
 local Workspace = game:GetService("Workspace")
+
+local LEADERBOARD_GUI = "StraitLeaderboardGui"
+
+-- Keep a single in-world board; `LeaderboardService` also binds to only the first valid instance.
+local function removeExtraStraitLeaderboardGuis()
+	local list: { SurfaceGui } = {}
+	for _, d in ipairs(Workspace:GetDescendants()) do
+		if d:IsA("SurfaceGui") and d.Name == LEADERBOARD_GUI and d.Parent and d.Parent:IsA("BasePart") then
+			table.insert(list, d)
+		end
+	end
+	if #list <= 1 then
+		return
+	end
+	local keep: SurfaceGui? = nil
+	for _, sg in ipairs(list) do
+		local n = sg:GetFullName()
+		if n:find("DocksLeaderboard", 1, true) and n:find("Board", 1, true) then
+			keep = sg
+			break
+		end
+	end
+	if not keep then
+		table.sort(list, function(a, b)
+			return a:GetFullName() < b:GetFullName()
+		end)
+		keep = list[1]
+	end
+	for _, sg in ipairs(list) do
+		if sg ~= keep then
+			local p = sg.Parent
+			sg:Destroy()
+			if p and p:IsA("BasePart") and #p:GetChildren() == 0 then
+				p:Destroy()
+			end
+		end
+	end
+end
 
 -- Brown-wood / brass palette (matches docks sign aesthetic)
 local COL = {
@@ -88,7 +132,9 @@ local function buildLeaderboardGui(sg: SurfaceGui)
 	sg.Face = Enum.NormalId.Front
 	sg.PixelsPerStud = 56
 	sg.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
-	sg.AlwaysOnTop = true
+	-- `true` makes the face draw over **characters and world** and looks like the UI is “in front of”
+	-- the player; `false` uses normal depth so the sign stays on the board surface.
+	sg.AlwaysOnTop = false
 	sg.LightInfluence = 0
 	sg.Brightness = 1.05
 
@@ -307,6 +353,8 @@ local function buildLeaderboardGui(sg: SurfaceGui)
 	makeColumn("CrossingsCol", 0)
 	makeColumn("BarrelsCol", 0.5)
 end
+
+removeExtraStraitLeaderboardGuis()
 
 local dock = ensureFolder(Workspace, "DocksLeaderboard")
 local existing = dock:FindFirstChild("Board")
