@@ -61,6 +61,8 @@ function HitContractService:Init(remoteService, oilStateService, oilShipmentServ
 	self._connections = {}
 	self._contractsByVictim = {} :: { [number]: { [string]: any } }
 	self._contractsById = {} :: { [string]: { [string]: any } }
+	--- `"<contractorUserId>:<victimUserId"` → workspace clock when hire cooldown ends.
+	self._hireCooldownEndsAtByPair = {} :: { [string]: number }
 	self._freeHitTokens = {} :: { [number]: number }
 	self._prompt = nil :: ProximityPrompt?
 	--- Once `Workspace.PirateHire` exists, listen for rig/parts streaming in under it.
@@ -116,6 +118,25 @@ function HitContractService:_consumeToken(userId: number): boolean
 	return true
 end
 
+local function _pairCooldownKey(contractorUserId: number, victimUserId: number): string
+	return tostring(contractorUserId) .. ":" .. tostring(victimUserId)
+end
+
+function HitContractService:_hireCooldownRemainingSeconds(contractorUserId: number, victimUserId: number): number
+	local endsAt = self._hireCooldownEndsAtByPair[_pairCooldownKey(contractorUserId, victimUserId)]
+	if not endsAt then
+		return 0
+	end
+	local now = workspace:GetServerTimeNow()
+	local rem = endsAt - now
+	return if rem > 0 then math.ceil(rem) else 0
+end
+
+function HitContractService:_stampHireCooldown(contractorUserId: number, victimUserId: number)
+	self._hireCooldownEndsAtByPair[_pairCooldownKey(contractorUserId, victimUserId)] =
+		workspace:GetServerTimeNow() + HitContractConfig.SameTargetHireCooldownSeconds
+end
+
 function HitContractService:TryCreateHit(contractorUserId: number, victimUserId: number): (boolean, string, { [string]: any }?)
 	if contractorUserId == victimUserId then
 		return false, "You can't place a hit on yourself.", nil
@@ -129,6 +150,16 @@ function HitContractService:TryCreateHit(contractorUserId: number, victimUserId:
 
 	if self:_activeContractForVictim(victimUserId) then
 		return false, "That target already has an active hit.", nil
+	end
+
+	local cdRem = self:_hireCooldownRemainingSeconds(contractorUserId, victimUserId)
+	if cdRem > 0 then
+		local m = math.floor(cdRem / 60)
+		local s = cdRem % 60
+		return false, string.format("Wait %d:%02d before hiring pirates on that player again.", m, s), {
+			cooldownRemainingSeconds = cdRem,
+			victimUserId = victimUserId,
+		}
 	end
 
 	local usedFreeToken = self:_consumeToken(contractorUserId)
@@ -150,6 +181,8 @@ function HitContractService:TryCreateHit(contractorUserId: number, victimUserId:
 
 	self._contractsByVictim[victimUserId] = contract
 	self._contractsById[contractId] = contract
+
+	self:_stampHireCooldown(contractorUserId, victimUserId)
 
 	-- Telemetry §6.5 `pirate_hire_created` (Sink — only when paid, not
 	-- when consuming a free-replacement token). Fires after the contract
@@ -350,6 +383,7 @@ function HitContractService:_buildTargetsFor(player: Player): { [number]: { [str
 				userId = p.UserId,
 				name = p.Name,
 				displayName = p.DisplayName,
+				hireCooldownRemainingSeconds = self:_hireCooldownRemainingSeconds(player.UserId, p.UserId),
 			})
 		end
 	end
@@ -414,6 +448,18 @@ function HitContractService:Start()
 			self:RefundContract(c.contractId, "target_left")
 		end
 		self._freeHitTokens[userId] = nil
+		local keysToClear = {}
+		for key, _ in pairs(self._hireCooldownEndsAtByPair) do
+			local leftStr, rightStr = string.match(key, "^(%d+):(%d+)$")
+			local left = leftStr and tonumber(leftStr)
+			local right = rightStr and tonumber(rightStr)
+			if left == userId or right == userId then
+				table.insert(keysToClear, key)
+			end
+		end
+		for _, key in ipairs(keysToClear) do
+			self._hireCooldownEndsAtByPair[key] = nil
+		end
 	end))
 end
 
@@ -426,6 +472,7 @@ function HitContractService:Stop()
 	self._pirateHireStreamingNpc = nil
 	self._contractsByVictim = {}
 	self._contractsById = {}
+	self._hireCooldownEndsAtByPair = {}
 	self._freeHitTokens = {}
 end
 

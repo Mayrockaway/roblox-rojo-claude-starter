@@ -29,6 +29,10 @@ local HitContractConfig = {
 	--- token if the contract can't be fulfilled (target leaves, no shipment,
 	--- etc.) — see `HitContractService:RefundContract`.
 	Cost = 5000,
+
+	--- Seconds before the same contractor can place another hire on the **same**
+	--- victim (anti-spam). Starts when a hire is accepted (cash/token consumed).
+	SameTargetHireCooldownSeconds = 120,
 }
 
 --- Format the steal ratio as a player-facing percent string ("50%"). Truncates

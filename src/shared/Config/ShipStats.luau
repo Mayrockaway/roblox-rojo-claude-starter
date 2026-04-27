@@ -26,7 +26,7 @@ local ShipStats = {}
 
 -- USD per whole barrel shipped (manifest tier keys = `Crude` / `Refined` / `Premium`).
 local DISPATCH_FEE_USD_PER_BARREL: { [string]: number } = {
-	Crude = 1,
+	Crude = 0,
 	Refined = 2,
 	Premium = 3,
 }

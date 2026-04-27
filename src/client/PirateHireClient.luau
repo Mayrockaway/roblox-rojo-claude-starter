@@ -52,6 +52,13 @@ local COLOR_PIRATE_DIM = Color3.fromRGB(210, 210, 210)
 local COLOR_PIRATE_MONEY = Color3.fromRGB(80, 220, 80)
 local COLOR_PIRATE_RED = Color3.fromRGB(255, 80, 80)
 
+local function formatCooldownMmSs(totalSeconds: number): string
+	local s = math.max(0, math.floor(totalSeconds))
+	local m = math.floor(s / 60)
+	local r = s % 60
+	return string.format("%d:%02d", m, r)
+end
+
 --- Bright, very-readable gold for the contractor's "your hit landed" status
 --- write. Picked to clear the dark `ShipmentHint` background and read at a
 --- glance against neutral white drilling chatter. Distinct from
@@ -245,9 +252,24 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 		pitchLabel.Size = UDim2.new(1, 0, 0, 60)
 		pitchLabel.TextWrapped = true
 		pitchLabel.TextColor3 = COLOR_PIRATE_DIM
-		local hireBtn = blockyLine("HireButton", string.format("Hire a hit ($%d)", uiState.hitCost), 3, true, root)
+		local cdCfg = HitContractConfig.SameTargetHireCooldownSeconds
+		if typeof(cdCfg) ~= "number" then
+			cdCfg = 120
+		end
+		local cooldownHint = blockyLine(
+			"CooldownHint",
+			string.format("Same captain twice? Wait %s between hires.", formatCooldownMmSs(cdCfg)),
+			3,
+			false,
+			root
+		)
+		cooldownHint.TextSize = 20
+		cooldownHint.Size = UDim2.new(1, 0, 0, 52)
+		cooldownHint.TextWrapped = true
+		cooldownHint.TextColor3 = COLOR_PIRATE_DIM
+		local hireBtn = blockyLine("HireButton", string.format("Hire a hit ($%d)", uiState.hitCost), 4, true, root)
 		if uiState.freeHitTokens > 0 then
-			local freeLabel = blockyLine("FreeTokens", string.format("  Free tokens: %d", uiState.freeHitTokens), 4, false, root)
+			local freeLabel = blockyLine("FreeTokens", string.format("  Free tokens: %d", uiState.freeHitTokens), 5, false, root)
 			freeLabel.TextSize = 22; freeLabel.Size = UDim2.new(1, 0, 0, 28); freeLabel.TextColor3 = COLOR_PIRATE_MONEY
 		end
 		local backBtn = blockyLine("BackButton", "back", 10, true, root)
@@ -257,7 +279,10 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 
 		hireBtn.MouseButton1Click:Connect(function()
 			header.Text = "Pick a target:"; header.TextSize = 38
-			pitchLabel.Visible = false; hireBtn.Visible = false; backBtn.Visible = false
+			pitchLabel.Visible = false
+			cooldownHint.Visible = false
+			hireBtn.Visible = false
+			backBtn.Visible = false
 			-- Wipe rows + the previous scroll container so re-opening the
 			-- target list doesn't stack stale results underneath.
 			for _, c in ipairs(root:GetChildren()) do
@@ -326,13 +351,44 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 								local label = string.format("%s", dn)
 								local tBtn = blockyLine("Target_" .. tostring(userId), label, order, true, scroll)
 								tBtn.TextSize = 26; tBtn.Size = UDim2.new(1, 0, 0, TARGET_ROW_HEIGHT)
+								local remInit =
+									math.max(0, math.floor(tonumber((target :: any).hireCooldownRemainingSeconds) or 0))
 								local costLabel = Instance.new("TextLabel")
 								costLabel.Size = UDim2.new(0.4, 0, 1, 0); costLabel.Position = UDim2.new(0.6, 0, 0, 0)
-								costLabel.BackgroundTransparency = 1; costLabel.Text = string.format("$%d", uiState.hitCost)
-								costLabel.Font = Enum.Font.LuckiestGuy; costLabel.TextSize = 22; costLabel.TextColor3 = COLOR_PIRATE_MONEY
+								costLabel.BackgroundTransparency = 1
+								costLabel.Font = Enum.Font.LuckiestGuy; costLabel.TextSize = 22
 								costLabel.TextStrokeTransparency = 0; costLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 								costLabel.TextXAlignment = Enum.TextXAlignment.Right; costLabel.Parent = tBtn
+								local blockedByCooldown = remInit > 0
+								if remInit > 0 then
+									costLabel.Text = formatCooldownMmSs(remInit)
+									costLabel.TextColor3 = COLOR_PIRATE_DIM
+									tBtn.Active = false
+									tBtn.AutoButtonColor = false
+									task.spawn(function()
+										local r = remInit
+										local btn, lbl = tBtn, costLabel
+										while r > 0 and btn.Parent do
+											lbl.Text = formatCooldownMmSs(r)
+											task.wait(1)
+											r -= 1
+										end
+										if btn.Parent then
+											blockedByCooldown = false
+											btn.Active = true
+											btn.AutoButtonColor = false
+											lbl.Text = string.format("$%d", uiState.hitCost)
+											lbl.TextColor3 = COLOR_PIRATE_MONEY
+										end
+									end)
+								else
+									costLabel.Text = string.format("$%d", uiState.hitCost)
+									costLabel.TextColor3 = COLOR_PIRATE_MONEY
+								end
 								tBtn.MouseButton1Click:Connect(function()
+									if blockedByCooldown then
+										return
+									end
 									requestPirateHireAction:FireServer({ action = "hire", victimUserId = userId })
 									header.Text = "Pirates dispatched!"; header.TextSize = 32
 									task.delay(1.5, closeUi)
