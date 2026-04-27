@@ -13,6 +13,8 @@ local SoundService = game:GetService("SoundService")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 
+local FirstPersonFistsController = require(script.Parent:WaitForChild("FirstPersonFistsController"))
+
 --- Serial event-voice queue (`Pirates`, `Storm`, `Coastguard`, …). Lazy
 --- require so a load-order surprise never takes the cinematic FX down with
 --- it — voice line is purely additive. Same shape used in
@@ -478,7 +480,7 @@ end
 ---
 --- Server-side write of `AssemblyLinearVelocity` would not work here:
 --- character physics is client-owned, so the write would not replicate.
-local PUSH_TOLERANCE_STUDS_PER_SEC = 6
+local PUSH_TOLERANCE_STUDS_PER_SEC = 3
 --- HRP is roughly 2 studs above the floor while standing; 6 studs gives
 --- comfortable clearance for boat decks with raised lips, ramps, ladders,
 --- and the small bobbing the WaterlineAnchor introduces, without reaching
@@ -489,18 +491,50 @@ local FLOOR_RAYCAST_DOWN_STUDS = 6
 --- frames of the post-unanchor ramp (where the boat is barely moving) and
 --- high enough that small physics jitter on a "stationary" anchored part
 --- doesn't false-positive us out of the damper.
-local PLATFORM_MOVING_THRESHOLD_STUDS_PER_SEC = 0.5
+local PLATFORM_MOVING_THRESHOLD_STUDS_PER_SEC = 3
+local DECK_DAMPER_BV_NAME = "DeckDamperBV"
 local function dampLocalPlayerCharacterDuringEvent(durationSec: number)
 	if durationSec <= 0 then
 		return
 	end
 	local t0 = os.clock()
 	local conn: RBXScriptConnection?
+	local activeBV: BodyVelocity? = nil
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
 	raycastParams.IgnoreWater = true
+
+	local function removeBV()
+		if activeBV then
+			activeBV:Destroy()
+			activeBV = nil
+		end
+	end
+
+	local function ensureBV(hrp: BasePart): BodyVelocity
+		if activeBV and activeBV.Parent == hrp then
+			return activeBV
+		end
+		removeBV()
+		-- Also clean up any stale ones from previous damper runs
+		for _, c in ipairs(hrp:GetChildren()) do
+			if c.Name == DECK_DAMPER_BV_NAME and c:IsA("BodyVelocity") then
+				c:Destroy()
+			end
+		end
+		local bv = Instance.new("BodyVelocity")
+		bv.Name = DECK_DAMPER_BV_NAME
+		bv.Velocity = Vector3.zero
+		bv.MaxForce = Vector3.new(1e6, 0, 1e6) -- XZ only, Y free for gravity/jump
+		bv.P = 1e4
+		bv.Parent = hrp
+		activeBV = bv
+		return bv
+	end
+
 	conn = RunService.Heartbeat:Connect(function()
 		if os.clock() - t0 >= durationSec then
+			removeBV()
 			if conn then
 				conn:Disconnect()
 			end
@@ -518,34 +552,47 @@ local function dampLocalPlayerCharacterDuringEvent(durationSec: number)
 		end
 		-- Skip while seated (a real seat weld owns the velocity entirely).
 		if hum.SeatPart then
+			removeBV()
 			return
 		end
 
-		--- Probe the floor under the player. If it's moving, defer to the
-		--- engine's floor mechanic; see doc-block above for why writing HRP
-		--- velocity ourselves in that case manifests as the player sliding
-		--- toward the bow at ~2× the boat's velocity.
 		raycastParams.FilterDescendantsInstances = { char }
 		local hit = workspace:Raycast(
 			hrp.Position,
 			Vector3.new(0, -FLOOR_RAYCAST_DOWN_STUDS, 0),
 			raycastParams
 		)
+		local rootAnchored = false
+		local floorMoving = false
+		local floorXZ = Vector3.zero
 		if hit and hit.Instance then
-			local pv = hit.Instance.AssemblyLinearVelocity
-			local platformXZ = Vector3.new(pv.X, 0, pv.Z)
-			if platformXZ.Magnitude > PLATFORM_MOVING_THRESHOLD_STUDS_PER_SEC then
-				return
+			local assemblyRoot = hit.Instance.AssemblyRootPart
+			rootAnchored = (assemblyRoot and assemblyRoot.Anchored) or false
+			if not rootAnchored then
+				local pv = hit.Instance.AssemblyLinearVelocity
+				floorXZ = Vector3.new(pv.X, 0, pv.Z)
+				floorMoving = floorXZ.Magnitude > PLATFORM_MOVING_THRESHOLD_STUDS_PER_SEC
 			end
 		end
 
-		local v = hrp.AssemblyLinearVelocity
 		local moveDir = hum.MoveDirection
 		local walkSpeed = hum.WalkSpeed
-		local expectedXZ = Vector3.new(moveDir.X * walkSpeed, 0, moveDir.Z * walkSpeed)
-		local actualXZ = Vector3.new(v.X, 0, v.Z)
-		if (actualXZ - expectedXZ).Magnitude > PUSH_TOLERANCE_STUDS_PER_SEC then
-			hrp.AssemblyLinearVelocity = Vector3.new(expectedXZ.X, v.Y, expectedXZ.Z)
+		local walkXZ = Vector3.new(moveDir.X * walkSpeed, 0, moveDir.Z * walkSpeed)
+
+		if rootAnchored then
+			-- Ship is frozen. Use BodyVelocity to overpower collision forces
+			-- during the physics step. Velocity assignment alone loses to
+			-- persistent collision-normal push from angled hull surfaces.
+			local bv = ensureBV(hrp)
+			bv.Velocity = Vector3.new(walkXZ.X, 0, walkXZ.Z)
+			local v = hrp.AssemblyLinearVelocity
+			hrp.AssemblyLinearVelocity = Vector3.new(walkXZ.X, v.Y, walkXZ.Z)
+		else
+			-- Ship unanchored (event ending / resume ramp starting).
+			-- Remove BodyVelocity and GET OUT — the engine's floor tracker
+			-- handles the moving deck. Writing velocity here double-counts
+			-- platform contribution and sucks the player toward the bow.
+			removeBV()
 		end
 	end)
 end
@@ -881,16 +928,16 @@ end
 
 local function getBoatDeckY(boat: Model, waterlineY: number): number
 	local rig = getBoatRigDef(boat)
-	-- DeckTopAnchor: dedicated, hand-authored Attachment on each ship template
-	-- placed exactly at the walkable deck surface. Single source of truth for
-	-- "where do NPC feet go on this boat."
-	local deckTop = findRigAttachment(boat, rig.deckTopAnchorName)
-	if deckTop then
-		return deckTop.WorldPosition.Y
-	end
+	-- BarrelStackRoot top sits on the actual walkable deck surface — prefer
+	-- it over DeckTopAnchor which is consistently 4-6 studs too high on most
+	-- boats (13 studs on Whale), causing NPCs to float above the deck.
 	local barrel = boat:FindFirstChild(rig.barrelStackRootName, true)
 	if barrel and barrel:IsA("BasePart") then
 		return barrel.Position.Y + barrel.Size.Y / 2
+	end
+	local deckTop = findRigAttachment(boat, rig.deckTopAnchorName)
+	if deckTop then
+		return deckTop.WorldPosition.Y
 	end
 	local seat = boat:FindFirstChild(rig.deckSeatName, true)
 	if seat and seat:IsA("BasePart") then
@@ -912,48 +959,62 @@ end
 -- Raycasts straight down at (x, z) looking ONLY near the authored deck Y (from
 -- DeckTopAnchor / BarrelStackRoot). Sails and masts are well above the deck so
 -- they're excluded by starting the cast just above deck Y with a short range.
-local function raycastBoatDeckY(boat: Model, x: number, z: number): number?
-	local rig = getBoatRigDef(boat)
-	-- Use BarrelStackRoot/DeckSeat as the canonical deck Y reference.
-	local approxDeckY: number? = nil
-	local bs = boat:FindFirstChild(rig.barrelStackRootName, true)
-	if bs and bs:IsA("BasePart") then
-		approxDeckY = bs.Position.Y + bs.Size.Y / 2
-	else
-		local seat = boat:FindFirstChild(rig.deckSeatName, true)
-		if seat and seat:IsA("BasePart") then
-			approxDeckY = seat.Position.Y + seat.Size.Y / 2
+local function raycastBoatDeckY(boat: Model, x: number, z: number, overrideDeckY: number?): number?
+	local approxDeckY = overrideDeckY
+	if not approxDeckY then
+		local rig = getBoatRigDef(boat)
+		local bs = boat:FindFirstChild(rig.barrelStackRootName, true)
+		if bs and bs:IsA("BasePart") then
+			approxDeckY = bs.Position.Y
+		else
+			local seat = boat:FindFirstChild(rig.deckSeatName, true)
+			if seat and seat:IsA("BasePart") then
+				approxDeckY = seat.Position.Y + seat.Size.Y / 2
+			end
+		end
+		if not approxDeckY then
+			local bbCF, _ = boat:GetBoundingBox()
+			approxDeckY = bbCF.Position.Y
 		end
 	end
-	if not approxDeckY then
-		local bbCF, _ = boat:GetBoundingBox()
-		approxDeckY = bbCF.Position.Y
-	end
-	-- Cast from 4 studs above expected deck, 8 studs downward. Sails/masts are
-	-- tens of studs above this window so they're impossible to hit.
+	-- Cast from 2 studs above deck, 6 studs downward.
+	-- Use Exclude filter (character only) instead of Include filter, because
+	-- collision contract sets CanQuery=false on helper parts. Include filter
+	-- with the boat misses all CanQuery=false parts. Exclude filter ignores
+	-- CanQuery and hits any collidable geometry.
 	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Include
-	params.FilterDescendantsInstances = { boat }
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	local lp = Players.LocalPlayer
+	local char = lp and lp.Character
+	params.FilterDescendantsInstances = if char then { char } else {}
 	params.IgnoreWater = true
-	local origin = Vector3.new(x, approxDeckY + 4, z)
-	local remaining = 8
-	for _ = 1, 4 do
+	local origin = Vector3.new(x, approxDeckY + 2, z)
+	local remaining = 6
+	for iter = 1, 4 do
 		if remaining <= 0 then break end
 		local result = Workspace:Raycast(origin, Vector3.new(0, -remaining, 0), params)
-		if not result then return nil end
-		if result.Normal.Y > 0.7 then return result.Position.Y end
+		if not result then
+			warn(string.format("[RaycastDeckY] MISS x=%.1f z=%.1f originY=%.1f approxDeckY=%.1f remaining=%.1f iter=%d", x, z, origin.Y, approxDeckY, remaining, iter))
+			return nil
+		end
+		if result.Normal.Y > 0.4 then
+			warn(string.format("[RaycastDeckY] HIT x=%.1f z=%.1f hitY=%.1f normalY=%.2f part=%s approxDeckY=%.1f", x, z, result.Position.Y, result.Normal.Y, result.Instance:GetFullName(), approxDeckY))
+			return result.Position.Y
+		end
+		warn(string.format("[RaycastDeckY] STEEP x=%.1f z=%.1f hitY=%.1f normalY=%.2f part=%s — skipping", x, z, result.Position.Y, result.Normal.Y, result.Instance:GetFullName()))
 		local stepped = (origin.Y - result.Position.Y) + 0.1
 		remaining = remaining - stepped
 		origin = Vector3.new(x, result.Position.Y - 0.1, z)
 	end
+	warn(string.format("[RaycastDeckY] EXHAUSTED x=%.1f z=%.1f approxDeckY=%.1f", x, z, approxDeckY))
 	return nil
 end
 
 -- Takes a desired NPC stand position (where feet should land) and returns the
 -- NPC PIVOT position (feet + pivot-to-feet offset). Falls back to nil if
 -- targetXZ is off the boat — caller should skip or clamp.
-local function npcPivotOnDeck(boat: Model, targetXZ: Vector3, npcPivotToFeet: number): Vector3?
-	local y = raycastBoatDeckY(boat, targetXZ.X, targetXZ.Z)
+local function npcPivotOnDeck(boat: Model, targetXZ: Vector3, npcPivotToFeet: number, overrideDeckY: number?): Vector3?
+	local y = raycastBoatDeckY(boat, targetXZ.X, targetXZ.Z, overrideDeckY)
 	if not y then return nil end
 	return Vector3.new(targetXZ.X, y + npcPivotToFeet, targetXZ.Z)
 end
@@ -1802,6 +1863,147 @@ local EVENT_FX: { [string]: EventFxFn } = {
 local TweenService = game:GetService("TweenService")
 
 local StraitWaypointWorldFx = {}
+
+--- Voyage-long deck damper: runs the entire time the player is on a moving ship.
+--- Started on ShipmentStarted, stopped on ShipmentResolved.
+local voyageDamperConn: RBXScriptConnection? = nil
+local voyageDamperBV: BodyVelocity? = nil
+
+local function stopVoyageDamper()
+	if voyageDamperConn then
+		voyageDamperConn:Disconnect()
+		voyageDamperConn = nil
+	end
+	if voyageDamperBV then
+		voyageDamperBV:Destroy()
+		voyageDamperBV = nil
+	end
+end
+
+local function startVoyageDamper()
+	stopVoyageDamper()
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParams.IgnoreWater = true
+	-- Track last known ship velocity so we can carry it through jumps
+	local lastShipXZ = Vector3.zero
+	local lastOnShipClock = 0
+	-- How long after leaving the deck we still apply ship velocity (covers jump arcs)
+	local AIRBORNE_CARRY_SECONDS = 2.0
+
+	local wasOnShip = false
+	local logClock = 0
+
+	voyageDamperConn = RunService.Heartbeat:Connect(function()
+		local lp = Players.LocalPlayer
+		local char = lp and lp.Character
+		if not char then return end
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		if not (hum and hrp and hrp:IsA("BasePart")) then return end
+		if hum.SeatPart then
+			if voyageDamperBV then voyageDamperBV:Destroy(); voyageDamperBV = nil end
+			wasOnShip = false
+			return
+		end
+
+		raycastParams.FilterDescendantsInstances = { char }
+		local hit = workspace:Raycast(hrp.Position, Vector3.new(0, -FLOOR_RAYCAST_DOWN_STUDS, 0), raycastParams)
+
+		-- Check if the floor part belongs to an ActiveShipmentBoat model.
+		-- CollisionGroup alone misses decorative/detail parts the player stands on.
+		local onShip = false
+		if hit and hit.Instance and hit.Instance:IsA("BasePart") then
+			local ancestor = hit.Instance
+			while ancestor do
+				if ancestor.Name == "ActiveShipmentBoat" and ancestor:IsA("Model") then
+					onShip = true
+					break
+				end
+				ancestor = ancestor.Parent
+			end
+		end
+		local assemblyRoot = onShip and hit.Instance.AssemblyRootPart or nil
+		local rootAnchored = (assemblyRoot and assemblyRoot.Anchored) or false
+
+		local moveDir = hum.MoveDirection
+		local walkSpeed = hum.WalkSpeed
+		local walkXZ = Vector3.new(moveDir.X * walkSpeed, 0, moveDir.Z * walkSpeed)
+		local shouldLog = os.clock() - logClock >= 0.5
+
+		if onShip then
+			local pv = hit.Instance.AssemblyLinearVelocity
+			local floorXZ = Vector3.new(pv.X, 0, pv.Z)
+			lastShipXZ = floorXZ
+			lastOnShipClock = os.clock()
+			wasOnShip = true
+
+			if rootAnchored then
+				-- Frozen ship — BodyVelocity holds player
+				if not voyageDamperBV or voyageDamperBV.Parent ~= hrp then
+					if voyageDamperBV then voyageDamperBV:Destroy() end
+					local bv = Instance.new("BodyVelocity")
+					bv.Name = "VoyageDamperBV"
+					bv.MaxForce = Vector3.new(1e6, 0, 1e6)
+					bv.P = 1e4
+					bv.Parent = hrp
+					voyageDamperBV = bv
+				end
+				voyageDamperBV.Velocity = Vector3.new(walkXZ.X, 0, walkXZ.Z)
+				local v = hrp.AssemblyLinearVelocity
+				hrp.AssemblyLinearVelocity = Vector3.new(walkXZ.X, v.Y, walkXZ.Z)
+			else
+				-- Moving ship on deck — let the engine handle it
+				if voyageDamperBV then voyageDamperBV:Destroy(); voyageDamperBV = nil end
+			end
+		else
+			-- Off ship. Only carry ship velocity if player is still near the
+			-- boat (jumped, not teleported away). Check distance to ship.
+			local airTime = os.clock() - lastOnShipClock
+			local nearShip = false
+			if wasOnShip and airTime < AIRBORNE_CARRY_SECONDS and lastShipXZ.Magnitude > 1 then
+				-- Find the boat and check distance
+				local docks = workspace:FindFirstChild("Map")
+					and workspace.Map:FindFirstChild("MapDecor")
+					and workspace.Map.MapDecor:FindFirstChild("dOCKS")
+					and workspace.Map.MapDecor.dOCKS:FindFirstChild("Boats")
+				if docks then
+					local boat = docks:FindFirstChild("ActiveShipmentBoat")
+					if boat and boat:IsA("Model") then
+						local dist = (hrp.Position - boat:GetPivot().Position).Magnitude
+						nearShip = dist < 80
+					end
+				end
+			end
+
+			if nearShip then
+				local targetXZ = lastShipXZ + walkXZ
+				if not voyageDamperBV or voyageDamperBV.Parent ~= hrp then
+					if voyageDamperBV then voyageDamperBV:Destroy() end
+					local bv = Instance.new("BodyVelocity")
+					bv.Name = "VoyageDamperBV"
+					bv.MaxForce = Vector3.new(1e6, 0, 1e6)
+					bv.P = 1e4
+					bv.Parent = hrp
+					voyageDamperBV = bv
+				end
+				voyageDamperBV.Velocity = Vector3.new(targetXZ.X, 0, targetXZ.Z)
+			else
+				wasOnShip = false
+				if voyageDamperBV then voyageDamperBV:Destroy(); voyageDamperBV = nil end
+			end
+		end
+	end)
+end
+
+function StraitWaypointWorldFx.OnVoyageStarted()
+	warn("[VoyageDamper] STARTED")
+	startVoyageDamper()
+end
+
+function StraitWaypointWorldFx.OnVoyageEnded()
+	stopVoyageDamper()
+end
 validateStraitEventAssets()
 
 --- Explode a boat into its pieces. Clones every visible BasePart from the boat,
@@ -3106,7 +3308,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 	tryEnqueueOwnerVoice(data, "Pirates")
 
 	local shipmentId = if typeof(data.shipmentId) == "string" then data.shipmentId else ""
-	local barrelsStolen = math.max(0, tonumber(data.barrelsStolen) or 0)
+	local barrelsStolen = math.max(0, tonumber(data.barrelsStolen) or tonumber(data.potentialBarrelsStolen) or 0)
 	local approachSide = tonumber(data.approachSide) or 1
 	local pirateDebug = RunService:IsStudio()
 
@@ -3123,8 +3325,11 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		return
 	end
 
-	-- PirateRaidConfig.SequenceDuration = 20s. +1s buffer covers the server
-	-- brake + unanchor tail. See `dampLocalPlayerCharacterDuringEvent`.
+	-- Interactive pirate raids let the owner walk freely on deck to slap pirates.
+	-- Spectators and legacy raids still get anchored.
+	local isInteractive = data.interactive == true and Players.LocalPlayer.UserId == (tonumber(data.ownerUserId) or 0)
+	-- Velocity guard during pirate raid — BodyVelocity holds player on
+	-- anchored deck, velocity correction handles moving/stopped floor.
 	dampLocalPlayerCharacterDuringEvent(21)
 
 	task.spawn(function()
@@ -3269,10 +3474,15 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		local PHASE_ESCAPE = 4.0
 		local RETURN_WINDOW = 1.25 -- overlap: last pirates return vs escape drive (was undefined)
 		-- Scale pirate count by how many barrels were stolen (fewer pirates for small raids).
-		-- 0 stolen = 1 pirate (minimum visual), full 25%+ = 5 pirates.
-		local totalLoaded = math.max(1, tonumber(data.totalLoaded) or 1)
-		local lossFrac = barrelsStolen / totalLoaded
-		local PIRATE_COUNT = math.clamp(math.ceil(lossFrac * 20), 1, 5)
+		-- Interactive mode: server sends pirateCount explicitly.
+		local PIRATE_COUNT: number
+		if isInteractive and typeof(data.pirateCount) == "number" then
+			PIRATE_COUNT = math.clamp(data.pirateCount, 1, 5)
+		else
+			local totalLoaded = math.max(1, tonumber(data.totalLoaded) or 1)
+			local lossFrac = barrelsStolen / totalLoaded
+			PIRATE_COUNT = math.clamp(math.ceil(lossFrac * 20), 1, 5)
+		end
 		local PIRATE_SPACING = 1.5
 		local deckY = getBoatDeckY(playerBoat, rootPos.Y)
 		-- Lift by NPC pivot-to-feet offset so pirates' feet land on deck (not buried).
@@ -3327,8 +3537,11 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 
 		do
 			local ghostRoots: { Instance } = { pirateBoat }
-			for _, p in ipairs(pirates) do
-				table.insert(ghostRoots, p.npc)
+			if not isInteractive then
+				-- Interactive pirates need CanQuery=true for raycasts; exclude from ghost sweep
+				for _, p in ipairs(pirates) do
+					table.insert(ghostRoots, p.npc)
+				end
 			end
 			-- Full sequence + escape (~22s) — keep sweeps longer than CoastGuard (42) so reparents stay ghosted
 			sustainStraitNpcGhosts(ghostRoots, 62)
@@ -3339,6 +3552,14 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		applyStraitNpcGhostParts(pirateBoat)
 		for _, p in ipairs(pirates) do
 			applyStraitNpcGhostParts(p.npc)
+			if isInteractive then
+				-- Re-enable CanQuery so distance-based punch detection sees them
+				for _, part in ipairs(p.npc:GetDescendants()) do
+					if part:IsA("BasePart") then
+						part.CanQuery = true
+					end
+				end
+			end
 		end
 
 		local waterlinePartLive = playerBoat:FindFirstChild("WaterlineAnchor", true)
@@ -3410,7 +3631,7 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		local landingPositions = {}
 		for i = 1, PIRATE_COUNT do
 			local targetXZ = landingBase + perp * ((i - pirateMid) * 1.6)
-			landingPositions[i] = npcPivotOnDeck(playerBoat, targetXZ, pirateLift)
+			landingPositions[i] = npcPivotOnDeck(playerBoat, targetXZ, pirateLift, deckY - pirateLift)
 				or Vector3.new(targetXZ.X, deckY, targetXZ.Z)
 		end
 
@@ -3423,183 +3644,563 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 		end
 
 		local deckBarrels = buildBarrelAnimationSources(playerBoat, data.stolenDeckBarrels)
-		local toSteal = math.min(barrelsStolen, #deckBarrels, PIRATE_COUNT)
-		if pirateDebug then
-			print(string.format(
-				"[PirateRaidDebug][Client] shipment=%s liveDeckBarrels=%d usableTargets=%d toSteal=%d pirateCount=%d",
-				shipmentId,
-				#collectDeckBarrelInstances(playerBoat),
-				#deckBarrels,
-				toSteal,
-				PIRATE_COUNT
-			))
-			if toSteal <= 0 then
-				warn(string.format("[PirateRaidDebug][Client] shipment=%s no barrel targets resolved", shipmentId))
+		local reportInteractiveResult: (() -> ())? = nil
+
+		-- === INTERACTIVE vs LEGACY branch ===
+		if isInteractive then
+			-- ==========================================
+			-- INTERACTIVE PIRATE RAID — full legacy board→steal→return→escape
+			-- sequence with punch overlay. Player can punch pirates to knock
+			-- them off. 2 HP each: first hit = knockback+stun, second = fly off.
+			-- Barrel is lost once grabbed (same as legacy). Pirates that aren't
+			-- punched out complete the full legacy flow (steal, toss, zipline back).
+			-- ==========================================
+			local raidToken = data.raidToken
+			local SLAP_ARC = 18
+			local SLAP_COOLDOWN = 0.5
+			local punchSession: any = nil
+
+			local lp = Players.LocalPlayer
+			local savedMinZoom: number? = nil
+			local savedMaxZoom: number? = nil
+			if lp then
+				savedMinZoom = lp.CameraMinZoomDistance
+				savedMaxZoom = lp.CameraMaxZoomDistance
+				lp.CameraMinZoomDistance = 0.5
+				lp.CameraMaxZoomDistance = 0.5
 			end
-		end
 
-		-- Unified per-pirate flow: board → steal → return, all in parallel, no phase walls
-		local BOARD_STAGGER = 0.25
-		local BOARD_TO_ROPE_DUR, BOARD_SLIDE_DUR, BOARD_DROP_DUR = 0.2, 0.6, 0.2
-		local RETURN_TO_ROPE_DUR, RETURN_SLIDE_DUR, RETURN_DROP_DUR = 0.2, 0.55, 0.2
+			-- Per-pirate punch state (layered on top of the legacy flow)
+			local slappedSet: { [number]: boolean } = {}
+			local pirateGrabbedBarrel: { [number]: boolean } = {} -- true once pirate picked up a barrel (oil lost)
+			local slappedCount = 0
+			local toSteal = math.min(barrelsStolen, #deckBarrels, PIRATE_COUNT)
+			local raidOver = false
+			local resultReported = false
+			local PIRATE_MAX_HP = 2
+			local pirateHP: { [number]: number } = {}
+			local KNOCKBACK_DIST = 5
+			local pirateStunUntil: { [number]: number } = {}
+			local pirateCancelledI: { [number]: boolean } = {}
 
-		local pirateFlows = {}
-		for i, pirate in ipairs(pirates) do
-			local idx = i
-			local pirateData = pirate
-			local myBarrel = if idx <= toSteal then deckBarrels[idx] else nil
-			table.insert(pirateFlows, function()
-				-- Stagger so all pirates don't zipline at the exact same instant
-				task.wait((idx - 1) * BOARD_STAGGER)
+			for i = 1, PIRATE_COUNT do
+				pirateHP[i] = PIRATE_MAX_HP
+				pirateStunUntil[i] = 0
+				pirateCancelledI[i] = false
+			end
 
-				-- === BOARD: slide down rope, drop to landing ===
-				movePirate(pirateData, uprightLookAt(ropeStart, ropeEnd), BOARD_TO_ROPE_DUR, 0)
-				local slideStart = os.clock()
-				while true do
-					local alpha = math.min((os.clock() - slideStart) / BOARD_SLIDE_DUR, 1)
-					local eased = alpha * alpha * (3 - 2 * alpha)
-					local slidePos = ropeStart:Lerp(ropeEnd, eased)
-					slidePos += Vector3.new(0, -2.5 * math.sin(eased * math.pi), 0)
-					setObjectCF(pirateData.npc, uprightLookAt(slidePos, ropeEnd))
-					if alpha >= 1 then break end
-					task.wait()
-				end
-				local landPos = landingPositions[idx]
-				local landCF = uprightLookAt(landPos, ropeEnd)
-				animateMove(pirateData.npc, uprightLookAt(ropeEnd, landPos), landCF, BOARD_DROP_DUR, 0)
-				pirateData.cf = landCF
+			-- HUD
+			local slapGui = Instance.new("ScreenGui")
+			slapGui.Name = "PirateSlapHud"
+			slapGui.DisplayOrder = 999
+			slapGui.ResetOnSpawn = false
+			local timerLabel = Instance.new("TextLabel")
+			timerLabel.Name = "Timer"
+			timerLabel.Size = UDim2.new(0.4, 0, 0.06, 0)
+			timerLabel.Position = UDim2.new(0.3, 0, 0.05, 0)
+			timerLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+			timerLabel.BackgroundTransparency = 0.5
+			timerLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+			timerLabel.TextScaled = true
+			timerLabel.Font = Enum.Font.GothamBold
+			timerLabel.Text = "PUNCH THE PIRATES!"
+			Instance.new("UICorner", timerLabel).CornerRadius = UDim.new(0.3, 0)
+			timerLabel.Parent = slapGui
+			local counterLabel = Instance.new("TextLabel")
+			counterLabel.Name = "Counter"
+			counterLabel.Size = UDim2.new(0.25, 0, 0.045, 0)
+			counterLabel.Position = UDim2.new(0.375, 0, 0.115, 0)
+			counterLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+			counterLabel.BackgroundTransparency = 0.6
+			counterLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+			counterLabel.TextScaled = true
+			counterLabel.Font = Enum.Font.GothamBold
+			counterLabel.Text = string.format("Barrels saved: 0/%d", toSteal)
+			Instance.new("UICorner", counterLabel).CornerRadius = UDim.new(0.3, 0)
+			counterLabel.Parent = slapGui
+			local playerGui = Players.LocalPlayer:FindFirstChild("PlayerGui")
+			if playerGui then slapGui.Parent = playerGui end
 
-				-- === STEAL: walk to barrel, grab, walk to edge, toss ===
-				if myBarrel then
-					local barrelInst = myBarrel.instance
-					local barrelSnapshot = myBarrel.snapshot
-					local barrelPos = if barrelInst and barrelInst.Parent
-						then getInstanceWorldPosition(barrelInst)
-						else getBarrelSnapshotPosition(barrelSnapshot)
-					if barrelPos then
-						if pirateDebug then
-							print(string.format(
-								"[PirateRaidDebug][Client] shipment=%s pirate=%d barrelPos=(%.1f,%.1f,%.1f)",
-								shipmentId,
-								idx,
-								barrelPos.X,
-								barrelPos.Y,
-								barrelPos.Z
-							))
-						end
-						local carrySourceClone: Instance? = nil
-						local carrySourceCF: CFrame? = nil
-						if barrelInst and barrelInst.Parent and (barrelInst:IsA("Model") or barrelInst:IsA("BasePart")) then
-							carrySourceClone = barrelInst:Clone()
-							carrySourceCF = getObjectCF(barrelInst)
-						end
-						local standTargetXZ = Vector3.new(barrelPos.X, 0, barrelPos.Z) + perp * BARREL_SIDE_OFFSET
-						local standPos = npcPivotOnDeck(playerBoat, standTargetXZ, pirateLift)
-							or Vector3.new(standTargetXZ.X, deckY, standTargetXZ.Z)
-						walkPirate(pirateData, uprightLookAt(standPos, barrelPos))
-						if barrelInst and barrelInst.Parent then
-							barrelInst:Destroy()
-						end
-						task.wait(0.2)
+			-- Hearts billboard
+			local function heartsString(hp: number): string
+				return string.rep("\xe2\x9d\xa4", hp) .. string.rep("\xf0\x9f\xa4\x8d", PIRATE_MAX_HP - hp)
+			end
+			for i, pirate in ipairs(pirates) do
+				local bb = Instance.new("BillboardGui")
+				bb.Name = "PirateMarker"
+				bb.Size = UDim2.new(3.5, 0, 1, 0)
+				bb.StudsOffset = Vector3.new(0, 5, 0)
+				bb.AlwaysOnTop = true
+				bb.Adornee = pirate.npc:FindFirstChild("Head") or pirate.npc.PrimaryPart or pirate.npc:FindFirstChildWhichIsA("BasePart")
+				local hl = Instance.new("TextLabel")
+				hl.Name = "Hearts"
+				hl.Size = UDim2.new(1, 0, 1, 0)
+				hl.BackgroundTransparency = 1
+				hl.TextColor3 = Color3.fromRGB(255, 255, 255)
+				hl.TextScaled = true
+				hl.Font = Enum.Font.GothamBold
+				hl.Text = heartsString(PIRATE_MAX_HP)
+				hl.Parent = bb
+				bb.Parent = pirate.npc
+			end
+			local function updateHearts(idx: number)
+				local m = pirates[idx] and pirates[idx].npc:FindFirstChild("PirateMarker")
+				local h = m and m:FindFirstChild("Hearts")
+				if h and h:IsA("TextLabel") then h.Text = heartsString(pirateHP[idx]) end
+			end
 
-						local carry: Instance
-						if carrySourceClone then
-							carry = carrySourceClone
-							prepareKinematicFx(carry)
-							setInstanceWorldCFrame(carry, carrySourceCF or CFrame.new(barrelPos))
-						else
-							carry = createBarrelVisualFromSnapshot(barrelSnapshot, barrelPos)
-						end
-						carry.Name = "CarriedBarrel"
-						prepareKinematicFx(carry)
-						setObjectCF(carry, CFrame.new(standPos + Vector3.new(0, BARREL_CARRY_UP, 0)))
-						carry.Parent = Workspace
-						Debris:AddItem(carry, 20)
-
-						local edgeDir = Vector3.new(zipFromBase.X - standPos.X, 0, zipFromBase.Z - standPos.Z)
-						edgeDir = if edgeDir.Magnitude > 0.001 then edgeDir.Unit else fwd
-						local edgeTargetXZ = Vector3.new(standPos.X + edgeDir.X * 8, 0, standPos.Z + edgeDir.Z * 8)
-						local edgePos = npcPivotOnDeck(playerBoat, edgeTargetXZ, pirateLift)
-							or Vector3.new(edgeTargetXZ.X, deckY, edgeTargetXZ.Z)
-						walkPirate(pirateData, uprightLookAt(edgePos, zipFromBase), nil, carry)
-
-						local tossTarget = pirateBoat:GetPivot().Position
-							+ Vector3.new(0, PIRATE_BOAT_DECK_Y + 1, 0)
-							+ fwd * ((idx - pirateMid) * PIRATE_SPACING)
-						if pirateDebug then
-							print(string.format(
-								"[PirateRaidDebug][Client] shipment=%s pirate=%d standPos=(%.1f,%.1f,%.1f) edgePos=(%.1f,%.1f,%.1f) tossTarget=(%.1f,%.1f,%.1f)",
-								shipmentId,
-								idx,
-								standPos.X,
-								standPos.Y,
-								standPos.Z,
-								edgePos.X,
-								edgePos.Y,
-								edgePos.Z,
-								tossTarget.X,
-								tossTarget.Y,
-								tossTarget.Z
-							))
-						end
-						animateMove(carry, getObjectCF(carry), CFrame.new(tossTarget), 0.9, TOSS_ARC_HEIGHT)
-						carry.Parent = pirateBoat
-						setInstanceWorldCFrame(carry, CFrame.new(tossTarget))
-						if pirateDebug then
-							print(string.format(
-								"[PirateRaidDebug][Client] shipment=%s pirate=%d mountedCarry=true",
-								shipmentId,
-								idx
-							))
-						end
-					elseif pirateDebug then
-						warn(string.format("[PirateRaidDebug][Client] shipment=%s pirate=%d barrelPos unresolved", shipmentId, idx))
+			-- hitPirate: knockback on non-lethal, fly off on lethal
+			local function hitPirate(pirateIdx: number)
+				if slappedSet[pirateIdx] then return end
+				local pd = pirates[pirateIdx]
+				if not pd or not pd.npc.Parent then return end
+				pirateHP[pirateIdx] -= 1
+				updateHearts(pirateIdx)
+				if pirateHP[pirateIdx] > 0 then
+					pirateCancelledI[pirateIdx] = true
+					pirateStunUntil[pirateIdx] = os.clock() + 1.0
+					local character = Players.LocalPlayer.Character
+					local hrp = character and character:FindFirstChild("HumanoidRootPart")
+					local kd = fwd
+					if hrp and hrp:IsA("BasePart") then
+						local tw = pd.cf.Position - hrp.Position
+						tw = Vector3.new(tw.X, 0, tw.Z)
+						kd = if tw.Magnitude > 0.1 then tw.Unit else fwd
 					end
-				elseif pirateDebug then
-					print(string.format("[PirateRaidDebug][Client] shipment=%s pirate=%d no assigned barrel", shipmentId, idx))
+					local kt = pd.cf.Position + kd * KNOCKBACK_DIST
+					task.spawn(function()
+						animateMove(pd.npc, pd.cf, CFrame.lookAt(kt, kt + kd), 0.2, 2)
+						pd.cf = CFrame.lookAt(kt, kt + kd)
+					end)
+					return
 				end
-
-				-- === RETURN: walk back to landing, slide up rope, drop on pirate boat ===
-				walkPirate(pirateData, uprightLookAt(landingPositions[idx], ropeEnd))
-				movePirate(pirateData, uprightLookAt(ropeEnd, ropeStart), RETURN_TO_ROPE_DUR, 0)
-				local upStart = os.clock()
-				while true do
-					local alpha = math.min((os.clock() - upStart) / RETURN_SLIDE_DUR, 1)
-					local eased = alpha * alpha * (3 - 2 * alpha)
-					local slidePos = ropeEnd:Lerp(ropeStart, eased)
-					slidePos += Vector3.new(0, -2.5 * math.sin(eased * math.pi), 0)
-					setObjectCF(pirateData.npc, uprightLookAt(slidePos, ropeStart))
-					if alpha >= 1 then break end
-					task.wait()
+				-- Killed
+				slappedSet[pirateIdx] = true
+				slappedCount += 1
+				pirateCancelledI[pirateIdx] = true
+				local mk = pd.npc:FindFirstChild("PirateMarker")
+				if mk then mk:Destroy() end
+				-- Only count as saved if they hadn't grabbed a barrel yet
+				local saved = 0
+				for idx2 = 1, toSteal do
+					if slappedSet[idx2] and not pirateGrabbedBarrel[idx2] then saved += 1 end
 				end
-				local pbPos = pirateBoat:GetPivot().Position
-				local returnPos = pbPos + Vector3.new(0, PIRATE_BOAT_DECK_Y, 0) + fwd * ((idx - pirateMid) * PIRATE_SPACING)
-				local returnCF = uprightLookAt(returnPos, returnPos + fwd)
-				animateMove(pirateData.npc, uprightLookAt(ropeStart, returnPos), returnCF, RETURN_DROP_DUR, 0)
-				pirateData.cf = returnCF
-			end)
-		end
-		-- Wait until EVERY pirate has finished their full flow (no minimum hold)
-		runTimedParallel(pirateFlows, 0)
-
-		Debris:AddItem(zipA, 0.1)
-		Debris:AddItem(zipB, 0.1)
-
-		for _, pirate in ipairs(pirates) do
-			if pirate.npc.Parent then
-				local worldCF = getObjectCF(pirate.npc)
-				pirate.npc.Parent = pirateBoat
-				setObjectCF(pirate.npc, worldCF)
-				pirate.cf = worldCF
-				applyStraitNpcGhostParts(pirate.npc)
+				counterLabel.Text = string.format("Barrels saved: %d/%d", saved, toSteal)
+				if saved >= toSteal then
+					counterLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+					counterLabel.Text = "ALL BARRELS SAVED!"
+				end
+				local sp = pd.cf.Position + perp * -35 + Vector3.new(0, -8, 0)
+				task.spawn(function()
+					animateMove(pd.npc, pd.cf, CFrame.new(sp), 0.7, SLAP_ARC)
+					Debris:AddItem(pd.npc, 0.1)
+				end)
 			end
-		end
-		applyStraitNpcGhostParts(pirateBoat)
 
+			-- Punch hit detection
+			local SoundService = game:GetService("SoundService")
+			local punchHitSound = Instance.new("Sound")
+			punchHitSound.SoundId = "rbxassetid://82459453430214"
+			punchHitSound.Volume = 1
+			punchHitSound.Parent = SoundService
+
+			local function doPunch()
+				if raidOver then return end
+				local character = Players.LocalPlayer.Character
+				if not character then return end
+				local hrp = character:FindFirstChild("HumanoidRootPart")
+				if not hrp or not hrp:IsA("BasePart") then return end
+				local origin = hrp.Position + hrp.CFrame.LookVector * 3
+				local PUNCH_RANGE = 14
+				local best: number? = nil
+				local bestDist = PUNCH_RANGE + 1
+				for i, pirate in ipairs(pirates) do
+					if slappedSet[i] then continue end
+					local d = (pirate.cf.Position - origin).Magnitude
+					if d <= PUNCH_RANGE and d < bestDist then
+						best = i
+						bestDist = d
+					end
+				end
+				if best then
+					hitPirate(best)
+					punchHitSound:Play()
+				end
+			end
+
+			punchSession = FirstPersonFistsController.beginSession({
+				cooldownSeconds = SLAP_COOLDOWN,
+				onPunch = doPunch,
+			})
+
+	
+			reportInteractiveResult = function()
+				if resultReported then return end
+				resultReported = true
+				local ids = {}
+				for idx in pairs(slappedSet) do
+					if not pirateGrabbedBarrel[idx] then
+						table.insert(ids, idx)
+					end
+				end
+				local gcr = require(Players.LocalPlayer:WaitForChild("PlayerScripts"):WaitForChild("Client"):WaitForChild("GetClientRemotes"))
+				local r = gcr()
+				if r and r.pirateRaidInteractiveResult then
+					r.pirateRaidInteractiveResult:FireServer({ raidToken = raidToken, slappedPirateIds = ids })
+				end
+			end
+
+			-- Full legacy per-pirate flows with interruptible walks
+			local BOARD_STAGGER = 0.25
+			local BOARD_TO_ROPE_DUR, BOARD_SLIDE_DUR, BOARD_DROP_DUR = 0.2, 0.6, 0.2
+			local RETURN_TO_ROPE_DUR, RETURN_SLIDE_DUR, RETURN_DROP_DUR = 0.2, 0.55, 0.2
+
+			-- Interruptible walk: same as walkPirate but checks pirateCancelledI/slappedSet
+			-- and supports stun-resume loop
+			local function interruptibleWalkToTarget(pirateData, idx: number, targetPos: Vector3, carry: Instance?)
+				while true do
+					if slappedSet[idx] then return true end
+					while os.clock() < pirateStunUntil[idx] do
+						if slappedSet[idx] then return true end
+						task.wait()
+					end
+					pirateCancelledI[idx] = false
+					local fromPos = pirateData.cf.Position
+					local dist = (targetPos - fromPos).Magnitude
+					if dist < 0.5 then return false end
+					local dur = dist / PIRATE_WALK_SPEED
+					local t0 = os.clock()
+					local flat = Vector3.new(targetPos.X - fromPos.X, 0, targetPos.Z - fromPos.Z)
+					local lookD = if flat.Magnitude > 0.001 then flat.Unit else fwd
+					local interrupted = false
+					while true do
+						if pirateCancelledI[idx] or slappedSet[idx] then
+							interrupted = true
+							break
+						end
+						local alpha = math.min((os.clock() - t0) / dur, 1)
+						local pos = fromPos:Lerp(targetPos, alpha)
+						local bob = math.abs(math.sin(os.clock() * math.pi * 2.4)) * 0.32
+						local cf = CFrame.lookAt(pos + Vector3.new(0, bob, 0), pos + lookD + Vector3.new(0, bob, 0))
+						setObjectCF(pirateData.npc, cf)
+						pirateData.cf = cf
+						if carry and carry.Parent then
+							setObjectCF(carry, CFrame.new(pos + Vector3.new(0, BARREL_CARRY_UP, 0)))
+						end
+						if alpha >= 1 then break end
+						task.wait()
+					end
+					if slappedSet[idx] then return true end
+					if not interrupted then return false end
+				end
+			end
+
+			local pirateFlows = {}
+			for i, pirate in ipairs(pirates) do
+				local idx = i
+				local pirateData = pirate
+				local myBarrel = if idx <= toSteal then deckBarrels[idx] else nil
+				table.insert(pirateFlows, function()
+					-- === BOARD: stagger, slide down rope, drop to landing (same as legacy) ===
+					task.wait((idx - 1) * BOARD_STAGGER)
+					movePirate(pirateData, uprightLookAt(ropeStart, ropeEnd), BOARD_TO_ROPE_DUR, 0)
+					local slideStart = os.clock()
+					while true do
+						local alpha = math.min((os.clock() - slideStart) / BOARD_SLIDE_DUR, 1)
+						local eased = alpha * alpha * (3 - 2 * alpha)
+						local slidePos = ropeStart:Lerp(ropeEnd, eased)
+						slidePos += Vector3.new(0, -2.5 * math.sin(eased * math.pi), 0)
+						setObjectCF(pirateData.npc, uprightLookAt(slidePos, ropeEnd))
+						if alpha >= 1 then break end
+						task.wait()
+					end
+					local landPos = landingPositions[idx]
+					local landCF = uprightLookAt(landPos, ropeEnd)
+					animateMove(pirateData.npc, uprightLookAt(ropeEnd, landPos), landCF, BOARD_DROP_DUR, 0)
+					pirateData.cf = landCF
+
+					if slappedSet[idx] then return end
+
+					-- === STEAL: walk to barrel, grab, walk to edge, toss (interruptible) ===
+					if myBarrel then
+						local barrelInst = myBarrel.instance
+						local barrelSnapshot = myBarrel.snapshot
+						local barrelPos = if barrelInst and barrelInst.Parent
+							then getInstanceWorldPosition(barrelInst)
+							else getBarrelSnapshotPosition(barrelSnapshot)
+						if barrelPos then
+							local carrySourceClone: Instance? = nil
+							local carrySourceCF: CFrame? = nil
+							if barrelInst and barrelInst.Parent and (barrelInst:IsA("Model") or barrelInst:IsA("BasePart")) then
+								carrySourceClone = barrelInst:Clone()
+								carrySourceCF = getObjectCF(barrelInst)
+							end
+							local standTargetXZ = Vector3.new(barrelPos.X, 0, barrelPos.Z) + perp * BARREL_SIDE_OFFSET
+							local standPos = npcPivotOnDeck(playerBoat, standTargetXZ, pirateLift, deckY - pirateLift)
+								or Vector3.new(standTargetXZ.X, deckY, standTargetXZ.Z)
+
+							-- Walk to barrel (interruptible with knockback+stun resume)
+							if interruptibleWalkToTarget(pirateData, idx, standPos) then return end
+
+							-- Grab barrel (oil is now lost)
+							pirateGrabbedBarrel[idx] = true
+							if barrelInst and barrelInst.Parent then
+								barrelInst:Destroy()
+							end
+							task.wait(0.2)
+							if slappedSet[idx] then return end
+
+							local carry: Instance
+							if carrySourceClone then
+								carry = carrySourceClone
+								prepareKinematicFx(carry)
+								setInstanceWorldCFrame(carry, carrySourceCF or CFrame.new(barrelPos))
+							else
+								carry = createBarrelVisualFromSnapshot(barrelSnapshot, barrelPos)
+							end
+							carry.Name = "CarriedBarrel"
+							prepareKinematicFx(carry)
+							setObjectCF(carry, CFrame.new(standPos + Vector3.new(0, BARREL_CARRY_UP, 0)))
+							carry.Parent = Workspace
+							Debris:AddItem(carry, 20)
+
+							-- Walk to edge carrying barrel
+							local edgeDir = Vector3.new(zipFromBase.X - standPos.X, 0, zipFromBase.Z - standPos.Z)
+							edgeDir = if edgeDir.Magnitude > 0.001 then edgeDir.Unit else fwd
+							local edgeTargetXZ = Vector3.new(standPos.X + edgeDir.X * 8, 0, standPos.Z + edgeDir.Z * 8)
+							local edgePos = npcPivotOnDeck(playerBoat, edgeTargetXZ, pirateLift, deckY - pirateLift)
+								or Vector3.new(edgeTargetXZ.X, deckY, edgeTargetXZ.Z)
+
+							if interruptibleWalkToTarget(pirateData, idx, edgePos, carry) then
+								-- Punched off while carrying — barrel goes with them
+								if carry and carry.Parent then
+									Debris:AddItem(carry, 0.1)
+								end
+								return
+							end
+
+							-- Toss barrel onto pirate boat (same as legacy)
+							local tossTarget = pirateBoat:GetPivot().Position
+								+ Vector3.new(0, PIRATE_BOAT_DECK_Y + 1, 0)
+								+ fwd * ((idx - pirateMid) * PIRATE_SPACING)
+							animateMove(carry, getObjectCF(carry), CFrame.new(tossTarget), 0.9, TOSS_ARC_HEIGHT)
+							carry.Parent = pirateBoat
+							setInstanceWorldCFrame(carry, CFrame.new(tossTarget))
+						end
+					end
+
+					if slappedSet[idx] then return end
+
+					-- === RETURN: walk back to landing, zipline up, drop on pirate boat (same as legacy) ===
+					walkPirate(pirateData, uprightLookAt(landingPositions[idx], ropeEnd))
+					movePirate(pirateData, uprightLookAt(ropeEnd, ropeStart), RETURN_TO_ROPE_DUR, 0)
+					local upStart = os.clock()
+					while true do
+						local alpha = math.min((os.clock() - upStart) / RETURN_SLIDE_DUR, 1)
+						local eased = alpha * alpha * (3 - 2 * alpha)
+						local slidePos = ropeEnd:Lerp(ropeStart, eased)
+						slidePos += Vector3.new(0, -2.5 * math.sin(eased * math.pi), 0)
+						setObjectCF(pirateData.npc, uprightLookAt(slidePos, ropeStart))
+						if alpha >= 1 then break end
+						task.wait()
+					end
+					local pbPos = pirateBoat:GetPivot().Position
+					local returnPos = pbPos + Vector3.new(0, PIRATE_BOAT_DECK_Y, 0) + fwd * ((idx - pirateMid) * PIRATE_SPACING)
+					local returnCF = uprightLookAt(returnPos, returnPos + fwd)
+					animateMove(pirateData.npc, uprightLookAt(ropeStart, returnPos), returnCF, RETURN_DROP_DUR, 0)
+					pirateData.cf = returnCF
+					-- Remove marker after pirate returns safely
+					local mk = pirateData.npc:FindFirstChild("PirateMarker")
+					if mk then mk:Destroy() end
+				end)
+			end
+			-- Run all pirate flows in parallel, wait for all to finish
+			runTimedParallel(pirateFlows, 0)
+
+			-- Fight is over
+			raidOver = true
+			if punchSession then
+				punchSession:Disconnect()
+				punchSession = nil
+			end
+			if lp then
+				lp.CameraMinZoomDistance = savedMinZoom or 0.5
+				lp.CameraMaxZoomDistance = savedMaxZoom or 400
+			end
+
+			-- Report to server
+			if reportInteractiveResult then reportInteractiveResult() end
+
+			-- Final HUD
+			local saved = 0
+			for idx = 1, toSteal do
+				if slappedSet[idx] and not pirateGrabbedBarrel[idx] then saved += 1 end
+			end
+			timerLabel.Text = if saved >= toSteal then "ALL BARRELS SAVED!" else string.format("Lost %d barrels", toSteal - saved)
+			timerLabel.TextColor3 = if saved >= toSteal then Color3.fromRGB(100, 255, 100) else Color3.fromRGB(255, 80, 80)
+			task.delay(3, function()
+				if slapGui.Parent then slapGui:Destroy() end
+			end)
+
+			-- Clean up zip anchors + sounds (pirates already on pirate boat or destroyed)
+			Debris:AddItem(zipA, 0.1)
+			Debris:AddItem(zipB, 0.1)
+			Debris:AddItem(punchHitSound, 0.5)
+
+			-- Move surviving pirates onto pirate boat (same as legacy)
+			for _, pirate in ipairs(pirates) do
+				if pirate.npc.Parent and pirate.npc.Parent ~= pirateBoat then
+					local worldCF = getObjectCF(pirate.npc)
+					pirate.npc.Parent = pirateBoat
+					setObjectCF(pirate.npc, worldCF)
+					pirate.cf = worldCF
+					applyStraitNpcGhostParts(pirate.npc)
+				end
+			end
+			applyStraitNpcGhostParts(pirateBoat)
+		else
+			-- ==========================================
+			-- LEGACY PIRATE RAID CINEMATIC (unchanged)
+			-- ==========================================
+			local toSteal = math.min(barrelsStolen, #deckBarrels, PIRATE_COUNT)
+			if pirateDebug then
+				print(string.format(
+					"[PirateRaidDebug][Client] shipment=%s liveDeckBarrels=%d usableTargets=%d toSteal=%d pirateCount=%d",
+					shipmentId,
+					#collectDeckBarrelInstances(playerBoat),
+					#deckBarrels,
+					toSteal,
+					PIRATE_COUNT
+				))
+				if toSteal <= 0 then
+					warn(string.format("[PirateRaidDebug][Client] shipment=%s no barrel targets resolved", shipmentId))
+				end
+			end
+
+			-- Unified per-pirate flow: board → steal → return, all in parallel, no phase walls
+			local BOARD_STAGGER = 0.25
+			local BOARD_TO_ROPE_DUR, BOARD_SLIDE_DUR, BOARD_DROP_DUR = 0.2, 0.6, 0.2
+			local RETURN_TO_ROPE_DUR, RETURN_SLIDE_DUR, RETURN_DROP_DUR = 0.2, 0.55, 0.2
+
+			local pirateFlows = {}
+			for i, pirate in ipairs(pirates) do
+				local idx = i
+				local pirateData = pirate
+				local myBarrel = if idx <= toSteal then deckBarrels[idx] else nil
+				table.insert(pirateFlows, function()
+					task.wait((idx - 1) * BOARD_STAGGER)
+					movePirate(pirateData, uprightLookAt(ropeStart, ropeEnd), BOARD_TO_ROPE_DUR, 0)
+					local slideStart = os.clock()
+					while true do
+						local alpha = math.min((os.clock() - slideStart) / BOARD_SLIDE_DUR, 1)
+						local eased = alpha * alpha * (3 - 2 * alpha)
+						local slidePos = ropeStart:Lerp(ropeEnd, eased)
+						slidePos += Vector3.new(0, -2.5 * math.sin(eased * math.pi), 0)
+						setObjectCF(pirateData.npc, uprightLookAt(slidePos, ropeEnd))
+						if alpha >= 1 then break end
+						task.wait()
+					end
+					local landPos = landingPositions[idx]
+					local landCF = uprightLookAt(landPos, ropeEnd)
+					animateMove(pirateData.npc, uprightLookAt(ropeEnd, landPos), landCF, BOARD_DROP_DUR, 0)
+					pirateData.cf = landCF
+
+					if myBarrel then
+						local barrelInst = myBarrel.instance
+						local barrelSnapshot = myBarrel.snapshot
+						local barrelPos = if barrelInst and barrelInst.Parent
+							then getInstanceWorldPosition(barrelInst)
+							else getBarrelSnapshotPosition(barrelSnapshot)
+						if barrelPos then
+							local carrySourceClone: Instance? = nil
+							local carrySourceCF: CFrame? = nil
+							if barrelInst and barrelInst.Parent and (barrelInst:IsA("Model") or barrelInst:IsA("BasePart")) then
+								carrySourceClone = barrelInst:Clone()
+								carrySourceCF = getObjectCF(barrelInst)
+							end
+							local standTargetXZ = Vector3.new(barrelPos.X, 0, barrelPos.Z) + perp * BARREL_SIDE_OFFSET
+							local standPos = npcPivotOnDeck(playerBoat, standTargetXZ, pirateLift, deckY - pirateLift)
+								or Vector3.new(standTargetXZ.X, deckY, standTargetXZ.Z)
+							walkPirate(pirateData, uprightLookAt(standPos, barrelPos))
+							if barrelInst and barrelInst.Parent then
+								barrelInst:Destroy()
+							end
+							task.wait(0.2)
+
+							local carry: Instance
+							if carrySourceClone then
+								carry = carrySourceClone
+								prepareKinematicFx(carry)
+								setInstanceWorldCFrame(carry, carrySourceCF or CFrame.new(barrelPos))
+							else
+								carry = createBarrelVisualFromSnapshot(barrelSnapshot, barrelPos)
+							end
+							carry.Name = "CarriedBarrel"
+							prepareKinematicFx(carry)
+							setObjectCF(carry, CFrame.new(standPos + Vector3.new(0, BARREL_CARRY_UP, 0)))
+							carry.Parent = Workspace
+							Debris:AddItem(carry, 20)
+
+							local edgeDir = Vector3.new(zipFromBase.X - standPos.X, 0, zipFromBase.Z - standPos.Z)
+							edgeDir = if edgeDir.Magnitude > 0.001 then edgeDir.Unit else fwd
+							local edgeTargetXZ = Vector3.new(standPos.X + edgeDir.X * 8, 0, standPos.Z + edgeDir.Z * 8)
+							local edgePos = npcPivotOnDeck(playerBoat, edgeTargetXZ, pirateLift, deckY - pirateLift)
+								or Vector3.new(edgeTargetXZ.X, deckY, edgeTargetXZ.Z)
+							walkPirate(pirateData, uprightLookAt(edgePos, zipFromBase), nil, carry)
+
+							local tossTarget = pirateBoat:GetPivot().Position
+								+ Vector3.new(0, PIRATE_BOAT_DECK_Y + 1, 0)
+								+ fwd * ((idx - pirateMid) * PIRATE_SPACING)
+							animateMove(carry, getObjectCF(carry), CFrame.new(tossTarget), 0.9, TOSS_ARC_HEIGHT)
+							carry.Parent = pirateBoat
+							setInstanceWorldCFrame(carry, CFrame.new(tossTarget))
+						end
+					end
+
+					walkPirate(pirateData, uprightLookAt(landingPositions[idx], ropeEnd))
+					movePirate(pirateData, uprightLookAt(ropeEnd, ropeStart), RETURN_TO_ROPE_DUR, 0)
+					local upStart = os.clock()
+					while true do
+						local alpha = math.min((os.clock() - upStart) / RETURN_SLIDE_DUR, 1)
+						local eased = alpha * alpha * (3 - 2 * alpha)
+						local slidePos = ropeEnd:Lerp(ropeStart, eased)
+						slidePos += Vector3.new(0, -2.5 * math.sin(eased * math.pi), 0)
+						setObjectCF(pirateData.npc, uprightLookAt(slidePos, ropeStart))
+						if alpha >= 1 then break end
+						task.wait()
+					end
+					local pbPos = pirateBoat:GetPivot().Position
+					local returnPos = pbPos + Vector3.new(0, PIRATE_BOAT_DECK_Y, 0) + fwd * ((idx - pirateMid) * PIRATE_SPACING)
+					local returnCF = uprightLookAt(returnPos, returnPos + fwd)
+					animateMove(pirateData.npc, uprightLookAt(ropeStart, returnPos), returnCF, RETURN_DROP_DUR, 0)
+					pirateData.cf = returnCF
+				end)
+			end
+			runTimedParallel(pirateFlows, 0)
+
+			Debris:AddItem(zipA, 0.1)
+			Debris:AddItem(zipB, 0.1)
+
+			for _, pirate in ipairs(pirates) do
+				if pirate.npc.Parent then
+					local worldCF = getObjectCF(pirate.npc)
+					pirate.npc.Parent = pirateBoat
+					setObjectCF(pirate.npc, worldCF)
+					pirate.cf = worldCF
+					applyStraitNpcGhostParts(pirate.npc)
+				end
+			end
+			applyStraitNpcGhostParts(pirateBoat)
+		end
+
+		-- Shared escape: pirate boat drives away
 		local driveAwayDur = math.max(0.2, PHASE_ESCAPE - RETURN_WINDOW)
 		local escapePos = pirateBoat:GetPivot().Position + fwd * ESCAPE_DIST
 		escapePos = Vector3.new(escapePos.X, rootPos.Y, escapePos.Z)
 		animateMove(pirateBoat, pirateBoat:GetPivot(), uprightLookAt(escapePos, escapePos + fwd), driveAwayDur, 0)
+		if reportInteractiveResult then
+			reportInteractiveResult()
+		end
 
 		Debris:AddItem(pirateBoat, 2)
 	end)

@@ -87,6 +87,9 @@ task.spawn(function()
 end)
 local PlotKpiVisibility = require(resolveClientModule(script, "PlotKpiVisibility"))
 PlotKpiVisibility.start()
+
+local FirstPersonFistsController = require(resolveClientModule(script, "FirstPersonFistsController"))
+FirstPersonFistsController.start()
 local ClientPlotGrid = require(resolveClientModule(script, "ClientPlotGrid"))
 local DrillAnimationClient = require(resolveClientModule(script, "DrillAnimationClient"))
 local DrillReplicationClient = require(resolveClientModule(script, "DrillReplicationClient"))
@@ -113,6 +116,8 @@ type StraitWaypointFxModule = {
 	OnUSShipSlapPayload: (data: { [string]: any }) -> (),
 	OnStormPayload: (data: { [string]: any }) -> (),
 	OnTornadoPayload: (data: { [string]: any }) -> (),
+	OnVoyageStarted: () -> (),
+	OnVoyageEnded: () -> (),
 }
 
 local function straitWaypointFxStub(): StraitWaypointFxModule
@@ -125,6 +130,8 @@ local function straitWaypointFxStub(): StraitWaypointFxModule
 		OnUSShipSlapPayload = function() end,
 		OnStormPayload = function() end,
 		OnTornadoPayload = function() end,
+		OnVoyageStarted = function() end,
+		OnVoyageEnded = function() end,
 	}
 end
 

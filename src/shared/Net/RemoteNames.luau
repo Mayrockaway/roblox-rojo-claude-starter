@@ -98,6 +98,11 @@ local RemoteNames = {
 	PirateHireOpen = "PirateHireOpen",
 	PirateHireResult = "PirateHireResult",
 	PirateHitAlert = "PirateHitAlert",
+	--- Client → server: interactive pirate raid result. Payload:
+	--- `{ raidToken = string, slappedPirateIds = { number } }`.
+	--- Server validates token, pirate indices, timing, then applies
+	--- proportional barrel loss (un-slapped pirates steal barrels).
+	PirateRaidInteractiveResult = "PirateRaidInteractiveResult",
 
 	-- Daily free drill: claim the current cycle's random drill (same for all players).
 	-- Server replies on `OilActionResult` with action `"ClaimDailyDrill"`.

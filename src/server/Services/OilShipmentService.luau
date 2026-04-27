@@ -913,6 +913,12 @@ function OilShipmentService:Start()
 	table.insert(self._connections, teleportHire.OnServerEvent:Connect(function(player)
 		self:_handleTeleportToHire(player)
 	end))
+
+	-- Interactive pirate raid: client reports which pirates were slapped
+	local pirateRaidResult = self._remoteService:GetEvent(RemoteNames.PirateRaidInteractiveResult)
+	table.insert(self._connections, pirateRaidResult.OnServerEvent:Connect(function(player, payload)
+		self:_handlePirateRaidInteractiveResult(player, payload)
+	end))
 end
 
 function OilShipmentService:_handleTeleportToShip(player: Player, payload: any?)
@@ -1681,6 +1687,8 @@ function OilShipmentService:_runShipment(shipment)
 			if forcedLost then
 				voyageAborted = true
 			end
+			-- Check for expired interactive pirate raid (AFK/disconnect timeout)
+			self:_checkPendingInteractiveRaidTimeout(shipment, ctx)
 		end
 
 		local s_hull = s_hull_prev
@@ -1725,7 +1733,7 @@ function OilShipmentService:_runShipment(shipment)
 			local remaining = totalPathLen - s_hull
 			local shipState = self._activeShips[shipment.shipmentId]
 			if shipState and shipState.alignPos and remaining < 80 then
-				shipState.alignPos.Responsiveness = 20
+				shipState.alignPos.Responsiveness = 10
 			end
 
 			local prevArc = s_hull_prev
@@ -1752,6 +1760,8 @@ function OilShipmentService:_runShipment(shipment)
 					if ctx then
 						ctx.eventInProgress = false
 					end
+					-- Reset stuck timer after any strait event freeze (pirate raids, CG inspections, etc.)
+					lastProgressClock = os.clock()
 					if lost then
 						voyageAborted = true
 						break
@@ -1801,7 +1811,10 @@ function OilShipmentService:_runShipment(shipment)
 				end
 			end
 
-			local wallElapsed = workspace:GetServerTimeNow() - voyageWallStart
+			-- Use voyage clock (freeze-adjusted) for the hard wall, not raw wall time.
+			-- Raw wall time includes freeze pauses (pirate raids, CG inspections),
+			-- which are already accounted for in voyageClock.startTime offsets.
+			local wallElapsed = workspace:GetServerTimeNow() - voyageClock.startTime
 			local hardWall = wallElapsed > voyageTime * VOYAGE_FAILSAFE_MAX_WALL_MULT
 			local stuckNoMove = (os.clock() - lastProgressClock) > VOYAGE_FAILSAFE_STUCK_SECONDS
 				and s_hull < totalPathLen - VOYAGE_COMPLETE_ARC_EPS_STUDS
@@ -1819,6 +1832,13 @@ function OilShipmentService:_runShipment(shipment)
 				self:_updateShipPosition(shipment.shipmentId, boat, Vector3.new(endPos.X, endPos.Y, endPos.Z), flatE)
 			end
 			if arrived or hardWall or stuckNoMove then
+				warn(string.format(
+					"[VoyageEnd] shipment=%s arrived=%s hardWall=%s stuckNoMove=%s wallElapsed=%.1f voyageTime=%.1f s_hull=%.1f totalPath=%.1f stuckSec=%.1f",
+					shipment.shipmentId,
+					tostring(arrived), tostring(hardWall), tostring(stuckNoMove),
+					wallElapsed, voyageTime, s_hull, totalPathLen,
+					os.clock() - lastProgressClock
+				))
 				self:_emitShipmentEvent("ShipmentVoyageComplete", {
 					ownerUserId = ownerUserId,
 					shipmentId = shipment.shipmentId,
@@ -2405,6 +2425,7 @@ function OilShipmentService:_loadBarrelsOnDeck(boat: Instance, manifest)
 					part.Anchored = false
 					part.Massless = true
 					part.CanCollide = true
+					part.Transparency = 0.3
 					pcall(function()
 						(part :: BasePart).CollisionGroup = BoatCollisionContract.CollisionGroup
 					end)
@@ -2503,6 +2524,51 @@ function OilShipmentService:_straitDebugLogEnabled(): boolean
 		return false
 	end
 	return d.LogWaypointTriggers or d.VerboseStraitWaypointLogsInStudio ~= false
+end
+
+--- Dry-run barrel loss: returns the count and per-tier breakdown that WOULD be lost
+--- without modifying the manifest. Used by interactive pirate raids to pre-compute potential loss.
+function OilShipmentService:_computeLooseBarrelLoss(shipment, fraction: number, minFloor: number?): (number, { [string]: number })
+	local removedByTier: { [string]: number } = {}
+	if fraction <= 0 and (minFloor or 0) <= 0 then
+		return 0, removedByTier
+	end
+	local manifest = shipment.manifest
+	if typeof(manifest) ~= "table" then
+		return 0, removedByTier
+	end
+	local onShip = 0
+	for _, tier in ipairs(TIER_ORDER) do
+		onShip += manifest[tier] or 0
+	end
+	if onShip <= 0 then
+		return 0, removedByTier
+	end
+	local toRemove = math.ceil(onShip * fraction)
+	if minFloor and minFloor > toRemove then
+		toRemove = minFloor
+	end
+	if toRemove > onShip then
+		toRemove = onShip
+	end
+	if toRemove <= 0 then
+		return 0, removedByTier
+	end
+	local removed = 0
+	for _, tier in ipairs(BARREL_LOSS_TIER_ORDER) do
+		local have = manifest[tier] or 0
+		if have > 0 then
+			local take = math.min(have, toRemove - removed)
+			if take > 0 then
+				removed += take
+				removedByTier[tier] = (removedByTier[tier] or 0) + take
+			end
+		end
+		if removed >= toRemove then
+			break
+		end
+	end
+	return removed, removedByTier
 end
 
 -- Returns oil units removed (sum) and per-tier oil removed. Loss = max(minFloor, ceil(manifestSum * fraction)),
@@ -2862,6 +2928,144 @@ function OilShipmentService:_maybeProcessForcedPirateHit(
 	return didTotalLoss
 end
 
+--- Handle the client's interactive pirate raid result. Validates the payload,
+--- computes proportional barrel loss based on how many pirates the player slapped,
+--- and applies the final deduction.
+function OilShipmentService:_handlePirateRaidInteractiveResult(player: Player, payload: { [string]: any })
+	if typeof(payload) ~= "table" then
+		return
+	end
+	local raidToken = payload.raidToken
+	if typeof(raidToken) ~= "string" then
+		return
+	end
+	local slappedIds = payload.slappedPirateIds
+	if typeof(slappedIds) ~= "table" then
+		return
+	end
+
+	-- Find the matching shipment context by raidToken
+	local matchShipmentId: string? = nil
+	local matchCtx: { [string]: any }? = nil
+	for sid, ctx in pairs(self._shipmentContexts) do
+		local pending = ctx.pendingInteractiveRaid
+		if pending and pending.raidToken == raidToken then
+			-- Verify player is the owner via _activeShipmentByOwner
+			if self._activeShipmentByOwner[player.UserId] == sid then
+				matchShipmentId = sid
+				matchCtx = ctx
+			end
+			break
+		end
+	end
+
+	if not matchCtx or not matchShipmentId then
+		if RunService:IsStudio() then
+			warn("[PirateRaidDebug][Server] Interactive result rejected: no matching pending raid for token", raidToken)
+		end
+		return
+	end
+
+	local pending = matchCtx.pendingInteractiveRaid
+	if not pending then
+		return
+	end
+
+	local pirateCount = pending.pirateCount
+
+	-- Validate slapped pirate IDs: unique integers in [1, pirateCount]
+	local validSlapped: { [number]: boolean } = {}
+	local slappedCount = 0
+	for _, id in ipairs(slappedIds) do
+		local idx = tonumber(id)
+		if idx and idx >= 1 and idx <= pirateCount and idx == math.floor(idx) and not validSlapped[idx] then
+			validSlapped[idx] = true
+			slappedCount += 1
+		end
+	end
+	slappedCount = math.min(slappedCount, pirateCount)
+
+	-- Store the result on the pending raid. The voyage-loop timeout checker
+	-- (_checkPendingInteractiveRaidTimeout) will see .clientResult and apply
+	-- proportional loss instead of full loss, because it has the shipment object.
+	pending.clientResult = {
+		slappedCount = slappedCount,
+	}
+	pending.resumeAfterResultAt = workspace:GetServerTimeNow() + (tonumber(pending.resumeDelaySeconds) or 0)
+	-- Mark as resolved so timeout applies the result immediately on next tick
+	pending.expiresAt = 0
+
+	if RunService:IsStudio() then
+		print(string.format(
+			"[PirateRaidDebug][Server] Interactive result received: slapped=%d/%d — queued for voyage loop to apply",
+			slappedCount, pirateCount
+		))
+	end
+end
+
+--- Check for expired interactive pirate raids in the voyage loop. If the client
+--- never reports (AFK/disconnect), apply full barrel loss after the timeout.
+--- Checks the pending interactive raid on this shipment's context.
+--- Called each frame from the voyage loop. Handles two cases:
+--- 1. Client sent result (.clientResult set) — apply proportional loss
+--- 2. Timeout expired — apply full loss (AFK/disconnect)
+function OilShipmentService:_checkPendingInteractiveRaidTimeout(shipment, ctx: { [string]: any }?)
+	-- pendingInteractiveRaid lives on the voyage context now
+	local ctxToUse = ctx
+	if not ctxToUse then
+		-- Fallback: look up by shipmentId
+		ctxToUse = self._shipmentContexts[shipment.shipmentId]
+	end
+	if not ctxToUse then
+		return
+	end
+	local pending = ctxToUse.pendingInteractiveRaid
+	if not pending then
+		return
+	end
+	if workspace:GetServerTimeNow() < pending.expiresAt then
+		return
+	end
+
+	ctxToUse.pendingInteractiveRaid = nil
+
+	-- Determine loss fraction based on whether client reported
+	local lossFrac = pending.resolvedLossFrac
+	local clientResult = pending.clientResult
+	if clientResult then
+		-- Proportional: only un-slapped pirates steal
+		local slappedCount = clientResult.slappedCount or 0
+		local pirateCount = pending.pirateCount or 1
+		local unsaved = pirateCount - slappedCount
+		lossFrac = pending.resolvedLossFrac * (unsaved / pirateCount)
+		if RunService:IsStudio() then
+			print(string.format("[PirateRaidDebug][Server] Interactive result applied: slapped=%d/%d adjustedFrac=%.3f",
+				slappedCount, pirateCount, lossFrac))
+		end
+	else
+		if RunService:IsStudio() then
+			warn("[PirateRaidDebug][Server] Interactive raid TIMEOUT — full loss")
+		end
+	end
+
+	local barrelsStolen = 0
+	local stolenByTier: { [string]: number } = {}
+	if lossFrac > 0 then
+		barrelsStolen, stolenByTier = self:_applyLooseBarrelLoss(shipment, lossFrac)
+	end
+	if barrelsStolen > 0 then
+		self:_emitManifestHudSnapshot(shipment, {
+			title = ManifestIncidentTitle.fromEventId(pending.defId),
+			eventId = pending.defId,
+			totalLoss = false,
+			lossOilByTier = stolenByTier,
+		})
+	end
+	if RunService:IsStudio() then
+		print(string.format("[PirateRaidDebug][Server] Barrel loss applied: %d barrels stolen", barrelsStolen))
+	end
+end
+
 --- Pause a shipment ship for a cinematic strait event (CoastGuard inspection,
 --- PirateRaid boarding) WITHOUT yanking the player off the deck.
 ---
@@ -2886,6 +3090,7 @@ end
 --- Toggle via `Constants.StraitEventsDebug.LogFreezeCharacterSnapshot`.
 local FREEZE_BRAKE_SECONDS = 0.35
 local FREEZE_SNAPSHOT_INTERVAL_SECONDS = 0.5
+local FREEZE_EARLY_EXIT_POLL_SECONDS = 0.1
 
 --- After the cinematic freeze ends and the boat un-anchors, eases
 --- `alignPos.Position` from the boat's current resting position out to the
@@ -3066,8 +3271,10 @@ end
 
 function OilShipmentService:_freezeShipForStraitEventCinematic(
 	shipmentId: string,
-	durationSec: number
-)
+	durationSec: number,
+	shouldEndEarly: (() -> boolean)?
+): number
+	local freezeStartedAt = os.clock()
 	local shipState = self._activeShips[shipmentId]
 	local rootPart: BasePart? = shipState and shipState.root
 	local alignPos = shipState and shipState.alignPos
@@ -3143,10 +3350,21 @@ function OilShipmentService:_freezeShipForStraitEventCinematic(
 	-- Lets us see if anything attaches mid-event (e.g. seat capture, weld
 	-- from a sweeping NPC ship part, runtime BodyMover) that would explain
 	-- a continuous pull toward the cosmetic NPC ship.
+	local function shouldBreakHold(): boolean
+		if not shouldEndEarly then
+			return false
+		end
+		local ok, result = pcall(shouldEndEarly)
+		return ok and result == true
+	end
+
 	local holdSec = math.max(0, durationSec - FREEZE_BRAKE_SECONDS)
 	if snapshotEnabled and ownerChar and holdSec > 0 then
 		local elapsed = 0
 		while elapsed < holdSec do
+			if shouldBreakHold() then
+				break
+			end
 			local step = math.min(FREEZE_SNAPSHOT_INTERVAL_SECONDS, holdSec - elapsed)
 			task.wait(step)
 			elapsed += step
@@ -3159,7 +3377,15 @@ function OilShipmentService:_freezeShipForStraitEventCinematic(
 			end
 		end
 	else
-		task.wait(holdSec)
+		local elapsed = 0
+		while elapsed < holdSec do
+			if shouldBreakHold() then
+				break
+			end
+			local step = math.min(FREEZE_EARLY_EXIT_POLL_SECONDS, holdSec - elapsed)
+			task.wait(step)
+			elapsed += step
+		end
 	end
 
 	if rootPart and not wasAnchored then
@@ -3195,6 +3421,7 @@ function OilShipmentService:_freezeShipForStraitEventCinematic(
 			end
 		end
 	end
+	return os.clock() - freezeStartedAt
 end
 
 -- Returns true if shipment is a total loss (caller must cleanup boat and exit _runShipment).
@@ -3679,67 +3906,148 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	if def.pirateEvent then
 		local pc = StraitEventCatalog.PirateRaidConfig
 
-		-- Apply barrel loss (server-authoritative, same as normal event)
-		local barrelsStolen = 0
-		local stolenByTier: { [string]: number } = {}
-		local stolenDeckBarrels = {}
+		-- Roll potential barrel loss fraction (not applied yet for interactive mode)
 		local resolvedLossFrac = def.looseBarrelLossFraction
 		if def.looseBarrelLossFractionMin and def.looseBarrelLossFractionMax then
 			resolvedLossFrac = rng:NextNumber(def.looseBarrelLossFractionMin, def.looseBarrelLossFractionMax)
 		end
-		if resolvedLossFrac and resolvedLossFrac > 0 then
-			barrelsStolen, stolenByTier = self:_applyLooseBarrelLoss(shipment, resolvedLossFrac)
-			stolenDeckBarrels = self:_snapshotLostDeckBarrels(boat, stolenByTier, barrelsStolen)
-		end
-		if barrelsStolen > 0 then
-			self:_emitManifestHudSnapshot(shipment, {
-				title = ManifestIncidentTitle.fromEventId(def.id),
-				eventId = def.id,
-				totalLoss = false,
-				lossOilByTier = stolenByTier,
-			})
-		end
+		resolvedLossFrac = resolvedLossFrac or 0
 
 		-- Pick approach side (perpendicular to ship heading)
 		local approachSide = rng:NextNumber() < 0.5 and 1 or -1
 
-		-- Fire pirate raid event to all clients
-		self:_emitShipmentEvent("PirateRaidEvent", {
-			ownerUserId = ownerUserId,
-			shipmentId = shipment.shipmentId,
-			eventId = def.id,
-			displayName = def.displayName,
-			playtestTitle = playtestTitle,
-			severity = severity,
-			barrelsStolen = barrelsStolen,
-			totalLoaded = shipment.totalLoaded,
-			stolenDeckBarrels = stolenDeckBarrels,
-			approachSide = approachSide,
-			worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
-			particleFxScale = particleFxScale,
-		})
-		if RunService:IsStudio() then
-			print(string.format(
-				"[PirateRaidDebug][Server] shipment=%s barrelsStolen=%d snapshotCount=%d approachSide=%d",
-				shipment.shipmentId,
-				barrelsStolen,
-				#stolenDeckBarrels,
-				approachSide
-			))
+		-- Determine pirate count (same formula as client)
+		local pirateCount = math.clamp(math.ceil(resolvedLossFrac * 20), 1, 5)
+
+		-- Interactive mode: defer barrel loss until player reports slap results
+		local useInteractive = pc.InteractiveEnabled == true and resolvedLossFrac > 0
+		-- Need the owner player online to interact
+		local ownerPlayer: Player? = nil
+		if useInteractive then
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p.UserId == ownerUserId then
+					ownerPlayer = p
+					break
+				end
+			end
+			if not ownerPlayer then
+				useInteractive = false
+			end
 		end
 
-		if log then
-			print(string.format("  [StraitShipment DEBUG] PIRATE RAID: %d barrels stolen, side=%d, pausing %ds",
-				barrelsStolen, approachSide, pc.SequenceDuration))
-		end
+		if useInteractive then
+			-- INTERACTIVE PATH: deferred barrel loss
+			local raidToken = HttpService:GenerateGUID(false)
+			-- Snapshot barrels for client animation (max possible loss)
+			local maxBarrels, maxStolenByTier = self:_computeLooseBarrelLoss(shipment, resolvedLossFrac)
+			local stolenDeckBarrels = self:_snapshotLostDeckBarrels(boat, maxStolenByTier, maxBarrels)
 
-		-- Pause ship for the full cinematic sequence. Brakes via AlignPosition
-		-- before anchoring so the player character on the deck doesn't slide
-		-- forward from inertia — see `_freezeShipForStraitEventCinematic`
-		-- doc-comment. Same treatment as CG inspection above.
-		self:_freezeShipForStraitEventCinematic(shipment.shipmentId, pc.SequenceDuration)
-		voyageClock.startTime += pc.SequenceDuration
-		return false
+			-- Store pending interactive raid on the voyage context (not shipment — ctx is accessible from voyage loop)
+			local interactionWindow = (tonumber(pc.InteractionWindowSeconds) or 9)
+			local serverTimeout = interactionWindow + (tonumber(pc.ServerTimeoutBufferSeconds) or 3)
+			-- Freeze for full sequence so ship stays still during the fight
+			local freezeDuration = pc.SequenceDuration
+			local voyageCtx = self._shipmentContexts[shipment.shipmentId]
+			if voyageCtx then
+				voyageCtx.pendingInteractiveRaid = {
+					raidToken = raidToken,
+					pirateCount = pirateCount,
+					resolvedLossFrac = resolvedLossFrac,
+					expiresAt = workspace:GetServerTimeNow() + serverTimeout + pc.ApproachSeconds + pc.BoardingSeconds,
+					resumeDelaySeconds = math.max(0.2, (tonumber(pc.EscapeSeconds) or 4) - 1.25),
+					shipmentId = shipment.shipmentId,
+					defId = def.id,
+				}
+			end
+
+			-- Fire interactive pirate raid event to all clients
+			self:_emitShipmentEvent("PirateRaidEvent", {
+				ownerUserId = ownerUserId,
+				shipmentId = shipment.shipmentId,
+				eventId = def.id,
+				displayName = def.displayName,
+				playtestTitle = playtestTitle,
+				severity = severity,
+				-- Interactive fields
+				interactive = true,
+				raidToken = raidToken,
+				pirateCount = pirateCount,
+				potentialBarrelsStolen = maxBarrels,
+				totalLoaded = shipment.totalLoaded,
+				stolenDeckBarrels = stolenDeckBarrels,
+				approachSide = approachSide,
+				interactionWindowSeconds = interactionWindow,
+				worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+				particleFxScale = particleFxScale,
+			})
+
+			if RunService:IsStudio() then
+				print(string.format(
+					"[PirateRaidDebug][Server] INTERACTIVE shipment=%s potentialLoss=%d pirateCount=%d token=%s timeout=%.1fs",
+					shipment.shipmentId, maxBarrels, pirateCount, raidToken, serverTimeout
+				))
+			end
+			if log then
+				print(string.format("  [StraitShipment DEBUG] INTERACTIVE PIRATE RAID: %d potential barrels, %d pirates, side=%d, freeze %ds",
+					maxBarrels, pirateCount, approachSide, math.ceil(freezeDuration)))
+			end
+
+			local freezeElapsed = self:_freezeShipForStraitEventCinematic(shipment.shipmentId, freezeDuration, function()
+				local currentCtx = self._shipmentContexts[shipment.shipmentId]
+				local pending = currentCtx and currentCtx.pendingInteractiveRaid
+				return pending ~= nil
+					and pending.clientResult ~= nil
+					and workspace:GetServerTimeNow() >= (tonumber(pending.resumeAfterResultAt) or 0)
+			end)
+			voyageClock.startTime += math.min(freezeDuration, freezeElapsed)
+			return false
+		else
+			-- LEGACY PATH: immediate barrel loss (non-interactive or no owner online)
+			local barrelsStolen = 0
+			local stolenByTier: { [string]: number } = {}
+			local stolenDeckBarrels = {}
+			if resolvedLossFrac > 0 then
+				barrelsStolen, stolenByTier = self:_applyLooseBarrelLoss(shipment, resolvedLossFrac)
+				stolenDeckBarrels = self:_snapshotLostDeckBarrels(boat, stolenByTier, barrelsStolen)
+			end
+			if barrelsStolen > 0 then
+				self:_emitManifestHudSnapshot(shipment, {
+					title = ManifestIncidentTitle.fromEventId(def.id),
+					eventId = def.id,
+					totalLoss = false,
+					lossOilByTier = stolenByTier,
+				})
+			end
+
+			self:_emitShipmentEvent("PirateRaidEvent", {
+				ownerUserId = ownerUserId,
+				shipmentId = shipment.shipmentId,
+				eventId = def.id,
+				displayName = def.displayName,
+				playtestTitle = playtestTitle,
+				severity = severity,
+				barrelsStolen = barrelsStolen,
+				totalLoaded = shipment.totalLoaded,
+				stolenDeckBarrels = stolenDeckBarrels,
+				approachSide = approachSide,
+				worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+				particleFxScale = particleFxScale,
+			})
+			if RunService:IsStudio() then
+				print(string.format(
+					"[PirateRaidDebug][Server] LEGACY shipment=%s barrelsStolen=%d snapshotCount=%d approachSide=%d",
+					shipment.shipmentId, barrelsStolen, #stolenDeckBarrels, approachSide
+				))
+			end
+			if log then
+				print(string.format("  [StraitShipment DEBUG] PIRATE RAID: %d barrels stolen, side=%d, pausing %ds",
+					barrelsStolen, approachSide, pc.SequenceDuration))
+			end
+
+			self:_freezeShipForStraitEventCinematic(shipment.shipmentId, pc.SequenceDuration)
+			voyageClock.startTime += pc.SequenceDuration
+			return false
+		end
 	end
 
 	if def.stormEvent then
@@ -4070,8 +4378,13 @@ function OilShipmentService:_setupShip(shipmentId: string, boatModel: Model, sta
 	alignPos.Mode = Enum.PositionAlignmentMode.OneAttachment
 	alignPos.Attachment0 = att
 	alignPos.MaxForce = 1e9
-	alignPos.MaxVelocity = 200
-	alignPos.Responsiveness = 8
+	-- MaxVelocity controls how fast the hull can accelerate toward the carrot,
+	-- NOT the actual ship speed (which is carrot speed = pathLen / travelSeconds).
+	-- Lower values = gentler acceleration = player doesn't get pushed off deck.
+	-- 60 studs/s is well above any carrot speed (fastest boat ~92 studs/s) so
+	-- the hull still tracks smoothly; it just can't jerk forward violently.
+	alignPos.MaxVelocity = 60
+	alignPos.Responsiveness = 5
 	alignPos.Position = startPosition
 	alignPos.Parent = root
 

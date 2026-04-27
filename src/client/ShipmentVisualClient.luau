@@ -32,6 +32,8 @@ export type StraitWaypointFxCallbacks = {
 	OnUSShipSlapPayload: (data: { [string]: any }) -> (),
 	OnStormPayload: (data: { [string]: any }) -> (),
 	OnTornadoPayload: (data: { [string]: any }) -> (),
+	OnVoyageStarted: () -> (),
+	OnVoyageEnded: () -> (),
 }
 
 export type ShipmentVisualDeps = {
@@ -174,8 +176,12 @@ function ShipmentVisualClient.connect(deps: ShipmentVisualDeps, shipmentVisualEv
 				return
 			end
 			playEventSFX("Pirates")
-			local stolen = tonumber(data.barrelsStolen) or 0
-			setStatus(string.format("PIRATES BOARDING! Lost %d barrels!", stolen), false)
+			if data.interactive then
+				setStatus("PIRATES BOARDING! Slap them off your ship!", false)
+			else
+				local stolen = tonumber(data.barrelsStolen) or 0
+				setStatus(string.format("PIRATES BOARDING! Lost %d barrels!", stolen), false)
+			end
 			return
 		end
 
@@ -315,7 +321,9 @@ function ShipmentVisualClient.connect(deps: ShipmentVisualDeps, shipmentVisualEv
 				then (data :: any).shipDisplayName
 				else tostring((data :: any).boatId or (data :: any).shipSkinId or (data :: any).boatTypeId or "Ship")
 			setStatus(string.format("Shipment out: %s (%d barrels)", shipLabel, tonumber(data.loaded) or 0), true)
+			StraitWaypointWorldFx.OnVoyageStarted()
 		elseif kind == "ShipmentResolved" then
+			StraitWaypointWorldFx.OnVoyageEnded()
 			local delivered = tonumber(data.delivered) or 0
 			local lost = tonumber(data.lost) or 0
 			local totalLoss = delivered == 0 and lost == 0

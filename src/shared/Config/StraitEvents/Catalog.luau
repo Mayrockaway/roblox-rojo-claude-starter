@@ -116,6 +116,19 @@ Catalog.PirateRaidConfig = {
 	BoardingSeconds = 3,
 	StealingSeconds = 7,
 	EscapeSeconds = 4,
+	-- Interactive slap mini-game: owner clicks/taps pirates to knock them off the ship
+	-- before they grab barrels. Un-slapped pirates steal proportional barrel loss.
+	InteractiveEnabled = true,
+	--- Seconds the owner has to slap pirates after boarding completes.
+	--- Must fit within SequenceDuration (20s) minus approach(4)+board(3)+escape(4)=9s
+	InteractionWindowSeconds = 9,
+	--- Arc height (studs) for the slap knockoff trajectory.
+	PirateSlapKnockbackArc = 18,
+	--- Minimum seconds between slaps (anti-macro / click-spam guard).
+	SlapCooldownSeconds = 0.4,
+	--- Server timeout buffer (seconds) added to InteractionWindowSeconds before
+	--- applying full barrel loss for AFK/disconnect.
+	ServerTimeoutBufferSeconds = 3,
 }
 
 -- Storm visual + gameplay config (delay and barrel-loss outcomes are rolled independently).
