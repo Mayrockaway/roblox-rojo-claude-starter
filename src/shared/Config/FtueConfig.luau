@@ -85,8 +85,16 @@ local FtueConfig = {
 	},
 
 	--- Ordered server-driven flow (see `FtueService` + gameplay hooks).
+	---
+	--- `Intro` and `WaitDocksHire` ("suspicious persons") are intentionally
+	--- omitted: their step ids, copy, and portraits are kept in the tables
+	--- below so the legs can be reactivated by re-adding the strings here,
+	--- but the live flow starts directly at `WaitDrillOil_WIP` and jumps from
+	--- `WaitDocksFleetPanel` straight to `Done`. See `FtueService` —
+	--- `applyWaitDrillEntry` now fires from the initial `SyncFromOilState`
+	--- (not the Intro Continue button) and `OnFtueDocksProgress`'s
+	--- `FleetPanelClosed` branch advances to `Done` instead of `WaitDocksHire`.
 	Order = {
-		"Intro",
 		"WaitDrillOil_WIP",
 		"WaitReveal",
 		"WaitPlotShipment",
@@ -99,7 +107,6 @@ local FtueConfig = {
 		-- progression refactor (see `Step` block above).
 		-- `WaitDocksFleetPanel` is its replacement — teaches `FleetPanelGui`.
 		"WaitDocksFleetPanel",
-		"WaitDocksHire",
 		"Done",
 	} :: { string },
 
@@ -110,8 +117,8 @@ local FtueConfig = {
 			body = "HEY YOU! Our country is desperate for oil and you look like you can get through the Strait of Hormuz by any means necessary!",
 		},
 		WaitDrillOil_WIP = {
-			title = "FIRST STRIKE!",
-			body = "Here's your first drill on the house - slap that drill on any tile over there and get to drilling! Your pump will automatically collect it for you.",
+			title = "DRILL FOR OIL!",
+			body = "Put that drill on any tile and get to drilling! Your pump will auto collect for you.",
 		},
 		WaitReveal = {
 			title = "STRUCK GOLD!",
@@ -119,7 +126,7 @@ local FtueConfig = {
 		},
 		WaitPlotShipment = {
 			title = "SHIP YOUR CARGO!",
-			body = "Great work! Head over to the delivery man to dispatch your first haul - each barrel costs a fee, but here's some cash to get started.",
+			body = "Great work! Head over to the delivery man to dispatch your first haul.",
 		},
 		WaitShipment = {
 			title = "SAIL THE STRAIT!",
@@ -139,7 +146,7 @@ local FtueConfig = {
 		},
 		WaitDocksEquipmentShop = {
 			title = "GEAR UP!",
-			body = "First stop, the Equipment Shop - here's where you'll find all your drilling gear. Step up to the counter and grab that Advanced Drill - first one's free.",
+			body = "Here's where you'll find all your drilling gear. Grab that Advanced Drill - first one's free.",
 		},
 		-- `WaitDocksUpgradeShip` copy removed by Step 4 of the boat-
 		-- progression refactor (see `Step` block above).
@@ -153,7 +160,7 @@ local FtueConfig = {
 		},
 		Done = {
 			title = "WELCOME TO TOWN",
-			body = "That's it! You're a seasoned veteran of the Strait now. Here's some cash to get started. Don't forget to check the store often and explore. Now get to drilling!",
+			body = "You're a seasoned veteran of the Strait now. Here's some cash to get started!",
 		},
 	} :: { [string]: { title: string, body: string } },
 

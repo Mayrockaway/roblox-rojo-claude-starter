@@ -3,8 +3,8 @@
 -- this controller exposes Open/Close/IsOpen so `HudPanelRouter` includes it in the
 -- modal-exclusivity group.
 --
--- It also wires the three ship cards under `Ships` (`Ship1`..`Ship3`), the Patriot
--- under `Ships2` (`Ship1` only), the Featured starter pack (`Featured.Tab.EquipBest`),
+-- It also wires the three ship cards under `Ships` (`Ship1`..`Ship3`), `Ships2`
+-- (`Ship1` = Patriot, `Ship2` = Surfboat), the Featured starter pack (`Featured.Tab.EquipBest`),
 -- and the Early Supporter bundle (`Featured2.Tab.EquipBest`):
 --   * Each `Template/Buy` ImageButton fires `RequestPromptRobuxPurchase` with the
 --     matching `MonetizationCatalog` item id (`ship.pirateship`, `ship.ducky`, …). The
@@ -34,15 +34,18 @@ local SCREEN_NAME = "RobuxShop"
 --- UI slot name -> MonetizationCatalog item id. Keep in sync with the Studio
 --- card layout under `…Main.Container.Ships` (`buildShipItem` uses
 --- `ship.` .. lower(boatId)) — legacy `ship.ship4skin` ids are invalid.
---- Order: Ship1=PirateShip, Ship2=Ducky, Ship3=Moby.
+--- Order: Ship1=PirateShip, Ship2=Ducky, Ship3=Moby. `Ship4` = Surfboat
+--- (optional — only wired if `Ships.Ship4` exists under RobuxShop).
 local SHIP_SLOT_TO_ITEM_ID: { [string]: string } = {
 	Ship1 = "ship.pirateship",
 	Ship2 = "ship.ducky",
 	Ship3 = "ship.moby",
+	Ship4 = "ship.surfboat",
 }
 
---- `Ships2` in the same Main container: single premium hull (The Patriot).
+--- `Ships2` in the same Main container: `Ship1` = The Patriot, `Ship2` = Surfboat.
 local SHIP2_SHIP1_ITEM_ID = "ship.americaneagleboat"
+local SHIP2_SHIP2_ITEM_ID = "ship.surfboat"
 
 --- The Featured starter pack card lives at
 --- `Canvas.Container.Main.Container.Featured.Tab.EquipBest` (Studio author
@@ -269,7 +272,18 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 
 	for slotName, itemId in pairs(SHIP_SLOT_TO_ITEM_ID) do
 		local slot = ships:FindFirstChild(slotName)
-		local template = slot and slot:FindFirstChild("Template")
+		if not slot then
+			if slotName == "Ship4" then
+				continue
+			end
+			warn(string.format("[RobuxShopPanel] %s slot not found under Ships — skipping.", slotName))
+			continue
+		end
+		local boatId = boatIdForItemId(itemId)
+		if typeof(boatId) == "string" and boatId ~= "" then
+			applyShipSlotIconFromBoatId(slot, boatId)
+		end
+		local template = slot:FindFirstChild("Template")
 		local buy = template and template:FindFirstChild("Buy")
 		if not (buy and buy:IsA("ImageButton")) then
 			warn(string.format("[RobuxShopPanel] %s/Template/Buy not found or not an ImageButton — skipping.", slotName))
@@ -299,46 +313,54 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 		end))
 	end
 
-	-- Ships2: The Patriot (`AmericanEagleBoat`) — `Ships2.Ship1.Template.Buy`
+	-- Ships2: `Ship1` = Patriot, `Ship2` = Surfboat (`…/Template/Buy` each).
 	local ships2 = findShipsContainer(screen, "Ships2")
 	if ships2 then
-		local slot = ships2:FindFirstChild("Ship1")
-		if slot then
-			applyShipSlotIconFromBoatId(slot, "AmericanEagleBoat")
-		end
-		local template = slot and slot:FindFirstChild("Template")
-		local buy2 = template and template:FindFirstChild("Buy")
-		if buy2 and buy2:IsA("ImageButton") then
-			local img2 = buy2 :: ImageButton
-			img2.Active = true
-			img2.AutoButtonColor = true
-			local label2 = findBuyLabel(img2)
-			local card2 = { slotName = "Ships2_Ship1", itemId = SHIP2_SHIP1_ITEM_ID, buy = img2, label = label2 }
-			table.insert(cardRefs, card2)
-			table.insert(connections, img2.Activated:Connect(function()
-				if img2:GetAttribute("Owned") == true then
+		local function wireShips2BuyRow(slotName: string, itemId: string, boatIdForIcon: string, cardKey: string)
+			local slot = ships2:FindFirstChild(slotName)
+			if slot then
+				applyShipSlotIconFromBoatId(slot, boatIdForIcon)
+			end
+			local template = slot and slot:FindFirstChild("Template")
+			local buyBtn = template and template:FindFirstChild("Buy")
+			if not (buyBtn and buyBtn:IsA("ImageButton")) then
+				warn(
+					string.format(
+						"[RobuxShopPanel] Ships2/%s/Template/Buy not found or not an ImageButton under %s — %s buy will not be wired.",
+						slotName,
+						screen:GetFullName(),
+						cardKey
+					)
+				)
+				return
+			end
+			local img = buyBtn :: ImageButton
+			img.Active = true
+			img.AutoButtonColor = true
+			local lbl = findBuyLabel(img)
+			local card = { slotName = "Ships2_" .. slotName, itemId = itemId, buy = img, label = lbl }
+			table.insert(cardRefs, card)
+			table.insert(connections, img.Activated:Connect(function()
+				if img:GetAttribute("Owned") == true then
 					return
 				end
 				local now = os.clock()
-				local last = lastPromptFireByItemId[SHIP2_SHIP1_ITEM_ID] or 0
+				local last = lastPromptFireByItemId[itemId] or 0
 				if now - last < 0.6 then
 					return
 				end
-				lastPromptFireByItemId[SHIP2_SHIP1_ITEM_ID] = now
-				remotes.requestPromptRobuxPurchase:FireServer({ itemId = SHIP2_SHIP1_ITEM_ID })
+				lastPromptFireByItemId[itemId] = now
+				remotes.requestPromptRobuxPurchase:FireServer({ itemId = itemId })
 			end))
-		else
-			warn(
-				"[RobuxShopPanel] Ships2/Ship1/Template/Buy not found or not an ImageButton under "
-					.. screen:GetFullName()
-					.. " — Patriot buy will not be wired."
-			)
 		end
+
+		wireShips2BuyRow("Ship1", SHIP2_SHIP1_ITEM_ID, "AmericanEagleBoat", "Patriot")
+		wireShips2BuyRow("Ship2", SHIP2_SHIP2_ITEM_ID, "Surfboat", "Surfboat")
 	else
 		warn(
 			"[RobuxShopPanel] Ships2 container not found under "
 				.. screen:GetFullName()
-				.. " — Patriot row will not be wired."
+				.. " — Ships2 rows will not be wired."
 		)
 	end
 

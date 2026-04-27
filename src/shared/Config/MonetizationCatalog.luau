@@ -167,6 +167,7 @@ end
 --- what the Roblox prompt will say.
 local SHIP_PLACEHOLDER_PRICE: { [string]: number } = {
 	PirateShip = 149, -- The Sparrow (RobuxShop Ships.Ship1)
+	Surfboat = 199, -- Surfboat (RobuxShop Ships.Ship4 when authored)
 	Ducky = 299, -- Jet Duck     (RobuxShop Ships.Ship2)
 	Moby = 299, -- Moby         (RobuxShop Ships.Ship3)
 	AmericanEagleBoat = 499, -- The Patriot (RobuxShop Ships2.Ship1)
@@ -277,6 +278,7 @@ MonetizationCatalog.Items = {
 	-- `Ship4Skin` / `Ship5Skin` / `WhaleSkin` ownership to these new ids
 	-- so existing buyers don't lose their purchases.
 	buildShipItem("PirateShip", 3578818285),
+	buildShipItem("Surfboat", 3582274032, "rbxassetid://111201898460303"),
 	buildShipItem("Ducky", 3578818474),
 	buildShipItem("Moby", 3578818669),
 	-- R$499 Patriot — DevProduct id `3580438808` (not shared with `early_supporter_bundle`).

@@ -9,6 +9,8 @@ local Constants = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild(
 local RemoteNames = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Net"):WaitForChild("RemoteNames"))
 local CharacterTeleport = require(script.Parent.Parent.Utils.CharacterTeleport)
 local ResponsiveBillboard = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Utils"):WaitForChild("ResponsiveBillboard"))
+local FtueConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("FtueConfig"))
+local OilConfigForSpawn = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("OilConfig"))
 
 --- Cached on first use. The `Remotes` folder is populated by `RemoteService:Init()` (runs in
 --- `init.server.luau` before `PlotService:Start()`), so by the time any spawn happens this
@@ -733,6 +735,26 @@ function PlotService:_ensureCharacterAddedConnection(player: Player)
 	end)
 end
 
+--- Public re-spawn entry point. Called by `FtueService` when the FTUE step
+--- attribute changes mid-life (typically the brand-new-profile race: the
+--- character spawned and was parked at ClaimPad before `OilStateService`
+--- finished loading the profile, so the WaitDrillOil_WIP override inside
+--- `_teleportCharacterToOwnedPlot` was bypassed). Re-runs the canonical
+--- teleport so the override fires now that the attribute is set.
+---
+--- No-ops if the player has no plot or no character. Safe to call repeatedly.
+function PlotService:RefreshSpawn(player: Player)
+	local plot = self._assignedByUserId[player.UserId]
+	if not plot then
+		return
+	end
+	local char = player.Character
+	if not char then
+		return
+	end
+	self:_teleportCharacterToOwnedPlot(player, char)
+end
+
 function PlotService:_releasePlot(plot: Model?)
 	if not plot then
 		return
@@ -765,16 +787,100 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 	local wasSitting = hum ~= nil and hum.SeatPart ~= nil
 	CharacterTeleport.unseatIfSitting(character)
 
-	--- Preserve the ClaimPad's authored rotation so the character spawns facing whichever
-	--- way the pad is pointed (currently 180° → looking at the Delivery Man). Using
-	--- `CFrame.new(x,y,z)` here would discard rotation and the player would always land
-	--- facing world -Z. `CFrame.Rotation + Vector3` keeps the pad's LookVector and just
-	--- translates to the lifted XYZ.
-	local target = spawnPart.CFrame.Rotation + Vector3.new(
-		spawnPart.Position.X,
-		math.max(14, spawnPart.Position.Y + 8),
-		spawnPart.Position.Z
-	)
+	--- FTUE override: when the player is on the **WaitDrillOil_WIP** leg, spawn
+	--- them directly on the highlighted starter chunk instead of the ClaimPad
+	--- behind it. We do this here (inside the canonical teleport) rather than
+	--- as a deferred follow-up in `FtueService` because the post-teleport drift
+	--- loop below would otherwise treat the FTUE move as drift-from-ClaimPad
+	--- and yank the player back. Targeting the grid here means the drift loop
+	--- defends the grid, the engine spawn-pivot race poll defends the grid,
+	--- and any subsequent `CharacterAdded` (death-respawn while still on the
+	--- leg) lands on the grid too. ClaimPad rotation is preserved so the
+	--- player still faces the same direction (toward the Delivery Man) as the
+	--- non-FTUE spawn.
+	local ftueStepRaw = player:GetAttribute(Constants.FtueStepAttribute)
+	local ftueStep: string? = if typeof(ftueStepRaw) == "string" then ftueStepRaw else nil
+	local target: CFrame
+	if ftueStep == FtueConfig.Step.WaitDrillOil_WIP then
+		local startSectionId = string.format(
+			"S%02d_%02d",
+			OilConfigForSpawn.Chunks.StartingRow,
+			OilConfigForSpawn.Chunks.StartingCol
+		)
+		local ground = plot:FindFirstChild("PlotGround")
+		local section = ground and ground:FindFirstChild(startSectionId)
+		--- Pick the T## tile whose XZ position is closest to ClaimPad — i.e.
+		--- the front-edge corner of the chunk facing the player's natural
+		--- approach. This avoids spawning on the chunk centerpiece (which is
+		--- where the auto-place pump lands) and keeps the player out of the
+		--- pump model. Falls back to the section bounding-box center if no
+		--- tiles are found, then to ClaimPad if the section itself is missing.
+		local frontTile: BasePart? = nil
+		local frontTileD = math.huge
+		if section and section:IsA("Model") then
+			local claimXZ = Vector2.new(spawnPart.Position.X, spawnPart.Position.Z)
+			for _, child in ipairs((section :: Model):GetChildren()) do
+				if child:IsA("BasePart") and string.match(child.Name, "^T%d+$") then
+					local d = (Vector2.new(child.Position.X, child.Position.Z) - claimXZ).Magnitude
+					if d < frontTileD then
+						frontTileD = d
+						frontTile = child
+					end
+				end
+			end
+		end
+		if frontTile then
+			--- Land slightly above the tile's top surface so the character
+			--- drops onto it cleanly. Keep ClaimPad's rotation so the
+			--- camera-snap heading matches the non-FTUE spawn (looking
+			--- toward the Delivery Man).
+			local tileTopY = frontTile.Position.Y + frontTile.Size.Y * 0.5
+			target = spawnPart.CFrame.Rotation + Vector3.new(
+				frontTile.Position.X,
+				tileTopY + 5,
+				frontTile.Position.Z
+			)
+		elseif section and section:IsA("Model") then
+			--- No T## tiles found inside the section (unexpected authoring).
+			--- Fall back to the section's bounding-box center so the player
+			--- still lands somewhere on the grid rather than at ClaimPad.
+			warn(string.format(
+				"[PlotService] FTUE WaitDrillOil_WIP spawn fallback for %s: no T## tiles in %s.PlotGround.%s — using section center",
+				player.Name, plot.Name, startSectionId
+			))
+			local sectionCf, sectionSz = (section :: Model):GetBoundingBox()
+			local targetY = sectionCf.Position.Y + sectionSz.Y * 0.5 + 5
+			target = spawnPart.CFrame.Rotation + Vector3.new(
+				sectionCf.Position.X,
+				targetY,
+				sectionCf.Position.Z
+			)
+		else
+			--- Section missing (mis-authored plot) — fall back to ClaimPad and
+			--- log so the next plot-authoring pass catches it.
+			warn(string.format(
+				"[PlotService] FTUE WaitDrillOil_WIP spawn fallback for %s: %s.PlotGround.%s missing",
+				player.Name, plot.Name, startSectionId
+			))
+			target = spawnPart.CFrame.Rotation + Vector3.new(
+				spawnPart.Position.X,
+				math.max(14, spawnPart.Position.Y + 8),
+				spawnPart.Position.Z
+			)
+		end
+	else
+		--- Non-FTUE spawn: preserve the ClaimPad's authored rotation so the
+		--- character spawns facing whichever way the pad is pointed (currently
+		--- 180° → looking at the Delivery Man). Using `CFrame.new(x,y,z)` here
+		--- would discard rotation and the player would always land facing
+		--- world -Z. `CFrame.Rotation + Vector3` keeps the pad's LookVector and
+		--- just translates to the lifted XYZ.
+		target = spawnPart.CFrame.Rotation + Vector3.new(
+			spawnPart.Position.X,
+			math.max(14, spawnPart.Position.Y + 8),
+			spawnPart.Position.Z
+		)
+	end
 
 	--- DO NOT add `SetNetworkOwner(nil)` here — see the matching comment in
 	--- `CharacterTeleport.teleportWithUnseat`. Stealing net ownership presents

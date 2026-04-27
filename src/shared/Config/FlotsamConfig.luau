@@ -7,7 +7,12 @@
 local FlotsamConfig = {}
 
 --- Master switch — flip to `false` to disable the system without uninstalling.
-FlotsamConfig.Enabled = true
+--- Currently OFF: the system needs design changes before it goes live, but
+--- we want to keep all the spawn / claim / reward wiring in place so other
+--- updates can ship without ripping it out. `FlotsamService:Start()`
+--- early-returns on this flag (line ~63) so flipping to `true` re-enables
+--- the system in one edit, no service rewrite needed.
+FlotsamConfig.Enabled = false
 
 --- Target number of crates alive on the strait at any moment. The maintenance
 --- loop tops up to this number whenever a crate is claimed.

@@ -171,6 +171,7 @@ local DEFERRED_RARE_EVENT_ENTRIES: { InstanceEntry } = {
 	{ service = "ReplicatedStorage", segments = { "Assets", "Jet" }, optional = true },
 	{ service = "ReplicatedStorage", segments = { "Assets", "MushroomCloud" }, optional = true },
 	{ service = "ReplicatedStorage", segments = { "Assets", "Ducky" }, optional = true },
+	{ service = "ReplicatedStorage", segments = { "Assets", "SurfboardBoat" }, optional = true },
 	{ service = "ReplicatedStorage", segments = { "Assets", "GiantArm" }, optional = true },
 }
 

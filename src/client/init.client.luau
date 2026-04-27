@@ -758,6 +758,17 @@ local function startHudModalWiring()
 			FreeDailyDrillController.start(playerGui)
 		end
 
+		--- 7-day daily reward calendar (`StarterGui.Daily` modal). The panel
+		--- is also bound by `HudPanelRouter` for open/close/exclusivity; this
+		--- call sets up the per-slot state listener + claim-button wiring,
+		--- which is independent of whether the panel is currently open.
+		local dailyPanelMod = uiFolder:FindFirstChild("HudPanels")
+			and uiFolder.HudPanels:FindFirstChild("DailyPanel")
+		if dailyPanelMod and dailyPanelMod:IsA("ModuleScript") then
+			local DailyPanel = require(dailyPanelMod) :: { start: (PlayerGui) -> () }
+			DailyPanel.start(playerGui)
+		end
+
 		local tpMod = uiFolder:WaitForChild("HudTeleportRouter", 30)
 		if tpMod and tpMod:IsA("ModuleScript") then
 			local HudTeleportRouter = require(tpMod) :: { start: (PlayerGui) -> () }

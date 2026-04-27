@@ -214,6 +214,25 @@ local function buildDefaultPersisted()
 		--- waiting for their first `barrelsPerSecond` tick before they can dispatch.
 		--- Flips to `true` after the boost fires; subsequent barrels accumulate normally.
 		ftueFirstBarrelGranted = false,
+		--- 7-day daily reward calendar (`StarterGui.Daily` modal driven by
+		--- `DailyRewardCalendarService`). `dailyRewardClaimedCount` is the
+		--- number of slots the player has already claimed (0..7); the next
+		--- claimable slot is `dailyRewardClaimedCount + 1`.
+		--- `dailyRewardLastClaimAt` is the `os.time()` of the most recent
+		--- claim — `nil` for a brand-new player so Reward 1 is immediately
+		--- available with no cooldown. Cooldown duration lives in
+		--- `DailyRewardCalendarConfig.CooldownSeconds` (12h today). Streak
+		--- break = resume: the timer keeps running while the player is
+		--- offline so missed days unlock the next slot on next login (no
+		--- reset-to-day-1 punishment).
+		dailyRewardClaimedCount = 0,
+		dailyRewardLastClaimAt = nil :: number?,
+		--- Rolled boatId for the Slot 2 random-boat pool reward. Persisted
+		--- so the panel can swap the slot's icon to the actual hull on every
+		--- subsequent open (the receipt-of-what-you-rolled doubles as the
+		--- "this is what you got" reveal — there is no separate popup UI).
+		--- `nil` until the player claims slot 2.
+		dailyRewardSlot2BoatId = nil :: string?,
 		storageCapacity = OilConfig.StartingStorageCapacity,
 		oilByTier = {
 			Crude = 0,
@@ -244,7 +263,7 @@ local function buildDefaultPersisted()
 		--- `GrantBoat`. Stored as `[boatId] = true` so JSON
 		--- round-trip is order-stable.
 		ownedBoatIds = BoatCatalog.GetStarterBoatIds(),
-		ftueStep = if FtueConfig.Enabled then FtueConfig.Step.Intro else nil,
+		ftueStep = if FtueConfig.Enabled then FtueConfig.Step.WaitDrillOil_WIP else nil,
 		ftueCompleted = not FtueConfig.Enabled,
 		ftueDoneScreenAcknowledged = false,
 		--- One-shot suppression flag for the **post-login Robux Shop auto-open**
@@ -863,6 +882,71 @@ function OilStateService:GetDailyDrillClaimCycle(userId: number): number?
 		return v
 	end
 	return nil
+end
+
+--- 7-day daily reward calendar accessors.
+--- `claimedCount` ranges 0..`DailyRewardCalendarConfig.TotalRewards`.
+--- `lastClaimAt` is `os.time()` of the most recent claim, or `nil` for a
+--- brand-new player (so Reward 1 is immediately available, no cooldown).
+--- Both fields persist across sessions via `_applyPersistedIntoState` /
+--- `_flushStateIntoPersisted`.
+function OilStateService:GetDailyRewardProgress(userId: number): (number, number?)
+	local state = self:GetState(userId)
+	if not state then
+		return 0, nil
+	end
+	local count = (state :: any).dailyRewardClaimedCount
+	local lastAt = (state :: any).dailyRewardLastClaimAt
+	local countNum = if typeof(count) == "number" and count >= 0 then math.floor(count) else 0
+	local lastAtNum: number? = if typeof(lastAt) == "number" and lastAt > 0 then lastAt else nil
+	return countNum, lastAtNum
+end
+
+--- Set both fields atomically. The service calls this on a successful
+--- claim with `(prev + 1, os.time())`. The wrapper marks the state dirty
+--- so the next persistence flush includes the update.
+function OilStateService:SetDailyRewardProgress(userId: number, claimedCount: number, lastClaimAt: number?)
+	local state = self:GetState(userId)
+	if not state then
+		return
+	end
+	(state :: any).dailyRewardClaimedCount = math.max(0, math.floor(claimedCount))
+	if typeof(lastClaimAt) == "number" and lastClaimAt > 0 then
+		(state :: any).dailyRewardLastClaimAt = lastClaimAt
+	else
+		(state :: any).dailyRewardLastClaimAt = nil
+	end
+	self:_markDirty(userId)
+end
+
+--- Slot 2 random-boat reward: the rolled boatId persists so the panel can
+--- swap the slot's icon to the actual hull on every subsequent open. The
+--- service calls `Set` once on a successful slot-2 claim; `Get` is read by
+--- `_pushState` to include the icon in the snapshot. Both no-op cleanly
+--- if the player profile hasn't loaded yet.
+function OilStateService:GetDailyRewardSlot2BoatId(userId: number): string?
+	local state = self:GetState(userId)
+	if not state then
+		return nil
+	end
+	local v = (state :: any).dailyRewardSlot2BoatId
+	if typeof(v) == "string" and v ~= "" then
+		return v
+	end
+	return nil
+end
+
+function OilStateService:SetDailyRewardSlot2BoatId(userId: number, boatId: string?)
+	local state = self:GetState(userId)
+	if not state then
+		return
+	end
+	if typeof(boatId) == "string" and boatId ~= "" then
+		(state :: any).dailyRewardSlot2BoatId = boatId
+	else
+		(state :: any).dailyRewardSlot2BoatId = nil
+	end
+	self:_markDirty(userId)
 end
 
 --- Mobile drill hint persistence: mark as dismissed so it never shows again.
@@ -2756,6 +2840,10 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		ftueFirstRevealApplied = false,
 		--- See `buildDefaultPersisted` — runtime mirror of the one-shot fast first-barrel grant.
 		ftueFirstBarrelGranted = false,
+		--- See `buildDefaultPersisted` — runtime mirror of the daily reward calendar progress.
+		dailyRewardClaimedCount = 0,
+		dailyRewardLastClaimAt = nil :: number?,
+		dailyRewardSlot2BoatId = nil :: string?,
 		-- Per-tank upgrade levels. storageCapacity is derived = sum of tank capacities.
 		tankTiers = defaultTankTiers(),
 		storageCapacity = 0, -- set below from tankTiers
@@ -2793,7 +2881,7 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		--- decrements on dispatch via `:ConsumeRunUpgradeOwned`). Empty table
 		--- means no run-upgrades stocked.
 		runUpgradeOwnedByItemId = {} :: { [string]: number },
-		ftueStep = if FtueConfig.Enabled then FtueConfig.Step.Intro else nil,
+		ftueStep = if FtueConfig.Enabled then FtueConfig.Step.WaitDrillOil_WIP else nil,
 		ftueCompleted = not FtueConfig.Enabled,
 		ftueDoneScreenAcknowledged = false,
 		--- See `buildDefaultPersisted` — runtime mirror of the Robux-shop
@@ -2992,6 +3080,28 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		(state :: any).ftueFirstBarrelGranted = false
 	end
 
+	--- Daily reward calendar (`DailyRewardCalendarService`). Legacy profiles
+	--- without these keys default to (0, nil) — same as a brand-new player,
+	--- so the very first open reveals Reward 1 ready to claim.
+	local pDrcc = (persisted :: any).dailyRewardClaimedCount
+	if typeof(pDrcc) == "number" and pDrcc >= 0 then
+		(state :: any).dailyRewardClaimedCount = math.floor(pDrcc)
+	else
+		(state :: any).dailyRewardClaimedCount = 0
+	end
+	local pDrlca = (persisted :: any).dailyRewardLastClaimAt
+	if typeof(pDrlca) == "number" and pDrlca > 0 then
+		(state :: any).dailyRewardLastClaimAt = pDrlca
+	else
+		(state :: any).dailyRewardLastClaimAt = nil
+	end
+	local pDrs2bid = (persisted :: any).dailyRewardSlot2BoatId
+	if typeof(pDrs2bid) == "string" and pDrs2bid ~= "" then
+		(state :: any).dailyRewardSlot2BoatId = pDrs2bid
+	else
+		(state :: any).dailyRewardSlot2BoatId = nil
+	end
+
 	-- FTUE step (v7+). Saves without these keys are pre-FTUE-progress profiles: skip tutorial.
 	local pFtue = persisted :: any
 	local hasFtueStepKey = typeof(pFtue.ftueStep) == "string"
@@ -3013,7 +3123,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 			s = mapped
 		end
 		if s == "" then
-			state.ftueStep = FtueConfig.Step.Intro
+			state.ftueStep = FtueConfig.Step.WaitDrillOil_WIP
 			state.ftueCompleted = false
 		else
 			state.ftueStep = s
@@ -3038,7 +3148,7 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		state.ftueStep = nil
 	else
 		state.ftueCompleted = false
-		state.ftueStep = FtueConfig.Step.Intro
+		state.ftueStep = FtueConfig.Step.WaitDrillOil_WIP
 	end
 
 	-- Done-screen dismissed (persisted). Legacy saves without key: infer from **fully** completed profile only.
@@ -3937,12 +4047,30 @@ function OilStateService:_serializeState(state)
 	(persisted :: any).ftueFreeDocksDrillUsed = (state :: any).ftueFreeDocksDrillUsed == true
 	(persisted :: any).ftueFirstRevealApplied = (state :: any).ftueFirstRevealApplied == true
 	(persisted :: any).ftueFirstBarrelGranted = (state :: any).ftueFirstBarrelGranted == true
+	--- Daily reward calendar — see `_applyPersistedIntoState` for the read side.
+	--- Leading `;` disambiguates the `(persisted :: any)` paren-call from the
+	--- previous `local` assignment (Lua would otherwise treat it as
+	--- `dailyRewardClaimedCount(persisted :: any)` — a function call).
+	local sDrcc = (state :: any).dailyRewardClaimedCount
+	;(persisted :: any).dailyRewardClaimedCount = if typeof(sDrcc) == "number" and sDrcc >= 0 then math.floor(sDrcc) else 0
+	local sDrlca = (state :: any).dailyRewardLastClaimAt
+	if typeof(sDrlca) == "number" and sDrlca > 0 then
+		(persisted :: any).dailyRewardLastClaimAt = sDrlca
+	else
+		(persisted :: any).dailyRewardLastClaimAt = nil
+	end
+	local sDrs2bid = (state :: any).dailyRewardSlot2BoatId
+	if typeof(sDrs2bid) == "string" and sDrs2bid ~= "" then
+		(persisted :: any).dailyRewardSlot2BoatId = sDrs2bid
+	else
+		(persisted :: any).dailyRewardSlot2BoatId = nil
+	end
 	if typeof((state :: any).ftueStep) == "string" then
 		(persisted :: any).ftueStep = (state :: any).ftueStep
 	elseif (state :: any).ftueCompleted == true then
 		(persisted :: any).ftueStep = nil
 	else
-		(persisted :: any).ftueStep = if FtueConfig.Enabled then FtueConfig.Step.Intro else FtueConfig.Step.Done
+		(persisted :: any).ftueStep = if FtueConfig.Enabled then FtueConfig.Step.WaitDrillOil_WIP else FtueConfig.Step.Done
 	end
 	(persisted :: any).ftueCompleted = (state :: any).ftueCompleted == true
 	(persisted :: any).ftueDoneScreenAcknowledged = (state :: any).ftueDoneScreenAcknowledged == true

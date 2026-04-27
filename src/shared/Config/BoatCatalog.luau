@@ -219,6 +219,11 @@ local TEMPLATE_RIG_OVERRIDES: { [string]: RigOverride } = {
 	Ducky = {
 		deckYOffsetFallback = 15,
 	},
+	--- `SurfboardBoat`: small hull; match other compact decks until dock
+	--- calibration is run in Studio.
+	SurfboardBoat = {
+		deckYOffsetFallback = 15,
+	},
 	Whale = {
 		deckYOffsetFallback = 15,
 	},
@@ -304,10 +309,10 @@ end
 --- `Ship3Skin` / `Ship4Skin` / `Ship5Skin` / `WhaleSkin` ids are
 --- RETIRED. All cash boats live on the `Tier1Boat`..`Tier10Boat` chain
 --- (Tier1 is the new starter, Tier9 still reuses the `Tanker` template
---- — no dedicated model). Robux boats live on three premium ids
---- (`PirateShip`, `Ducky`, `Moby`) that sort AFTER the cash chain via
---- `progressionIndex` 11..13 and explicitly reuse the existing
---- `PirateShip` / `Ducky` / `Whale` templates.
+--- — no dedicated model). Robux boats live on premium ids (`PirateShip`,
+--- `Surfboat`, `Ducky`, `Moby`, `AmericanEagleBoat`) that sort AFTER the
+--- cash chain via `progressionIndex` 11..15 and reuse templates under
+--- `ReplicatedStorage.Assets` (e.g. `SurfboardBoat`, `Whale`, …).
 ---
 --- Existing v10 saves migrate via `BoatCatalog.RemapLegacyBoatId` (called
 --- from `OilStateService._applyPersistedIntoState` before any catalog
@@ -328,9 +333,10 @@ end
 ---  |  9  | Tier9Boat         | Da Rig          | Tanker            | 6 / 8   | Epic       | cash $2,200,000              |
 ---  | 10  | Tier10Boat        | Normandy        | Tier10Boat        | 7 / 8   | Epic       | cash $5,500,000              |
 ---  | 11  | PirateShip        | The Sparrow     | PirateShip        | 8 / 8   | Epic       | robux R$149  (DP 3578818285) |
----  | 12  | Ducky             | Jet Duck        | Ducky             | 9 / 9   | Legendary  | robux R$299  (DP 3578818474) |
----  | 13  | Moby              | Moby            | Whale             | 9 / 10  | Legendary  | robux R$299  (DP 3578818669) |
----  | 14  | AmericanEagleBoat | The Patriot  | AmericanEagleBoat | 10 / 10   | Mythic  | robux R$499  (DP 3580438808)   |
+---  | 12  | Surfboat          | Surfboat        | SurfboardBoat     | 8 / 8   | Epic       | robux R$199  (DP 3582274032) |
+---  | 13  | Ducky             | Jet Duck        | Ducky             | 9 / 9   | Legendary  | robux R$299  (DP 3578818474) |
+---  | 14  | Moby              | Moby            | Whale             | 9 / 10  | Legendary  | robux R$299  (DP 3578818669) |
+---  | 15  | AmericanEagleBoat | The Patriot  | AmericanEagleBoat | 10 / 10   | Mythic  | robux R$499  (DP 3580438808)   |
 ---
 --- Stat shape:
 ---   * T1..T5 are linear straight upgrades.
@@ -350,7 +356,7 @@ local BoatCatalog = {
 	Boats = {
 		-- ─────────────────────────────────────────────────────────────────
 		-- Robux premium boats. They sort after the cash chain via the
-		-- explicit `progressionIndex` (11..13) and use existing templates
+		-- explicit `progressionIndex` (11..15) and use existing templates
 		-- in `ReplicatedStorage.Assets`. DevProductIds match the original
 		-- `Ship4Skin` / `Ship5Skin` / `WhaleSkin` listings — the v10 → v11
 		-- profile remap (see `BoatCatalog.RemapLegacyBoatId` +
@@ -368,13 +374,25 @@ local BoatCatalog = {
 			capacityLevel = 8,
 			unlock = { kind = "robux", devProductId = 3578818285 },
 		},
+		Surfboat = {
+			displayName = "Surfboat",
+			templateName = "SurfboardBoat",
+			fxParticleScale = 1,
+			rarityDisplay = "Epic",
+			icon = "rbxassetid://111201898460303",
+			progressionIndex = 12,
+			speedLevel = 8,
+			capacityLevel = 8,
+			--- Keep in sync with `MonetizationCatalog` `ship.surfboat` DevProduct id.
+			unlock = { kind = "robux", devProductId = 3582274032 },
+		},
 		Ducky = {
 			displayName = "Jet Duck",
 			templateName = "Ducky",
 			fxParticleScale = 1,
 			rarityDisplay = "Legendary",
 			icon = "rbxassetid://122817352338651",
-			progressionIndex = 12,
+			progressionIndex = 13,
 			speedLevel = 9,
 			capacityLevel = 9,
 			unlock = { kind = "robux", devProductId = 3578818474 },
@@ -385,7 +403,7 @@ local BoatCatalog = {
 			fxParticleScale = 1.2,
 			rarityDisplay = "Legendary",
 			icon = "rbxassetid://77447218245868",
-			progressionIndex = 13,
+			progressionIndex = 14,
 			speedLevel = 9,
 			capacityLevel = 10,
 			unlock = { kind = "robux", devProductId = 3578818669 },
@@ -397,7 +415,7 @@ local BoatCatalog = {
 			fxParticleScale = 1,
 			rarityDisplay = "Mythic",
 			icon = "rbxassetid://121375807397511",
-			progressionIndex = 14,
+			progressionIndex = 15,
 			speedLevel = 10,
 			capacityLevel = 10,
 			unlock = { kind = "robux", devProductId = 3580438808 },
@@ -417,7 +435,7 @@ local BoatCatalog = {
 		--     a hull that matches their farming pattern (e.g. T7 "Green
 		--     Machine" = 6/5 favors fast trips on a small load; T9
 		--     "Normandy" = 6/8 favors fewer, fuller runs).
-		--   * Premium Robux boats (`PirateShip` / `Ducky` / `Moby`) are
+		--   * Premium Robux boats (`PirateShip` / `Surfboat` / `Ducky` / `Moby`) are
 		--     authored above and outclass the cash chain on capacity.
 		--
 		-- Cost curve: early tiers stay cheap so first-session players cycle

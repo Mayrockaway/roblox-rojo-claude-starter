@@ -111,6 +111,21 @@ local RemoteNames = {
 	-- Fires on join + after claim so client can render the shop card.
 	DailyDrillUpdate = "DailyDrillUpdate",
 
+	-- 7-day daily reward calendar (`StarterGui.Daily` modal). Distinct from
+	-- `RequestClaimDailyDrill` above (which is the single ShopPanel pinned
+	-- card): this drives a 7-slot streak panel where each successful claim
+	-- starts a 12h cooldown on the next slot.
+	-- Client → server: claim the next available slot (server validates index
+	-- + cooldown). Server replies on `OilActionResult` with action
+	-- `"ClaimDailyReward"`.
+	RequestClaimDailyReward = "RequestClaimDailyReward",
+	-- Server → one client: full calendar snapshot:
+	--   { claimedCount, secondsUntilNext, totalRewards, cooldownSeconds }
+	-- Fires on join + after every claim. `claimedCount` is 0..totalRewards;
+	-- `secondsUntilNext` is `0` when the next slot is claimable right now
+	-- (or `0` when `claimedCount == totalRewards`, the all-claimed state).
+	DailyRewardUpdate = "DailyRewardUpdate",
+
 	-- Mobile drill hint: one-time dismissal (persisted so it never shows again).
 	RequestDismissMobileDrillHint = "RequestDismissMobileDrillHint",
 

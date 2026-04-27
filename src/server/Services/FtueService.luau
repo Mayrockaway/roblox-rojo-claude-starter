@@ -179,6 +179,14 @@ local function grantTutorialCompleteCashIfNeeded(self: any, player: Player)
 	ftueDbg("grantTutorialCompleteCashIfNeeded uid=%d granted amt=%d", player.UserId, amt)
 end
 
+--- Forward declaration so `SyncFromOilState` (defined below `reapplyFtueRestrictionAttributes`)
+--- can call `applyWaitDrillEntry` even though the function body is assigned further down the
+--- file. Lua locals do not hoist, so calling the identifier before the `local function …`
+--- statement would resolve to a nil global. The actual implementation assigns into this slot
+--- via `applyWaitDrillEntry = function(...)` (no leading `local`) so both `SyncFromOilState`
+--- and `onAcknowledge` close over the same upvalue.
+local applyWaitDrillEntry: (self: any, player: Player) -> ()
+
 --- Sets the drill restriction attribute from plot + oil state for the current step.
 --- The pipe / pump legs are gone — the auto-place center pump collects from drilled tiles
 --- so the drill-only highlight is the only restriction needed.
@@ -463,7 +471,7 @@ function FtueService:SyncFromOilState(userId: number)
 		return
 	end
 
-	local step = stepStr or FtueConfig.Step.Intro
+	local step = stepStr or FtueConfig.Step.WaitDrillOil_WIP
 
 	--- Rejoin recovery: `OilShipmentService` keeps active voyages in memory only
 	--- (`_activeShipmentByOwner` / `_activeShips` — see `OilShipmentService.luau`),
@@ -508,6 +516,17 @@ function FtueService:SyncFromOilState(userId: number)
 		local enableMarker = (step == FtueConfig.Step.WaitReveal)
 		;(self._oilState :: any):SetFtueTutorialTileMarker(userId, enableMarker)
 	end
+	--- Fresh-profile entry into the drill leg: `Intro` was removed from
+	--- `FtueConfig.Order`, so the old `onAcknowledge` Continue-button path that
+	--- granted the starter drill no longer fires for new players. Trigger
+	--- `applyWaitDrillEntry` here instead — it's idempotent (drill grant gated
+	--- on `equipmentOwnedByItemId[DrillItemId]`) so rejoins mid-step don't
+	--- stack extra drills, and the chunk restriction re-set is redundant with
+	--- `reapplyFtueRestrictionAttributes` above (kept as a safety net so the
+	--- Intro Continue path still works unchanged if the leg is reactivated).
+	if step == FtueConfig.Step.WaitDrillOil_WIP then
+		applyWaitDrillEntry(self, player)
+	end
 	player:SetAttribute(Constants.FtueStepAttribute, step)
 	--- Re-arm the equipment-shop sub-step on rejoin so the right pointer (`BuyDrill`
 	--- vs `ClosePanel`) lights up. `ftueFreeDocksDrillUsed` is the persisted source
@@ -536,10 +555,24 @@ function FtueService:SyncFromOilState(userId: number)
 	-- boat-progression refactor along with the leg itself, the
 	-- `FtueDocksUpgradeSubStepAttribute`, and `SetFtueDocksUpgradeSubStep`.
 	fireState(player, step)
+	--- Fresh-join spawn-on-grid trigger. On a brand-new profile the character
+	--- spawns (and gets parked at ClaimPad by `PlotService`) **before**
+	--- `OilStateService` finishes loading the profile and we set the
+	--- `FtueStepAttribute` a few lines above. PlotService's WaitDrillOil_WIP
+	--- spawn override therefore reads `nil` for that first teleport and falls
+	--- back to ClaimPad. Now that the attribute is set, ask PlotService to
+	--- re-run the canonical teleport — the override fires this time and the
+	--- player lands on the highlighted drill chunk. `RefreshSpawn` no-ops if
+	--- the character does not yet exist; the `CharacterAdded` connection in
+	--- `_ensureCharacterAddedConnection` will run the override on its own
+	--- once the character spawns (since the attribute is now set).
+	if step == FtueConfig.Step.WaitDrillOil_WIP and self._plotService and typeof((self._plotService :: any).RefreshSpawn) == "function" then
+		(self._plotService :: any):RefreshSpawn(player)
+	end
 	ftueDbg("SyncFromOilState uid=%d branch=midFlow -> FtueStateUpdate(%s)", userId, step)
 end
 
-local function applyWaitDrillEntry(self: any, player: Player)
+applyWaitDrillEntry = function(self: any, player: Player)
 	local function tryGrant(): boolean
 		local plot = self._plotService:GetOwnedPlot(player.UserId)
 		if not plot then
@@ -552,7 +585,18 @@ local function applyWaitDrillEntry(self: any, player: Player)
 		-- Chunk-level restriction: allow drilling ANY tile in the starter chunk.
 		local starterChunk = self._oilState:GetStarterChunkSectionId()
 		player:SetAttribute(Constants.FtueRestrictDrillChunkIdAttribute, starterChunk)
-		self._equipmentShop:GrantFreeOwnedEquipment(player, FtueConfig.DrillItemId, 1)
+		--- Drill grant is idempotent on the player's persisted inventory: skip if
+		--- they already own the FTUE drill (rejoin mid-WaitDrillOil_WIP, legacy
+		--- profile re-migrated, or the post-Intro Continue-button path that
+		--- previously ran this — `Intro` was removed from `FtueConfig.Order`
+		--- but the `onAcknowledge` branch is still wired in case the leg is
+		--- reactivated). Without this, every `SyncFromOilState` while the
+		--- player is on this step would stack another drill into the backpack.
+		local owned = (st :: any).equipmentOwnedByItemId
+		local ownedCount = if typeof(owned) == "table" then owned[FtueConfig.DrillItemId] else nil
+		if typeof(ownedCount) ~= "number" or ownedCount < 1 then
+			self._equipmentShop:GrantFreeOwnedEquipment(player, FtueConfig.DrillItemId, 1)
+		end
 		self._oilState:PushState(player.UserId)
 		return true
 	end
@@ -942,8 +986,13 @@ function FtueService:OnFtueDocksProgress(player: Player, action: any)
 		if fpSub ~= "ClosePanel" then
 			return
 		end
-		self:_setStep(player, FtueConfig.Step.WaitDocksHire)
-		fireState(player, FtueConfig.Step.WaitDocksHire)
+		--- `WaitDocksHire` ("suspicious persons") was removed from
+		--- `FtueConfig.Order` — jump straight to `Done`. The step constant,
+		--- copy, portrait, and `onAcknowledge` Continue branch are intentionally
+		--- left wired so the leg can be reactivated by re-adding the string to
+		--- `Order` and routing this branch back to `WaitDocksHire`.
+		self:_setStep(player, FtueConfig.Step.Done)
+		fireState(player, FtueConfig.Step.Done)
 		return
 	end
 end
@@ -1096,6 +1145,18 @@ function FtueService:_onCharacterSpawnedDuringFtue(player: Player)
 			end
 			self:_ensureAtWarehouse(player)
 		end)
+	elseif step == FtueConfig.Step.WaitDrillOil_WIP then
+		--- Drill-leg respawn: delegate to `PlotService:RefreshSpawn`. The
+		--- WaitDrillOil_WIP override inside `PlotService:_teleportCharacterToOwnedPlot`
+		--- targets the highlighted starter chunk (instead of ClaimPad), so
+		--- death-respawns mid-drill drop the player back on the grid. The
+		--- post-teleport drift loop then defends the grid for ~150ms, which
+		--- is exactly what we want — no race with our own deferred teleport
+		--- (the previous implementation here used a `task.delay(0.5, …)` HRP
+		--- move which the drift loop kept yanking back to ClaimPad on fresh
+		--- joins where multiple `CharacterAdded` events fired in quick
+		--- succession).
+		self._plotService:RefreshSpawn(player)
 	else
 		--- Generic FTUE **rejoin-only** anchor restore. `PlotService`
 		--- always teleports the freshly-spawned character to the ClaimPad on
@@ -1257,12 +1318,13 @@ function FtueService:Start()
 	end))
 
 	-- Telemetry §6.2 `ftue_step_abandoned`. On disconnect, if the player
-	-- is still mid-FTUE (current step is set and != Done) AND they got
-	-- past `Intro` (so we don't dilute analytics with players who insta-
-	-- quit at the splash), record the abandoned step + dwell time. Also
-	-- clear the per-server first-fire bookkeeping tables so a returning
-	-- player on a different server gets a fresh `ftue_started` /
-	-- `ftue_done` / `_ftueStepEnteredAtByUserId` slate (matches the
+	-- is still mid-FTUE (current step is set and != Done), record the
+	-- abandoned step + dwell time. The original "past Intro" guard (to
+	-- skip splash-screen quitters) is gone — `Intro` was removed from
+	-- `FtueConfig.Order` so every player starts past it by definition.
+	-- Also clear the per-server first-fire bookkeeping tables so a
+	-- returning player on a different server gets a fresh `ftue_started`
+	-- / `ftue_done` / `_ftueStepEnteredAtByUserId` slate (matches the
 	-- existing `ftue_done` / `ftue_started` server-lifetime contract).
 	table.insert(_connections, Players.PlayerRemoving:Connect(function(player)
 		pcall(function()
@@ -1270,10 +1332,8 @@ function FtueService:Start()
 				local stepRaw = player:GetAttribute(Constants.FtueStepAttribute)
 				local step: string? = if typeof(stepRaw) == "string" then stepRaw else nil
 				local enteredAt = _ftueStepEnteredAtByUserId[player.UserId]
-				local introOrdinal = _ftueOrdinal(FtueConfig.Step.Intro)
 				local stepOrdinal = _ftueOrdinal(step)
-				local pastIntro = stepOrdinal ~= nil and introOrdinal ~= nil and stepOrdinal > introOrdinal
-				if step ~= nil and step ~= FtueConfig.Step.Done and pastIntro then
+				if step ~= nil and step ~= FtueConfig.Step.Done then
 					local secondsInStep: number? = if typeof(enteredAt) == "number" then os.clock() - enteredAt else nil
 					Telemetry.Track(player, "ftue_step_abandoned", {
 						stepId = step,

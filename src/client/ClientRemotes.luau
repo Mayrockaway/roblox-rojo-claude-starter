@@ -105,6 +105,13 @@ export type ClientRemotes = {
 	autoShipStateUpdate: RemoteEvent,
 	requestClaimDailyDrill: RemoteEvent,
 	dailyDrillUpdate: RemoteEvent,
+	--- 7-day calendar (`StarterGui.Daily` modal). Separate from `requestClaimDailyDrill`
+	--- (the ShopPanel pinned card). See `DailyRewardCalendarService` (server) +
+	--- `DailyPanel` (client). Server pushes a snapshot
+	--- `{ claimedCount, secondsUntilNext, totalRewards, cooldownSeconds }`
+	--- on join and after each successful claim.
+	requestClaimDailyReward: RemoteEvent,
+	dailyRewardUpdate: RemoteEvent,
 }
 
 local Remotes: ClientRemotes = {
@@ -178,6 +185,8 @@ local Remotes: ClientRemotes = {
 	autoShipStateUpdate = waitRemote(RemoteNames.AutoShipStateUpdate) :: RemoteEvent,
 	requestClaimDailyDrill = waitRemote(RemoteNames.RequestClaimDailyDrill) :: RemoteEvent,
 	dailyDrillUpdate = waitRemote(RemoteNames.DailyDrillUpdate) :: RemoteEvent,
+	requestClaimDailyReward = waitRemote(RemoteNames.RequestClaimDailyReward) :: RemoteEvent,
+	dailyRewardUpdate = waitRemote(RemoteNames.DailyRewardUpdate) :: RemoteEvent,
 }
 
 local devLogEvent = waitRemote(RemoteNames.DevLog) :: RemoteEvent
