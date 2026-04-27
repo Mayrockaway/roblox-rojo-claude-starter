@@ -106,6 +106,14 @@ local Constants = {
 	KillZoneUnderMapThicknessY = 100,
 	KillZoneUnderMapHorizontalHalfExtent = 4000,
 
+	-- Oil Heaven: sky island Y offset above each player's main plot.
+	OilHeavenHeightOffset = 10000,
+	CurrentWorldAttribute = "CurrentWorld",
+	WorldMain = "Main",
+	WorldOilHeaven = "OilHeaven",
+	OilHeavenUnlockedAttribute = "OilHeavenUnlocked",
+	RebirthCountAttribute = "RebirthCount",
+
 	-- Dev strait UI (3 buttons). Server accepts only in Studio unless this is true.
 	StraitDevUiEnabled = false,
 	StraitDevUiDisabled = true, -- Suppress the Strait (dev) panel even in Studio

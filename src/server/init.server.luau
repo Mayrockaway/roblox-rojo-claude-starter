@@ -64,6 +64,7 @@ local KillZoneService = require(serviceFolder:WaitForChild("KillZoneService"))
 local LeaderboardService = require(serviceFolder:WaitForChild("LeaderboardService"))
 local GlobalEventService = require(serviceFolder:WaitForChild("GlobalEventService"))
 local DailyRewardCalendarService = require(serviceFolder:WaitForChild("DailyRewardCalendarService"))
+local OilHeavenPlotService = require(serviceFolder:WaitForChild("OilHeavenPlotService"))
 
 local DevLog = require(Shared:WaitForChild("DevLog"))
 
@@ -130,6 +131,8 @@ ArmyGeneralService:Init(RemoteService, OilStateService, OilShipmentService)
 FlotsamService:Init(OilStateService)
 SecurityPersonnelService:Init(OilStateService)
 AutoShipService:Init(RemoteService, OilStateService, WarehouseService, BoatDockService, OilShipmentService, MonetizationService)
+OilHeavenPlotService:Init(PlotService, OilStateService)
+OilShipmentService:SetOilHeavenPlotService(OilHeavenPlotService)
 OilShipmentService:SetHitContractService(HitContractService)
 OilShipmentService:SetLeaderboardService(LeaderboardService)
 OilStateService:SetLeaderboardService(LeaderboardService)
@@ -235,8 +238,10 @@ ToolService:Start()
 FighterPlaneWaveService:Start()
 LeaderboardService:Start()
 GlobalEventService:Start()
+OilHeavenPlotService:Start()
 
 game:BindToClose(function()
+	OilHeavenPlotService:Stop()
 	GlobalEventService:Stop()
 	KillZoneService:Stop()
 	PerfService:Stop()
@@ -807,6 +812,10 @@ do
 			else
 				warn(string.format("[Dev] /giveboat by %s -> failed for %s boat '%s': %s", player.Name, target.Name, boatIdArg, tostring(code)))
 			end
+		elseif cmd == "/unlockoilheaven" or cmd == "/oh" then
+			OilStateService:UnlockOilHeaven(player.UserId)
+			OilStateService:PushState(player.UserId)
+			print(string.format("[Dev] Oil Heaven unlocked for %s", player.Name))
 		elseif cmd == "/hideui" then
 			-- Toggle all client-side UI for marketing footage capture.
 			local ev = RemoteService:GetEvent(RemoteNames.DevHideUI)
@@ -876,6 +885,7 @@ do
 		"/autoship",
 		"/security",
 		"/event", "/eventlist", "/events",
+		"/unlockoilheaven", "/oh",
 	}
 	for _, alias in ipairs(DEV_COMMAND_ALIASES) do
 		local ok, err = pcall(function()

@@ -1466,6 +1466,9 @@ function OilStateService:GetStateForClient(userId: number)
 			end
 			return out
 		end)(),
+		-- Oil Heaven / rebirth
+		oilHeavenUnlocked = state.oilHeavenUnlocked == true,
+		rebirthCount = if typeof(state.rebirthCount) == "number" then state.rebirthCount else 0,
 	}
 end
 
@@ -2893,6 +2896,11 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		--- in lockstep with the persisted column via
 		--- `_applyPersistedIntoState` / `_buildPersistedFromState`.
 		purchasedOneTimeItemIds = {} :: { [string]: boolean },
+		--- Oil Heaven (rebirth sky-island). Unlocked after the player's
+		--- first rebirth; `rebirthCount` tracks how many rebirths total.
+		oilHeavenUnlocked = false,
+		rebirthCount = 0,
+		oilHeavenState = {} :: { [string]: any },
 		-- `ftueDocksUpgradeSubStep` runtime mirror was deleted by Step 4
 		-- of the boat-progression refactor along with the upgrade leg.
 		--- See `buildDefaultPersisted` — runtime mirror of the persisted FTUE rejoin
@@ -2963,6 +2971,16 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 
 	self._statesByUserId[userId] = state
 	self:_invokeStateTimersReady(userId)
+
+	-- Replicate Oil Heaven attributes to the Player so client UI can react.
+	do
+		local plr = Players:GetPlayerByUserId(userId)
+		if plr then
+			plr:SetAttribute(Constants.OilHeavenUnlockedAttribute, state.oilHeavenUnlocked == true)
+			plr:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
+			plr:SetAttribute(Constants.RebirthCountAttribute, state.rebirthCount or 0)
+		end
+	end
 
 	-- Force a deferred visual refresh so biome tiles + fog get applied after state is fully set
 	task.defer(function()
@@ -3851,6 +3869,17 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		end
 	end
 
+	-- Oil Heaven / rebirth fields.
+	if (persisted :: any).oilHeavenUnlocked == true then
+		state.oilHeavenUnlocked = true
+	end
+	if typeof((persisted :: any).rebirthCount) == "number" and (persisted :: any).rebirthCount > 0 then
+		state.rebirthCount = math.floor((persisted :: any).rebirthCount)
+	end
+	if typeof((persisted :: any).oilHeavenState) == "table" then
+		state.oilHeavenState = (persisted :: any).oilHeavenState
+	end
+
 	if (state :: any).ftueCompleted == true then
 		if self:_clearFtuePlacementNoSellback(state) then
 			self:_markDirty(state.ownerUserId)
@@ -4270,6 +4299,11 @@ function OilStateService:_serializeState(state)
 		end
 	end
 
+	-- Oil Heaven / rebirth
+	;(persisted :: any).oilHeavenUnlocked = state.oilHeavenUnlocked == true
+	;(persisted :: any).rebirthCount = if typeof(state.rebirthCount) == "number" then math.floor(state.rebirthCount) else 0
+	;(persisted :: any).oilHeavenState = if typeof(state.oilHeavenState) == "table" then state.oilHeavenState else {}
+
 	return persisted
 end
 
@@ -4645,6 +4679,59 @@ function OilStateService:ConsumeRunUpgradeOwned(userId: number, itemId: string, 
 	end
 	self:_markDirty(userId)
 	return true
+end
+
+--------------------------------------------------------------------------------
+-- Oil Heaven / Rebirth
+--------------------------------------------------------------------------------
+
+function OilStateService:UnlockOilHeaven(userId: number): boolean
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false
+	end
+	if state.oilHeavenUnlocked then
+		return true -- already unlocked
+	end
+	state.oilHeavenUnlocked = true
+	self:_markDirty(userId)
+	local plr = Players:GetPlayerByUserId(userId)
+	if plr then
+		plr:SetAttribute(Constants.OilHeavenUnlockedAttribute, true)
+	end
+	return true
+end
+
+function OilStateService:IsOilHeavenUnlocked(userId: number): boolean
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false
+	end
+	return state.oilHeavenUnlocked == true
+end
+
+function OilStateService:GetRebirthCount(userId: number): number
+	local state = self._statesByUserId[userId]
+	if not state then
+		return 0
+	end
+	return state.rebirthCount or 0
+end
+
+--- Increments the rebirth counter by 1 and returns the new count.
+--- Does NOT unlock Oil Heaven — call `UnlockOilHeaven` separately.
+function OilStateService:IncrementRebirth(userId: number): number
+	local state = self._statesByUserId[userId]
+	if not state then
+		return 0
+	end
+	state.rebirthCount = (state.rebirthCount or 0) + 1
+	self:_markDirty(userId)
+	local plr = Players:GetPlayerByUserId(userId)
+	if plr then
+		plr:SetAttribute(Constants.RebirthCountAttribute, state.rebirthCount)
+	end
+	return state.rebirthCount
 end
 
 function OilStateService:MarkEquipmentInventoryBackfillComplete(userId: number)

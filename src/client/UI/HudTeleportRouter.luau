@@ -147,6 +147,7 @@ local BUTTON_TO_REMOTE: { [string]: RemoteEvent } = {
 	HomeButton = ClientRemotes.requestTeleportHome,
 	ShipButton = ClientRemotes.requestTeleportToShip,
 	HireButton = ClientRemotes.requestTeleportToHire,         -- Workspace.HireTeleportTarget
+	RebirthButton = ClientRemotes.requestTeleportToOilHeaven, -- sky-island rebirth plot
 }
 
 local HudTeleportRouter = {}
@@ -241,6 +242,17 @@ function HudTeleportRouter.start(playerGui: PlayerGui)
 				end
 				task.wait(0.5)
 				continue
+			end
+
+			-- Oil Heaven button: hidden until OilHeavenUnlocked attribute is true.
+			local ohBtn = findTrigger("RebirthButton")
+			if ohBtn and ohBtn:IsA("GuiObject") then
+				local function updateOHVisibility()
+					local unlocked = LocalPlayer:GetAttribute("OilHeavenUnlocked")
+					ohBtn.Visible = unlocked == true
+				end
+				updateOHVisibility()
+				LocalPlayer:GetAttributeChangedSignal("OilHeavenUnlocked"):Connect(updateOHVisibility)
 			end
 
 			started = true

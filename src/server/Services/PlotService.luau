@@ -766,6 +766,14 @@ function PlotService:_releasePlot(plot: Model?)
 end
 
 function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Model)
+	-- Oil Heaven: if the player was in Oil Heaven when they died, respawn
+	-- them at their main plot (reset to Main world). The player can
+	-- explicitly teleport back up via the HUD button.
+	local currentWorld = player:GetAttribute(Constants.CurrentWorldAttribute)
+	if currentWorld == Constants.WorldOilHeaven then
+		player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
+	end
+
 	local plot = self._assignedByUserId[player.UserId]
 	if not plot then
 		warn(string.format("[PlotService] Teleport %s: no assigned plot", player.Name))

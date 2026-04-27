@@ -129,6 +129,11 @@ local RemoteNames = {
 	-- Mobile drill hint: one-time dismissal (persisted so it never shows again).
 	RequestDismissMobileDrillHint = "RequestDismissMobileDrillHint",
 
+	-- Oil Heaven (rebirth sky plot). Client → server: teleport up to the
+	-- player's personal sky island at Y=3000 above their main plot.
+	-- Server generates the plot on first visit (`OilHeavenPlotService`).
+	RequestTeleportToOilHeaven = "RequestTeleportToOilHeaven",
+
 	-- One-shot equipment shop (Tools cloned into `Player.Backpack`; cash via `OilStateService`).
 	RequestPurchaseEquipment = "RequestPurchaseEquipment",
 	RequestEquipmentShopCatalog = "RequestEquipmentShopCatalog",

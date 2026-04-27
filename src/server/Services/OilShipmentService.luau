@@ -690,6 +690,10 @@ function OilShipmentService:SetGlobalEventService(globalEventService: any)
 	self._globalEventService = globalEventService
 end
 
+function OilShipmentService:SetOilHeavenPlotService(oilHeavenPlotService: any)
+	self._oilHeavenPlotService = oilHeavenPlotService
+end
+
 function OilShipmentService:_discoverLanes()
 	self._lanes = {}
 	local Workspace = game:GetService("Workspace")
@@ -914,6 +918,11 @@ function OilShipmentService:Start()
 		self:_handleTeleportToHire(player)
 	end))
 
+	local teleportOilHeaven = self._remoteService:GetEvent(RemoteNames.RequestTeleportToOilHeaven)
+	table.insert(self._connections, teleportOilHeaven.OnServerEvent:Connect(function(player)
+		self:_handleTeleportToOilHeaven(player)
+	end))
+
 	-- Interactive pirate raid: client reports which pirates were slapped
 	local pirateRaidResult = self._remoteService:GetEvent(RemoteNames.PirateRaidInteractiveResult)
 	table.insert(self._connections, pirateRaidResult.OnServerEvent:Connect(function(player, payload)
@@ -1024,8 +1033,38 @@ function OilShipmentService:_handleTeleportHome(player: Player)
 		--- pad's LookVector.
 		local targetCFrame = claimPad.CFrame + Vector3.new(0, 5, 0)
 		CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportHome")
+		player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
 		self:_fireCameraSnap(player, targetCFrame)
 	end
+end
+
+function OilShipmentService:_handleTeleportToOilHeaven(player: Player)
+	local character = player.Character
+	if not character then return end
+
+	local unlocked = player:GetAttribute(Constants.OilHeavenUnlockedAttribute)
+	if not unlocked then
+		self:_sendActionResult(player, false, "ERR_OIL_HEAVEN_LOCKED", "Oil Heaven is not yet unlocked.")
+		return
+	end
+
+	if not self._oilHeavenPlotService then
+		warn("[OilShipmentService] OilHeavenPlotService not injected")
+		return
+	end
+
+	local plot = self._oilHeavenPlotService:GetOrCreatePlot(player.UserId)
+	if not plot then
+		self:_sendActionResult(player, false, "ERR_OIL_HEAVEN_GENERATE", "Could not create Oil Heaven plot.")
+		return
+	end
+
+	local spawnCFrame = self._oilHeavenPlotService:GetSpawnCFrame(player.UserId)
+	if not spawnCFrame then return end
+
+	CharacterTeleport.teleportWithUnseat(character, spawnCFrame, "RequestTeleportToOilHeaven")
+	player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldOilHeaven)
+	self:_fireCameraSnap(player, spawnCFrame)
 end
 
 --- `Workspace.DocksShop.DocksTeleportTarget` (or `Workspace.DocksTeleportTarget`): Attachment / BasePart / Model pivot.
