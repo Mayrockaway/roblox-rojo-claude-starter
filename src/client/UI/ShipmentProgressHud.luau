@@ -1350,7 +1350,42 @@ local function tryResumeCruiseDots(originalHaltGen: number)
 	startCruiseDots()
 end
 
-local function showHalted(severityRaw: string, holdSeconds: number)
+--- Initial UIScale used by `primeStatusPopIn` so the next pulse cycle
+--- visually pops the status line up from a smaller-than-rest scale. The
+--- pulse loop's first half-tween then carries it up past `1` (Sine-Out
+--- to `peak`) and back to `1` — a single perceived "punch" instead of a
+--- silent text swap. Tuned conservative so the text remains readable
+--- even in the smallest frame; smaller values exaggerate the pop but
+--- start to wash out the glyphs against the bar.
+local STATUS_POP_INITIAL_SCALE = 0.65
+
+--- Stamp the next pulse-loop start to "pop in" — set the UIScale below 1
+--- right before `startPulseLoop`, so the pulse's first Sine-Out tween
+--- ramps it up to `peak` from this floor rather than from a flat `1`.
+--- Safe no-op if the UIScale isn't authored yet.
+local function primeStatusPopIn()
+	local scale = hintFxScale
+	if scale and scale.Parent then
+		scale.Scale = STATUS_POP_INITIAL_SCALE
+	end
+end
+
+--- Title Case + warning-glyph helper used by the default "Ship Halted!"
+--- string and any caller that wants polish without authoring its own
+--- decorated label. Glyph defaults to a triangle warning sign (`⚠`) for
+--- halts; pass `"✓"` (or any other prefix) for evaded / positive states.
+local function decoratedAlertText(label: string, glyph: string?): string
+	local g = if typeof(glyph) == "string" and glyph ~= "" then glyph else "⚠"
+	return string.format("%s  %s", g, label)
+end
+
+--- `customMessage` (optional): overrides the default "⚠ Ship Halted!" text
+--- so callers can label the halt with the specific event id (e.g.
+--- "⚠ Mine Strike!" or "⚠ Pirate Raid!") for clearer player feedback.
+--- Severity coloring + FX still apply. Pass `nil` (or omit) to keep the
+--- generic decorated default. Whatever you pass is rendered as-is, so
+--- pre-decorate the string with the warning glyph to stay on-style.
+local function showHalted(severityRaw: string, holdSeconds: number, customMessage: string?)
 	local h = statusLine
 	if not (h and h.Parent) then
 		return
@@ -1364,7 +1399,9 @@ local function showHalted(severityRaw: string, holdSeconds: number)
 	-- Skip the text overwrite while a higher-priority lock is active, but keep
 	-- driving the FX (pulse / shake / fill freeze) — those are still useful.
 	if not HintLineState.isLocked() then
-		h.Text = "Ship halted!"
+		h.Text = if typeof(customMessage) == "string" and customMessage ~= ""
+			then customMessage
+			else decoratedAlertText("Ship Halted!", "⚠")
 		if level == "low" then
 			h.TextColor3 = COLORS.low
 		elseif level == "medium" then
@@ -1374,6 +1411,7 @@ local function showHalted(severityRaw: string, holdSeconds: number)
 		end
 		HintLineState.markNonCruiseWritten()
 	end
+	primeStatusPopIn()
 	if level == "low" then
 		startPulseLoop("low")
 	elseif level == "medium" then
@@ -1417,10 +1455,17 @@ local function showEvaded(message: string, holdSeconds: number)
 	cancelAllHintFx()
 	h.RichText = false
 	if not HintLineState.isLocked() then
-		h.Text = message
+		-- Caller may pass a pre-decorated string; otherwise prefix a
+		-- positive ✓ check so the green text reads as "good news, this
+		-- threat is gone" rather than just-another-event.
+		local decorated = if string.sub(message, 1, 1) == "⚠" or string.sub(message, 1, 1) == "✓"
+			then message
+			else decoratedAlertText(message, "✓")
+		h.Text = decorated
 		h.TextColor3 = COLORS.evaded
 		HintLineState.markNonCruiseWritten()
 	end
+	primeStatusPopIn()
 	startPulseLoop("low")
 
 	local resumeGen = haltGeneration
@@ -1450,10 +1495,11 @@ local function showTotalLossDuringPause(holdSeconds: number)
 	cancelAllHintFx()
 	h.RichText = false
 	if not HintLineState.isLocked() then
-		h.Text = "Shipment lost…"
+		h.Text = decoratedAlertText("Shipment Lost", "⚠")
 		h.TextColor3 = COLORS.lost
 		HintLineState.markNonCruiseWritten()
 	end
+	primeStatusPopIn()
 	startPulseLoop("high")
 	startShake(3.5)
 	haltResumeThread = task.delay(hold, function()
@@ -1743,13 +1789,35 @@ function ShipmentProgressHud.onVisualPacket(kind: string, data: Packet, localPla
 	if kind == "PirateRaidEvent" then
 		local sev = tostring(data.severity or "Medium")
 		local dur = StraitEventCatalog.PirateRaidConfig.SequenceDuration
-		showHalted(sev, dur)
+		showHalted(sev, dur, decoratedAlertText("Pirate Raid!", "⚠"))
 		return
 	end
 
 	if kind == "MineStrikeEvent" then
 		local sev = tostring(data.severity or "High")
-		showHalted(sev, mineHaltSeconds(data))
+		local total = mineHaltSeconds(data)
+		local alertLabel = decoratedAlertText("Mine Strike!", "⚠")
+		if data.didHit == true then
+			-- Real hit: stay on the alert message for the full halt; the
+			-- subsequent total-loss handler will paint the lost state.
+			showHalted(sev, total, alertLabel)
+		else
+			-- Hold "⚠ Mine Strike!" for a full 4s so the player has time
+			-- to read the threat before it transitions to the green
+			-- "✓ Mine Strike Evaded!" line. Capped to leave at least 0.5s
+			-- of evaded message before cruise dots resume on shorter halts.
+			-- `showEvaded` calls `cancelAllHintFx` which bumps
+			-- `haltGeneration`, so the showHalted resume thread no-ops
+			-- and the evaded hold-window cleanly takes over.
+			local alertHold = math.min(4, math.max(0.35, total - 0.5))
+			showHalted(sev, alertHold, alertLabel)
+			task.delay(alertHold, function()
+				local remaining = total - alertHold
+				if remaining > 0 then
+					showEvaded(decoratedAlertText("Mine Strike Evaded!", "✓"), remaining)
+				end
+			end)
+		end
 		return
 	end
 
@@ -1759,39 +1827,85 @@ function ShipmentProgressHud.onVisualPacket(kind: string, data: Packet, localPla
 			return
 		end
 		local outcome = tostring(data.outcome or "miss")
-		-- Miss = evaded → green positive cue, not an orange "Ship halted!".
+		-- Miss = evaded → green positive cue, not an orange halt label.
 		-- Hit / smallHit still go through `showHalted` so red shake/pulse fires.
 		if outcome == "miss" then
-			showEvaded("Missile evaded!", missileBarrageHintSeconds())
+			showEvaded(decoratedAlertText("Missile Evaded!", "✓"), missileBarrageHintSeconds())
 		else
 			local sev = if outcome == "hit" then "High" else "Medium"
-			showHalted(sev, missileBarrageHintSeconds())
+			showHalted(sev, missileBarrageHintSeconds(), decoratedAlertText("Missile Strike!", "⚠"))
 		end
 		return
 	end
 
 	-- Server emits these cinematic / weather events (not only `StraitWaypointEvent`); must cancel cruise dots.
 	if kind == "StormEvent" then
-		local hold = tonumber(data.sequenceSeconds) or StraitEventCatalog.StormConfig.BaseSequenceSeconds
-		showHalted(tostring(data.severity or "Medium"), hold)
+		local sev = tostring(data.severity or "Medium")
+		local total = tonumber(data.sequenceSeconds) or StraitEventCatalog.StormConfig.BaseSequenceSeconds
+		local alertLabel = decoratedAlertText("Thunderstorm!", "⚠")
+		local hadLoss = data.didBarrelLoss == true or (tonumber(data.barrelsLost) or 0) > 0
+		if hadLoss then
+			-- Real storm with barrel loss — stay on the alert message for the
+			-- whole sequence; the cargo manifest snapshot will land before
+			-- cruise resumes and tells the player what was lost.
+			showHalted(sev, total, alertLabel)
+		else
+			-- Harmless storm (FTUE showcase or a real storm whose rolls came
+			-- up empty) — lead with the alert, then transition to a green
+			-- "Storm Passed!" so the player isn't left wondering whether
+			-- they took damage.
+			local alertHold = math.min(4, math.max(0.35, total - 0.5))
+			showHalted(sev, alertHold, alertLabel)
+			task.delay(alertHold, function()
+				local remaining = total - alertHold
+				if remaining > 0 then
+					showEvaded(decoratedAlertText("Storm Passed!", "✓"), remaining)
+				end
+			end)
+		end
 		return
 	end
 
 	if kind == "TornadoEvent" then
-		local hold = tonumber(data.sequenceSeconds) or StraitEventCatalog.TornadoConfig.BaseSequenceSeconds
-		showHalted(tostring(data.severity or "High"), hold)
+		local sev = tostring(data.severity or "High")
+		local total = tonumber(data.sequenceSeconds) or StraitEventCatalog.TornadoConfig.BaseSequenceSeconds
+		local alertLabel = decoratedAlertText("Tornado!", "⚠")
+		local hadLoss = data.didBarrelLoss == true or (tonumber(data.barrelsLost) or 0) > 0
+		if hadLoss then
+			showHalted(sev, total, alertLabel)
+		else
+			local alertHold = math.min(4, math.max(0.35, total - 0.5))
+			showHalted(sev, alertHold, alertLabel)
+			task.delay(alertHold, function()
+				local remaining = total - alertHold
+				if remaining > 0 then
+					showEvaded(decoratedAlertText("Tornado Cleared!", "✓"), remaining)
+				end
+			end)
+		end
 		return
 	end
 
 	if kind == "CoastGuardInspectionEvent" then
-		local dur = StraitEventCatalog.CoastGuardInspectionConfig.SequenceDuration
-		showHalted("Low", dur)
+		-- Coast Guard inspections never apply barrel loss in any mode (regular
+		-- gameplay or FTUE showcase) — they're a cinematic boarding sequence,
+		-- not a damage event. Always paint the alert first, then resolve to a
+		-- green "Inspection Cleared!" so the line tells a complete story.
+		local total = StraitEventCatalog.CoastGuardInspectionConfig.SequenceDuration
+		local alertHold = math.min(4, math.max(0.35, total - 0.5))
+		showHalted("Low", alertHold, decoratedAlertText("Coast Guard Inspection!", "⚠"))
+		task.delay(alertHold, function()
+			local remaining = total - alertHold
+			if remaining > 0 then
+				showEvaded(decoratedAlertText("Inspection Cleared!", "✓"), remaining)
+			end
+		end)
 		return
 	end
 
 	if kind == "USShipSlapEvent" then
 		local dur = StraitEventCatalog.USShipSlapConfig.SequenceDuration
-		showHalted("High", dur)
+		showHalted("High", dur, decoratedAlertText("Navy Strike!", "⚠"))
 		return
 	end
 end

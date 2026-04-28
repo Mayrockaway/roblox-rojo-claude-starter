@@ -347,7 +347,13 @@ function FtueService:_setStep(player: Player, step: string?)
 			end
 			local ordinal = _ftueOrdinal(step)
 			if ordinal then
-				Telemetry.Funnel(player, "ftue", ordinal, step)
+				-- `Done` is the terminal step of the FTUE funnel — emit it
+				-- with status `"Complete"` so the dashboard records funnel
+				-- completion (not another "Start" beyond the last in-progress
+				-- step). Earlier in-progress steps default to `"Start"` so the
+				-- per-step drop-off rates still read correctly.
+				local funnelStatus: ("Start" | "Complete")? = if step == FtueConfig.Step.Done then "Complete" else nil
+				Telemetry.Funnel(player, "ftue", ordinal, step, funnelStatus)
 			end
 			if step == FtueConfig.Step.Done and not _ftueDoneFiredByUserId[player.UserId] then
 				_ftueDoneFiredByUserId[player.UserId] = true
@@ -569,6 +575,21 @@ function FtueService:SyncFromOilState(userId: number)
 	if step == FtueConfig.Step.WaitDrillOil_WIP and self._plotService and typeof((self._plotService :: any).RefreshSpawn) == "function" then
 		(self._plotService :: any):RefreshSpawn(player)
 	end
+	--- Rejoin race fix: `_onCharacterSpawnedDuringFtue` is wired to
+	--- `CharacterAdded` from `_bindCharacterSafetyNet`, but on first join
+	--- that fires **before** the oil profile has loaded — at which point
+	--- `FtueStepAttribute` is still `nil`, so every step-specific branch
+	--- (`WaitShipment` reseat, `WaitWarehouseSell` warehouse teleport,
+	--- generic `ftueLastSpawn` rejoin restore) early-outs and the player
+	--- gets stranded at the ClaimPad. Now that `SyncFromOilState` has set
+	--- the canonical step, re-trigger the safety net once for the existing
+	--- character so the right branch picks up. The else-branch's
+	--- `_ftueRejoinRestoreDone` latch still prevents stale-CFrame
+	--- death-respawn loops because it's only set after a successful
+	--- teleport (see `_onCharacterSpawnedDuringFtue` doc-comment).
+	if player.Character and typeof(step) == "string" and step ~= FtueConfig.Step.Done then
+		self:_onCharacterSpawnedDuringFtue(player)
+	end
 	ftueDbg("SyncFromOilState uid=%d branch=midFlow -> FtueStateUpdate(%s)", userId, step)
 end
 
@@ -674,7 +695,17 @@ local function onAcknowledge(self: any, player: Player)
 		applyWaitDrillEntry(self, player)
 		self:_setStep(player, FtueConfig.Step.WaitDrillOil_WIP)
 	elseif step == FtueConfig.Step.WaitSell then
-		self:_setStep(player, FtueConfig.Step.WaitDocksShipUpgrade)
+		--- `WaitSell` Continue auto-teleports the player to docks
+		--- (client side, in `FtueDialogueController`) and advances
+		--- straight into `WaitDocksEquipmentShop`. The legacy
+		--- `WaitDocksShipUpgrade` "Welcome to town" interstitial was
+		--- removed from `FtueConfig.Order` — its step constant + copy
+		--- are kept so the leg can be re-activated. Seed the
+		--- `BuyDrill` sub-step here so `EquipmentShopService` picks the
+		--- right pointer / discount logic when the panel opens.
+		ftueDbg("onAcknowledge uid=%d WaitSell Continue -> _setStep(WaitDocksEquipmentShop) (skipping WaitDocksShipUpgrade)", player.UserId)
+		self:_setStep(player, FtueConfig.Step.WaitDocksEquipmentShop)
+		player:SetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute, "BuyDrill")
 	elseif step == FtueConfig.Step.WaitDocksHire then
 		ftueDbg("onAcknowledge uid=%d WaitDocksHire Continue -> _setStep(Done) (final modal)", player.UserId)
 		local oil = self._oilState

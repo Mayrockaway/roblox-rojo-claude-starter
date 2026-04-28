@@ -1304,13 +1304,22 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		and ftueStepNow == FtueConfig.Step.WaitPlotShipment
 	then
 		tutorialEscort = true
-		-- Tutorial escort uses the fastest theoretically possible voyage
-		-- time (MaxSpeedLevel projection) scaled by a tutorial-specific
-		-- multiplier. Capacity level doesn't affect `travelSeconds`, so we
-		-- pass `MaxCapacityLevel` here purely for symmetry / intent ("max
-		-- stats projection").
+		-- Tutorial escort: project the boat to `MaxSpeedLevel` (its natural
+		-- top-tier travel time, currently `30 s`) and divide by **4** so
+		-- the new player crosses the strait at **4× the max-tier speed**
+		-- (~7.5 s base voyage). The `_runShipment` failsafe used to
+		-- force-warp the boat to the warehouse mid-strait at high speeds;
+		-- the matching guard below
+		-- (`if isTutorialEscort then hardWall = false; stuckNoMove = false`)
+		-- now hard-disables both wall checks for tutorial dispatches, so
+		-- the failsafe can never force-warp the protected voyage. The
+		-- showcase event pauses (Coast Guard freeze, Mines barrage) still
+		-- play their full duration since they're fired by lane waypoint
+		-- and `task.wait`/`voyageClock` shifts inside each helper.
+		-- Capacity level doesn't affect `travelSeconds`, so we pass
+		-- `MaxCapacityLevel` purely for symmetry.
 		local maxStats = ShipStats.Resolve(ShipUpgradeConfig.MaxSpeedLevel, ShipUpgradeConfig.MaxCapacityLevel)
-		travelSeconds = maxStats.travelSeconds * (tonumber(FtueConfig.FtueTutorialShipmentTravelTimeScale) or 0.5)
+		travelSeconds = maxStats.travelSeconds / 4
 		local tutSkin = FtueConfig.FtueTutorialShipmentSkinId
 		if typeof(tutSkin) == "string" and BoatCatalog.Boats[tutSkin] then
 			boatId = tutSkin
@@ -1385,6 +1394,14 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		travelSeconds = travelSeconds,
 		eventRisk = stats.eventRisk,
 		ftueTutorialSuppressStraitIncidents = tutorialEscort,
+		--- When the FTUE escort dispatch is active, stamp the configured
+		--- showcase table (lane-waypoint → event id) so
+		--- `_handleStraitWaypointTrigger` can route the protected voyage's
+		--- waypoint triggers into harmless VFX/SFX showcases. `nil` (not
+		--- the escort dispatch) keeps the normal "fully suppress" path.
+		ftueTutorialShowcasesByLaneWaypoint = if tutorialEscort
+			then (FtueConfig.FtueTutorialShowcasesByLaneWaypoint or {}) :: { [number]: string }
+			else nil,
 	}
 
 	-- Run-upgrade hooks. Security Personnel is opt-in: the client sends
@@ -1590,6 +1607,24 @@ function OilShipmentService:_runShipment(shipment)
 
 	-- Setup physics-driven ship
 	self:_setupShip(shipment.shipmentId, boat, startRaised, initDir)
+
+	-- Tutorial escort speed override. `_setupShip` clamps every dispatch's
+	-- `alignPos.MaxVelocity` to 60 studs/s — that's the **hull** physics
+	-- cap, separate from the carrot speed (`totalPathLen / travelSeconds`).
+	-- Lower `travelSeconds` only moves the carrot faster; the hull stays
+	-- bound by `MaxVelocity`. The tutorial dispatch already cuts
+	-- `travelSeconds` to `maxStats.travelSeconds / 4` (carrot ~133 studs/s
+	-- on a ~1000-stud path), so without raising the hull cap the new
+	-- player still saw a 60-stud/s boat regardless of `travelSeconds`
+	-- changes. Bump the cap for the protected voyage only — non-tutorial
+	-- dispatches keep the original 60 studs/s value so player upgrade
+	-- speed levels still drive perceived progression.
+	if (shipment :: any).ftueTutorialSuppressStraitIncidents == true then
+		local shipState = self._activeShips[shipment.shipmentId]
+		if shipState and shipState.alignPos then
+			shipState.alignPos.MaxVelocity = 240
+		end
+	end
 
 	-- Yield one physics step before anything downstream (barrel load,
 	-- security personnel mount, owner teleport) reads hull geometry.
@@ -1939,6 +1974,23 @@ function OilShipmentService:_runShipment(shipment)
 			local hardWall = wallElapsed > voyageTime * VOYAGE_FAILSAFE_MAX_WALL_MULT
 			local stuckNoMove = (os.clock() - lastProgressClock) > VOYAGE_FAILSAFE_STUCK_SECONDS
 				and s_hull < totalPathLen - VOYAGE_COMPLETE_ARC_EPS_STUDS
+			-- Tutorial protected voyages opt out of BOTH failsafe checks. The
+			-- boosted base speed + showcase event pauses (Coast Guard freeze
+			-- + Mines barrage) can flip one of these flags while the boat is
+			-- still mid-strait, and the existing recovery (force-warp the
+			-- boat to the warehouse end + early-break the voyage) reads to
+			-- the new player as the boat suddenly teleporting to the end.
+			-- Natural-arrival detection (`s_hull >= totalPathLen - eps`) and
+			-- lead-carrot arrival both still end the voyage cleanly when
+			-- the boat actually reaches the dock. If a tutorial voyage
+			-- genuinely hangs, the player can rejoin and the FTUE rejoin
+			-- restore puts them on solid ground — better UX than a visual
+			-- snap to the warehouse on the very first run.
+			local isTutorialEscort = (shipment :: any).ftueTutorialSuppressStraitIncidents == true
+			if isTutorialEscort then
+				hardWall = false
+				stuckNoMove = false
+			end
 			if (hardWall or stuckNoMove) and not arrived then
 				local endPos, endTan = positionAndTangentAtArcLength(path, segDists, totalPathLen)
 				local flatE = Vector3.new(endTan.X, 0, endTan.Z)
@@ -3545,6 +3597,180 @@ function OilShipmentService:_freezeShipForStraitEventCinematic(
 	return os.clock() - freezeStartedAt
 end
 
+--- FTUE tutorial mine showcase: surfaces mines around the boat with every
+--- outcome forced to `didHit = false` so the player sees the threat
+--- without any cargo loss. Mirrors the `def.mineEvent` block inside
+--- `_handleStraitWaypointTrigger` but skips total-loss / barrel-loss paths.
+--- Caller advances `voyageClock.startTime` so the stuck detector in
+--- `_runShipment` does not count this wait against voyage time.
+function OilShipmentService:_runFtueTutorialMineShowcase(
+	shipment,
+	ownerUserId: number,
+	worldPosition: Vector3,
+	voyageClock: { startTime: number },
+	boat: Instance
+)
+	local def = StraitEventCatalog.GetById("MineStrike")
+	if not def then
+		return
+	end
+	local mc = StraitEventCatalog.MineConfig
+	local mineCount = mc.MineCount or 15
+	local skinFx = BoatCatalog.GetBoat(shipment.boatId).fxParticleScale
+	local particleFxScale = ParticleFxScale.ComputePayloadScale(boat, skinFx)
+	local rng = Random.new()
+	local playtestTitle = StraitEventCatalog.GetPlaytestTitle(def)
+
+	-- Spread mines wide around the boat (no near-hit override) so every
+	-- mine is in the safe surfacing ring. The regular mine path picks one
+	-- of the first three mines and pulls it in front of the ship on a hit;
+	-- we skip that branch entirely.
+	local minePositions = {}
+	local radiusMin = mc.SpawnRadiusMin or 30
+	local radiusMax = mc.SpawnRadiusMax or 120
+	for mi = 1, mineCount do
+		local angle = (mi / mineCount) * math.pi * 2 + rng:NextNumber(-0.4, 0.4)
+		local dist = rng:NextNumber(radiusMin, radiusMax)
+		local offset = Vector3.new(math.cos(angle) * dist, 0, math.sin(angle) * dist)
+		table.insert(minePositions, {
+			x = worldPosition.X + offset.X,
+			y = worldPosition.Y,
+			z = worldPosition.Z + offset.Z,
+		})
+	end
+
+	self:_emitShipmentEvent("MineStrikeEvent", {
+		ownerUserId = ownerUserId,
+		shipmentId = shipment.shipmentId,
+		eventId = def.id,
+		displayName = def.displayName,
+		playtestTitle = playtestTitle,
+		severity = "Medium",
+		didHit = false,
+		minePositions = minePositions,
+		riseSeconds = mc.RiseSeconds,
+		worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+		particleFxScale = particleFxScale,
+	})
+
+	local totalPause = (mc.RiseSeconds or 0) + (mc.PauseAfterSurface or 0) + 1
+	task.wait(totalPause)
+	voyageClock.startTime += totalPause
+
+	pcall(function()
+		local ownerForTelemetry = Players:GetPlayerByUserId(ownerUserId)
+		Telemetry.Track(ownerForTelemetry, "ftue_tutorial_strait_showcase_fired", {
+			shipmentId = shipment.shipmentId,
+			eventId = "MineStrike",
+		})
+	end)
+end
+
+--- FTUE tutorial coast-guard showcase: fires the inspection cinematic and
+--- freezes the boat for `SequenceDuration`, identical to the normal coast
+--- guard path which already has no barrel-loss logic — we just bypass the
+--- occurrence / bracket roll so the protected voyage runs it on cue.
+function OilShipmentService:_runFtueTutorialCoastGuardShowcase(
+	shipment,
+	ownerUserId: number,
+	worldPosition: Vector3,
+	voyageClock: { startTime: number },
+	boat: Instance
+)
+	local def = StraitEventCatalog.GetById("CoastGuardInspection")
+	if not def then
+		return
+	end
+	local cfg = StraitEventCatalog.CoastGuardInspectionConfig
+	local skinFx = BoatCatalog.GetBoat(shipment.boatId).fxParticleScale
+	local particleFxScale = ParticleFxScale.ComputePayloadScale(boat, skinFx)
+	local rng = Random.new()
+	local playtestTitle = StraitEventCatalog.GetPlaytestTitle(def)
+	local approachSide = rng:NextNumber() < 0.5 and 1 or -1
+
+	self:_emitShipmentEvent("CoastGuardInspectionEvent", {
+		ownerUserId = ownerUserId,
+		shipmentId = shipment.shipmentId,
+		eventId = def.id,
+		displayName = def.displayName,
+		playtestTitle = playtestTitle,
+		severity = "Low",
+		approachSide = approachSide,
+		worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+		particleFxScale = particleFxScale,
+	})
+	self:_freezeShipForStraitEventCinematic(shipment.shipmentId, cfg.SequenceDuration)
+	voyageClock.startTime += cfg.SequenceDuration
+
+	pcall(function()
+		local ownerForTelemetry = Players:GetPlayerByUserId(ownerUserId)
+		Telemetry.Track(ownerForTelemetry, "ftue_tutorial_strait_showcase_fired", {
+			shipmentId = shipment.shipmentId,
+			eventId = "CoastGuardInspection",
+		})
+	end)
+end
+
+--- FTUE tutorial storm showcase: fires the thunderstorm cinematic VFX/SFX
+--- with no delay roll and no barrel loss. Mirrors the `def.stormEvent`
+--- block in `_handleStraitWaypointTrigger` but skips the `didDelay` /
+--- `didBarrelLoss` rolls and the `_applyLooseBarrelLoss` call so the
+--- protected voyage just sees rain + lightning + thunder. The base
+--- sequence duration is the same as the normal storm so the audio
+--- timing reads identically. Caller advances `voyageClock.startTime`
+--- so the stuck detector in `_runShipment` doesn't count this wait
+--- against voyage time.
+function OilShipmentService:_runFtueTutorialStormShowcase(
+	shipment,
+	ownerUserId: number,
+	laneWaypointIndex: number,
+	worldPosition: Vector3,
+	voyageClock: { startTime: number },
+	boat: Instance
+)
+	local def = StraitEventCatalog.GetById("Storm")
+	if not def then
+		return
+	end
+	local sc = StraitEventCatalog.StormConfig
+	local baseSequenceSeconds = math.max(0, tonumber(sc.BaseSequenceSeconds) or 0)
+	local skinFx = BoatCatalog.GetBoat(shipment.boatId).fxParticleScale
+	local particleFxScale = ParticleFxScale.ComputePayloadScale(boat, skinFx)
+	local playtestTitle = StraitEventCatalog.GetPlaytestTitle(def)
+
+	self:_emitShipmentEvent("StormEvent", {
+		ownerUserId = ownerUserId,
+		shipmentId = shipment.shipmentId,
+		eventId = def.id,
+		displayName = def.displayName,
+		playtestTitle = playtestTitle,
+		severity = "Medium",
+		laneWaypointIndex = laneWaypointIndex,
+		worldPosition = { x = worldPosition.X, y = worldPosition.Y, z = worldPosition.Z },
+		didDelay = false,
+		delaySeconds = 0,
+		didBarrelLoss = false,
+		barrelsLost = 0,
+		lostDeckBarrels = {},
+		barrelLossFraction = 0,
+		sequenceSeconds = baseSequenceSeconds,
+		particleFxScale = particleFxScale,
+	})
+
+	if baseSequenceSeconds > 0 then
+		task.wait(baseSequenceSeconds)
+		voyageClock.startTime += baseSequenceSeconds
+	end
+
+	pcall(function()
+		local ownerForTelemetry = Players:GetPlayerByUserId(ownerUserId)
+		Telemetry.Track(ownerForTelemetry, "ftue_tutorial_strait_showcase_fired", {
+			shipmentId = shipment.shipmentId,
+			eventId = "Storm",
+		})
+	end)
+end
+
 -- Returns true if shipment is a total loss (caller must cleanup boat and exit _runShipment).
 function OilShipmentService:_handleStraitWaypointTrigger(
 	shipment,
@@ -3555,6 +3781,21 @@ function OilShipmentService:_handleStraitWaypointTrigger(
 	boat: Instance
 ): boolean
 	if (shipment :: any).ftueTutorialSuppressStraitIncidents == true then
+		-- Tutorial showcase: at configured waypoints, fire harmless
+		-- VFX/SFX-only versions of strait events so the player sees the
+		-- threat fantasy without losing any cargo. Every other waypoint
+		-- stays fully suppressed.
+		local showcases = (shipment :: any).ftueTutorialShowcasesByLaneWaypoint
+		if typeof(showcases) == "table" then
+			local eventId = showcases[laneWaypointIndex]
+			if eventId == "MineStrike" then
+				self:_runFtueTutorialMineShowcase(shipment, ownerUserId, worldPosition, voyageClock, boat)
+			elseif eventId == "CoastGuardInspection" then
+				self:_runFtueTutorialCoastGuardShowcase(shipment, ownerUserId, worldPosition, voyageClock, boat)
+			elseif eventId == "Storm" then
+				self:_runFtueTutorialStormShowcase(shipment, ownerUserId, laneWaypointIndex, worldPosition, voyageClock, boat)
+			end
+		end
 		return false
 	end
 	-- Run-upgrade: Security Personnel deflects every strait incident on this

@@ -56,32 +56,27 @@ local STRAIT_PLAYTEST_BANNER_KINDS: { [string]: boolean } = {
 }
 
 local function showStraitPlaytestBannerIfNeeded(
-	player: Player,
-	playerGui: PlayerGui,
-	kind: string,
-	data: { [string]: any }
+	_player: Player,
+	_playerGui: PlayerGui,
+	_kind: string,
+	_data: { [string]: any }
 )
-	if not STRAIT_PLAYTEST_BANNER_KINDS[kind] then
-		return
-	end
-	-- ShipmentVisualEvent is FireAllClients; show the large playtest title only to the ship owner.
-	local ownerUid = data.ownerUserId or data.playerUserId
-	if typeof(ownerUid) ~= "number" or ownerUid ~= player.UserId then
-		return
-	end
-	if kind == "MissileStrikeEvent" then
-		local idx = tonumber(data.missileIndex) or 1
-		if idx ~= 1 then
-			return
-		end
-	end
-	local title = if typeof(data.playtestTitle) == "string" and data.playtestTitle ~= ""
-		then data.playtestTitle
-		elseif typeof(data.displayName) == "string" then data.displayName
-		else nil
-	if typeof(title) == "string" and title ~= "" then
-		StraitEventPlaytestBanner.show(playerGui, title)
-	end
+	--- Strait-event playtest banner (the large white "Mine strike" /
+	--- "Thunderstorm" / etc. headline that popped up over the world on
+	--- each strait incident) is disabled — it was a dev/playtest aid
+	--- that competes with the polished `ShipmentProgressHud` status
+	--- line for the player's attention. The status line in the bottom
+	--- hint bar already names the event ("⚠ Mine Strike!" / "✓ Mine
+	--- Strike Evaded!" / "⚠ Thunderstorm!" via `showHalted`'s custom
+	--- message arg) so this banner is now redundant.
+	---
+	--- The `STRAIT_PLAYTEST_BANNER_KINDS` allow-list above is left in
+	--- place + the function arg shape preserved so re-enabling is a
+	--- one-line revert. PirateHireClient's "Pirate Hit" / "RAIDED!"
+	--- banners are untouched — those are gameplay notifications, not
+	--- per-event headlines, and they still call `StraitEventPlaytestBanner.show`
+	--- from their own code path.
+	return
 end
 
 --- Missile barrages fire a `MissileStrikeEvent` per missile (idx 1..N). The

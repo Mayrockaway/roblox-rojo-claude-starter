@@ -10,11 +10,13 @@ local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Constants = require(Shared:WaitForChild("Constants"))
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local QualityConfig = require(Shared:WaitForChild("Config"):WaitForChild("QualityConfig"))
 local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
 local InstantSellConfig = require(Shared:WaitForChild("Config"):WaitForChild("InstantSellConfig"))
 local MonetizationCatalog = require(Shared:WaitForChild("Config"):WaitForChild("MonetizationCatalog"))
+local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
 
 local HudPanelBase = require(script.Parent.Parent.HudPanelBase)
 local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
@@ -1921,6 +1923,19 @@ local function wireRunUpgradeCard2(screen: ScreenGui, conns: { RBXScriptConnecti
 end
 
 local function disconnectAll()
+	-- Clear any FTUE hide-pass attribute markers + restore visibility on
+	-- the previously-wired screen so the next bind (or a Studio reload)
+	-- doesn't inherit a stale set of forcibly-hidden GuiObjects. Runs
+	-- BEFORE the connection / state teardown so `wiredScreen` still
+	-- points at the old screen here.
+	if wiredScreen and wiredScreen.Parent then
+		for _, d in ipairs(wiredScreen:GetDescendants()) do
+			if d:IsA("GuiObject") and d:GetAttribute("FtueWaitPlotHidden") == true then
+				d.Visible = true
+				d:SetAttribute("FtueWaitPlotHidden", nil)
+			end
+		end
+	end
 	for _, c in ipairs(connections) do
 		c:Disconnect()
 	end
@@ -1982,6 +1997,67 @@ local function disconnectAll()
 	cargoHaulerBadgeScale = nil
 	hideErrorNotification()
 	errorNotificationLabel = nil
+end
+
+--- Attribute marker stamped on every GuiObject that the FTUE
+--- WaitPlotShipment hide pass forces invisible. Restoring visibility on
+--- step-change scans for the marker so we never re-show GuiObjects that
+--- some other system (panel modals, idle decorations) already hid.
+local FTUE_PLOT_HIDE_ATTR = "FtueWaitPlotHidden"
+
+--- Targeted hide list for the FTUE WaitPlotShipment leg. Names match
+--- Studio-authored frames under `ShipOilPanelGui.Canvas.PanelHost.Panel.Body`
+--- (and one nested capacity label). Everything not in this list — `Banner`
+--- (panel header + close button), `HeaderDivider`, `CargoHeader` (the
+--- "Cargo" subheader), `ShipCargoRowCrude`, `ShipFooterDivider`, and
+--- `Footer` — stays visible so the panel still reads as the Ship Oil
+--- panel; we just collapse the noisy widgets the new player can't act on.
+--- Add a name here when a future Body section needs hiding during the
+--- first-shipment leg.
+local FTUE_WAIT_PLOT_HIDE_NAMES: { string } = {
+	"ShipCargoRowRefined",
+	"ShipCargoRowPremium",
+	"ShipCapacityBand",
+	"WarehouseCapacityLabel",
+	"RunUpgradesSection",
+	"InstantSellSection",
+	"ShipmentCostBand",
+}
+
+local function applyFtueWaitPlotShipmentHide(screen: ScreenGui)
+	local hideSet: { [string]: boolean } = {}
+	for _, name in ipairs(FTUE_WAIT_PLOT_HIDE_NAMES) do
+		hideSet[name] = true
+	end
+	for _, d in ipairs(screen:GetDescendants()) do
+		if not d:IsA("GuiObject") then
+			continue
+		end
+		if not hideSet[d.Name] then
+			continue
+		end
+		if d.Visible then
+			d:SetAttribute(FTUE_PLOT_HIDE_ATTR, true)
+			d.Visible = false
+		end
+	end
+end
+
+local function clearFtueWaitPlotShipmentHide(screen: ScreenGui)
+	for _, d in ipairs(screen:GetDescendants()) do
+		if d:IsA("GuiObject") and d:GetAttribute(FTUE_PLOT_HIDE_ATTR) == true then
+			d.Visible = true
+			d:SetAttribute(FTUE_PLOT_HIDE_ATTR, nil)
+		end
+	end
+end
+
+local function applyFtueShipOilModeForStep(screen: ScreenGui, stepValue: any)
+	if typeof(stepValue) == "string" and stepValue == FtueConfig.Step.WaitPlotShipment then
+		applyFtueWaitPlotShipmentHide(screen)
+	else
+		clearFtueWaitPlotShipmentHide(screen)
+	end
 end
 
 local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
@@ -2535,6 +2611,34 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 		maybeFireFtueDispatchPointerRefresh()
 	end))
 	maybeFireFtueDispatchPointerRefresh()
+
+	--- FTUE WaitPlotShipment hide pass. Apply on every step-change for
+	--- the local player so the panel collapses to just the Crude row +
+	--- Footer while the new player is on their first plot shipment, and
+	--- restores the full layout the moment they advance to `WaitShipment`.
+	--- Re-applies whenever the panel reopens (`Enabled` flip) so the hide
+	--- survives Roblox re-instantiating sub-frames. Re-runs after the
+	--- final `applyMerriweatherToPanelText` / row binds so we operate on
+	--- the fully-resolved tree.
+	local localPlayer = Players.LocalPlayer
+	if localPlayer then
+		local function refresh()
+			if not (wiredScreen == screen and screen.Parent) then
+				return
+			end
+			applyFtueShipOilModeForStep(screen, localPlayer:GetAttribute(Constants.FtueStepAttribute))
+		end
+		refresh()
+		table.insert(
+			connections,
+			localPlayer:GetAttributeChangedSignal(Constants.FtueStepAttribute):Connect(refresh)
+		)
+		table.insert(connections, screen:GetPropertyChangedSignal("Enabled"):Connect(function()
+			if screen.Enabled then
+				refresh()
+			end
+		end))
+	end
 end
 
 function ShipOilPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelController?

@@ -17,6 +17,7 @@ local FtueTpHomePointerState = require(script.Parent:WaitForChild("FtueTpHomePoi
 local FtueTpHomePointerSignals = require(script.Parent:WaitForChild("FtueTpHomePointerSignals"))
 local FtueDispatchPointerSignals = require(script.Parent:WaitForChild("FtueDispatchPointerSignals"))
 local UiSfx = require(script.Parent.Parent:WaitForChild("UiSfx"))
+local getClientRemotes = require(script.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
 
 --- Steps that show the **Continue** button. `WaitDrillOil_WIP` was previously
 --- ackable (dev skip that filled the refinery and jumped to `WaitPlotShipment`)
@@ -26,6 +27,11 @@ local UiSfx = require(script.Parent.Parent:WaitForChild("UiSfx"))
 --- step; the server-side reject lives in `FtueService.onAcknowledge`.
 local ACK_STEPS: { [string]: boolean } = {
 	[FtueConfig.Step.Intro] = true,
+	--- WaitSell Continue now does double duty: the handler below also
+	--- fires `requestTeleportToDocks` so the server advances the step
+	--- straight from `WaitSell` → `WaitDocksEquipmentShop` (skipping the
+	--- legacy `WaitDocksShipUpgrade` "Welcome to town" interstitial,
+	--- which was removed from `FtueConfig.Order`).
 	[FtueConfig.Step.WaitSell] = true,
 	[FtueConfig.Step.WaitDocksHire] = true,
 }
@@ -613,6 +619,18 @@ function FtueDialogueController.start(
 				hideNonPointersUnderCanvas(sg, true)
 				requestFtueAcknowledge:FireServer()
 				return
+			end
+			--- WaitSell → auto-teleport the player to docks, then ack so the
+			--- server advances the step. The Continue button replaces the
+			--- old "find the BuyButton on the HUD" UX for new players; the
+			--- HudPanelRouter `OnFtueDocksProgress` path is still wired
+			--- as a fallback if the player teleports manually first.
+			if typeof(attr) == "string" and attr == FtueConfig.Step.WaitSell then
+				local remotes = getClientRemotes()
+				local tpRemote = remotes and remotes.requestTeleportToDocks
+				if tpRemote and (tpRemote :: RemoteEvent).FireServer then
+					(tpRemote :: RemoteEvent):FireServer()
+				end
 			end
 			requestFtueAcknowledge:FireServer()
 		end)

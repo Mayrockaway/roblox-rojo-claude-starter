@@ -117,6 +117,22 @@ function PlotService:Init()
 	self._rng = Random.new()
 	self._plotAssignedEvent = Instance.new("BindableEvent")
 	self._plotReleasedEvent = Instance.new("BindableEvent")
+	--- Set by `OilStateService:Start()` so `_teleportCharacterToOwnedPlot`
+	--- can consult the FTUE rejoin snapshot before falling back to the
+	--- ClaimPad / WaitDrillOil_WIP grid override. Optional — when nil
+	--- (e.g. unit tests, services not bound yet) the FTUE branch silently
+	--- short-circuits and the existing logic still runs.
+	self._oilState = nil :: any
+end
+
+--- Late-binding setter so `OilStateService` can hand its FTUE snapshot
+--- accessor to `PlotService` without `PlotService` requiring the module
+--- (avoids the circular require: PlotService loads first because
+--- OilStateService Init takes it as an argument). Safe to call at any
+--- time; subsequent `_teleportCharacterToOwnedPlot` calls pick up the
+--- new reference automatically.
+function PlotService:SetOilStateService(oilState: any)
+	self._oilState = oilState
 end
 
 function PlotService:Start()
@@ -808,7 +824,29 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 	local ftueStepRaw = player:GetAttribute(Constants.FtueStepAttribute)
 	local ftueStep: string? = if typeof(ftueStepRaw) == "string" then ftueStepRaw else nil
 	local target: CFrame
-	if ftueStep == FtueConfig.Step.WaitDrillOil_WIP then
+
+	--- FTUE rejoin override: if `OilStateService` has a captured
+	--- `ftueLastSpawn` snapshot for this player, use that as the target
+	--- so the character spawns where they were when they last
+	--- disconnected (or where `_setStep` snapshotted them on entering
+	--- the leg) — instead of the ClaimPad. Targeting it here means the
+	--- post-teleport drift loop defends the FTUE position rather than
+	--- the ClaimPad, so it doesn't yank the player away when
+	--- `FtueService` follows up. The snapshot is null for fresh
+	--- profiles and players past `Done`, so this is a no-op outside
+	--- mid-FTUE rejoins. Plot mismatch (`snap.plotId ~= currentPlotId`)
+	--- also returns nil — see `OilStateService:GetFtueLastSpawnCFrame`.
+	local ftueSnapshotCFrame: CFrame? = nil
+	if self._oilState and typeof((self._oilState :: any).GetFtueLastSpawnCFrame) == "function" then
+		local currentPlotIdRaw = player:GetAttribute("PlotId")
+		local currentPlotId: number? = if typeof(currentPlotIdRaw) == "number" and currentPlotIdRaw > 0
+			then currentPlotIdRaw
+			else nil
+		ftueSnapshotCFrame = (self._oilState :: any):GetFtueLastSpawnCFrame(player.UserId, currentPlotId)
+	end
+	if ftueSnapshotCFrame then
+		target = ftueSnapshotCFrame
+	elseif ftueStep == FtueConfig.Step.WaitDrillOil_WIP then
 		local startSectionId = string.format(
 			"S%02d_%02d",
 			OilConfigForSpawn.Chunks.StartingRow,
@@ -836,13 +874,20 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 				end
 			end
 		end
+		--- Yaw the spawn 90° clockwise from the ClaimPad's heading so the
+		--- character lands looking **into the plot** (the tile grid) instead
+		--- of toward the Delivery Man behind them. Roblox's right-handed
+		--- coordinate system makes a clockwise yaw (turn-right from the
+		--- player's perspective) a `-π/2` rotation about Y. Applied to all
+		--- three branches below so the same heading lands on tile, section
+		--- center, and ClaimPad fallbacks.
+		local ftueDrillYawOffset = CFrame.Angles(0, -math.pi * 0.5, 0)
 		if frontTile then
 			--- Land slightly above the tile's top surface so the character
-			--- drops onto it cleanly. Keep ClaimPad's rotation so the
-			--- camera-snap heading matches the non-FTUE spawn (looking
-			--- toward the Delivery Man).
+			--- drops onto it cleanly. ClaimPad rotation × -90° yaw makes
+			--- the player face the plot's tile grid on first spawn.
 			local tileTopY = frontTile.Position.Y + frontTile.Size.Y * 0.5
-			target = spawnPart.CFrame.Rotation + Vector3.new(
+			target = (spawnPart.CFrame.Rotation * ftueDrillYawOffset) + Vector3.new(
 				frontTile.Position.X,
 				tileTopY + 5,
 				frontTile.Position.Z
@@ -857,7 +902,7 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 			))
 			local sectionCf, sectionSz = (section :: Model):GetBoundingBox()
 			local targetY = sectionCf.Position.Y + sectionSz.Y * 0.5 + 5
-			target = spawnPart.CFrame.Rotation + Vector3.new(
+			target = (spawnPart.CFrame.Rotation * ftueDrillYawOffset) + Vector3.new(
 				sectionCf.Position.X,
 				targetY,
 				sectionCf.Position.Z
@@ -869,7 +914,7 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 				"[PlotService] FTUE WaitDrillOil_WIP spawn fallback for %s: %s.PlotGround.%s missing",
 				player.Name, plot.Name, startSectionId
 			))
-			target = spawnPart.CFrame.Rotation + Vector3.new(
+			target = (spawnPart.CFrame.Rotation * ftueDrillYawOffset) + Vector3.new(
 				spawnPart.Position.X,
 				math.max(14, spawnPart.Position.Y + 8),
 				spawnPart.Position.Z
@@ -938,20 +983,38 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 	--- safety re-teleport corrected the position but left a visible ~300ms flash of the
 	--- character suspended over world origin.
 	---
-	--- Tight poll instead: check on `Heartbeat` for at most ~150ms (~9 frames at 60Hz).
-	--- Re-snap **only** when the engine actually drifts us (≥10 studs) and bail the moment
-	--- we see two consecutive "stable" frames. The 1-frame visible drift (~16ms) is
-	--- imperceptible, but the loop still terminates fast enough that we don't repeat the
-	--- multi-respawn stutter the longer hold loop caused before.
+	--- Tight poll instead: check on `Heartbeat` for up to ~120 frames. On a
+	--- healthy server (60 fps) that's ~2 s of coverage; in Studio at low fps
+	--- (10–15 fps with all VFX loaded) the same 120 iterations stretch to
+	--- 8–12 s, which still terminates promptly because the loop **early-exits
+	--- after 2 consecutive stable frames** — the long ceiling only matters
+	--- when the slam keeps re-triggering. The earlier 9-frame ceiling missed
+	--- the engine slam in low-fps Studio sessions (it landed at ~+1.2 s) and
+	--- dropped the character into the open ocean at world origin. Re-snap
+	--- **only** when drift ≥ 10 studs.
 	task.spawn(function()
 		local stableFrames = 0
-		local maxFrames = 9
+		local maxFrames = 120
 		local logged = false
 		for _ = 1, maxFrames do
 			RunService.Heartbeat:Wait()
 			if not (hrp.Parent and character.Parent and player.Parent) then
 				return
 			end
+			--- The drift defense ALWAYS runs (including for FTUE players
+			--- whose `FtueStepAttribute` is already set on fresh first-
+			--- join). An earlier iteration tried to early-exit when
+			--- `FtueStepAttribute` was non-nil, but on fresh-profile
+			--- WaitDrillOil_WIP that meant the engine's "no SpawnLocation"
+			--- pivot at +1-2 frames (which slams the character to
+			--- `(0, 102.5, 0)` — world origin) was never recovered, and
+			--- the player landed in the open ocean. The rejoin case (where
+			--- `FtueService` teleports the player to a warehouse / docks
+			--- destination AFTER the loop ends) is handled correctly via
+			--- the `ftueLastSpawn` snapshot path in
+			--- `_teleportCharacterToOwnedPlot` above (PlotService targets
+			--- the FTUE position directly, so the drift loop defends THAT
+			--- target instead of the ClaimPad).
 			local drift = (hrp.Position - target.Position).Magnitude
 			if drift > 10 then
 				if not logged then
@@ -976,11 +1039,17 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 		end
 	end)
 
-	--- DIAG: 1.2s post-spawn audit. If the character has drifted significantly
-	--- from the claim pad (kill-plane Y or large XZ distance), log it loudly so
-	--- the next death-loop repro tells us whether the server really thinks the
-	--- character is at the pad (= client-side visual issue) or the character
-	--- actually slid off / got pushed away (= a different service is moving it).
+	--- 1.2s post-spawn safety net. Logs significant drift for diagnostics
+	--- AND recovers the unmistakable **engine slam fingerprint** — the
+	--- "no SpawnLocation" pivot fallback that pivots the character to
+	--- exactly (0, ~102.5, 0). The drift loop above usually catches this,
+	--- but in low-fps Studio sessions the slam can land outside the loop's
+	--- frame window, leaving the character suspended over world origin.
+	--- We deliberately gate the recovery on the world-origin fingerprint
+	--- so we never yank a character that another service intentionally
+	--- moved (FtueService teleporting to warehouse / docks, an interactive
+	--- pirate raid moving the player, etc.) — those destinations are far
+	--- from world origin in real gameplay coordinates.
 	task.delay(1.2, function()
 		if not (hrp.Parent and character.Parent and player.Parent) then
 			return
@@ -995,6 +1064,27 @@ function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Mo
 				hrp.AssemblyLinearVelocity.X, hrp.AssemblyLinearVelocity.Y, hrp.AssemblyLinearVelocity.Z,
 				target.Position.Y
 			))
+		end
+		--- Engine "no SpawnLocation" slam fingerprint: HRP pivoted to
+		--- approximately (0, 102, 0). Plot ClaimPads, warehouse spawns,
+		--- and dock spawns all live at world coords with |X| or |Z|
+		--- well above 50 studs, so this fingerprint check is highly
+		--- specific to the engine bug we're recovering from.
+		local pos = hrp.Position
+		local atWorldOriginSlam = math.abs(pos.X) < 10
+			and math.abs(pos.Z) < 10
+			and pos.Y > 80
+			and pos.Y < 130
+		if atWorldOriginSlam then
+			DevLog.log(string.format(
+				"[PlotService.spawnClaim+1.2s] %s ENGINE-SLAM RECOVERY — re-teleporting from (%.1f,%.1f,%.1f) → target=(%.1f,%.1f,%.1f)",
+				player.Name,
+				pos.X, pos.Y, pos.Z,
+				target.Position.X, target.Position.Y, target.Position.Z
+			))
+			hrp.CFrame = target
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			hrp.AssemblyAngularVelocity = Vector3.zero
 		end
 	end)
 

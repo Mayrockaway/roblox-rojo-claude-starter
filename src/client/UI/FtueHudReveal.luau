@@ -34,7 +34,10 @@ type GatedEntry = {
 --   WaitDrillOil_WIP      → + EquipmentHotbar
 --   WaitPlotShipment      → + CashStrip, ActiveManifestPanel
 --   WaitShipment          → + TopRow, ShipmentProgressPanel
---   WaitDocksShipUpgrade  → + Buttons, CashStripPlus (robux modal; was top-level RobuxShop)
+--   WaitDocksEquipmentShop → + Buttons, CashStripPlus, RobuxShop (legacy STORE button alias)
+--                              — `WaitDocksShipUpgrade` was the previous gate for
+--                              this batch but the leg was removed from `Order`;
+--                              `WaitSell` Continue now jumps straight here.
 --   Done                  → + StraitControlCta, EarningsGamepass,
 --                            NukeDevProduct, AutoShipButton (rest of HUD)
 --
@@ -52,8 +55,13 @@ local CHILD_REVEAL: { GatedEntry } = {
 	{ path = "ActiveManifestPanel", revealAt = FtueConfig.Step.WaitPlotShipment },
 	{ path = "TopRow", revealAt = FtueConfig.Step.WaitShipment },
 	{ path = "ShipmentProgressPanel", revealAt = FtueConfig.Step.WaitShipment },
-	{ path = "Buttons", revealAt = FtueConfig.Step.WaitDocksShipUpgrade },
-	{ path = "CashStripPlus", revealAt = FtueConfig.Step.WaitDocksShipUpgrade },
+	{ path = "Buttons", revealAt = FtueConfig.Step.WaitDocksEquipmentShop },
+	{ path = "CashStripPlus", revealAt = FtueConfig.Step.WaitDocksEquipmentShop },
+	-- Legacy `Canvas.RobuxShop` ImageButton (the STORE icon) lives alongside
+	-- `CashStripPlus` and opens the same modal. It must follow the same gate
+	-- so a fresh-wipe profile doesn't see the STORE button before the FTUE
+	-- reveals the rest of the right-side button column.
+	{ path = "RobuxShop", revealAt = FtueConfig.Step.WaitDocksEquipmentShop },
 	{ path = "StraitControlCta", revealAt = FtueConfig.Step.Done },
 	{ path = "EarningsGamepass", revealAt = FtueConfig.Step.Done },
 	{ path = "NukeDevProduct", revealAt = FtueConfig.Step.Done },

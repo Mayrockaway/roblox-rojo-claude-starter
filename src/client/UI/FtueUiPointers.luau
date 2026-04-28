@@ -24,7 +24,12 @@ local FtueUiPointers = {}
 --- (used as the tween target). `findTweenTarget` strips the `Root` suffix to find the inner image.
 local POINTER_ROOT_BY_STEP: { [string]: string } = {
 	[FtueConfig.Step.WaitShipment] = "StraitPointerRoot",
-	[FtueConfig.Step.WaitDocksShipUpgrade] = "TownPointerRoot",
+	-- `WaitDocksShipUpgrade` no longer uses `TownPointerRoot` — the leg now
+	-- finishes from the dialogue Continue button (the previous step's
+	-- Continue auto-teleports the player to town, and this leg's Continue
+	-- advances to `WaitDocksEquipmentShop`). `TownPointerRoot` stays in
+	-- `ALL_POINTER_ROOT_NAMES` below so the resolver force-hides any
+	-- leftover Studio authoring.
 	--- `WaitDocksEquipmentShop` resolves through `resolveWaitDocksEquipmentShopPointer`
 	--- (sub-step driven: `BuyDrill` → `BuyDrillPointerRoot`, `ClosePanel` →
 	--- `CloseButtonPointerRoot`). Both pointers live **inside** `ShopPanelGui` so

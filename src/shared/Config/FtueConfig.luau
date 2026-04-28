@@ -27,10 +27,36 @@ local FtueConfig = {
 	--- Granted when the player reaches the final **Done** step (before Complete!). See `OilStateService.SetFtueProgress`.
 	TutorialCompleteCashReward = 500,
 
-	--- First FTUE strait shipment: cosmetic + guaranteed safe crossing (see `OilShipmentService`).
+	--- First FTUE strait shipment: cosmetic + guaranteed safe crossing (see
+	--- `OilShipmentService`). The protected dispatch projects the boat to
+	--- `ShipUpgradeConfig.MaxSpeedLevel` and divides the resulting
+	--- `travelSeconds` by **4** so the new player crosses at **4× the
+	--- max-tier speed** (~7.5s base voyage). The "boat teleports to
+	--- warehouse mid-strait" bug this used to trigger at high speeds is
+	--- now hard-prevented by a guard in `_runShipment` that forces both
+	--- failsafe wall checks to `false` whenever
+	--- `ftueTutorialSuppressStraitIncidents` is set.
 	FtueTutorialShipmentSkinId = "Ducky",
-	--- Multiplier on resolved `travelSeconds` for that first shipment only (`0.5` = 2× faster crossing than max-speed baseline).
-	FtueTutorialShipmentTravelTimeScale = 0.5,
+
+	--- Strait-event showcases fired during the protected tutorial voyage,
+	--- keyed by lane waypoint index. Every event in this table runs in
+	--- "harmless" mode — no barrel loss, no total loss, purely VFX/SFX
+	--- — so the player can see the strait threats without being punished
+	--- on their first crossing. Supported event ids:
+	---   * `"MineStrike"`           → mines surface around the boat then sink
+	---     (`_runFtueTutorialMineShowcase`, `didHit = false`).
+	---   * `"CoastGuardInspection"` → coast guard cinematic + boat freeze
+	---     (`_runFtueTutorialCoastGuardShowcase`).
+	---   * `"Storm"`                → thunderstorm cinematic, no delay /
+	---     no barrel loss (`_runFtueTutorialStormShowcase`).
+	--- The trigger waypoint must be inside the union of bracket allow-lists
+	--- (currently `Closed = {2..9}` covers every reasonable choice). Set
+	--- the table to `{}` (or `nil`) to skip the showcase entirely.
+	FtueTutorialShowcasesByLaneWaypoint = {
+		[3] = "CoastGuardInspection",
+		[6] = "MineStrike",
+		[9] = "Storm",
+	} :: { [number]: string },
 
 	DrillItemId = "drill_t1",
 
@@ -60,7 +86,13 @@ local FtueConfig = {
 		--- Land at warehouse; sell at **warehouse** terminal (Sell Oil UI pointers may still apply).
 		WaitWarehouseSell = "WaitWarehouseSell",
 		WaitSell = "WaitSell",
-		--- Go to Town: complete this leg by using the HUD **Buy** (teleport to docks), not Continue.
+		--- Legacy "Welcome to town" leg. Removed from `Order` — the live
+		--- flow now jumps from `WaitSell` Continue (which already
+		--- auto-teleports the player to docks) straight into
+		--- `WaitDocksEquipmentShop`. The step id, copy, portrait, and
+		--- ack-routing are kept so the leg can be reactivated by
+		--- re-adding `"WaitDocksShipUpgrade"` to `Order` and routing
+		--- `onAcknowledge`'s `WaitSell` branch back through it.
 		WaitDocksShipUpgrade = "WaitDocksShipUpgrade",
 		--- Visit the **Dock Equipment Shop** prox prompt → buy the free Tier 3 drill
 		--- (`FtueDocksFreeDrillItemId`). `EquipmentShopService` advances the FTUE on
@@ -86,14 +118,18 @@ local FtueConfig = {
 
 	--- Ordered server-driven flow (see `FtueService` + gameplay hooks).
 	---
-	--- `Intro` and `WaitDocksHire` ("suspicious persons") are intentionally
-	--- omitted: their step ids, copy, and portraits are kept in the tables
-	--- below so the legs can be reactivated by re-adding the strings here,
-	--- but the live flow starts directly at `WaitDrillOil_WIP` and jumps from
-	--- `WaitDocksFleetPanel` straight to `Done`. See `FtueService` —
-	--- `applyWaitDrillEntry` now fires from the initial `SyncFromOilState`
-	--- (not the Intro Continue button) and `OnFtueDocksProgress`'s
-	--- `FleetPanelClosed` branch advances to `Done` instead of `WaitDocksHire`.
+	--- `Intro`, `WaitDocksShipUpgrade` ("welcome to town"), and
+	--- `WaitDocksHire` ("suspicious persons") are intentionally omitted:
+	--- their step ids, copy, and portraits are kept in the tables below
+	--- so the legs can be reactivated by re-adding the strings here,
+	--- but the live flow starts directly at `WaitDrillOil_WIP`, jumps
+	--- from `WaitSell` Continue straight into `WaitDocksEquipmentShop`
+	--- (the Continue handler also auto-teleports the player to docks),
+	--- and jumps from `WaitDocksFleetPanel` straight to `Done`. See
+	--- `FtueService` — `applyWaitDrillEntry` fires from the initial
+	--- `SyncFromOilState` (not the Intro Continue button) and the
+	--- `WaitSell` ack now seeds the `BuyDrill` sub-step before
+	--- advancing.
 	Order = {
 		"WaitDrillOil_WIP",
 		"WaitReveal",
@@ -101,7 +137,8 @@ local FtueConfig = {
 		"WaitShipment",
 		"WaitWarehouseSell",
 		"WaitSell",
-		"WaitDocksShipUpgrade",
+		-- `WaitDocksShipUpgrade` removed — `WaitSell` Continue advances
+		-- straight to `WaitDocksEquipmentShop` (see `Step` block above).
 		"WaitDocksEquipmentShop",
 		-- `WaitDocksUpgradeShip` removed by Step 4 of the boat-
 		-- progression refactor (see `Step` block above).
@@ -130,7 +167,7 @@ local FtueConfig = {
 		},
 		WaitShipment = {
 			title = "SAIL THE STRAIT!",
-			body = "Time to set sea! I'll give you a speed boost so you can cross undisturbed. But be careful, that won't always be the case. Keep an eye on the status of the Strait!",
+			body = "Time to set sea! But be careful, anything can happen on the Strait - keep an eye on the status at all times.",
 		},
 		WaitWarehouseSell = {
 			title = "TIME TO CASH IN!",
@@ -141,26 +178,26 @@ local FtueConfig = {
 			body = "Watch out! Oil prices move in real time, so make sure you check the market to get a good price before you sell.",
 		},
 		WaitDocksShipUpgrade = {
-			title = "TO THE DOCKS!",
-			body = "Now head to the town - that's where you'll buy all your equipment, manage your fleet, and hire some Secret Services.",
+			title = "WELCOME TO TOWN!",
+			body = "Welcome to town - here's where you'll buy all your equipment, manage your fleet, and hire some Secret Services.",
 		},
 		WaitDocksEquipmentShop = {
-			title = "GEAR UP!",
-			body = "Here's where you'll find all your drilling gear. Grab that Advanced Drill - first one's free.",
+			title = "WELCOME TO TOWN!",
+			body = "Welcome to town - head to the Equipment shop and grab that Advanced Drill - first one's free.",
 		},
 		-- `WaitDocksUpgradeShip` copy removed by Step 4 of the boat-
 		-- progression refactor (see `Step` block above).
 		WaitDocksFleetPanel = {
 			title = "MIND YOUR FLEET",
-			body = "Next, talk to the dockman to get new, upgraded vessels and swap out your current ship.",
+			body = "Finally, talk to the dockman to get new, upgraded vessels and swap out your current ship.",
 		},
 		WaitDocksHire = {
 			title = "SUSPICIOUS PERSONS",
 			body = "One more thing, there's been some shady personnel around town. If you're curious, find out what they're up to, then hit Continue to move on.",
 		},
 		Done = {
-			title = "WELCOME TO TOWN",
-			body = "You're a seasoned veteran of the Strait now. Here's some cash to get started!",
+			title = "CONGRATULATIONS!",
+			body = "You're a seasoned veteran of the Strait now. Don't forget to explore the town and here's some cash to get started!",
 		},
 	} :: { [string]: { title: string, body: string } },
 

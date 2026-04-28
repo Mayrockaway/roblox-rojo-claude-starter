@@ -998,6 +998,16 @@ end
 function OilStateService:Start()
 	self._running = true
 
+	--- Hand `PlotService` a back-reference to us so its `CharacterAdded`
+	--- teleport (`_teleportCharacterToOwnedPlot`) can read the persisted
+	--- FTUE rejoin snapshot (`ftueLastSpawn`) and target it directly,
+	--- instead of teleporting to the ClaimPad and racing with the drift
+	--- defense loop when `FtueService:_onCharacterSpawnedDuringFtue`
+	--- tries to follow up with the FTUE-specific destination.
+	if self._plotService and typeof((self._plotService :: any).SetOilStateService) == "function" then
+		(self._plotService :: any):SetOilStateService(self)
+	end
+
 	table.insert(self._connections, self._plotService:OnPlotAssigned(function(userId: number, plot: Model)
 		self:_ensurePlayerState(userId, plot)
 		if _ftueService and typeof((_ftueService :: any).SyncFromOilState) == "function" then
