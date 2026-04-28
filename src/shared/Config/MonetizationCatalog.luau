@@ -55,6 +55,9 @@ export type MonetizationGrant = {
 
 	--- "Currency" — flat in-game cash to add via `OilStateService:AddCash`.
 	cashAmount: number?,
+	--- Dynamic cash pack (`SessionEconomics`): set to `"small"`, `"medium"`, or `"large"`.
+	--- When set, `cashAmount` is ignored and the server computes dollars at receipt time.
+	currencyPackTier: string?,
 
 	--- "Consumable" — symbolic id + quantity. Resolved by a service that
 	--- knows what the consumable means (e.g. ArmyGeneralService for nukes).
@@ -363,6 +366,43 @@ MonetizationCatalog.Items = {
 		grant = { kind = "Consumable", consumable = { id = "nuke", quantity = 1 } },
 	},
 
+	-- Pirate hire (Robux variant of `HitContractService:TryCreateHit`). Exposed
+	-- alongside the $5,000 cash button in the Pirate Broker dialogue. The
+	-- consumable handler in `HitContractService:SetMonetizationService` reads
+	-- `_pendingRobuxTargets[userId]` (stamped when the player clicks the
+	-- per-target Robux button) and runs `TryCreateHit` with
+	-- `paymentMethod = "robux"` so the cash spend / refund branches are
+	-- skipped. Receipt-side telemetry is the standard `monetization_purchased`
+	-- + `Telemetry.Purchase` path; the cash-only `Telemetry.Economy("Sink")`
+	-- on `pirate_hire` does NOT fire when paid via Robux (avoids
+	-- double-counting the action across `Source` + `Sink`).
+	{
+		id = "consumable.pirate_hire_x1",
+		productKind = "DevProduct",
+		productId = 3582631270,
+		robuxPrice = 79,
+		displayName = "Hire Pirates",
+		subtitle = "One-time hit on a player ship",
+		category = "Boosts",
+		grant = { kind = "Consumable", consumable = { id = "pirate_hire", quantity = 1 } },
+	},
+
+	-- Airstrike (Robux variant of `ArmyGeneralService:_handleAirstrike`). Same
+	-- pattern as pirate hire above: stamped target read from
+	-- `_pendingRobuxAirstrikeTargets[userId]`, airstrike runs with
+	-- `paymentMethod = "robux"` (skips cash spend + refund branches).
+	-- Outcome is identical to the cash version — a guaranteed hit.
+	{
+		id = "consumable.airstrike_x1",
+		productKind = "DevProduct",
+		productId = 3582631573,
+		robuxPrice = 99,
+		displayName = "Airstrike",
+		subtitle = "One-time airstrike on a player ship",
+		category = "Boosts",
+		grant = { kind = "Consumable", consumable = { id = "airstrike", quantity = 1 } },
+	},
+
 	-- Strait force-open / force-close, two minutes server-wide.
 	--
 	-- Behavioral contract for the future handler (`StraitStateService`-side):
@@ -429,6 +469,36 @@ MonetizationCatalog.Items = {
 		grant = { kind = "Consumable", consumable = { id = "security_personnel", quantity = 1 } },
 	},
 
+	-- Cargo Hauler: hires a single-shipment crewmate who **doubles every
+	-- barrel** loaded on the player's next dispatched shipment. Stacks: buying
+	-- N grants the doubling on the next N dispatches.
+	--
+	-- Behavioral contract (handler in `CargoHaulerService`):
+	--   * On grant, +1 to `OilStateService:AddRunUpgradeOwned("cargo_hauler")`.
+	--   * On dispatch (`OilShipmentService:_handleDispatch`), if the player
+	--     ticked "use cargo hauler" AND owned > 0, consume one stack and
+	--     multiply each `shipment.manifest[tier]` AND `shipment.totalLoaded`
+	--     by `CargoHaulerService:GetMultiplier()` (currently ×2). The
+	--     doubled manifest flows naturally into delivery + warehouse credit
+	--     + pirate-steal math; payout doubles in lockstep.
+	--   * Visible signal lives in the `ShipOilPanel` capacity readout (gold
+	--     "×2" badge when armed) — no on-deck rig today, by design.
+	--
+	-- `productId = 0` until the Roblox Creator Hub DevProduct exists; until
+	-- then `MonetizationService` returns `ERR_PRODUCT_NOT_CONFIGURED` from
+	-- the prompt and the row is filtered out of `IsBuyable()` so the shop
+	-- chrome shows a "Coming Soon" affordance instead of crashing.
+	{
+		id = "consumable.cargo_hauler_x1",
+		productKind = "DevProduct",
+		productId = 3582631925,
+		robuxPrice = 49,
+		displayName = "Cargo Hauler",
+		subtitle = "Doubles your next run's barrels (overflow lands in warehouse)",
+		category = "RunUpgrades",
+		grant = { kind = "Consumable", consumable = { id = "cargo_hauler", quantity = 1 } },
+	},
+
 	-- Drills (equipment-shop Robux purchase paths) ------------------------
 	-- Only T4 / T5 / T6 are sold for Robux. T1-T3 are cash-only and have NO
 	-- entry here on purpose — the EquipmentShopPopulate UI uses a
@@ -486,6 +556,40 @@ MonetizationCatalog.Items = {
 	-- 	category = "Currency",
 	-- 	grant = { kind = "Currency", cashAmount = 5000 },
 	-- },
+
+	-- Dynamic currency packs (sizes scale from rolling-session economics —
+	-- see `OilStateService:GetDynamicCurrencyPackGrant`). Wire real `productId`
+	-- values after creating Developer Products on Roblox Creator Hub.
+	{
+		id = "currency.dynamic_small",
+		productKind = "DevProduct",
+		productId = 3582647086,
+		robuxPrice = 49,
+		displayName = "Cash Pack — Small",
+		subtitle = "Amount scales with your recent earning rate",
+		category = "Currency",
+		grant = { kind = "Currency", currencyPackTier = "small" },
+	},
+	{
+		id = "currency.dynamic_medium",
+		productKind = "DevProduct",
+		productId = 3582647181,
+		robuxPrice = 149,
+		displayName = "Cash Pack — Medium",
+		subtitle = "Amount scales with your recent earning rate",
+		category = "Currency",
+		grant = { kind = "Currency", currencyPackTier = "medium" },
+	},
+	{
+		id = "currency.dynamic_large",
+		productKind = "DevProduct",
+		productId = 3582647343,
+		robuxPrice = 299,
+		displayName = "Cash Pack — Large",
+		subtitle = "Amount scales with your recent earning rate",
+		category = "Currency",
+		grant = { kind = "Currency", currencyPackTier = "large" },
+	},
 } :: { MonetizationItem }
 
 --- Index: stable `id` -> item.
@@ -593,6 +697,9 @@ export type MonetizationItemForClient = {
 	category: string?,
 	grantKind: MonetizationGrantKind,
 	grantBoatId: string?,
+	--- `"small"|"medium"|"large"` when the server resolves cash at runtime; `nil`
+	--- for flat bundles / fixed currency rows.
+	dynamicCashPackTier: string?,
 	isBuyable: boolean,
 	oneTimePurchase: boolean?,
 }
@@ -612,6 +719,7 @@ function MonetizationCatalog.ListForClient(): { MonetizationItemForClient }
 			category = item.category,
 			grantKind = item.grant.kind,
 			grantBoatId = item.grant.boatId,
+			dynamicCashPackTier = if typeof(item.grant.currencyPackTier) == "string" then item.grant.currencyPackTier else nil,
 			isBuyable = MonetizationCatalog.IsBuyable(item),
 			oneTimePurchase = item.oneTimePurchase == true,
 		})

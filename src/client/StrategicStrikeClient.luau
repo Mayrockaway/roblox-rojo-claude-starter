@@ -14,6 +14,10 @@ local Workspace = game:GetService("Workspace")
 --- stuck with `MouseBehavior = LockCenter` if they were in first-person when they
 --- triggered the dialog.
 local HudMousePolicy = require(script.Parent:WaitForChild("UI"):WaitForChild("HudMousePolicy"))
+--- Read the Robux variant price for airstrikes so the per-target "R$X"
+--- button label stays in sync with `MonetizationCatalog`.
+local MonetizationCatalog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("MonetizationCatalog"))
+local AIRSTRIKE_ROBUX_ITEM_ID = "consumable.airstrike_x1"
 --- Cross-platform UIScale for the runtime Army General dialogue (500×320
 --- offset root would otherwise overflow phone viewports). Same shared helper
 --- that scales the Pirate Hire dialogue + lootbox spinner; only ever shrinks
@@ -364,12 +368,21 @@ function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDep
 				obj.Active = true
 				obj.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 				obj.BackgroundTransparency = 0.99
+				-- Hover/leave swap that captures the *current* TextColor3 on
+				-- each MouseEnter, so a caller setting a custom resting color
+				-- after `blockyLine` returns (cash green, robux purple, nuke
+				-- purple) gets restored on MouseLeave instead of reverting to
+				-- the legacy hardcoded `COLOR_IDLE` (white). Re-capturing on
+				-- every MouseEnter means the resting color tracks any future
+				-- caller-side tweak automatically.
+				local restingColor = COLOR_IDLE
 				obj.MouseEnter:Connect(function()
+					restingColor = obj.TextColor3
 					obj.TextColor3 = COLOR_HOVER
 					obj.BackgroundTransparency = 0.35
 				end)
 				obj.MouseLeave:Connect(function()
-					obj.TextColor3 = COLOR_IDLE
+					obj.TextColor3 = restingColor
 					obj.BackgroundTransparency = 0.99
 				end)
 				local c = Instance.new("UICorner")
@@ -394,35 +407,100 @@ function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDep
 			return obj
 		end
 
+		-- Visual tokens specific to the airstrike menu — cash green, Robux
+		-- purple, and a dim gray for cooldown countdowns. Defined inline (not
+		-- module-scoped) so a future re-skin of just the Army General dialog
+		-- doesn't have to thread through the whole module.
+		local COLOR_AIRSTRIKE_CASH = Color3.fromRGB(80, 220, 80)
+		local COLOR_AIRSTRIKE_ROBUX = Color3.fromRGB(170, 130, 255)
+		local COLOR_AIRSTRIKE_ROBUX_HOVER = Color3.fromRGB(195, 165, 255)
+		local COLOR_AIRSTRIKE_DIM = Color3.fromRGB(180, 180, 180)
+		local function rgbHex(c: Color3): string
+			return string.format("#%02X%02X%02X",
+				math.floor(c.R * 255 + 0.5),
+				math.floor(c.G * 255 + 0.5),
+				math.floor(c.B * 255 + 0.5)
+			)
+		end
+
 		-- Header
 		local header = blockyLine("Header", "Army General:", 1, false)
 		header.Size = UDim2.new(1, 0, 0, 50)
 		header.TextSize = 44
 		header.Parent = root
 
-		-- Launch Nuke (Robux purchase via `MonetizationCatalog.consumable.nuke_x1`)
+		-- Flavor text — same shape as the Pirate Broker dialog: explain the
+		-- per-payment-method cooldown rule before showing the numbered
+		-- options. Cash = anti-spam cooldown applies; Robux = no cooldown.
+		-- 2:00 hard-coded here to match the server constant
+		-- (`StraitEvents/Catalog.luau` AirStrikeConfig.SameTargetCooldownSeconds);
+		-- if you tune the server value, mirror it in this string.
+		local cooldownHint = blockyLine(
+			"AirstrikeCooldownHint",
+			string.format(
+				"<font color=\"%s\">Cash airstrikes</font> share a 2:00 same-target cooldown.\n<font color=\"%s\">Robux airstrikes</font> have no cooldown.",
+				rgbHex(COLOR_AIRSTRIKE_CASH),
+				rgbHex(COLOR_AIRSTRIKE_ROBUX)
+			),
+			2, false
+		)
+		cooldownHint.TextSize = 18
+		cooldownHint.Size = UDim2.new(1, 0, 0, 50)
+		cooldownHint.TextWrapped = true
+		cooldownHint.RichText = true
+		cooldownHint.TextColor3 = COLOR_AIRSTRIKE_DIM
+		cooldownHint.Parent = root
+
+		-- Numbered top-level options, top-to-bottom: Cash → Robux → Nuke.
+		-- Nuke is the third option because it's the rarer, higher-impact
+		-- spend; the airstrike pair (cash vs robux for the same action) is
+		-- the everyday choice and reads first. "1." / "2." / "3." prefixes
+		-- are the clickable indicator vs the descriptive flavor above.
+		local airstrikeRobuxItem = MonetizationCatalog.GetItem(AIRSTRIKE_ROBUX_ITEM_ID)
+		local airstrikeRobuxPrice = (airstrikeRobuxItem and tonumber(airstrikeRobuxItem.robuxPrice)) or 0
+		local airCashBtn = blockyLine("AirstrikeCashButton", string.format("1. Call Airstrike with Cash ($%d)", airstrikeCost), 3, true)
+		airCashBtn.Parent = root
+		-- Setting `TextColor3` is enough — `blockyLine`'s MouseLeave reads
+		-- the current TextColor3 on each MouseEnter and restores it on
+		-- MouseLeave, so the resting color survives the hover cycle without
+		-- a per-button override.
+		airCashBtn.TextColor3 = COLOR_AIRSTRIKE_CASH
+		local airRobuxLabel = if airstrikeRobuxPrice > 0
+			then string.format("2. Call Airstrike with Robux (R$%d)", airstrikeRobuxPrice)
+			else "2. Call Airstrike with Robux (R$)"
+		local airRobuxBtn = blockyLine("AirstrikeRobuxButton", airRobuxLabel, 4, true)
+		airRobuxBtn.Parent = root
+		airRobuxBtn.TextColor3 = COLOR_AIRSTRIKE_ROBUX
+
+		-- Launch Nuke — option 3, Robux-only. Pulls the price from the
+		-- catalog so the label tracks any future tuning of
+		-- `consumable.nuke_x1`. Rendered in the same purple as the Robux
+		-- airstrike option so the player reads "anything purple = pay
+		-- Robux".
+		local nukeItem = MonetizationCatalog.GetItem("consumable.nuke_x1")
+		local nukePrice = (nukeItem and tonumber(nukeItem.robuxPrice)) or 0
 		local nukeOnCooldown = nukeCooldownRemaining > 0
 		local nukeText = if nukeOnCooldown
-			then string.format("Nuke (cooldown %ds)", math.ceil(nukeCooldownRemaining))
-			else "Launch Nuke (R$)"
-		local nukeBtn = blockyLine("NukeButton", nukeText, 2, true)
+			then string.format("3. Launch Nuke (cooldown %ds)", math.ceil(nukeCooldownRemaining))
+			elseif nukePrice > 0
+				then string.format("3. Launch Nuke (R$%d)", nukePrice)
+			else "3. Launch Nuke (R$)"
+		local nukeBtn = blockyLine("NukeButton", nukeText, 5, true)
 		nukeBtn.Parent = root
 		if nukeOnCooldown then
 			nukeBtn.TextColor3 = Color3.fromRGB(140, 140, 140)
 			nukeBtn.AutoButtonColor = false
+		else
+			-- `blockyLine`'s MouseLeave restores the captured TextColor3 from
+			-- the previous MouseEnter, so setting purple here is enough — no
+			-- per-button MouseEnter/MouseLeave overrides needed.
+			nukeBtn.TextColor3 = COLOR_AIRSTRIKE_ROBUX
 		end
 
-		-- Call Airstrike
-		local airBtn = blockyLine("AirstrikeButton", string.format("Call Airstrike ($%d)", airstrikeCost), 3, true)
-		airBtn.Parent = root
-
 		-- Back
-		local backBtn = blockyLine("BackButton", "back", 4, true)
+		local backBtn = blockyLine("BackButton", "back", 6, true)
 		backBtn.TextSize = 28
 		backBtn.TextColor3 = Color3.fromRGB(210, 210, 210)
-		backBtn.MouseLeave:Connect(function()
-			backBtn.TextColor3 = Color3.fromRGB(210, 210, 210)
-		end)
 		backBtn.Parent = root
 
 		-- Close on back
@@ -441,10 +519,26 @@ function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDep
 			screenGui:Destroy()
 		end)
 
-		-- Airstrike click — show target list as additional blocky lines
-		airBtn.MouseButton1Click:Connect(function()
+		-- Format mm:ss for cooldown display. Mirrors `formatCooldownMmSs`
+		-- in PirateHireClient — kept inline here so this file stays
+		-- import-light.
+		local function formatAirstrikeCooldown(totalSeconds: number): string
+			local s = math.max(0, math.floor(totalSeconds))
+			local m = math.floor(s / 60)
+			local r = s % 60
+			return string.format("%d:%02d", m, r)
+		end
+
+		--- Build the target list for the picked payment mode. Mirrors the
+		--- Pirate Broker's `showTargetList`: a single per-row button whose
+		--- click fires the action matching `mode`. Cash mode reads
+		--- `airstrikeCooldownRemainingSeconds` from the server payload and
+		--- shows a live MM:SS countdown if the same-target cooldown is
+		--- active; Robux mode ignores cooldowns (paying Robux is the
+		--- cooldown-skip feature).
+		local function showAirstrikeTargetList(mode: string)
 			-- Remove the previous target list (rows + their scroll container) so
-			-- a re-click of Airstrike doesn't stack stale rows underneath.
+			-- a re-pick of mode doesn't stack stale rows underneath.
 			for _, c in ipairs(root:GetChildren()) do
 				if c.Name:find("Target_") or c.Name == "TargetScroll" then
 					c:Destroy()
@@ -458,7 +552,9 @@ function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDep
 			-- Replace the options with target list
 			header.Text = "Pick Target:"
 			nukeBtn.Visible = false
-			airBtn.Visible = false
+			cooldownHint.Visible = false
+			airCashBtn.Visible = false
+			airRobuxBtn.Visible = false
 
 			-- Scrollable target container. The dialogue root is a fixed
 			-- `500×320` offset frame, so before this fix 5–7 returned targets
@@ -517,10 +613,81 @@ function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDep
 				tBtn.Parent = targetScroll
 				order += 1
 
-				if target.hasShipment then
+				-- Single per-row cost label, color-coded by mode. Cash mode
+				-- shows "$20,000" in green or a MM:SS countdown when the
+				-- same-target cooldown is active; Robux mode shows "R$99"
+				-- in purple and never blocks on cooldown — Robux is the
+				-- skip-cooldown feature.
+				local costLabel = Instance.new("TextLabel")
+				costLabel.Name = "CostLabel"
+				costLabel.AnchorPoint = Vector2.new(0, 0.5)
+				costLabel.Position = UDim2.new(0.5, 0, 0.5, 0)
+				costLabel.Size = UDim2.new(0.48, 0, 1, 0)
+				costLabel.BackgroundTransparency = 1
+				costLabel.Font = Enum.Font.LuckiestGuy
+				costLabel.TextSize = 22
+				costLabel.TextStrokeTransparency = 0
+				costLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+				costLabel.TextXAlignment = Enum.TextXAlignment.Right
+				costLabel.Parent = tBtn
+
+				local blockedByCooldown = false
+
+				if not target.hasShipment then
+					-- "(no ship)" rows are non-clickable in either mode —
+					-- nothing to airstrike. Just paint the label dim and skip
+					-- click wiring entirely.
+					costLabel.Text = "—"
+					costLabel.TextColor3 = COLOR_AIRSTRIKE_DIM
+				elseif mode == "cash" then
+					local remInit = math.max(0, math.floor(tonumber((target :: any).airstrikeCooldownRemainingSeconds) or 0))
+					if remInit > 0 then
+						blockedByCooldown = true
+						costLabel.Text = formatAirstrikeCooldown(remInit)
+						costLabel.TextColor3 = COLOR_AIRSTRIKE_DIM
+						tBtn.Active = false
+						tBtn.AutoButtonColor = false
+						-- Tick the countdown; flip back to the cash price +
+						-- clickable when it hits 0. Same shape as Pirate
+						-- Broker's per-row cooldown ticker.
+						task.spawn(function()
+							local r = remInit
+							local btn, lbl = tBtn, costLabel
+							while r > 0 and btn.Parent do
+								lbl.Text = formatAirstrikeCooldown(r)
+								task.wait(1)
+								r -= 1
+							end
+							if btn.Parent then
+								blockedByCooldown = false
+								btn.Active = true
+								btn.AutoButtonColor = false
+								lbl.Text = string.format("$%d", airstrikeCost)
+								lbl.TextColor3 = COLOR_AIRSTRIKE_CASH
+							end
+						end)
+					else
+						costLabel.Text = string.format("$%d", airstrikeCost)
+						costLabel.TextColor3 = COLOR_AIRSTRIKE_CASH
+					end
 					tBtn.MouseButton1Click:Connect(function()
+						if blockedByCooldown then
+							return
+						end
 						requestArmyGeneralAction:FireServer({ action = "airstrike", victimUserId = target.userId })
 						screenGui:Destroy()
+					end)
+				else
+					-- Robux mode — no cooldown. Click stages the target +
+					-- opens the Robux prompt; don't close the dialog (the
+					-- player still has to confirm/cancel).
+					costLabel.Text = if airstrikeRobuxPrice > 0
+						then string.format("R$%d", airstrikeRobuxPrice)
+						else "R$"
+					costLabel.TextColor3 = COLOR_AIRSTRIKE_ROBUX
+					tBtn.MouseButton1Click:Connect(function()
+						requestArmyGeneralAction:FireServer({ action = "promptAirstrikeRobux", victimUserId = target.userId })
+						header.Text = "Opening Robux prompt…"
 					end)
 				end
 			end
@@ -532,10 +699,19 @@ function StrategicStrikeClient.connectArmyGeneralEarly(deps: ArmyGeneralEarlyDep
 				noTargets.Parent = targetScroll
 			end
 
-			-- Back returns to main menu
+			-- Back returns to main menu (close — no nested back-stack).
 			backBtn.MouseButton1Click:Connect(function()
 				screenGui:Destroy()
 			end)
+		end
+
+		-- Top-level numbered options route to the same target list,
+		-- parametrized by payment mode. Mirrors the Pirate Broker dialog.
+		airCashBtn.MouseButton1Click:Connect(function()
+			showAirstrikeTargetList("cash")
+		end)
+		airRobuxBtn.MouseButton1Click:Connect(function()
+			showAirstrikeTargetList("robux")
 		end)
 	end)
 

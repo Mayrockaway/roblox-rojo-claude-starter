@@ -196,7 +196,17 @@ Catalog.NukeConfig = {
 -- copy ("AIRSTRIKE HIT!" / "Airstrike missed") and the victim death-cam
 -- assumptions in `StrategicStrikeClient.airStrikeEvent` handler.
 Catalog.AirStrikeConfig = {
-	Cost = 10000,
+	-- Cash cost paid by `ArmyGeneralService:_handleAirstrike` via
+	-- `OilStateService:TrySpendCash`. Robux variants
+	-- (`consumable.airstrike_x1`) pay in Robux at the receipt boundary and
+	-- bypass this number AND the same-target cooldown below — by design,
+	-- Robux is the "skip the cooldown" path.
+	Cost = 20000,
+	--- Seconds before the same contractor can land another **cash** airstrike
+	--- on the same victim. Mirrors `HitContractConfig.SameTargetHireCooldownSeconds`
+	--- so paid-spam griefing has the same anti-spam guardrail across both
+	--- NPC contracts. Robux airstrikes neither check nor stamp this.
+	SameTargetCooldownSeconds = 120,
 	HitChance = 1.0,
 	JetAltitude = 300,
 	JetSpeed = 700,

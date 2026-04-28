@@ -4375,13 +4375,26 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 		cgBoat:PivotTo(flatLookAt(spawnPos, spawnPos - perp))
 		Debris:AddItem(cgBoat, 42)
 
-		-- Siren lights + sound start immediately during approach
+		-- Siren lights + looping ping on the CG hull. Every client runs this cinematic
+		-- (server broadcasts one payload), but **only the inspected player** should hear
+		-- the spatial siren — each spectator was cloning their own `cgBoat` locally and
+		-- hearing its `Sound` at full roll-off.
 		local stopSiren: () -> ()
 		do
 			local bp = cgBoat:FindFirstChildWhichIsA("BasePart", true)
 			local rL = Instance.new("PointLight"); rL.Color = Color3.fromRGB(255,50,50); rL.Brightness = 10; rL.Range = 50; rL.Parent = if bp then bp else cgBoat
 			local bL = Instance.new("PointLight"); bL.Color = Color3.fromRGB(50,120,255); bL.Brightness = 10; bL.Range = 50; bL.Enabled = false; bL.Parent = if bp then bp else cgBoat
-			local snd = Instance.new("Sound"); snd.SoundId = "rbxassetid://4590662766"; snd.Volume = 0.55; snd.Looped = true; snd.RollOffMaxDistance = 320; snd.Parent = cgBoat; snd:Play()
+			local snd: Sound? = nil
+			if isLocalOwner(data) then
+				local s = Instance.new("Sound")
+				s.SoundId = "rbxassetid://4590662766"
+				s.Volume = 0.55
+				s.Looped = true
+				s.RollOffMaxDistance = 320
+				s.Parent = cgBoat
+				s:Play()
+				snd = s
+			end
 			local active = true
 			stopSiren = function() active = false end
 			task.spawn(function()
@@ -4390,7 +4403,10 @@ function StraitWaypointWorldFx.OnCoastGuardInspectionPayload(data: { [string]: a
 					if not active then break end
 					rL.Enabled = false; bL.Enabled = true; task.wait(0.38)
 				end
-				rL.Enabled = false; bL.Enabled = false; snd:Stop()
+				rL.Enabled = false; bL.Enabled = false
+				if snd then
+					snd:Stop()
+				end
 			end)
 		end
 

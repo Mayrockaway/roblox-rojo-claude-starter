@@ -101,6 +101,17 @@ function MonetizationService:Start()
 		return MonetizationCatalog.ListForClient()
 	end
 
+	local currencyPreviewFn = self._remoteService:GetFunction(RemoteNames.RequestCurrencyPackPreview)
+	currencyPreviewFn.OnServerInvoke = function(player: Player)
+		if typeof(player) ~= "Instance" or not player:IsA("Player") then
+			return { ok = false, code = "ERR_BAD_PAYLOAD" }
+		end
+		if self._oilStateService and typeof(self._oilStateService.GetEconomicsCashPackPreview) == "function" then
+			return self._oilStateService:GetEconomicsCashPackPreview(player.UserId)
+		end
+		return { ok = false, code = "ERR_NO_STATE" }
+	end
+
 	table.insert(self._connections, Players.PlayerRemoving:Connect(function(player)
 		self._recentReceipts[player.UserId] = nil
 		self._gamePassCache[player.UserId] = nil
@@ -586,6 +597,12 @@ function MonetizationService:_dispatchGrant(userId: number, grant: MonetizationC
 		local equip = if grant.equipOnGrant ~= nil then grant.equipOnGrant == true else parentEquipOnGrant
 		return self:_grantShip(userId, equip, grant.boatId)
 	elseif kind == "Currency" then
+		local tierPack = grant.currencyPackTier
+		if typeof(tierPack) == "string"
+			and (tierPack == "small" or tierPack == "medium" or tierPack == "large")
+		then
+			return self:_grantCurrencyPackTier(userId, tierPack :: any)
+		end
 		return self:_grantCurrency(userId, grant.cashAmount)
 	elseif kind == "Consumable" then
 		return self:_grantConsumable(userId, grant.consumable)
@@ -636,14 +653,36 @@ function MonetizationService:_grantCurrency(userId: number, cashAmount: number?)
 	-- `cashAmount`. Doubling that on top of the GamePass would silently
 	-- double-pay every owner. Same reasoning applies to Bundle sub-grants
 	-- whose `kind == "Currency"` (they route here too).
-	local added = self._oilStateService:AddCash(userId, cashAmount, { skipMultiplier = true })
-	if not added then
+	local grantOk, actualAdded =
+		self._oilStateService:AddCash(userId, cashAmount, { skipMultiplier = true })
+	if grantOk ~= true then
 		return false, "ERR_NO_STATE"
 	end
+	pcall(function()
+		if typeof(self._oilStateService.NotifyEconomicsRobuxDirectCashGrant) == "function" then
+			self._oilStateService:NotifyEconomicsRobuxDirectCashGrant(userId, actualAdded)
+		end
+	end)
 	pcall(function()
 		self._oilStateService:PushState(userId)
 	end)
 	return true, nil
+end
+
+--- Receipt-time dynamic cash sizing (`currency.dynamic_*` packs). Computes the
+--- grant from trailing session economics (`SessionEconomics`).
+function MonetizationService:_grantCurrencyPackTier(userId: number, tier: string): (boolean, string?)
+	if typeof(userId) ~= "number" or typeof(tier) ~= "string" then
+		return false, "ERR_BAD_GRANT_PAYLOAD"
+	end
+	if typeof(self._oilStateService.GetDynamicCurrencyPackGrant) ~= "function" then
+		return false, "ERR_NO_STATE"
+	end
+	local amount = math.floor(self._oilStateService:GetDynamicCurrencyPackGrant(userId, tier :: any) :: any)
+	if amount <= 0 then
+		return false, "ERR_BAD_GRANT_PAYLOAD"
+	end
+	return self:_grantCurrency(userId, amount)
 end
 
 function MonetizationService:_grantConsumable(_userId: number, consumable: { id: string, quantity: number }?): (boolean, string?)
@@ -740,6 +779,21 @@ end
 --- Handler signature: `(userId, equipmentItemId, quantity) -> (ok, err?)`.
 function MonetizationService:SetEquipmentHandler(fn: (userId: number, itemId: string, quantity: number) -> (boolean, string?))
 	self._equipmentHandler = fn
+end
+
+--- Server-side entry point for opening the Robux prompt for a given
+--- catalog item. Wraps the same `_handlePromptRequest` flow that the
+--- client's `RequestPromptRobuxPurchase` remote runs, so it goes through
+--- the catalog validation → one-time-purchase gate → registered
+--- `_promptPreconditions` → `MarketplaceService:Prompt*Purchase` chain
+--- and emits the same `monetization_prompted` / `monetization_prompt_failed`
+--- telemetry. Used by services like `HitContractService` /
+--- `ArmyGeneralService` that need to stamp per-action context (target user,
+--- expiration, etc.) BEFORE the Robux prompt opens — they call this once
+--- the precondition state is staged, instead of asking the client to
+--- round-trip through `RequestPromptRobuxPurchase`.
+function MonetizationService:PromptPurchase(player: Player, itemId: string)
+	self:_handlePromptRequest(player, { itemId = itemId })
 end
 
 --- Register a *pre-prompt* precondition for a specific monetization item.

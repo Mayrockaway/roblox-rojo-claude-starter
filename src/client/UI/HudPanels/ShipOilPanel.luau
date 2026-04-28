@@ -199,6 +199,23 @@ local selected: { [string]: number } = {
 }
 local _useSecurityPersonnel = false
 local _securityOwnedCount = 0
+-- Cargo Hauler arm flag + owned-stack count. Same shape as the Security
+-- Personnel pair above: `_useCargoHauler` is the local toggle the player
+-- flips on/off via `RunUpgradeCard2`'s pill, `_cargoHaulerOwnedCount`
+-- mirrors `runUpgradeOwnedByItemId.cargo_hauler` from the latest oil-state
+-- snapshot. Both feed the dispatch payload (`useCargoHauler`) and the
+-- "×2" capacity-readout hint in `refreshFooter`.
+local _useCargoHauler = false
+local _cargoHaulerOwnedCount = 0
+-- Red "×2!" attention badge that paints next to `TotalBarrelsLabel` while
+-- Cargo Hauler is armed. Lazy-created the first time `refreshFooter` runs
+-- with the label resolved, kept around (parented under `totalBarrelsLabel`
+-- itself) until `disconnectAll` tears down the panel — at which point it
+-- dies with its parent. The pulse tween is held so we can `:Cancel()` it
+-- on disarm; otherwise an idle tween would keep firing on a hidden label.
+local cargoHaulerBadge: TextLabel? = nil
+local cargoHaulerBadgeScale: UIScale? = nil
+local cargoHaulerBadgeTween: Tween? = nil
 local latestCash = 0
 local shipmentCostLabel: TextLabel? = nil
 local totalBarrelsLabel: TextLabel? = nil
@@ -455,14 +472,37 @@ local function notifyWarehouseFullSafety()
 	UiSfx.playUiDenied()
 end
 
-local function setAmountFieldText(field: AmountField, value: number)
-	local t = tostring(value)
+--- Per-field default text color, captured the first time `setAmountFieldText`
+--- runs against a field. Lets us flip stepper amounts green while Cargo
+--- Hauler is armed and restore the Studio-authored color (typically the
+--- gold accent) on disarm without hard-coding a specific RGB. Cleared in
+--- `disconnectAll` alongside the other rebound maps.
+local _amountFieldOriginalColor: { [GuiObject]: Color3 } = {}
+
+local CARGO_HAULER_GREEN = Color3.fromRGB(60, 200, 80)
+
+local function setAmountFieldText(field: AmountField, value: number, cargoHaulerArmed: boolean?)
+	-- Snapshot the original color BEFORE we ever overwrite, so the first
+	-- "armed → disarm" cycle restores the authored accent rather than
+	-- whatever fallback we baked in.
+	if _amountFieldOriginalColor[field :: any] == nil then
+		_amountFieldOriginalColor[field :: any] = field.TextColor3
+	end
+	-- Cargo Hauler doubles the *displayed* value while leaving the
+	-- internal `selected[tier]` untouched (server still pays dispatch
+	-- fee on the un-doubled selection; the doubling is a server-side
+	-- grant). So the stepper reads "40" while `selected.Crude == 20`.
+	local displayValue = if cargoHaulerArmed then value * 2 else value
+	local t = tostring(displayValue)
 	if field:IsA("TextBox") then
 		-- Always sync from `selected` so +/- works while the field is focused (stale typed text was blocking updates).
 		field.Text = t
 	else
 		(field :: TextLabel).Text = t
 	end
+	field.TextColor3 = if cargoHaulerArmed
+		then CARGO_HAULER_GREEN
+		else (_amountFieldOriginalColor[field :: any] or Color3.fromRGB(255, 255, 255))
 end
 
 --- Wired AmountLabel TextBoxes → tier key (for Enter-to-commit).
@@ -563,13 +603,21 @@ end
 local function refreshRowUi()
 	clampSelectionsToInventory()
 	clampSelectionsToShipCapacity()
+	-- Cargo Hauler arm flag: when set, the stepper's `AmountLabel`
+	-- displays each tier's `selected` value × 2 in green so the player
+	-- sees the doubled barrels they'll dispatch. The internal `selected`
+	-- table stays at the un-doubled value — server-side `_handleDispatch`
+	-- does the actual ×2 multiply on the manifest after the fee+inventory
+	-- consume, so the player only pays/loses 20 from inventory but
+	-- dispatches 40.
+	local cargoHaulerArmed = _useCargoHauler and _cargoHaulerOwnedCount > 0
 	for _, bind in pairs(rowBindings) do
 		local tier = bind.tier
 		local inv = maxBarrelsInRefineryForTier(tier)
 		bind.inventoryLabel.Text = formatBarrelInventoryCount(inv)
 		local s = math.min(selected[tier] or 0, inv)
 		selected[tier] = s
-		setAmountFieldText(bind.amountField, s)
+		setAmountFieldText(bind.amountField, s, cargoHaulerArmed)
 	end
 end
 
@@ -580,14 +628,132 @@ local function refreshFooter()
 	if shipmentCostLabel then
 		shipmentCostLabel.Text = string.format("Shipment Cost: $%d", rs.dispatchFee)
 	end
+	-- Cargo Hauler arm state visibly modifies the footer readouts: when
+	-- armed, paint both labels gold AND show a bright red "×2!" badge
+	-- next to TotalBarrels with an infinite-repeat scale pulse so the
+	-- player can't miss that their next dispatch is doubled. The arm flag
+	-- is canonical client-side state (server re-validates on dispatch),
+	-- so this paint is safe to run from `refreshFooter` on every
+	-- tier-amount tick.
+	local cargoHaulerArmed = _useCargoHauler and _cargoHaulerOwnedCount > 0
+	-- Cargo Hauler "armed" accent is the module-level `CARGO_HAULER_GREEN`
+	-- shared by every armed-state element: stepper amounts (doubled),
+	-- TotalBarrels (doubled), ShipCapacity (load+cap both doubled), and
+	-- the pulsing ×2! badge. One green so the doubled signals all read
+	-- as one visual unit.
+
+	-- Lazy-create the red ×2! badge as a child of `totalBarrelsLabel` —
+	-- pinned to its right edge (anchor (0, 0.5), pos (1, 8px, 0.5, 0)) so
+	-- it floats just outside the label's text. UIScale child is what the
+	-- pulse tween animates, leaving the label's geometry untouched.
+	local function ensureCargoHaulerBadge()
+		if cargoHaulerBadge and cargoHaulerBadge.Parent then
+			return
+		end
+		if not totalBarrelsLabel then
+			return
+		end
+		local badge = Instance.new("TextLabel")
+		badge.Name = "CargoHaulerBadge"
+		badge.AnchorPoint = Vector2.new(0, 0.5)
+		badge.Position = UDim2.new(1, 8, 0.5, 0)
+		badge.Size = UDim2.fromScale(0.4, 0.95)
+		badge.BackgroundTransparency = 1
+		badge.FontFace = Font.new("rbxasset://fonts/families/Merriweather.json", Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+		badge.Text = "×2!"
+		badge.TextColor3 = CARGO_HAULER_GREEN
+		badge.TextScaled = true
+		badge.TextXAlignment = Enum.TextXAlignment.Left
+		badge.TextYAlignment = Enum.TextYAlignment.Center
+		badge.Visible = false
+		badge.ZIndex = (totalBarrelsLabel.ZIndex or 1) + 5
+		badge.BorderSizePixel = 0
+		badge.Parent = totalBarrelsLabel
+
+		-- Black stroke so the red reads punchy on any panel bg.
+		local stroke = Instance.new("UIStroke")
+		stroke.Color = Color3.fromRGB(0, 0, 0)
+		stroke.Thickness = 2
+		stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+		stroke.LineJoinMode = Enum.LineJoinMode.Round
+		stroke.Parent = badge
+
+		local scale = Instance.new("UIScale")
+		scale.Scale = 1
+		scale.Parent = badge
+
+		cargoHaulerBadge = badge
+		cargoHaulerBadgeScale = scale
+	end
+
+	--- Show / hide the badge and start / stop its pulse tween. Idempotent;
+	--- safe to call every refresh tick.
+	local function setCargoHaulerBadgeArmed(armed: boolean)
+		ensureCargoHaulerBadge()
+		if not (cargoHaulerBadge and cargoHaulerBadge.Parent and cargoHaulerBadgeScale) then
+			return
+		end
+		cargoHaulerBadge.Visible = armed
+		if armed then
+			-- Re-create the tween only if it isn't already playing — calling
+			-- `:Play()` on a live looping tween is a no-op so this branch
+			-- is cheap on subsequent refresh ticks while armed.
+			local existing = cargoHaulerBadgeTween
+			if not existing or existing.PlaybackState == Enum.PlaybackState.Cancelled or existing.PlaybackState == Enum.PlaybackState.Completed then
+				cargoHaulerBadgeScale.Scale = 1
+				cargoHaulerBadgeTween = TweenService:Create(
+					cargoHaulerBadgeScale,
+					-- 0.45s out-and-back via Reverses=true; RepeatCount=-1 loops
+					-- forever until disarm.
+					TweenInfo.new(0.45, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+					{ Scale = 1.4 }
+				)
+				cargoHaulerBadgeTween:Play()
+			end
+		else
+			if cargoHaulerBadgeTween then
+				cargoHaulerBadgeTween:Cancel()
+				cargoHaulerBadgeTween = nil
+			end
+			cargoHaulerBadgeScale.Scale = 1
+		end
+	end
+
 	if totalBarrelsLabel then
-		totalBarrelsLabel.Text = string.format("Total Barrels: %d", totalBarrels)
+		if cargoHaulerArmed then
+			-- Show the doubled total inline; the green ×2! pulse badge to
+			-- the right is the attention beat. Both green so the two
+			-- elements read as one "your barrels are doubled" signal.
+			totalBarrelsLabel.Text = string.format("Total Barrels: %d", totalBarrels * 2)
+			totalBarrelsLabel.TextColor3 = CARGO_HAULER_GREEN
+		else
+			totalBarrelsLabel.Text = string.format("Total Barrels: %d", totalBarrels)
+			-- Restore Studio-authored color (white). If a future re-skin
+			-- changes the resting color, capture it on first bind the same
+			-- way `_warehouseLabelDefaultColor` does — for now white is the
+			-- canonical authored color.
+			totalBarrelsLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		end
 	end
 	if shipCapacityLabel then
 		local load = sumSelectedOilUnits()
 		local cap = math.max(0, math.floor(maxShipCapacityOilUnits()))
-		shipCapacityLabel.Text = string.format("%d/%d Ship Capacity", load, cap)
+		if cargoHaulerArmed then
+			-- Both load AND cap doubled so the readout reads "40/40"
+			-- instead of "20/20" — emphasizes that the dispatched ship
+			-- carries 2× its normal payload (the boat's actual capacity
+			-- is unchanged; this is a visual representation of the
+			-- doubled grant).
+			shipCapacityLabel.Text = string.format("%d/%d Ship Capacity", load * 2, cap * 2)
+			shipCapacityLabel.TextColor3 = CARGO_HAULER_GREEN
+		else
+			shipCapacityLabel.Text = string.format("%d/%d Ship Capacity", load, cap)
+			shipCapacityLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		end
 	end
+	-- Drive the badge after the label text update so it pins against the
+	-- updated text width on the same frame.
+	setCargoHaulerBadgeArmed(cargoHaulerArmed)
 	if warehouseCapacityLabel then
 		-- Live "slots left" projection: warehouse cap minus what is already
 		-- stored minus the barrels the player has staged in this manifest.
@@ -749,14 +915,28 @@ local function setMaxForTier(tier: string)
 	-- the player sees the binding constraint. Ship-vs-warehouse precedence
 	-- mirrors the implicit ordering elsewhere in the file (ship cap is the
 	-- harder limit; warehouse safety is the secondary guard).
+	--
+	-- Cargo Hauler arm state: when armed, every visible barrel readout in
+	-- the panel (stepper, TotalBarrels, ShipCapacity) shows the doubled
+	-- value, so the cap message must too — otherwise the player sees
+	-- "40/40 Ship Capacity" + stepper "40" + an error saying "capped at
+	-- 20 barrels" and rightfully wonders which number to trust. We scale
+	-- the displayed cap by the same multiplier the dispatch grant uses
+	-- and append a "(×2 with Cargo Hauler)" tag so the player understands
+	-- where the doubled number came from. Inventory count stays real
+	-- (`inv`) because the inventory column on the row never doubles —
+	-- it's the player's actual barrels on the dock.
+	local cargoHaulerArmed = _useCargoHauler and _cargoHaulerOwnedCount > 0
+	local displayedCap = if cargoHaulerArmed then actualMax * 2 else actualMax
+	local cargoHaulerNote = if cargoHaulerArmed then " (×2 with Cargo Hauler)" else ""
 	local tierDisplay = (QualityConfig.Tiers[tier :: any] and QualityConfig.Tiers[tier :: any].displayName) or tier
 	local message: string
 	if actualMax >= inv then
 		message = string.format("All %d %s barrels already loaded.", inv, tierDisplay)
 	elseif shipRoomBarrels <= warehouseRoomBarrels then
-		message = string.format("Ship cargo full — %s capped at %d barrels.", tierDisplay, actualMax)
+		message = string.format("Ship cargo full — %s capped at %d barrels%s.", tierDisplay, displayedCap, cargoHaulerNote)
 	else
-		message = string.format("Warehouse near full — %s capped at %d barrels.", tierDisplay, actualMax)
+		message = string.format("Warehouse near full — %s capped at %d barrels%s.", tierDisplay, displayedCap, cargoHaulerNote)
 	end
 	showErrorNotification(message, 4)
 	UiSfx.playUiDenied()
@@ -813,6 +993,11 @@ local function tryDispatch()
 	ClientRemotes.requestDispatchShipment:FireServer({
 		manifest = manifest,
 		useSecurityPersonnel = _useSecurityPersonnel == true,
+		-- Mirror Security Personnel's opt-in shape: server only doubles
+		-- when the player has explicitly toggled the Cargo Hauler card on
+		-- AND owns ≥1 stack (server re-validates `_cargoHaulerService:
+		-- TryConsumeForDispatch` so a tampered client can't free-ride).
+		useCargoHauler = _useCargoHauler == true,
 	})
 end
 
@@ -1038,6 +1223,121 @@ end
 
 local RUN_UPGRADE_ITEM_ID = "consumable.security_personnel_x1"
 local RUN_UPGRADE_INVENTORY_ID = "security_personnel"
+-- Cargo Hauler — same shape as the Security Personnel constants above. The
+-- inventory id is what `OilStateService.runUpgradeOwnedByItemId` keys on
+-- (set by `CargoHaulerService:SetMonetizationService`'s consumable handler);
+-- the catalog id is what `RequestPromptRobuxPurchase` carries to the server.
+local RUN_UPGRADE_CARGO_ITEM_ID = "consumable.cargo_hauler_x1"
+local RUN_UPGRADE_CARGO_INVENTORY_ID = "cargo_hauler"
+
+-- Shared "purple Robux chrome" applied to the BUY button on every
+-- run-upgrade card. Mirrors the chrome the RobuxShop panel uses (purple
+-- bg, vertical depth gradient, top sheen strip, scaled stroke, single
+-- centered "R$XX" label). Wipes whatever Studio authored on the button so
+-- the visual stays consistent across cards regardless of authoring drift.
+local BUY_PURPLE       = Color3.fromRGB(124, 92, 252)
+local BUY_PURPLE_STROKE = Color3.fromRGB(60, 40, 160)
+local BUY_TEXT_STROKE  = Color3.fromRGB(40, 25, 100)
+local FONT_BUY         = Font.new("rbxasset://fonts/families/Merriweather.json", Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+
+local function applyRobuxChromeToBuyButton(button: GuiButton, priceText: string)
+	-- Idempotent strip — re-runs of `wireRunUpgradeCard1/2` (e.g. when the
+	-- panel re-opens) replace prior chrome cleanly instead of stacking.
+	for _, c in ipairs(button:GetChildren()) do
+		c:Destroy()
+	end
+
+	if button:IsA("ImageButton") then
+		button.Image = ""
+		button.ImageTransparency = 1
+	end
+	button.BackgroundColor3 = BUY_PURPLE
+	button.BackgroundTransparency = 0
+	button.BorderSizePixel = 0
+	button.AutoButtonColor = false
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0.28, 0)
+	corner.Parent = button
+
+	-- Scaled stroke — same Thickness=0.2 contextual mode as the RobuxShop
+	-- buttons so all "Robux chrome" surfaces look uniform.
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = BUY_PURPLE_STROKE
+	stroke.Thickness = 0.2
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+	stroke.LineJoinMode = Enum.LineJoinMode.Round
+	stroke.Parent = button
+
+	-- Vertical depth gradient. Multipliers (white → light gray) so any
+	-- future hover-tween of `BackgroundColor3` rides the gradient cleanly.
+	local grad = Instance.new("UIGradient")
+	grad.Rotation = 90
+	grad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
+		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(220, 220, 230)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(165, 165, 195)),
+	})
+	grad.Parent = button
+
+	-- Top sheen strip — glossy upper edge, mirrors the RobuxShop chrome.
+	local highlight = Instance.new("Frame")
+	highlight.Name = "TopHighlight"
+	highlight.BackgroundColor3 = Color3.new(1, 1, 1)
+	highlight.BackgroundTransparency = 0.55
+	highlight.BorderSizePixel = 0
+	highlight.AnchorPoint = Vector2.new(0.5, 0)
+	highlight.Position = UDim2.fromScale(0.5, 0.07)
+	highlight.Size = UDim2.fromScale(0.88, 0.32)
+	highlight.ZIndex = 2
+	local hCorner = Instance.new("UICorner")
+	hCorner.CornerRadius = UDim.new(1, 0)
+	hCorner.Parent = highlight
+	local hGrad = Instance.new("UIGradient")
+	hGrad.Rotation = 90
+	hGrad.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.1),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	hGrad.Parent = highlight
+	highlight.Parent = button
+
+	-- Centered "R$XX" label. Single string (vs split icon+price) — the
+	-- ShipOilPanel buttons are short pills where icon+price doesn't fit
+	-- without crowding. Stroke for legibility against the lighter top of
+	-- the depth gradient.
+	local label = Instance.new("TextLabel")
+	label.Name = "Price"
+	label.BackgroundTransparency = 1
+	label.AnchorPoint = Vector2.new(0.5, 0.5)
+	label.Position = UDim2.fromScale(0.5, 0.5)
+	label.Size = UDim2.fromScale(0.84, 0.62)
+	label.FontFace = FONT_BUY
+	label.Text = priceText
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.TextScaled = true
+	label.TextXAlignment = Enum.TextXAlignment.Center
+	label.TextYAlignment = Enum.TextYAlignment.Center
+	label.ZIndex = 3
+	label.BorderSizePixel = 0
+	label.Parent = button
+	local labelStroke = Instance.new("UIStroke")
+	labelStroke.Color = BUY_TEXT_STROKE
+	labelStroke.Thickness = 1.25
+	labelStroke.Transparency = 0.25
+	labelStroke.Parent = label
+end
+
+--- Resolve a catalog item's `robuxPrice` to the "R$XX" string the BUY
+--- button surfaces. Returns "R$—" for missing/zero prices so a half-wired
+--- catalog entry still renders something instead of a blank pill.
+local function formatBuyButtonPrice(item: any): string
+	local price = item and item.robuxPrice
+	if typeof(price) == "number" and price > 0 then
+		return string.format("R$%d", math.floor(price))
+	end
+	return "R$—"
+end
 
 local runUpgradeCard1Binding: {
 	titleLabel: TextLabel,
@@ -1218,6 +1518,12 @@ local function wireRunUpgradeCard1(screen: ScreenGui, conns: { RBXScriptConnecti
 		end
 	end
 
+	-- Re-skin the BUY button as the canonical purple Robux chrome with
+	-- the catalog price as its centered label. The CostPill below still
+	-- gets repurposed as the OFF/ON arm toggle; the BUY button stays
+	-- focused on "spend Robux to buy more stacks".
+	applyRobuxChromeToBuyButton(buyButton :: GuiButton, formatBuyButtonPrice(item))
+
 	runUpgradeCard1Binding = {
 		titleLabel = titleLabel :: TextLabel,
 		descriptionLabel = (descLabel and descLabel:IsA("TextLabel")) and (descLabel :: TextLabel) or nil,
@@ -1305,10 +1611,14 @@ local function wireRunUpgradeCard1(screen: ScreenGui, conns: { RBXScriptConnecti
 		runUpgradeCard1Binding.toggleDisplay = toggleDisplay :: TextLabel
 		runUpgradeCard1Binding.toggleButton = toggleButton :: TextButton
 		table.insert(conns, (toggleButton :: TextButton).Activated:Connect(function()
+			-- The OFF/ON pill is *only* the arm-on-next-dispatch toggle —
+			-- it never opens the Robux prompt. The purple BUY button on
+			-- the right of the card owns the purchase flow. When the
+			-- player owns nothing, clicking the toggle is a no-op (stays
+			-- OFF) so they don't get a back-door purchase prompt from a
+			-- mis-clicked toggle.
 			if _securityOwnedCount > 0 then
 				_useSecurityPersonnel = not _useSecurityPersonnel
-			else
-				ClientRemotes.requestPromptRobuxPurchase:FireServer({ itemId = RUN_UPGRADE_ITEM_ID })
 			end
 			refreshRunUpgradeCard1(_securityOwnedCount)
 		end))
@@ -1326,6 +1636,274 @@ local function wireRunUpgradeCard1(screen: ScreenGui, conns: { RBXScriptConnecti
 		local data = (payload :: any).data
 		local itemId = (typeof(data) == "table" and (data :: any).itemId) or nil
 		if itemId ~= RUN_UPGRADE_ITEM_ID then
+			return
+		end
+		if payload.ok == true then
+			return
+		end
+		local code = tostring(payload.code)
+		if code == "ERR_PRODUCT_NOT_CONFIGURED" then
+			warn(string.format("[ShipOilPanel] %s — DevProduct id is 0 in MonetizationCatalog. Set the real productId from the Creator Dashboard.", itemId))
+		elseif code == "ERR_MONETIZATION_DISABLED" then
+			warn(string.format("[ShipOilPanel] %s — MonetizationCatalog.Enabled is false; toggle it on to allow purchases.", itemId))
+		elseif code == "ERR_PROMPT_FAILED" then
+			warn(string.format("[ShipOilPanel] %s — MarketplaceService prompt failed; user may retry.", itemId))
+		end
+	end))
+end
+
+--==============================================================================
+-- RunUpgradeCard2 — Cargo Hauler (doubles next dispatch's barrels).
+-- Authoring + behavior intentionally mirror `RunUpgradeCard1` (Security
+-- Personnel) with a Studio-authored card under the same RunUpgradesSection;
+-- the visible "armed" signal additionally lights up the footer's
+-- TotalBarrels + ShipCapacity readouts in gold with "×2" via `refreshFooter`.
+--==============================================================================
+
+local cargoHaulerCard2Binding: {
+	titleLabel: TextLabel,
+	descriptionLabel: TextLabel?,
+	costPill: GuiObject?,
+	costPillGradient: UIGradient?,
+	costLabel: TextLabel?,
+	toggleDisplay: TextLabel?,
+	toggleButton: TextButton?,
+	buyButton: GuiButton,
+	baseTitle: string,
+	baseDescription: string,
+}? = nil
+
+local refreshRunUpgradeCard2: ((ownedCount: number) -> ())
+
+refreshRunUpgradeCard2 = function(ownedCount: number)
+	local b = cargoHaulerCard2Binding
+	if not b then
+		return
+	end
+	_cargoHaulerOwnedCount = math.max(0, math.floor(ownedCount))
+	-- Unlike Security Personnel, dropping the owned count to 0 forces the
+	-- arm flag back off so a stale "ON" pill can't carry across to the
+	-- next purchase.
+	if _cargoHaulerOwnedCount <= 0 then
+		_useCargoHauler = false
+	end
+	if b.descriptionLabel then
+		if _useCargoHauler then
+			b.descriptionLabel.Text = string.format("ON - 1/%d will be used on dispatch", _cargoHaulerOwnedCount)
+		elseif _cargoHaulerOwnedCount > 0 then
+			b.descriptionLabel.Text = string.format("OFF - %d available", _cargoHaulerOwnedCount)
+		else
+			b.descriptionLabel.Text = b.baseDescription
+		end
+	end
+	-- Same red/green pill paint as Card1 — green when armed, red when off.
+	-- Keeps the two run-upgrade cards visually parallel.
+	if b.costPill and b.costPill.Parent then
+		b.costPill.BackgroundColor3 = if _useCargoHauler
+			then Color3.fromRGB(46, 166, 74)
+			else Color3.fromRGB(196, 64, 102)
+		b.costPill.BackgroundTransparency = 0
+	end
+	if b.costPillGradient and b.costPillGradient.Parent then
+		b.costPillGradient.Enabled = false
+	end
+	if b.toggleDisplay and b.toggleDisplay.Parent then
+		b.toggleDisplay.Text = _useCargoHauler and "ON" or "OFF"
+	end
+end
+
+--- Read `runUpgradeOwnedByItemId.cargo_hauler` defensively. Same shape as
+--- the Security Personnel reader; missing/malformed payloads → 0 so the
+--- card still repaints cleanly with no count.
+local function readCargoHaulerOwnedFromSnapshot(snap: any): number
+	if typeof(snap) ~= "table" then
+		return 0
+	end
+	local owned = (snap :: any).runUpgradeOwnedByItemId
+	if typeof(owned) ~= "table" then
+		return 0
+	end
+	local n = (owned :: { [string]: any })[RUN_UPGRADE_CARGO_INVENTORY_ID]
+	if typeof(n) ~= "number" then
+		return 0
+	end
+	return math.max(0, math.floor(n))
+end
+
+local function wireRunUpgradeCard2(screen: ScreenGui, conns: { RBXScriptConnection })
+	local section = screen:FindFirstChild("RunUpgradesSection", true)
+	local cards = section and section:FindFirstChild("RunUpgradeCards")
+	local card = cards and cards:FindFirstChild("RunUpgradeCard2")
+	if not (card and card:IsA("GuiObject")) then
+		warn("[ShipOilPanel] RunUpgradeCard2 not found under " .. screen:GetFullName() .. " — Cargo Hauler buy CTA will not be wired.")
+		return
+	end
+
+	-- Same `ComingSoonOverlay` policy as Card1: while Studio has the overlay
+	-- attached, treat the product as unavailable.
+	if card:FindFirstChild("ComingSoonOverlay") then
+		cargoHaulerCard2Binding = nil
+		return
+	end
+
+	local titleLabel = card:FindFirstChild("TitleLabel", true)
+	local descLabel = card:FindFirstChild("DescriptionLabel", true)
+	local costPill = card:FindFirstChild("CostPill", true)
+	-- Studio's per-card cost label naming convention: `CostLabel<N>` matches
+	-- the card index, falls back to any nested `TextLabel` inside the pill
+	-- if a future re-author drops the suffix.
+	local costLabel = costPill and (costPill:FindFirstChild("CostLabel2") or costPill:FindFirstChildWhichIsA("TextLabel", true))
+	local buyButton = card:FindFirstChild("BuyButton", true)
+
+	if not (titleLabel and titleLabel:IsA("TextLabel")) then
+		warn("[ShipOilPanel] RunUpgradeCard2.TitleLabel missing — skipping wire.")
+		return
+	end
+	if not (buyButton and buyButton:IsA("GuiButton")) then
+		warn("[ShipOilPanel] RunUpgradeCard2.BuyButton missing — skipping wire.")
+		return
+	end
+
+	local item = MonetizationCatalog.GetItem(RUN_UPGRADE_CARGO_ITEM_ID)
+	if not item then
+		warn(string.format(
+			"[ShipOilPanel] MonetizationCatalog has no entry for %q — RunUpgradeCard2 will keep Studio placeholder text.",
+			RUN_UPGRADE_CARGO_ITEM_ID
+		))
+		return
+	end
+
+	titleLabel.Text = (typeof(item.displayName) == "string" and item.displayName) or titleLabel.Text
+	local baseDescription = if typeof(item.subtitle) == "string" and item.subtitle ~= ""
+		then item.subtitle
+		else "Doubles your next run's barrels"
+
+	if costLabel and costLabel:IsA("TextLabel") then
+		local price = item.robuxPrice
+		if typeof(price) == "number" and price > 0 then
+			costLabel.Text = string.format("R$%d", math.floor(price))
+		else
+			costLabel.Text = "R$—"
+		end
+	end
+
+	-- Same purple chrome as Card1's BUY button.
+	applyRobuxChromeToBuyButton(buyButton :: GuiButton, formatBuyButtonPrice(item))
+
+	cargoHaulerCard2Binding = {
+		titleLabel = titleLabel :: TextLabel,
+		descriptionLabel = (descLabel and descLabel:IsA("TextLabel")) and (descLabel :: TextLabel) or nil,
+		costPill = costPill,
+		costPillGradient = (costPill and costPill:FindFirstChild("UIGradient") and costPill:FindFirstChild("UIGradient"):IsA("UIGradient"))
+			and (costPill:FindFirstChild("UIGradient") :: UIGradient)
+			or nil,
+		costLabel = (costLabel and costLabel:IsA("TextLabel")) and (costLabel :: TextLabel) or nil,
+		toggleDisplay = nil,
+		toggleButton = nil,
+		buyButton = buyButton :: GuiButton,
+		baseTitle = titleLabel.Text,
+		baseDescription = baseDescription,
+	}
+
+	refreshRunUpgradeCard2(0)
+
+	-- BUY: open the Robux prompt for the catalog item — always buy more,
+	-- regardless of current owned count.
+	table.insert(conns, (buyButton :: GuiButton).Activated:Connect(function()
+		ClientRemotes.requestPromptRobuxPurchase:FireServer({ itemId = RUN_UPGRADE_CARGO_ITEM_ID })
+	end))
+
+	-- CostPill = OFF/ON toggle. Same authoring trick as Card1: the Studio-
+	-- authored pill becomes the visible base, we layer a display label
+	-- + a transparent hit target that owns the click.
+	if costPill and costPill:IsA("GuiObject") and costLabel and costLabel:IsA("TextLabel") then
+		costLabel.Text = ""
+		costLabel.ClipsDescendants = false
+		local coinIcon = costPill:FindFirstChild("CoinIcon")
+		if coinIcon and coinIcon:IsA("GuiObject") then
+			coinIcon.Visible = false
+		end
+
+		local toggleDisplay = costLabel:FindFirstChild("CargoHaulerToggleDisplay")
+		if toggleDisplay and not toggleDisplay:IsA("TextLabel") then
+			toggleDisplay:Destroy()
+			toggleDisplay = nil
+		end
+		if not toggleDisplay then
+			local display = Instance.new("TextLabel")
+			display.Name = "CargoHaulerToggleDisplay"
+			display.AnchorPoint = Vector2.new(0, 0.5)
+			display.Position = UDim2.new(-0.5, 0, 0.5, 0)
+			display.Size = UDim2.new(2, 0, 1, 0)
+			display.BorderSizePixel = 0
+			display.TextColor3 = Color3.fromRGB(255, 255, 255)
+			display.TextScaled = true
+			display.BackgroundTransparency = 1
+			display.Font = Enum.Font.GothamBold
+			display.TextXAlignment = Enum.TextXAlignment.Center
+			display.TextYAlignment = Enum.TextYAlignment.Center
+			display.ZIndex = math.max(costPill.ZIndex + 2, costLabel.ZIndex + 2, buyButton.ZIndex + 1)
+			display.Parent = costLabel
+			local textConstraint = Instance.new("UITextSizeConstraint")
+			textConstraint.MaxTextSize = 20
+			textConstraint.MinTextSize = 12
+			textConstraint.Parent = display
+			toggleDisplay = display
+		end
+
+		local toggleButton = costLabel:FindFirstChild("ToggleHit")
+		if toggleButton and not toggleButton:IsA("TextButton") then
+			toggleButton:Destroy()
+			toggleButton = nil
+		end
+		if not toggleButton then
+			local hit = Instance.new("TextButton")
+			hit.Name = "ToggleHit"
+			hit.AnchorPoint = Vector2.new(0, 0.5)
+			hit.Position = UDim2.new(-0.5, 0, 0.5, 0)
+			hit.Size = UDim2.new(2, 0, 1, 0)
+			hit.BackgroundTransparency = 1
+			hit.AutoButtonColor = false
+			hit.BorderSizePixel = 0
+			hit.Text = ""
+			hit.ZIndex = math.max(costPill.ZIndex + 3, costLabel.ZIndex + 3, buyButton.ZIndex + 2)
+			hit.Parent = costLabel
+			toggleButton = hit
+		end
+
+		cargoHaulerCard2Binding.toggleDisplay = toggleDisplay :: TextLabel
+		cargoHaulerCard2Binding.toggleButton = toggleButton :: TextButton
+		table.insert(conns, (toggleButton :: TextButton).Activated:Connect(function()
+			-- Toggle is *only* the arm-on-next-dispatch flag — never opens
+			-- a Robux prompt. The purple BUY button owns purchasing. A
+			-- click while owned == 0 is a no-op (stays OFF) so the player
+			-- doesn't get a back-door purchase prompt.
+			if _cargoHaulerOwnedCount > 0 then
+				_useCargoHauler = not _useCargoHauler
+			end
+			refreshRunUpgradeCard2(_cargoHaulerOwnedCount)
+			-- Toggling Cargo Hauler changes:
+			--   * Stepper AmountLabels → display × 2 in green (refreshRowUi)
+			--   * Footer TotalBarrels + ShipCapacity → green doubled value (refreshFooter)
+			--   * Pulsing ×2! badge visibility (refreshFooter)
+			-- Repaint both immediately rather than waiting for the next
+			-- snapshot tick so the toggle feels responsive.
+			refreshRowUi()
+			refreshFooter()
+		end))
+		refreshRunUpgradeCard2(_cargoHaulerOwnedCount)
+	end
+
+	-- Console-only failure surfacing for this card (mirrors Card1 — there
+	-- is no per-card error toast; dispatch errors own the panel's
+	-- `ErrorNotification`).
+	table.insert(conns, ClientRemotes.monetizationResult.OnClientEvent:Connect(function(payload: any)
+		if typeof(payload) ~= "table" then
+			return
+		end
+		local data = (payload :: any).data
+		local itemId = (typeof(data) == "table" and (data :: any).itemId) or nil
+		if itemId ~= RUN_UPGRADE_CARGO_ITEM_ID then
 			return
 		end
 		if payload.ok == true then
@@ -1382,6 +1960,26 @@ local function disconnectAll()
 	lastFtueShipOilPeekOpen = nil
 	lastFtueShipOilPeekBarrels = nil
 	runUpgradeCard1Binding = nil
+	cargoHaulerCard2Binding = nil
+	-- Reset arm flag + owned mirror so a new wire pass starts from a
+	-- clean state (matches how `_useSecurityPersonnel` / `_securityOwnedCount`
+	-- get re-derived from the next snapshot push).
+	_useCargoHauler = false
+	_cargoHaulerOwnedCount = 0
+	-- Drop the captured per-field original colors so the next wire pass
+	-- captures fresh against the new bound fields (the previous fields
+	-- are stale once `rowBindings` is cleared above).
+	table.clear(_amountFieldOriginalColor)
+	-- Cancel the badge pulse and drop our refs. The TextLabel itself
+	-- belongs to `totalBarrelsLabel` (cleared just above) and is destroyed
+	-- when the panel tears down, but we explicitly nil-out so the next
+	-- wire pass lazy-creates a fresh badge under the new label.
+	if cargoHaulerBadgeTween then
+		cargoHaulerBadgeTween:Cancel()
+		cargoHaulerBadgeTween = nil
+	end
+	cargoHaulerBadge = nil
+	cargoHaulerBadgeScale = nil
 	hideErrorNotification()
 	errorNotificationLabel = nil
 end
@@ -1586,6 +2184,11 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 	-- push because the binding was still nil, then `refreshRunUpgradeCard1(0)` in
 	-- the late wire clobbered the right count until a second purchase re-pushed).
 	wireRunUpgradeCard1(screen, connections)
+	-- Cargo Hauler card. Same wire-before-snapshot ordering reasoning as
+	-- Card1 — the binding must exist before the first `oilStateUpdate`
+	-- packet refreshes it, otherwise the bundle-grant first-push gets
+	-- silently lost and the panel paints "0 owned" until the next push.
+	wireRunUpgradeCard2(screen, connections)
 
 	table.insert(connections, ClientRemotes.warehouseStateUpdate.OnClientEvent:Connect(function(data: any)
 		if mergeWarehouseTotalsFromPayload(data) then
@@ -1614,9 +2217,10 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 			end
 		end
 		-- Run-upgrade owned counts ride on the same packet so the
-		-- RunUpgradeCard1 "Ready ×N" badge updates in the same frame as a
-		-- successful Robux receipt OR a dispatch consume.
+		-- RunUpgradeCard1/Card2 "Ready ×N" badges update in the same frame
+		-- as a successful Robux receipt OR a dispatch consume.
 		refreshRunUpgradeCard1(readRunUpgradeOwnedFromSnapshot(snap))
+		refreshRunUpgradeCard2(readCargoHaulerOwnedFromSnapshot(snap))
 		refreshFooter()
 	end))
 
@@ -1727,6 +2331,7 @@ local function wireShipOil(screen: ScreenGui, closePanel: (() -> ())?)
 					clampSelectionsToInventory()
 				end
 				refreshRunUpgradeCard1(readRunUpgradeOwnedFromSnapshot(st))
+				refreshRunUpgradeCard2(readCargoHaulerOwnedFromSnapshot(st))
 			end
 		end
 	end

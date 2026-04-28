@@ -183,6 +183,9 @@ local RemoteNames = {
 	-- waiting for a push. Keeps the wire small and snapshot-shaped like
 	-- `RequestEquipmentShopCatalog`.
 	RequestMonetizationCatalog = "RequestMonetizationCatalog",
+	--- Server → invoking client: roll-up dynamic cash-pack sizes from
+	--- `SessionEconomics` + current cash hint (`OilStateService:GetEconomicsCashPackPreview`).
+	RequestCurrencyPackPreview = "RequestCurrencyPackPreview",
 	-- Server → one client: which `gamePassEffect` ids (e.g. "DoubleEarnings")
 	-- the player currently owns, as `{ effects = { DoubleEarnings = true, ... } }`.
 	-- Pushed on join (after `MarketplaceService:UserOwnsGamePassAsync` resolves)

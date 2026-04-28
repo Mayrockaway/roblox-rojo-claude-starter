@@ -67,7 +67,21 @@ function HitContractService:Init(remoteService, oilStateService, oilShipmentServ
 	self._prompt = nil :: ProximityPrompt?
 	--- Once `Workspace.PirateHire` exists, listen for rig/parts streaming in under it.
 	self._pirateHireStreamingNpc = nil :: Instance?
+	--- Per-contractor "what target did they just click Robux-hire on?" stamp.
+	--- Set when the client fires `action == "promptHireRobux"`, read by the
+	--- registered `SetPromptPrecondition` (defense-in-depth gate before the
+	--- Robux dialog opens) and again by the `SetConsumableHandler` once the
+	--- receipt lands. `stampedAt` is `os.clock()`; entries older than
+	--- `_PENDING_ROBUX_TARGET_TTL_SECONDS` are treated as stale and rejected.
+	self._pendingRobuxTargets = {} :: { [number]: { victimUserId: number, stampedAt: number } }
+	self._monetizationService = nil :: any
 end
+
+--- Time window during which a Robux-hire stamp on `_pendingRobuxTargets` is
+--- treated as "live". Long enough to cover the player closing the Roblox
+--- prompt and re-opening it once, short enough that a player can't keep an
+--- old target stamp alive across long idle periods.
+local _PENDING_ROBUX_TARGET_TTL_SECONDS = 90
 
 function HitContractService:_tokenCount(userId: number): number
 	return math.max(0, self._freeHitTokens[userId] or 0)
@@ -137,7 +151,25 @@ function HitContractService:_stampHireCooldown(contractorUserId: number, victimU
 		workspace:GetServerTimeNow() + HitContractConfig.SameTargetHireCooldownSeconds
 end
 
-function HitContractService:TryCreateHit(contractorUserId: number, victimUserId: number): (boolean, string, { [string]: any }?)
+--- `opts.paymentMethod` selects how the hire was paid for:
+---   * `"cash"` (default) — debit `HIT_COST_CASH` via `OilStateService:TrySpendCash`,
+---     unless a free-replacement token covers the cost.
+---   * `"robux"` — caller is the Robux receipt handler in
+---     `SetMonetizationService`. The player already paid in Robux at the
+---     `MarketplaceService:Prompt*Purchase` step, so we skip the cash spend
+---     entirely AND skip the free-token consume (Robux is a separate
+---     currency rail; we don't want a Robux purchase to silently consume a
+---     refund-replacement token instead). Telemetry's `Telemetry.Economy
+---     ("Sink", ..., "pirate_hire")` only fires on the cash path so the
+---     soft-currency dashboard isn't double-counted; the Robux path is
+---     reported by `MonetizationService` via `Telemetry.Purchase`.
+function HitContractService:TryCreateHit(
+	contractorUserId: number,
+	victimUserId: number,
+	opts: { paymentMethod: string? }?
+): (boolean, string, { [string]: any }?)
+	local paymentMethod = (opts and opts.paymentMethod) or "cash"
+
 	if contractorUserId == victimUserId then
 		return false, "You can't place a hit on yourself.", nil
 	end
@@ -152,23 +184,33 @@ function HitContractService:TryCreateHit(contractorUserId: number, victimUserId:
 		return false, "That target already has an active hit.", nil
 	end
 
-	local cdRem = self:_hireCooldownRemainingSeconds(contractorUserId, victimUserId)
-	if cdRem > 0 then
-		local m = math.floor(cdRem / 60)
-		local s = cdRem % 60
-		return false, string.format("Wait %d:%02d before hiring pirates on that player again.", m, s), {
-			cooldownRemainingSeconds = cdRem,
-			victimUserId = victimUserId,
-		}
+	-- Robux purchases bypass the same-target cooldown — that's the whole
+	-- point of paying Robux from the player's perspective. Cash hires
+	-- continue to enforce the anti-spam window.
+	if paymentMethod ~= "robux" then
+		local cdRem = self:_hireCooldownRemainingSeconds(contractorUserId, victimUserId)
+		if cdRem > 0 then
+			local m = math.floor(cdRem / 60)
+			local s = cdRem % 60
+			return false, string.format("Wait %d:%02d before hiring pirates on that player again.", m, s), {
+				cooldownRemainingSeconds = cdRem,
+				victimUserId = victimUserId,
+			}
+		end
 	end
 
-	local usedFreeToken = self:_consumeToken(contractorUserId)
-	if not usedFreeToken then
-		if not self._oilStateService:TrySpendCash(contractorUserId, HIT_COST_CASH) then
-			return false, string.format("Need $%d cash to hire a hit.", HIT_COST_CASH), nil
+	local usedFreeToken = false
+	if paymentMethod == "cash" then
+		usedFreeToken = self:_consumeToken(contractorUserId)
+		if not usedFreeToken then
+			if not self._oilStateService:TrySpendCash(contractorUserId, HIT_COST_CASH) then
+				return false, string.format("Need $%d cash to hire a hit.", HIT_COST_CASH), nil
+			end
+			self._oilStateService:PushState(contractorUserId)
 		end
-		self._oilStateService:PushState(contractorUserId)
 	end
+	-- `paymentMethod == "robux"` falls through with `usedFreeToken = false`
+	-- and no cash debit — receipt handler already paid in Robux.
 
 	local contractId = tostring(contractorUserId) .. "_" .. tostring(victimUserId) .. "_" .. tostring(math.floor(workspace:GetServerTimeNow() * 1000))
 	local contract = {
@@ -182,21 +224,35 @@ function HitContractService:TryCreateHit(contractorUserId: number, victimUserId:
 	self._contractsByVictim[victimUserId] = contract
 	self._contractsById[contractId] = contract
 
-	self:_stampHireCooldown(contractorUserId, victimUserId)
+	-- Stamp the same-target cooldown only on cash hires. Robux purchases
+	-- bypass the cooldown gate AND don't stamp it themselves — paying Robux
+	-- is the "no cooldowns" feature, so a cash hire 30s after a Robux hire
+	-- on the same victim is fine. Per design (`HitContractConfig`).
+	if paymentMethod ~= "robux" then
+		self:_stampHireCooldown(contractorUserId, victimUserId)
+	end
 
-	-- Telemetry §6.5 `pirate_hire_created` (Sink — only when paid, not
-	-- when consuming a free-replacement token). Fires after the contract
-	-- row is committed so a `QueueOrInjectForActiveShipment` failure
-	-- still records the attempt that took the player's cash.
+	-- Telemetry §6.5 `pirate_hire_created` (Sink — only when paid in cash, not
+	-- when consuming a free-replacement token, and not when paid in Robux —
+	-- Robux is reported separately by `MonetizationService:_processReceipt`
+	-- via `Telemetry.Purchase`). Fires after the contract row is committed so
+	-- a `QueueOrInjectForActiveShipment` failure still records the attempt.
 	pcall(function()
-		if not usedFreeToken then
+		if paymentMethod == "cash" and not usedFreeToken then
 			Telemetry.Economy(contractor, "Sink", HIT_COST_CASH, "cash", "pirate_hire", { kind = "pirate_hire", id = "hire" })
+		end
+		local cost: number
+		if paymentMethod == "robux" or usedFreeToken then
+			cost = 0
+		else
+			cost = HIT_COST_CASH
 		end
 		Telemetry.Track(contractor, "pirate_hire_created", {
 			contractId = contractId,
 			victimUserId = victimUserId,
-			cost = if usedFreeToken then 0 else HIT_COST_CASH,
+			cost = cost,
 			usedFreeToken = usedFreeToken,
+			paymentMethod = paymentMethod,
 		})
 	end)
 
@@ -393,28 +449,175 @@ function HitContractService:_buildTargetsFor(player: Player): { [number]: { [str
 	return out
 end
 
+--- Common pre-payment validation: target must exist online, not be the
+--- contractor, not already have an active contract, and (for cash hires) the
+--- (contractor, victim) cooldown must be expired.
+---
+--- `opts.skipCooldown = true` bypasses the same-target cooldown gate. This
+--- is the Robux escape hatch — paying Robux is the "skip the cooldown"
+--- feature, so the precondition + receipt handler pass it. Cash hires
+--- (`TryCreateHit({ paymentMethod = "cash" })`, the default) pass nil/false
+--- and continue to enforce anti-spam.
+function HitContractService:_validateHireTarget(
+	contractorUserId: number,
+	victimUserId: number,
+	opts: { skipCooldown: boolean? }?
+): (boolean, string, { [string]: any }?)
+	if contractorUserId == victimUserId then
+		return false, "You can't place a hit on yourself.", nil
+	end
+	local contractor = Players:GetPlayerByUserId(contractorUserId)
+	local victim = Players:GetPlayerByUserId(victimUserId)
+	if not contractor or not victim then
+		return false, "That target is not available.", nil
+	end
+	if self:_activeContractForVictim(victimUserId) then
+		return false, "That target already has an active hit.", nil
+	end
+	local skipCooldown = (opts ~= nil) and (opts :: any).skipCooldown == true
+	if not skipCooldown then
+		local cdRem = self:_hireCooldownRemainingSeconds(contractorUserId, victimUserId)
+		if cdRem > 0 then
+			local m = math.floor(cdRem / 60)
+			local s = cdRem % 60
+			return false, string.format("Wait %d:%02d before hiring pirates on that player again.", m, s), {
+				cooldownRemainingSeconds = cdRem,
+				victimUserId = victimUserId,
+			}
+		end
+	end
+	return true, "", nil
+end
+
+--- Stamp `_pendingRobuxTargets[contractorUserId] = { victimUserId, ... }`
+--- and open the Robux purchase prompt for `consumable.pirate_hire_x1`.
+--- Wired from `_onRequestAction` when the client clicks the per-target
+--- Robux button (`action = "promptHireRobux"`). The actual hire executes
+--- inside the `SetMonetizationService` consumable handler once the receipt
+--- lands.
+function HitContractService:_handlePromptHireRobux(player: Player, payload: any)
+	if not self._monetizationService then
+		self:_fireResult(player, false, "Robux purchases not available.", nil)
+		return
+	end
+	local victimUserId = tonumber(payload.victimUserId)
+	if not victimUserId then
+		self:_fireResult(player, false, "Choose a valid target.", nil)
+		return
+	end
+	-- Robux variant skips the same-target cooldown — paying Robux is the
+	-- "skip the cooldown" path. The other validation gates (self-hire,
+	-- target online, no active contract) still apply.
+	local ok, message, data = self:_validateHireTarget(player.UserId, victimUserId, { skipCooldown = true })
+	if not ok then
+		self:_fireResult(player, false, message, data)
+		return
+	end
+	self._pendingRobuxTargets[player.UserId] = {
+		victimUserId = victimUserId,
+		stampedAt = os.clock(),
+	}
+	-- Routes through `MonetizationService:_handlePromptRequest`, which runs
+	-- the registered `consumable.pirate_hire_x1` precondition (defense in
+	-- depth) and then opens `MarketplaceService:PromptProductPurchase`.
+	-- Result/error toast lands on the client via `MonetizationResult`.
+	self._monetizationService:PromptPurchase(player, "consumable.pirate_hire_x1")
+end
+
 function HitContractService:_onRequestAction(player: Player, payload: any)
 	if typeof(payload) ~= "table" then
 		self:_fireResult(player, false, "Bad pirate request payload.", nil)
 		return
 	end
 	local action = tostring(payload.action or "")
-	-- Legacy `action == "ask"` (broker quote easter-egg) was removed when the
-	-- client replaced the ask button with a static pitch label. The server no
-	-- longer responds to it; only "hire" is valid now.
-	if action ~= "hire" then
-		self:_fireResult(player, false, "Unknown pirate action.", nil)
+	-- `"hire"` — cash payment path (legacy default).
+	-- `"promptHireRobux"` — Robux payment path: stamp pending target +
+	-- open Roblox prompt; the consumable receipt handler runs the hire.
+	if action == "hire" then
+		local victimUserId = tonumber(payload.victimUserId)
+		if not victimUserId then
+			self:_fireResult(player, false, "Choose a valid target.", nil)
+			return
+		end
+		local ok, message, data = self:TryCreateHit(player.UserId, victimUserId)
+		self:_fireResult(player, ok, message, data)
+		return
+	elseif action == "promptHireRobux" then
+		self:_handlePromptHireRobux(player, payload)
+		return
+	end
+	self:_fireResult(player, false, "Unknown pirate action.", nil)
+end
+
+--- Wire the Robux variant of pirate hire into `MonetizationService`. Mirrors
+--- the pattern `ArmyGeneralService:SetMonetizationService` uses for the nuke:
+--- a pre-prompt precondition rejects the dialog before the player is charged
+--- if the target is no longer attackable, and the receipt handler runs the
+--- hire grant once Roblox confirms the purchase. Storing the intended
+--- `victimUserId` in `_pendingRobuxTargets` lets us thread per-action context
+--- through the consumable handler's `(userId, quantity)` signature.
+function HitContractService:SetMonetizationService(monetizationService)
+	self._monetizationService = monetizationService
+	if not monetizationService then
 		return
 	end
 
-	local victimUserId = tonumber(payload.victimUserId)
-	if not victimUserId then
-		self:_fireResult(player, false, "Choose a valid target.", nil)
-		return
-	end
+	-- Defense-in-depth gate: the action handler already validated the target
+	-- when stamping the pending target, but state can shift between the
+	-- click and the prompt opening (target leaves, target gets hit by
+	-- someone else, cooldown stamp lands). Re-validate here so the player
+	-- isn't charged for a hire that can no longer execute.
+	monetizationService:SetPromptPrecondition("consumable.pirate_hire_x1", function(player: Player)
+		local pending = self._pendingRobuxTargets[player.UserId]
+		if not pending then
+			return false, "ERR_NO_TARGET", "Pick a target in the Pirate Broker dialog first."
+		end
+		if (os.clock() - pending.stampedAt) > _PENDING_ROBUX_TARGET_TTL_SECONDS then
+			self._pendingRobuxTargets[player.UserId] = nil
+			return false, "ERR_TARGET_STALE", "That target selection expired — pick again."
+		end
+		-- Same `skipCooldown` rule as `_handlePromptHireRobux`: Robux purchases
+		-- never gate on the same-target cooldown. The other validations still
+		-- run (self-hire, target online, no active contract).
+		local ok, message = self:_validateHireTarget(player.UserId, pending.victimUserId, { skipCooldown = true })
+		if not ok then
+			-- Leave the stamp in place so the player can re-prompt after the
+			-- transient condition clears (e.g. target rejoining) without
+			-- having to re-click the target row.
+			return false, "ERR_PIRATE_HIRE_BLOCKED", message
+		end
+		return true, nil, nil
+	end)
 
-	local ok, message, data = self:TryCreateHit(player.UserId, victimUserId)
-	self:_fireResult(player, ok, message, data)
+	-- Receipt handler. Always resolves to a grant attempt — the prompt gate
+	-- above already ran before Roblox charged the player. If the pending
+	-- target evaporated between prompt and receipt (target left, etc.) we
+	-- still return `true` from the handler so Roblox finalizes the receipt
+	-- and the player isn't double-prompted on next session; `TryCreateHit`'s
+	-- internal validation will also return false in that case and we report
+	-- it via `_fireResult` so the player sees what happened.
+	monetizationService:SetConsumableHandler("pirate_hire", function(userId: number, _quantity: number): (boolean, string?)
+		local player = Players:GetPlayerByUserId(userId)
+		if not player then
+			-- Buyer left between prompt and receipt — Roblox auto-handles
+			-- via NotProcessedYet on next session.
+			return false, "ERR_PIRATE_HIRE_BUYER_OFFLINE"
+		end
+		local pending = self._pendingRobuxTargets[userId]
+		self._pendingRobuxTargets[userId] = nil
+		if not pending then
+			self:_fireResult(player, false, "Couldn't find the target you picked. Try again.", nil)
+			return true, nil
+		end
+		-- `paymentMethod = "robux"` skips the cash debit branch in
+		-- `TryCreateHit`. We run it inline (not inside `task.spawn`) because
+		-- the work is bounded and we want to surface the result to the
+		-- player on the same `MonetizationResult` toast pipeline; if any
+		-- step yields, ProcessReceipt's outer pcall handles it.
+		local ok, message, data = self:TryCreateHit(userId, pending.victimUserId, { paymentMethod = "robux" })
+		self:_fireResult(player, ok, message, data)
+		return true, nil
+	end)
 end
 
 function HitContractService:Start()
@@ -448,6 +651,7 @@ function HitContractService:Start()
 			self:RefundContract(c.contractId, "target_left")
 		end
 		self._freeHitTokens[userId] = nil
+		self._pendingRobuxTargets[userId] = nil
 		local keysToClear = {}
 		for key, _ in pairs(self._hireCooldownEndsAtByPair) do
 			local leftStr, rightStr = string.match(key, "^(%d+):(%d+)$")
@@ -474,6 +678,7 @@ function HitContractService:Stop()
 	self._contractsById = {}
 	self._hireCooldownEndsAtByPair = {}
 	self._freeHitTokens = {}
+	self._pendingRobuxTargets = {}
 end
 
 return HitContractService

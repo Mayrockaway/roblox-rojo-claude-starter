@@ -34,7 +34,7 @@ type GatedEntry = {
 --   WaitDrillOil_WIP      → + EquipmentHotbar
 --   WaitPlotShipment      → + CashStrip, ActiveManifestPanel
 --   WaitShipment          → + TopRow, ShipmentProgressPanel
---   WaitDocksShipUpgrade  → + Buttons, RobuxShop
+--   WaitDocksShipUpgrade  → + Buttons, CashStripPlus (robux modal; was top-level RobuxShop)
 --   Done                  → + StraitControlCta, EarningsGamepass,
 --                            NukeDevProduct, AutoShipButton (rest of HUD)
 --
@@ -53,7 +53,7 @@ local CHILD_REVEAL: { GatedEntry } = {
 	{ path = "TopRow", revealAt = FtueConfig.Step.WaitShipment },
 	{ path = "ShipmentProgressPanel", revealAt = FtueConfig.Step.WaitShipment },
 	{ path = "Buttons", revealAt = FtueConfig.Step.WaitDocksShipUpgrade },
-	{ path = "RobuxShop", revealAt = FtueConfig.Step.WaitDocksShipUpgrade },
+	{ path = "CashStripPlus", revealAt = FtueConfig.Step.WaitDocksShipUpgrade },
 	{ path = "StraitControlCta", revealAt = FtueConfig.Step.Done },
 	{ path = "EarningsGamepass", revealAt = FtueConfig.Step.Done },
 	{ path = "NukeDevProduct", revealAt = FtueConfig.Step.Done },
@@ -148,8 +148,20 @@ function FtueHudReveal.start(player: Player)
 		return false
 	end
 
+	local function resolveGatedPath(path: string): GuiObject?
+		local direct = canvas:FindFirstChild(path)
+		if direct and direct:IsA("GuiObject") then
+			return direct :: GuiObject
+		end
+		local deep = canvas:FindFirstChild(path, true)
+		if deep and deep:IsA("GuiObject") then
+			return deep :: GuiObject
+		end
+		return nil
+	end
+
 	for _, entry in ipairs(CHILD_REVEAL) do
-		local inst = canvas:FindFirstChild(entry.path)
+		local inst = resolveGatedPath(entry.path)
 		if inst and tryAddEntry(entry, inst) then
 			-- resolved
 		else
@@ -220,15 +232,35 @@ function FtueHudReveal.start(player: Player)
 		local addedConn: RBXScriptConnection? = nil
 		addedConn = canvas.ChildAdded:Connect(function(child)
 			local entry = pendingByPath[child.Name]
-			if not entry then
-				return
-			end
-			if tryAddEntry(entry, child) then
+			if entry and tryAddEntry(entry, child) then
 				pendingByPath[child.Name] = nil
 				applyForStep(currentStepValue())
 				if next(pendingByPath) == nil and addedConn then
 					addedConn:Disconnect()
 					addedConn = nil
+				end
+			end
+		end)
+		-- Nested gates (e.g. `CashStripPlus` parented under `CashStrip`): resolve any time
+		-- a descendant appears; `pendingByPath` keys are canonical path IDs.
+		local descConn: RBXScriptConnection? = nil
+		descConn = canvas.DescendantAdded:Connect(function(child)
+			if not child:IsA("GuiObject") then
+				return
+			end
+			local entry = pendingByPath[child.Name]
+			if entry and tryAddEntry(entry, child) then
+				pendingByPath[child.Name] = nil
+				applyForStep(currentStepValue())
+				if next(pendingByPath) == nil then
+					if addedConn then
+						addedConn:Disconnect()
+						addedConn = nil
+					end
+					if descConn then
+						descConn:Disconnect()
+						descConn = nil
+					end
 				end
 			end
 		end)
@@ -238,20 +270,26 @@ function FtueHudReveal.start(player: Player)
 		-- entries that get parented to canvas under unusual conditions).
 		task.delay(2, function()
 			for path, entry in pairs(pendingByPath) do
-				local inst = canvas:FindFirstChild(path)
+				local inst = resolveGatedPath(path)
 				if inst and tryAddEntry(entry, inst) then
 					pendingByPath[path] = nil
 				end
 			end
 			applyForStep(currentStepValue())
-			if next(pendingByPath) == nil and addedConn then
-				addedConn:Disconnect()
-				addedConn = nil
+			if next(pendingByPath) == nil then
+				if addedConn then
+					addedConn:Disconnect()
+					addedConn = nil
+				end
+				if descConn then
+					descConn:Disconnect()
+					descConn = nil
+				end
 			end
 			-- After the grace period, anything still missing is a real
 			-- structural absence — log once so drift is visible.
 			for path in pairs(pendingByPath) do
-				warn(string.format("[FtueHudReveal] HUD.Canvas.%s never appeared — gate skipped", path))
+				warn(string.format("[FtueHudReveal] HUD.Canvas...%s never appeared — gate skipped", path))
 			end
 		end)
 	end

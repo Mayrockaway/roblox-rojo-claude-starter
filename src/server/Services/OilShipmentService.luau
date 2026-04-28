@@ -664,6 +664,16 @@ function OilShipmentService:SetSecurityPersonnelService(securityPersonnelService
 	self._securityPersonnelService = securityPersonnelService
 end
 
+--- Inject `CargoHaulerService` so `_handleDispatch` can call
+--- `:TryConsumeForDispatch(userId)` and apply the barrel-doubling multiplier
+--- when the player ticked the Cargo Hauler toggle on this dispatch. Wired
+--- from `init.server.luau` after both services exist; until then the
+--- service is `nil` and the hook is a no-op (the shipment dispatches with
+--- the player's selected manifest unchanged).
+function OilShipmentService:SetCargoHaulerService(cargoHaulerService: any)
+	self._cargoHaulerService = cargoHaulerService
+end
+
 function OilShipmentService:SetAutoShipService(autoShipService: any)
 	self._autoShipService = autoShipService
 end
@@ -1324,6 +1334,16 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		dispatchManifestOil[tier] = normalizedManifest[tier] or 0
 	end
 
+	-- Dispatch fee is computed from the player's selected manifest
+	-- (`normalizedManifest`) BEFORE the Cargo Hauler block below doubles
+	-- `shipment.manifest`. This is intentional: the player only pays the
+	-- fee on what they loaded — the Cargo Hauler's grant is "free" extra
+	-- barrels added on top, not a tier of selectable cargo. The frozen
+	-- fee is stored on `shipment.dispatchFee` and every downstream read
+	-- (telemetry, action-result payload, _handleDelivery, recovery
+	-- snapshots) uses the stored value rather than recomputing from
+	-- the (now-doubled) `shipment.manifest` — so the fee can never
+	-- accidentally double when Cargo Hauler is active.
 	local dispatchFee = ShipStats.ComputeDispatchFeeFromManifestOilUnits(normalizedManifest, hudPerBarrelOilUnits())
 	if not self._oilStateService:TrySpendCash(player.UserId, dispatchFee) then
 		self:_sendActionResult(player, false, "ERR_NOT_ENOUGH_CASH", "Not enough cash for dispatch fee.")
@@ -1371,10 +1391,58 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		end)
 	end
 
+	-- Cargo Hauler: same opt-in shape as Security Personnel — client sends
+	-- `useCargoHauler = true` when the player explicitly toggled it on for
+	-- this dispatch. On consume, multiply every tier of `shipment.manifest`
+	-- AND `shipment.totalLoaded` by the service's multiplier (currently ×2).
+	-- The doubled manifest propagates naturally:
+	--   * `_handleDelivery` reads `shipment.manifest[tier]` per-tier when
+	--     crediting the warehouse → delivery doubles.
+	--   * The market payout is computed off the delivered barrels → payout
+	--     doubles in lockstep.
+	--   * Pirate-steal math is `% of manifest`, so absolute barrels stolen
+	--     also doubles. Designed-for: a bigger haul means a juicier target.
+	-- `dispatchManifestOil` is left untouched because it's the HUD oil-unit
+	-- preview tied to what the player physically loaded (their inventory
+	-- only debited 1× — the 2nd × is the Cargo Hauler's grant). Stamping a
+	-- `cargoHauled` flag lets downstream code (telemetry, future shipment
+	-- review screens) tell a normal voyage from a doubled one.
+	local wantCargoHauler = typeof(payload) == "table" and payload.useCargoHauler == true
+	if wantCargoHauler and self._cargoHaulerService and self._cargoHaulerService:TryConsumeForDispatch(player.UserId) then
+		local mult = 2
+		if typeof(self._cargoHaulerService.GetMultiplier) == "function" then
+			local m = self._cargoHaulerService:GetMultiplier()
+			if typeof(m) == "number" and m > 0 then
+				mult = m
+			end
+		end
+		local doubledManifest: { [string]: number } = {}
+		for tier, amount in pairs(shipment.manifest) do
+			doubledManifest[tier] = (typeof(amount) == "number" and amount or 0) * mult
+		end
+		shipment.manifest = doubledManifest
+		shipment.totalLoaded = shipment.totalLoaded * mult
+		;(shipment :: any).cargoHauled = true
+		;(shipment :: any).cargoHaulerMultiplier = mult
+		pcall(function()
+			local remaining = 0
+			if typeof(self._cargoHaulerService.GetOwnedCount) == "function" then
+				remaining = self._cargoHaulerService:GetOwnedCount(player.UserId)
+			end
+			Telemetry.Track(player, "cargo_hauler_consumed", {
+				shipmentId = shipment.shipmentId,
+				multiplier = mult,
+				barrelsBefore = totalRequested,
+				barrelsAfter = shipment.totalLoaded,
+				remainingOwned = remaining,
+			})
+		end)
+	end
+
 	self:_sendActionResult(player, true, "OK", "Shipment dispatched.", {
 		shipmentId = shipment.shipmentId,
 		boatId = boatId,
-		totalLoaded = totalRequested,
+		totalLoaded = shipment.totalLoaded,
 	})
 
 	-- Wrap telemetry in pcall so a Telemetry bug can never block the

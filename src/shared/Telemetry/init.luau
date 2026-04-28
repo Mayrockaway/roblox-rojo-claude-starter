@@ -8,6 +8,7 @@
 --   Telemetry.Economy(player, flowType, amount, currency, reason, item?) -- soft-currency flow
 --   Telemetry.Progression(player, status, path1, path2?, path3?, value?) -- generic progression
 --   Telemetry.Purchase(player, productKind, productId, robuxAmount) -- monetization
+--   Telemetry.SetWalletReader(reader)                              -- bootstrap-time wallet plumbing
 --
 --   Telemetry._getSession(player)   -- debug-only: peek per-player session
 --   Telemetry._resetCircuit()       -- test hook: clear circuit-open state
@@ -109,10 +110,41 @@ local DROP_SUMMARY_INTERVAL_SECONDS = 60
 -- Rolling window for both per-player and per-server rate limits.
 local RATE_WINDOW_SECONDS = 60
 
--- Default `transactionType` string passed to `LogEconomyEvent`. Roblox treats
--- this as a free-text bucket; SPEC §4.5 names "Gameplay" as the canonical
--- bucket for non-IAP currency flows.
+-- `transactionType` strings passed to `LogEconomyEvent`. The Roblox dashboard
+-- buckets transactions by these values (the same names as
+-- `Enum.AnalyticsEconomyTransactionType.{Shop,Gameplay,IAP,TimedReward,ContextualPurchase}`),
+-- so passing arbitrary strings (e.g. the raw event reason `"oil_sold"`) ends up
+-- as an un-bucketed long-tail on the dashboard. We map every known `reason`
+-- prefix (everything before an optional `":"` so dynamic suffixes like
+-- `"boat_unlock:Tier2Boat"` collapse to `boat_unlock`) onto one of the canonical
+-- buckets here. Unknown reasons fall back to `Gameplay` (per SPEC §4.5).
 local DEFAULT_ECONOMY_TRANSACTION_TYPE = "Gameplay"
+local _REASON_TO_TX_TYPE: { [string]: string } = {
+	-- Sources — player gains cash from gameplay
+	oil_sold              = "Gameplay",
+	instant_sold          = "Gameplay",
+	oilman_sold           = "Gameplay",
+	-- Sources — time-gated rewards (daily login etc.)
+	daily_reward_cash     = "TimedReward",
+	-- Sinks — store / shop purchases
+	chunk                 = "Shop",
+	equipment_purchased   = "Shop",
+	warehouse_upgrade     = "Shop",
+	oil_tank_upgrade      = "Shop",
+	boat_unlock           = "Shop",
+	-- Sinks — gameplay-action spends (consumed in-run, not a persistent unlock)
+	airstrike             = "Gameplay",
+	pirate_hire           = "Gameplay",
+	dispatch_fee          = "Gameplay",
+}
+
+local function _resolveTransactionType(reason: string): string
+	-- `reason` may carry a `prefix:suffix` form (e.g. `boat_unlock:Tier2Boat`,
+	-- `oil_tank_upgrade:crude`). Bucket by the prefix alone so the dashboard
+	-- doesn't fragment one bucket across every suffix value.
+	local prefix = string.match(reason, "^[^:]+") or reason
+	return _REASON_TO_TX_TYPE[prefix] or DEFAULT_ECONOMY_TRANSACTION_TYPE
+end
 
 --==============================================================================
 -- Module
@@ -139,6 +171,15 @@ local _ringBuffer: { { eventName: string, at: number, payload: EventPayload } } 
 local _ringBufferIndex = 0
 local _unknownEventWarned: { [string]: boolean } = {}
 local _bootstrapped = false
+
+-- Optional wallet getter, registered by server bootstrap once `OilStateService`
+-- is `:Init`-ed. `Telemetry.Economy` calls this with `(player, currency)` to
+-- resolve the post-transaction balance for `LogEconomyEvent`'s required
+-- `endingBalance` argument. We keep this as a registered callback (not a
+-- direct require) because `OilStateService` already requires `Shared.Telemetry`
+-- — a back-require would form a cycle.
+type WalletReader = (player: Player, currency: string) -> number?
+local _walletReader: WalletReader? = nil
 
 --==============================================================================
 -- Helpers
@@ -386,9 +427,11 @@ local function _fanOutRoblox(
 				nil :: any -- customFields (3-field-Enum-keyed only; full payload goes to GA)
 			)
 		elseif kind == "economy" then
-			-- SPEC §4.5 — `endingBalance` is required by the API. We pass
-			-- `0` until PR 5 plumbs the per-player wallet into the
-			-- decorator (TODO: read from `OilStateService:GetCash`).
+			-- SPEC §4.5 — `endingBalance` is required by the API.
+			-- `Telemetry.Economy` reads the per-player wallet via the
+			-- `_walletReader` registered at server bootstrap and stamps
+			-- `dispatch.endingBalance` before we get here; a `0` fallback
+			-- means no reader was registered for this currency.
 			AnalyticsService:LogEconomyEvent(
 				player,
 				dispatch.flowTypeEnum,
@@ -577,9 +620,14 @@ function Telemetry.Funnel(
 end
 
 --- Soft-currency flow — fans out to Roblox `LogEconomyEvent` and GA
---- `resource` category. `endingBalance` is passed as `0` until per-player
---- wallet plumbing lands in PR 5; the Roblox dashboard treats `0` as
---- "unknown" rather than a hard error.
+--- `resource` category. `endingBalance` is read from the registered
+--- `_walletReader` (see `Telemetry.SetWalletReader`); passes `0` if no
+--- reader is registered or it returns `nil` for the requested currency
+--- — the Roblox dashboard treats `0` as "unknown" rather than a hard error.
+--- `transactionType` is mapped from `reason` via `_resolveTransactionType`
+--- so the dashboard buckets transactions onto the canonical
+--- `Enum.AnalyticsEconomyTransactionType` values
+--- (`Shop`/`Gameplay`/`TimedReward`/…) instead of every raw `reason` string.
 function Telemetry.Economy(
 	player: Player,
 	flowType: EconomyFlow,
@@ -601,6 +649,16 @@ function Telemetry.Economy(
 	if item then
 		properties.item = item
 	end
+	local endingBalance: number = 0
+	if _walletReader then
+		local ok, balance = pcall(_walletReader, player, currency)
+		if ok and typeof(balance) == "number" then
+			endingBalance = balance
+		end
+	end
+	-- Mirror the resolved balance onto `properties` so the GA payload (and
+	-- the Studio debug print) carries it alongside the amount/flow fields.
+	properties.endingBalance = endingBalance
 	-- Use `reason` as the event name so callers line up with the catalog
 	-- rows in SPEC §6.4 (`oil_sold`, `dispatch_fee`, `equipment_purchased`, …).
 	local flowEnum = (Enum :: any).AnalyticsEconomyFlowType[flowType]
@@ -609,10 +667,20 @@ function Telemetry.Economy(
 		flowTypeEnum = flowEnum,
 		currency = currency,
 		amount = amount,
-		endingBalance = 0,
-		transactionType = reason,
+		endingBalance = endingBalance,
+		transactionType = _resolveTransactionType(reason),
 		itemSku = item,
 	})
+end
+
+--- Register the wallet getter used by `Telemetry.Economy` to resolve
+--- `endingBalance` for `LogEconomyEvent`. Wired once at server bootstrap
+--- (`src/server/init.server.luau`) after `OilStateService:Init` runs;
+--- structured as a registered callback rather than a direct require because
+--- `OilStateService` already requires `Shared.Telemetry`. Calling this a
+--- second time replaces the previous reader.
+function Telemetry.SetWalletReader(reader: WalletReader?)
+	_walletReader = reader
 end
 
 --- Generic progression event — fans out to Roblox `LogProgressionEvent`

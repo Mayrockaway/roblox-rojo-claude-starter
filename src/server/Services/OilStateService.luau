@@ -16,6 +16,8 @@ local ShipUpgradeConfig = require(Shared:WaitForChild("Config"):WaitForChild("Sh
 local ShipProfileMigration = require(Shared:WaitForChild("Config"):WaitForChild("ShipProfileMigration"))
 local OilTankConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilTankConfig"))
 local FtueConfig = require(Shared:WaitForChild("Config"):WaitForChild("FtueConfig"))
+local SessionEconomicsConfig = require(Shared:WaitForChild("Config"):WaitForChild("SessionEconomicsConfig"))
+local SessionEconomics = require(Shared:WaitForChild("Utils"):WaitForChild("SessionEconomics"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local DevLog = require(Shared:WaitForChild("DevLog"))
 local Telemetry = require(Shared:WaitForChild("Telemetry"))
@@ -158,8 +160,12 @@ end
 
 local function buildDefaultPersisted()
 	return {
-		--- Profile version. Bumped to **11** by Step 7 of the boat-progression
-		--- refactor: v11 retires the legacy boat ids (`DefaultTanker`,
+		--- Profile version. Bumped to **12** — adds `economicsSessions` for
+		--- rolling net-cash/session-time windows that feed **dynamic Robux cash
+		--- pack** sizing (`SessionEconomicsConfig` / `SessionEconomics`). v11
+		--- history below still applies per field.
+		---
+		--- Earlier: **11** — Step 7 boat refactor: v11 retires legacy boat ids (`DefaultTanker`,
 		--- `Ship3Skin`, `Ship4Skin`, `Ship5Skin`, `WhaleSkin`) in favor of
 		--- the consolidated `Tier1Boat`..`Tier10Boat` cash chain plus
 		--- `PirateShip` / `Ducky` / `Moby` Robux boats. The v10 → v11
@@ -177,7 +183,7 @@ local function buildDefaultPersisted()
 		---     fields.
 		---   * 7 → 8 (Step 3): data-driven starter set.
 		--- v < 8 backfill still runs — see `_applyPersistedIntoState`.
-		version = 11,
+		version = 12,
 		cash = initialStartingCash(),
 		ftueEscortShipmentRemaining = initialFtueEscortShipmentRemaining(),
 		ftueDispatchCashGranted = false,
@@ -311,6 +317,10 @@ local function buildDefaultPersisted()
 		--- for read/write, and `FtueService` for the step-change capture +
 		--- character-spawn restore wiring.
 		ftueLastSpawn = nil :: { x: number, y: number, z: number, yaw: number, plotId: number? }?,
+		--- Completed session economics snapshots (organic net ≠ Robux-direct cash).
+		--- See `OilStateService:_finalizeEconomicsSessionOnDrop`,
+		--- `_:NotifyEconomicsRobuxDirectCashGrant`, `:GetDynamicCurrencyPackGrant`.
+		economicsSessions = {} :: { { netOrganic: number, sessionSeconds: number, endedAt: number } },
 	}
 end
 
@@ -1575,6 +1585,19 @@ function OilStateService:AddCash(userId: number, amount: number, opts: { skipMul
 	return true, value
 end
 
+--- Read the player's current cash balance. Returns `0` if no oil state is
+--- loaded for the user (e.g. pre-`Init`, mid-bootstrap, or after Stop).
+--- Used by `Shared.Telemetry`'s wallet reader to populate the
+--- `endingBalance` argument of `LogEconomyEvent` — wire-up happens in
+--- `src/server/init.server.luau` once `OilStateService:Init` returns.
+function OilStateService:GetCash(userId: number): number
+	local state = self._statesByUserId[userId]
+	if not state then
+		return 0
+	end
+	return state.cash or 0
+end
+
 -- Auto-place a T1 pump at the center tile (T33) of a section.
 -- This pump is permanent and can only be upgraded, not removed.
 function OilStateService:_autoPlaceCenterPump(userId: number, state: any, chunk: any, groundType: any)
@@ -2763,6 +2786,7 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		end
 		-- Always bind the current Workspace plot Model (same plotId can be a new instance after rejoin).
 		existing.plot = plot
+		self:_economicsBeginSessionTracking(existing)
 		self:_invokeStateTimersReady(userId)
 		return
 	end
@@ -2908,6 +2932,10 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		--- ClaimPad teleport on the **first** character spawn after rejoin and on
 		--- in-session FTUE death-respawns.
 		ftueLastSpawn = nil :: { x: number, y: number, z: number, yaw: number, plotId: number? }?,
+		economicsSessions = {} :: { { netOrganic: number, sessionSeconds: number, endedAt: number } },
+		economicsSessionJoinWallTime = nil :: number?,
+		economicsSessionBaselineCash = nil :: number?,
+		economicsExcludedRobuxCashThisSession = 0,
 	}
 
 	local persisted = self:_loadPersistedProfile(userId)
@@ -2921,7 +2949,7 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		pcall(function()
 			local plr = Players:GetPlayerByUserId(userId)
 			Telemetry.Track(plr, "first_join", {
-				oilProfileVersionAtCreate = 10,
+				oilProfileVersionAtCreate = 12,
 			})
 		end)
 	end
@@ -2970,6 +2998,7 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 	end
 
 	self._statesByUserId[userId] = state
+	self:_economicsBeginSessionTracking(state)
 	self:_invokeStateTimersReady(userId)
 
 	-- Replicate Oil Heaven attributes to the Player so client UI can react.
@@ -3880,11 +3909,164 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		state.oilHeavenState = (persisted :: any).oilHeavenState
 	end
 
+	-- ─── Rolling session economics (`economicsSessions`, v12+) ─────────────
+	do
+		(state :: any).economicsSessions = {}
+		local rawEco = (persisted :: any).economicsSessions
+		local maxEcoRows = tonumber(SessionEconomicsConfig.MAX_SESSION_ROWS)
+		maxEcoRows = if typeof(maxEcoRows) == "number" and maxEcoRows >= 2 then math.floor(maxEcoRows) else 10
+		if typeof(rawEco) == "table" then
+			local rows = rawEco :: { any }
+			local count = #rows
+			local startCopy = math.max(1, count - maxEcoRows + 1)
+			for idx = startCopy, count do
+				local row = rows[idx]
+				if typeof(row) == "table" then
+					local net = tonumber(row.netOrganic)
+					local sec = tonumber(row.sessionSeconds)
+					local ended = tonumber(row.endedAt)
+					if typeof(net) == "number" and typeof(sec) == "number" and sec >= 0 then
+						table.insert((state :: any).economicsSessions, {
+							netOrganic = math.floor(net + 0.5),
+							sessionSeconds = math.max(0, math.floor(sec)),
+							endedAt = if typeof(ended) == "number" then math.floor(ended) else os.time(),
+						})
+					end
+				end
+			end
+		end
+	end
+
 	if (state :: any).ftueCompleted == true then
 		if self:_clearFtuePlacementNoSellback(state) then
 			self:_markDirty(state.ownerUserId)
 		end
 	end
+end
+
+--- Start per-join economics window (**not persisted**) — captures baseline cash +
+--- clock so `PlayerRemoving` can append one organic `{ netOrganic, seconds }`
+--- row (Robux-direct cash subtracted separately).
+function OilStateService:_economicsBeginSessionTracking(state: any)
+	if typeof(state) ~= "table" then
+		return
+	end
+	if typeof(state.economicsSessionJoinWallTime) == "number" then
+		return
+	end
+	if typeof(state.economicsSessions) ~= "table" then
+		state.economicsSessions = {}
+	end
+	state.economicsSessionJoinWallTime = os.time()
+	state.economicsSessionBaselineCash = floorPositive(state.cash or 0)
+	state.economicsExcludedRobuxCashThisSession = 0
+end
+
+--- Append a trailing session economics row + trim (`MAX_SESSION_ROWS`). Clears
+--- runtime session trackers so the profile never persists join baselines.
+function OilStateService:_economicsFinalizeSessionOnDrop(state: any)
+	if typeof(state) ~= "table" then
+		return
+	end
+	local joinWall = state.economicsSessionJoinWallTime
+	local baseline = state.economicsSessionBaselineCash
+	state.economicsSessionJoinWallTime = nil :: any
+	state.economicsSessionBaselineCash = nil :: any
+	if typeof(joinWall) ~= "number" or typeof(baseline) ~= "number" then
+		return
+	end
+
+	local excluded = floorPositive(state.economicsExcludedRobuxCashThisSession or 0)
+	state.economicsExcludedRobuxCashThisSession = 0
+
+	local endWall = os.time()
+	local seconds = math.max(0, endWall - math.floor(joinWall))
+	local gross = floorPositive(state.cash) - floorPositive(baseline)
+	local organic = gross - excluded
+
+	local minSec =
+		math.floor(tonumber(SessionEconomicsConfig.MIN_SESSION_SECONDS_TO_RECORD) or 45)
+	minSec = math.max(10, math.min(minSec, 900))
+	if seconds < minSec and math.abs(organic) < 250 then
+		return
+	end
+
+	local maxEcoRows =
+		math.clamp(math.floor(tonumber(SessionEconomicsConfig.MAX_SESSION_ROWS) or 10), 3, 30)
+	table.insert(state.economicsSessions, {
+		netOrganic = math.floor(organic + 0.5),
+		sessionSeconds = math.max(seconds, 1),
+		endedAt = endWall,
+	})
+	local ecoRows = state.economicsSessions
+	while typeof(ecoRows) == "table" and #ecoRows > maxEcoRows do
+		table.remove(ecoRows, 1)
+	end
+	self:_markDirty(state.ownerUserId :: any)
+end
+
+--- Exclude Robux-funded **direct cash** grants from rolling organic net so buying
+--- a Large pack yesterday doesn't inflate tomorrow's inferred $/hour. Call for
+--- every `MonetizationService` `_grantCurrency` path (dynamic + flat).
+function OilStateService:NotifyEconomicsRobuxDirectCashGrant(userId: number, grantedAmount: number?)
+	if typeof(userId) ~= "number" then
+		return
+	end
+	if typeof(grantedAmount) ~= "number" or grantedAmount <= 0 then
+		return
+	end
+	local st = self._statesByUserId[userId]
+	if typeof(st) ~= "table" then
+		return
+	end
+	st.economicsExcludedRobuxCashThisSession = floorPositive(
+		st.economicsExcludedRobuxCashThisSession or 0
+	) + math.floor(grantedAmount)
+end
+
+--- Returns **post-multiplier / post-safety** dollar amount for `"small"|"medium"|"large"` packs.
+function OilStateService:GetDynamicCurrencyPackGrant(userId: number, tier: string): number
+	local tierNorm = ""
+	if tier == "small" or tier == "medium" or tier == "large" then
+		tierNorm = tier
+	else
+		return 0 :: any
+	end
+	local state = self._statesByUserId[userId]
+	if typeof(state) ~= "table" then
+		local fb = tonumber(SessionEconomicsConfig.FALLBACK_NET_CASH_PER_HOUR) or 15_000
+		return SessionEconomics.cashGrantForTier(fb, tierNorm)
+	end
+	local cashFloor = floorPositive(state.cash or 0)
+	local hourly = SessionEconomics.estimateNetCashPerHour(state.economicsSessions or {}, cashFloor)
+	return SessionEconomics.cashGrantForTier(hourly, tierNorm)
+end
+
+--- Client preview blob for HUD copy — never trust `grant` literals from Studio.
+function OilStateService:GetEconomicsCashPackPreview(userId: number)
+	local state = self._statesByUserId[userId]
+	if typeof(state) ~= "table" then
+		local hourly = SessionEconomics.estimateNetCashPerHour({}, 0 :: any)
+		return {
+			ok = false,
+			code = "ERR_NO_STATE",
+			rollingNetCashPerHour = hourly,
+			smallCash = SessionEconomics.cashGrantForTier(hourly, "small"),
+			mediumCash = SessionEconomics.cashGrantForTier(hourly, "medium"),
+			largeCash = SessionEconomics.cashGrantForTier(hourly, "large"),
+		}
+	end
+	local cashFloor = floorPositive(state.cash or 0)
+	local hourly =
+		SessionEconomics.estimateNetCashPerHour(state.economicsSessions or {}, cashFloor)
+	return {
+		ok = true,
+		code = nil,
+		rollingNetCashPerHour = hourly,
+		smallCash = SessionEconomics.cashGrantForTier(hourly, "small"),
+		mediumCash = SessionEconomics.cashGrantForTier(hourly, "medium"),
+		largeCash = SessionEconomics.cashGrantForTier(hourly, "large"),
+	}
 end
 
 function OilStateService:_markDirty(userId: number)
@@ -3897,6 +4079,10 @@ function OilStateService:_flushAndDropUser(userId: number)
 	self._statesByUserId[userId] = nil
 	self._dirtyByUserId[userId] = nil
 		return
+	end
+	local econState = self._statesByUserId[userId]
+	if econState then
+		self:_economicsFinalizeSessionOnDrop(econState)
 	end
 	-- Always persist latest state when removing session data (PlayerRemoving / plot release),
 	-- even if `_markDirty` never ran after the last successful autosave.
@@ -4194,20 +4380,31 @@ function OilStateService:_serializeState(state)
 
 	-- (drills-only refactor) Removed: pipes / drums serialization + nextProspectId / nextPipeId / nextDrumId.
 	persisted.nextDrillId = state.nextDrillId
-	-- Bumped 10 → 11 by Step 7 of the boat-progression refactor: the
-	-- legacy boat ids (`DefaultTanker`, `Ship3Skin`, `Ship4Skin`,
-	-- `Ship5Skin`, `WhaleSkin`) were retired in favor of the consolidated
-	-- `Tier1Boat`..`Tier10Boat` cash chain plus three Robux ids
-	-- (`PirateShip`, `Ducky`, `Moby`). Reads run every persisted boat id
-	-- through `BoatCatalog.RemapLegacyBoatId` BEFORE catalog gates so
-	-- Robux purchases survive; writes are always v11 + the new ids.
+	-- v12+: `economicsSessions` for dynamic Robux cash-pack sizing.
+	--
+	-- v11: Step 7 boat refactor — consolidated `Tier1Boat`..`Tier10Boat` ids.
 	-- Earlier history:
 	--   * 9 → 10 (Step 6): `shipSkinId` → `equippedBoatId`,
 	--     `ownedShipSkinIds` → `ownedBoatIds`.
 	--   * 8 → 9 (Step 4): deleted the `shipSpeedLevel` /
 	--     `shipCapacityLevel` + `ftueDocksUpgradeSubStep` fields.
 	--   * 7 → 8 (Step 3): data-driven starter set.
-	persisted.version = 11
+	persisted.economicsSessions = {}
+	if typeof((state :: any).economicsSessions) == "table" then
+		for _, row in ipairs((state :: any).economicsSessions :: { any }) do
+			if typeof(row) == "table" then
+				table.insert((persisted :: any).economicsSessions, {
+					netOrganic = math.floor((tonumber((row :: any).netOrganic) or 0) + 0.5),
+					sessionSeconds = math.max(
+						0,
+						math.floor(tonumber((row :: any).sessionSeconds) or 0)
+					),
+					endedAt = math.floor(tonumber((row :: any).endedAt) or os.time()),
+				})
+			end
+		end
+	end
+	persisted.version = 12
 
 	local activeDrillIds: { number } = {}
 	local seenActiveDrill: { [number]: boolean } = {}

@@ -13,6 +13,12 @@ local Workspace = game:GetService("Workspace")
 
 local StraitEventPlaytestBanner = require(script.Parent:WaitForChild("UI"):WaitForChild("StraitEventPlaytestBanner"))
 local HitContractConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("HitContractConfig"))
+--- Read the Robux variant price from the shared catalog so the per-target
+--- "R$X" button label stays in sync with `MonetizationCatalog`. Server is
+--- still the authority on prompt validity (`SetPromptPrecondition`) and
+--- receipts (`SetConsumableHandler`); this is display-only.
+local MonetizationCatalog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("MonetizationCatalog"))
+local PIRATE_HIRE_ROBUX_ITEM_ID = "consumable.pirate_hire_x1"
 local UiSfx = require(script.Parent:WaitForChild("UiSfx")) :: {
 	playPirateHitContract: () -> (),
 }
@@ -51,6 +57,12 @@ local COLOR_PIRATE_HOVER = Color3.fromRGB(255, 205, 80)
 local COLOR_PIRATE_DIM = Color3.fromRGB(210, 210, 210)
 local COLOR_PIRATE_MONEY = Color3.fromRGB(80, 220, 80)
 local COLOR_PIRATE_RED = Color3.fromRGB(255, 80, 80)
+-- Purple — used to visually flag every Robux-payment option in the dialog
+-- (numbered top-level "Hire with Robux" line + the per-target Robux cost
+-- on the target list). Distinct from `COLOR_PIRATE_MONEY` (green = cash)
+-- so the two payment paths read as different at a glance.
+local COLOR_PIRATE_ROBUX = Color3.fromRGB(170, 130, 255)
+local COLOR_PIRATE_ROBUX_HOVER = Color3.fromRGB(195, 165, 255)
 
 local function formatCooldownMmSs(totalSeconds: number): string
 	local s = math.max(0, math.floor(totalSeconds))
@@ -148,8 +160,23 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 			obj.Active = true
 			obj.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 			obj.BackgroundTransparency = 0.99
-			obj.MouseEnter:Connect(function() obj.TextColor3 = COLOR_PIRATE_HOVER; obj.BackgroundTransparency = 0.35 end)
-			obj.MouseLeave:Connect(function() obj.TextColor3 = COLOR_PIRATE_IDLE; obj.BackgroundTransparency = 0.99 end)
+			-- Hover/leave swap. Captures the *current* TextColor3 on each
+			-- MouseEnter so a caller that sets a custom resting color after
+			-- `blockyLine` returns (cash green, robux purple, back gray) gets
+			-- restored on MouseLeave instead of the legacy hardcoded white.
+			-- Re-capturing on every MouseEnter (rather than once at create)
+			-- means a caller can change the resting color any time and the
+			-- next hover/leave cycle picks it up automatically.
+			local restingColor = COLOR_PIRATE_IDLE
+			obj.MouseEnter:Connect(function()
+				restingColor = obj.TextColor3
+				obj.TextColor3 = COLOR_PIRATE_HOVER
+				obj.BackgroundTransparency = 0.35
+			end)
+			obj.MouseLeave:Connect(function()
+				obj.TextColor3 = restingColor
+				obj.BackgroundTransparency = 0.99
+			end)
 			local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = obj
 		else
 			obj = Instance.new("TextLabel")
@@ -256,32 +283,79 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 		if typeof(cdCfg) ~= "number" then
 			cdCfg = 120
 		end
+		-- Single flavor block with both payment-method rules side-by-side, so
+		-- the player learns the relevant differences before they pick a
+		-- numbered option. Cash = anti-spam cooldown applies; Robux = no
+		-- cooldown (that's the headline reason to pay Robux, made explicit).
+		-- RichText so the highlights (cash green, robux purple) match the
+		-- numbered button colors below — the two reinforce each other.
+		local function rgbHex(c: Color3): string
+			return string.format("#%02X%02X%02X",
+				math.floor(c.R * 255 + 0.5),
+				math.floor(c.G * 255 + 0.5),
+				math.floor(c.B * 255 + 0.5)
+			)
+		end
 		local cooldownHint = blockyLine(
 			"CooldownHint",
-			string.format("Same captain twice? Wait %s between hires.", formatCooldownMmSs(cdCfg)),
+			string.format(
+				"<font color=\"%s\">Cash hires</font> share a %s same-target cooldown.\n<font color=\"%s\">Robux hires</font> have no cooldown.",
+				rgbHex(COLOR_PIRATE_MONEY),
+				formatCooldownMmSs(cdCfg),
+				rgbHex(COLOR_PIRATE_ROBUX)
+			),
 			3,
 			false,
 			root
 		)
 		cooldownHint.TextSize = 20
-		cooldownHint.Size = UDim2.new(1, 0, 0, 52)
+		cooldownHint.Size = UDim2.new(1, 0, 0, 60)
 		cooldownHint.TextWrapped = true
+		cooldownHint.RichText = true
 		cooldownHint.TextColor3 = COLOR_PIRATE_DIM
-		local hireBtn = blockyLine("HireButton", string.format("Hire a hit ($%d)", uiState.hitCost), 4, true, root)
+
+		-- Top-level numbered menu — two clickable response options. The "1." /
+		-- "2." prefix is the visible differentiator the player asked for so
+		-- clickable lines are obvious vs descriptive flavor text above.
+		local robuxItem = MonetizationCatalog.GetItem(PIRATE_HIRE_ROBUX_ITEM_ID)
+		local robuxPrice = (robuxItem and tonumber(robuxItem.robuxPrice)) or 0
+		local hireCashBtn = blockyLine(
+			"HireCashButton",
+			string.format("1. Hire with Cash ($%d)", uiState.hitCost),
+			4, true, root
+		)
+		-- Setting `TextColor3` here is enough — `blockyLine`'s MouseLeave
+		-- now reads the current TextColor3 on each MouseEnter and restores
+		-- it on MouseLeave, so the resting color (green for cash, purple
+		-- for robux below) survives the hover/leave cycle automatically.
+		-- No per-button MouseLeave override needed.
+		hireCashBtn.TextColor3 = COLOR_PIRATE_MONEY
+		local hireRobuxLabel = if robuxPrice > 0
+			then string.format("2. Hire with Robux (R$%d)", robuxPrice)
+			else "2. Hire with Robux (R$)"
+		local hireRobuxBtn = blockyLine("HireRobuxButton", hireRobuxLabel, 5, true, root)
+		hireRobuxBtn.TextColor3 = COLOR_PIRATE_ROBUX
+
 		if uiState.freeHitTokens > 0 then
-			local freeLabel = blockyLine("FreeTokens", string.format("  Free tokens: %d", uiState.freeHitTokens), 5, false, root)
+			local freeLabel = blockyLine("FreeTokens", string.format("  Free tokens: %d", uiState.freeHitTokens), 6, false, root)
 			freeLabel.TextSize = 22; freeLabel.Size = UDim2.new(1, 0, 0, 28); freeLabel.TextColor3 = COLOR_PIRATE_MONEY
 		end
 		local backBtn = blockyLine("BackButton", "back", 10, true, root)
 		backBtn.TextSize = 28; backBtn.TextColor3 = COLOR_PIRATE_DIM
-		backBtn.MouseLeave:Connect(function() backBtn.TextColor3 = COLOR_PIRATE_DIM end)
 		backBtn.MouseButton1Click:Connect(closeUi)
 
-		hireBtn.MouseButton1Click:Connect(function()
+		--- Hide the top-level menu, fetch targets, and render rows for the
+		--- chosen payment mode. Each row carries a single click handler tied
+		--- to that mode (cash → fire `hire` action; robux → fire
+		--- `promptHireRobux` action). Per-target cooldown only applies in
+		--- cash mode — robux rows ignore it (the Robux purchase is the
+		--- "skip cooldown" feature).
+		local function showTargetList(mode: string)
 			header.Text = "Pick a target:"; header.TextSize = 38
 			pitchLabel.Visible = false
 			cooldownHint.Visible = false
-			hireBtn.Visible = false
+			hireCashBtn.Visible = false
+			hireRobuxBtn.Visible = false
 			backBtn.Visible = false
 			-- Wipe rows + the previous scroll container so re-opening the
 			-- target list doesn't stack stale results underneath.
@@ -353,46 +427,76 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 								tBtn.TextSize = 26; tBtn.Size = UDim2.new(1, 0, 0, TARGET_ROW_HEIGHT)
 								local remInit =
 									math.max(0, math.floor(tonumber((target :: any).hireCooldownRemainingSeconds) or 0))
+
+								-- Single per-row cost label, color-coded by the mode the
+								-- player picked at the top-level menu. Cash mode shows
+								-- "$10,000" in green (or a MM:SS countdown if the
+								-- same-target cooldown is active); Robux mode shows
+								-- "R$79" in purple, never on cooldown — that's the
+								-- whole point of the Robux path.
 								local costLabel = Instance.new("TextLabel")
-								costLabel.Size = UDim2.new(0.4, 0, 1, 0); costLabel.Position = UDim2.new(0.6, 0, 0, 0)
+								costLabel.Size = UDim2.new(0.42, 0, 1, 0); costLabel.Position = UDim2.new(0.58, 0, 0, 0)
 								costLabel.BackgroundTransparency = 1
 								costLabel.Font = Enum.Font.LuckiestGuy; costLabel.TextSize = 22
 								costLabel.TextStrokeTransparency = 0; costLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 								costLabel.TextXAlignment = Enum.TextXAlignment.Right; costLabel.Parent = tBtn
-								local blockedByCooldown = remInit > 0
-								if remInit > 0 then
-									costLabel.Text = formatCooldownMmSs(remInit)
-									costLabel.TextColor3 = COLOR_PIRATE_DIM
-									tBtn.Active = false
-									tBtn.AutoButtonColor = false
-									task.spawn(function()
-										local r = remInit
-										local btn, lbl = tBtn, costLabel
-										while r > 0 and btn.Parent do
-											lbl.Text = formatCooldownMmSs(r)
-											task.wait(1)
-											r -= 1
+
+								local blockedByCooldown = false
+								if mode == "cash" then
+									-- Cash mode: cooldown gate applies. If the row's
+									-- cooldown timer is non-zero, paint MM:SS in dim
+									-- and disable the click; spawn a per-second tick
+									-- that flips back to "$X,XXX" + clickable when
+									-- the timer reaches 0.
+									if remInit > 0 then
+										blockedByCooldown = true
+										costLabel.Text = formatCooldownMmSs(remInit)
+										costLabel.TextColor3 = COLOR_PIRATE_DIM
+										tBtn.Active = false
+										tBtn.AutoButtonColor = false
+										task.spawn(function()
+											local r = remInit
+											local btn, lbl = tBtn, costLabel
+											while r > 0 and btn.Parent do
+												lbl.Text = formatCooldownMmSs(r)
+												task.wait(1)
+												r -= 1
+											end
+											if btn.Parent then
+												blockedByCooldown = false
+												btn.Active = true
+												btn.AutoButtonColor = false
+												lbl.Text = string.format("$%d", uiState.hitCost)
+												lbl.TextColor3 = COLOR_PIRATE_MONEY
+											end
+										end)
+									else
+										costLabel.Text = string.format("$%d", uiState.hitCost)
+										costLabel.TextColor3 = COLOR_PIRATE_MONEY
+									end
+									tBtn.MouseButton1Click:Connect(function()
+										if blockedByCooldown then
+											return
 										end
-										if btn.Parent then
-											blockedByCooldown = false
-											btn.Active = true
-											btn.AutoButtonColor = false
-											lbl.Text = string.format("$%d", uiState.hitCost)
-											lbl.TextColor3 = COLOR_PIRATE_MONEY
-										end
+										requestPirateHireAction:FireServer({ action = "hire", victimUserId = userId })
+										header.Text = "Pirates dispatched!"; header.TextSize = 32
+										task.delay(1.5, closeUi)
 									end)
 								else
-									costLabel.Text = string.format("$%d", uiState.hitCost)
-									costLabel.TextColor3 = COLOR_PIRATE_MONEY
+									-- Robux mode: no cooldown gate — the row is always
+									-- clickable. Click fires `promptHireRobux`, server
+									-- stamps the pending target and opens the Roblox
+									-- prompt. Don't close the dialog: the player still
+									-- has to confirm/cancel the prompt.
+									costLabel.Text = if robuxPrice > 0
+										then string.format("R$%d", robuxPrice)
+										else "R$"
+									costLabel.TextColor3 = COLOR_PIRATE_ROBUX
+									tBtn.MouseButton1Click:Connect(function()
+										requestPirateHireAction:FireServer({ action = "promptHireRobux", victimUserId = userId })
+										header.Text = "Opening Robux prompt…"; header.TextSize = 28
+									end)
 								end
-								tBtn.MouseButton1Click:Connect(function()
-									if blockedByCooldown then
-										return
-									end
-									requestPirateHireAction:FireServer({ action = "hire", victimUserId = userId })
-									header.Text = "Pirates dispatched!"; header.TextSize = 32
-									task.delay(1.5, closeUi)
-								end)
 								order += 1
 							end
 						end
@@ -405,8 +509,17 @@ function PirateHireClient.connect(deps: PirateHireDeps, remotes: PirateHireRemot
 
 			local hireBack = blockyLine("HireBack", "back", 99, true, root)
 			hireBack.TextSize = 24; hireBack.TextColor3 = COLOR_PIRATE_DIM
-			hireBack.MouseLeave:Connect(function() hireBack.TextColor3 = COLOR_PIRATE_DIM end)
 			hireBack.MouseButton1Click:Connect(function() closeUi(); openUi(payload) end)
+		end
+
+		-- Top-level menu wiring: numbered options route to the same target
+		-- list, parametrized by payment mode. Both close-then-reopen via
+		-- `hireBack` so the back-stack stays simple (one level deep).
+		hireCashBtn.MouseButton1Click:Connect(function()
+			showTargetList("cash")
+		end)
+		hireRobuxBtn.MouseButton1Click:Connect(function()
+			showTargetList("robux")
 		end)
 	end
 

@@ -15,6 +15,7 @@ local remoteFunctionNames = {
 	[RemoteNames.RequestPirateHireTargets] = true,
 	[RemoteNames.RequestArmyGeneralTargets] = true,
 	[RemoteNames.RequestMonetizationCatalog] = true,
+	[RemoteNames.RequestCurrencyPackPreview] = true,
 }
 
 function RemoteService:Init()

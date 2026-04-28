@@ -119,15 +119,37 @@ local function collectVeinCrateStaticUris(): { string }
 	return out
 end
 
+--- Every authored ScreenGui under `StarterGui` whose Image / Sound assets we
+--- want pre-warmed before the player ever opens the panel. `includeDescendants
+--- = true` makes the loader walk every descendant and add each ImageLabel /
+--- ImageButton / Sound to the `ContentProvider:PreloadAsync` target list, so
+--- by the time the panel opens its first frame, every icon already lives in
+--- the texture cache (no first-open pop-in). Each entry is `optional = true`
+--- because Studio places may strip individual panels for testing — a missing
+--- one adds to `missingOptional` rather than failing the boot.
+---
+--- Add new ScreenGuis here as you author them. Mirror the live
+--- `game.StarterGui` tree — anything not listed here will lazy-load on first
+--- panel open and the player will see image flicker on the very first
+--- interaction.
 local COMMON_STARTER_GUI_ENTRIES: { InstanceEntry } = {
 	{ service = "StarterGui", segments = { "HUD" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "SellOilPanelGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "ShipOilPanelGui" }, includeDescendants = true, optional = true },
+	{ service = "StarterGui", segments = { "ShipOilInstantSellGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "FleetPanelGui" }, includeDescendants = true, optional = true },
+	{ service = "StarterGui", segments = { "ShopPanelGui" }, includeDescendants = true, optional = true },
+	{ service = "StarterGui", segments = { "RobuxShop" }, includeDescendants = true, optional = true },
+	{ service = "StarterGui", segments = { "RebirthPanelGui" }, includeDescendants = true, optional = true },
+	{ service = "StarterGui", segments = { "RebirthShopPanelGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "SettingsPanelGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "FTUEDialogueGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "OilPriceInfoPanelGui" }, includeDescendants = true, optional = true },
 	{ service = "StarterGui", segments = { "StraitInfoPanelGui" }, includeDescendants = true, optional = true },
+	{ service = "StarterGui", segments = { "StraitControlPanelGui" }, includeDescendants = true, optional = true },
+	{ service = "StarterGui", segments = { "Daily" }, includeDescendants = true, optional = true },
+	{ service = "StarterGui", segments = { "AutoShipPriorityGui" }, includeDescendants = true, optional = true },
+	{ service = "StarterGui", segments = { "GlobalEventBannerGui" }, includeDescendants = true, optional = true },
 }
 
 local COMMON_GAMEPLAY_TEMPLATE_ENTRIES: { InstanceEntry } = {

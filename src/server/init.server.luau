@@ -31,8 +31,10 @@ RemoteService:Init()
 -- already-present players. Required here (early, side-effect only) so the
 -- hooks are live before the first PlayerAdded fires; the returned table is
 -- consumed by service code that wants to call `Telemetry.Track(...)` etc.
--- See `docs/features/telemetry/SPEC.md` §13 PR 3 / §9.1.
-require(Shared:WaitForChild("Telemetry"))
+-- We also bind a wallet reader below (after `OilStateService:Init`) so
+-- `Telemetry.Economy` can stamp the post-transaction cash balance onto
+-- `LogEconomyEvent` — see `docs/features/telemetry/SPEC.md` §13 PR 3 / §9.1.
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local StraitStateService = require(serviceFolder:WaitForChild("StraitStateService"))
 local PlotService = require(serviceFolder:WaitForChild("PlotService"))
@@ -59,6 +61,7 @@ local HitContractService = require(serviceFolder:WaitForChild("HitContractServic
 local ArmyGeneralService = require(serviceFolder:WaitForChild("ArmyGeneralService"))
 local FlotsamService = require(serviceFolder:WaitForChild("FlotsamService"))
 local SecurityPersonnelService = require(serviceFolder:WaitForChild("SecurityPersonnelService"))
+local CargoHaulerService = require(serviceFolder:WaitForChild("CargoHaulerService"))
 local AutoShipService = require(serviceFolder:WaitForChild("AutoShipService"))
 local KillZoneService = require(serviceFolder:WaitForChild("KillZoneService"))
 local LeaderboardService = require(serviceFolder:WaitForChild("LeaderboardService"))
@@ -123,6 +126,18 @@ LeaderboardService:Init()
 StraitStateService:Init(RemoteService)
 PlotService:Init()
 OilStateService:Init(RemoteService, PlotService)
+-- Plumb the post-transaction cash balance into `LogEconomyEvent` via the
+-- registered wallet reader. Done here (after `OilStateService:Init`, before
+-- any service `:Start()` could emit) so every `Telemetry.Economy` call from
+-- this point on stamps a real `endingBalance` on the Roblox dashboard
+-- instead of the previous hardcoded `0`. Currency parameter is keyed off
+-- the caller's `currency` arg; only `"cash"` is wired today.
+Telemetry.SetWalletReader(function(player: Player, currency: string): number?
+	if currency == "cash" then
+		return OilStateService:GetCash(player.UserId)
+	end
+	return nil
+end)
 OilVisualService:Init(OilStateService, PlotService)
 BoatDockService:Init(RemoteService, OilStateService)
 OilShipmentService:Init(RemoteService, OilStateService, PlotService, WarehouseService, StraitStateService, BoatDockService)
@@ -130,6 +145,7 @@ HitContractService:Init(RemoteService, OilStateService, OilShipmentService)
 ArmyGeneralService:Init(RemoteService, OilStateService, OilShipmentService)
 FlotsamService:Init(OilStateService)
 SecurityPersonnelService:Init(OilStateService)
+CargoHaulerService:Init(OilStateService)
 AutoShipService:Init(RemoteService, OilStateService, WarehouseService, BoatDockService, OilShipmentService, MonetizationService)
 OilHeavenPlotService:Init(PlotService, OilStateService)
 OilShipmentService:SetOilHeavenPlotService(OilHeavenPlotService)
@@ -137,6 +153,7 @@ OilShipmentService:SetHitContractService(HitContractService)
 OilShipmentService:SetLeaderboardService(LeaderboardService)
 OilStateService:SetLeaderboardService(LeaderboardService)
 OilShipmentService:SetSecurityPersonnelService(SecurityPersonnelService)
+OilShipmentService:SetCargoHaulerService(CargoHaulerService)
 OilShipmentService:SetAutoShipService(AutoShipService)
 ChunkOwnershipService:Init(PlotService, OilStateService)
 WarehouseService:Init(RemoteService, OilStateService)
@@ -153,7 +170,9 @@ MonetizationService:Init(RemoteService, OilStateService, StraitStateService)
 -- `AddCash(uid, amt, { skipMultiplier = true })` — see `OilStateService:AddCash`.
 OilStateService:SetMonetizationService(MonetizationService)
 ArmyGeneralService:SetMonetizationService(MonetizationService)
+HitContractService:SetMonetizationService(MonetizationService)
 SecurityPersonnelService:SetMonetizationService(MonetizationService)
+CargoHaulerService:SetMonetizationService(MonetizationService)
 EquipmentShopService:SetMonetizationService(MonetizationService)
 -- GlobalEventService runs the server-wide buff/threat rotation
 -- (`cash_frenzy`, `express_convoy`). Inject into the two
@@ -220,6 +239,7 @@ HitContractService:Start()
 ArmyGeneralService:Start()
 FlotsamService:Start()
 SecurityPersonnelService:Start()
+CargoHaulerService:Start()
 AutoShipService:Start()
 ChunkOwnershipService:Start()
 WarehouseService:Start()
@@ -263,6 +283,7 @@ game:BindToClose(function()
 	OilShipmentService:Stop()
 	ArmyGeneralService:Stop()
 	SecurityPersonnelService:Stop()
+	CargoHaulerService:Stop()
 	HitContractService:Stop()
 	BoatDockService:Stop()
 	OilVisualService:Stop()

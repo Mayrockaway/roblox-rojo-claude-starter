@@ -100,6 +100,7 @@ export type ClientRemotes = {
 	requestPromptRobuxPurchase: RemoteEvent,
 	monetizationResult: RemoteEvent,
 	requestMonetizationCatalog: RemoteFunction,
+	requestCurrencyPackPreview: RemoteFunction,
 	gamePassEffectsUpdate: RemoteEvent,
 	requestSetAutoShip: RemoteEvent,
 	autoShipStateUpdate: RemoteEvent,
@@ -178,6 +179,7 @@ local Remotes: ClientRemotes = {
 	requestPromptRobuxPurchase = waitRemote(RemoteNames.RequestPromptRobuxPurchase) :: RemoteEvent,
 	monetizationResult = waitRemote(RemoteNames.MonetizationResult) :: RemoteEvent,
 	requestMonetizationCatalog = waitRemote(RemoteNames.RequestMonetizationCatalog) :: RemoteFunction,
+	requestCurrencyPackPreview = waitRemote(RemoteNames.RequestCurrencyPackPreview) :: RemoteFunction,
 	--- Server → one client: `{ effects = { DoubleEarnings = true, ... } }` snapshot
 	--- of which `gamePassEffect` ids the player currently owns. Pushed on join
 	--- and again whenever a GamePass prompt finishes with `wasPurchased = true`.

@@ -5,8 +5,11 @@
 --
 -- It also wires the three ship cards under `Ships` (`Ship1`..`Ship3`), `Ships2`
 -- (`Ship1` = Patriot, `Ship2` = Surfboat), the Featured starter pack (`Featured.Tab.EquipBest`),
--- and the Early Supporter bundle (`Featured2.Tab.EquipBest`):
---   * Each `Template/Buy` ImageButton fires `RequestPromptRobuxPurchase` with the
+-- Early Supporter (`Featured2.Tab.EquipBest`), and the **`CashRow`** dynamic cash packs:
+--   * Under `Main.Container.CashRow`, placards **`SmallPack` / `MediumPack` / `LargePack`**.
+--     Each placard uses **`CashAmount`** (repainted from `RequestCurrencyPackPreview`)
+--     and **`BuyButton`** (+ inner **`Price`**) → `RequestPromptRobuxPurchase` (`currency.dynamic_*`).
+--   * Ships: each `Ships…/Template/Buy` ImageButton fires `RequestPromptRobuxPurchase` with the
 --     matching `MonetizationCatalog` item id (`ship.pirateship`, `ship.ducky`, …). The
 --     server's `MonetizationService` opens the Roblox prompt
 --     and on receipt grants the boat via `OilStateService:GrantBoat`.
@@ -30,6 +33,14 @@ local HudPanelTypes = require(script.Parent.Parent.HudPanelTypes)
 local getClientRemotes = require(script.Parent.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
 
 local SCREEN_NAME = "RobuxShop"
+
+-- Ship-card buy states (chrome lives under `StarterGui.RobuxShop` — apply MCP
+-- `scripts/mcp_normalize_robux_shop_buy_buttons.luau` once, then Save Studio).
+local ROBUX_BTN_FILL = Color3.fromRGB(115, 62, 205)
+local ROBUX_BTN_OWNED_FILL = Color3.fromRGB(62, 54, 82)
+local ROBUX_LABEL_BRIGHT = Color3.fromRGB(250, 246, 255)
+local ROBUX_LABEL_MUTED = Color3.fromRGB(200, 192, 214)
+local ROBUX_CHROME_STROKE = "RobuxShopChromeStroke"
 
 --- UI slot name -> MonetizationCatalog item id. Keep in sync with the Studio
 --- card layout under `…Main.Container.Ships` (`buildShipItem` uses
@@ -64,6 +75,19 @@ local STARTER_PACK_ITEM_ID = "starter_pack"
 --- `Featured2.Tab.EquipBest` — Early Supporter Bundle (see `MonetizationCatalog`).
 local EARLY_SUPPORTER_ITEM_ID = "early_supporter_bundle"
 
+--- `Main.Container.CashRow.<SmallPack|MediumPack|LargePack>` (`StarterGui` live tree).
+local CASH_DYNAMIC_PACK_ROWS: {
+	{
+		placardNames: { string },
+		itemId: string,
+		previewField: string,
+	}
+} = {
+	{ placardNames = { "SmallPack", "Cash1", "Small" }, itemId = "currency.dynamic_small", previewField = "smallCash" },
+	{ placardNames = { "MediumPack", "Cash2", "Medium" }, itemId = "currency.dynamic_medium", previewField = "mediumCash" },
+	{ placardNames = { "LargePack", "Cash3", "Large" }, itemId = "currency.dynamic_large", previewField = "largeCash" },
+}
+
 local RobuxShopPanel = {}
 
 local wiredScreen: ScreenGui? = nil
@@ -79,6 +103,8 @@ local featuredBuyRef: ImageButton? = nil
 --- Same contract as `Featured` / `starter_pack`, for `Featured2` (Early Supporter).
 local featured2Root: Instance? = nil
 local featured2BuyRef: ImageButton? = nil
+--- Captured in `wireCashPlacards` for `repaintCashPackAmounts` (see `requestCurrencyPackPreview`).
+local cashPackPreviewRows: { { itemId: string, cashLabel: TextLabel?, previewField: string } } = {}
 
 local function disconnectAll()
 	for _, c in ipairs(connections) do
@@ -92,6 +118,7 @@ local function disconnectAll()
 	featuredBuyRef = nil
 	featured2Root = nil
 	featured2BuyRef = nil
+	table.clear(cashPackPreviewRows)
 	wiredScreen = nil
 end
 
@@ -138,12 +165,31 @@ local function applyShipSlotIconFromBoatId(slot: Instance, boatId: string)
 end
 
 local function findBuyLabel(buy: ImageButton): TextLabel?
+	for _, child in ipairs(buy:GetChildren()) do
+		if child:IsA("TextLabel") then
+			return child :: TextLabel
+		end
+	end
 	for _, d in ipairs(buy:GetDescendants()) do
 		if d:IsA("TextLabel") then
-			return d
+			return d :: TextLabel
 		end
 	end
 	return nil
+end
+
+--- Ship-slot buy buttons (`Template/Buy`) only — toggles authored purple chrome between
+--- purchasable and owned (`StarterGui.RobuxShop` via MCP normalization script).
+local function tintRobuxShipBuyForOwned(buy: ImageButton, owned: boolean)
+	buy.BackgroundColor3 = if owned then ROBUX_BTN_OWNED_FILL else ROBUX_BTN_FILL
+	local stroke = buy:FindFirstChild(ROBUX_CHROME_STROKE)
+	if stroke and stroke:IsA("UIStroke") then
+		stroke.Transparency = if owned then 0.45 else 0.12
+	end
+	local lbl = findBuyLabel(buy)
+	if lbl then
+		lbl.TextColor3 = if owned then ROBUX_LABEL_MUTED else ROBUX_LABEL_BRIGHT
+	end
 end
 
 local function priceForItemId(itemId: string): number?
@@ -152,6 +198,166 @@ local function priceForItemId(itemId: string): number?
 		return nil
 	end
 	return item.robuxPrice
+end
+
+--- Same comma grouping as `HUD.Canvas.CashStrip` / `CashGainToast`.
+local function formatUsdWithCommas(amount: number): string
+	local n = math.floor(math.max(0, amount))
+	local s = tostring(n)
+	local segments = {}
+	local i = #s
+	while i > 0 do
+		local startIdx = math.max(1, i - 2)
+		table.insert(segments, 1, string.sub(s, startIdx, i))
+		i = startIdx - 1
+	end
+	return "$" .. table.concat(segments, ",")
+end
+
+local function resolveCashPlacard(cashFolder: Instance, placardNames: { string }): Instance?
+	for _, name in ipairs(placardNames) do
+		local ch = cashFolder:FindFirstChild(name)
+		if ch then
+			return ch
+		end
+	end
+	return nil
+end
+
+local function findCashAmountOnPlacard(placard: Instance): TextLabel?
+	local probe = placard:FindFirstChild("CashAmount", true)
+	if probe and probe:IsA("TextLabel") then
+		return probe
+	end
+	for _, d in ipairs(placard:GetDescendants()) do
+		if d.Name == "CashAmount" and d:IsA("TextLabel") then
+			return d :: TextLabel
+		end
+	end
+	return nil
+end
+
+local function findBuyUnderCashPlacard(placard: Instance): ImageButton?
+	-- Live `StarterGui.RobuxShop`: `CashRow.SmallPack|…/BuyButton` (see MCP hierarchy).
+	local buyButton = placard:FindFirstChild("BuyButton")
+	if buyButton and buyButton:IsA("ImageButton") then
+		return buyButton :: ImageButton
+	end
+	local template = placard:FindFirstChild("Template")
+	local buy = template and template:FindFirstChild("Buy")
+	if buy and buy:IsA("ImageButton") then
+		return buy :: ImageButton
+	end
+	local fallback = placard:FindFirstChild("Buy", true)
+	if fallback and fallback:IsA("ImageButton") then
+		return fallback :: ImageButton
+	end
+	return nil
+end
+
+local function repaintCashPackAmounts(remotes: any)
+	if #cashPackPreviewRows == 0 then
+		return
+	end
+	local ok, previewAny = pcall(function()
+		return remotes.requestCurrencyPackPreview:InvokeServer()
+	end)
+	local preview = if ok and typeof(previewAny) == "table" then previewAny :: { [string]: any } else nil
+	for _, row in ipairs(cashPackPreviewRows) do
+		local lbl = row.cashLabel
+		if not (lbl and lbl.Parent) then
+			continue
+		end
+		local amt: number?
+		if preview then
+			amt = tonumber(preview[row.previewField])
+		end
+		if typeof(amt) == "number" and amt == amt and amt >= 0 then
+			lbl.Text = formatUsdWithCommas(amt)
+		else
+			lbl.Text = "$—"
+		end
+	end
+end
+
+--- `Main.Container.CashRow` placards (`BuyButton`, `CashAmount` TextLabel).
+local function wireCashPlacards(screen: ScreenGui, remotes: any)
+	local inner = findMainInnerContainer(screen)
+	if not inner then
+		return
+	end
+	local cashFolder = inner:FindFirstChild("CashRow") or inner:FindFirstChild("Cash")
+	if not cashFolder then
+		warn("[RobuxShopPanel] Main.Container.CashRow (or Cash) not found — dynamic cash placards not wired.")
+		return
+	end
+
+	table.clear(cashPackPreviewRows)
+
+	for _, spec in ipairs(CASH_DYNAMIC_PACK_ROWS) do
+		local placard = resolveCashPlacard(cashFolder, spec.placardNames)
+		if not placard then
+			warn(
+				string.format(
+					"[RobuxShopPanel] CashRow/%s placard missing under %s — skipped %s.",
+					table.concat(spec.placardNames, " or "),
+					cashFolder:GetFullName(),
+					spec.itemId
+				)
+			)
+			continue
+		end
+
+		local cashLbl = findCashAmountOnPlacard(placard)
+		if cashLbl then
+			table.insert(cashPackPreviewRows, {
+				itemId = spec.itemId,
+				cashLabel = cashLbl,
+				previewField = spec.previewField,
+			})
+		else
+			warn(
+				string.format(
+					"[RobuxShopPanel] CashAmount TextLabel not found under %s — %s label not wired.",
+					placard:GetFullName(),
+					spec.itemId
+				)
+			)
+		end
+
+		local buyBtn = findBuyUnderCashPlacard(placard)
+		if buyBtn then
+			buyBtn.Active = true
+			buyBtn.AutoButtonColor = true
+			local pill = findBuyLabel(buyBtn)
+			if pill then
+				local price = priceForItemId(spec.itemId)
+				if typeof(price) == "number" then
+					pill.Text = string.format("R$ %d", price)
+				end
+			end
+			table.insert(connections, buyBtn.Activated:Connect(function()
+				local itemId = spec.itemId
+				local now = os.clock()
+				local last = lastPromptFireByItemId[itemId] or 0
+				if now - last < 0.6 then
+					return
+				end
+				lastPromptFireByItemId[itemId] = now
+				remotes.requestPromptRobuxPurchase:FireServer({ itemId = itemId })
+			end))
+		else
+			warn(
+				string.format(
+					"[RobuxShopPanel] BuyButton (or Template/Buy) missing under %s — %s buy not wired.",
+					placard:GetFullName(),
+					spec.itemId
+				)
+			)
+		end
+	end
+
+	repaintCashPackAmounts(remotes)
 end
 
 local function boatIdForItemId(itemId: string): string?
@@ -167,6 +373,8 @@ local function repaintCard(card: { slotName: string, itemId: string, buy: ImageB
 	local owned = boatId ~= nil and ownedBoatSet[boatId] == true
 	card.buy:SetAttribute("Owned", owned)
 
+	tintRobuxShipBuyForOwned(card.buy, owned)
+
 	local label = card.label
 	if label then
 		if owned then
@@ -174,7 +382,7 @@ local function repaintCard(card: { slotName: string, itemId: string, buy: ImageB
 		else
 			local price = priceForItemId(card.itemId)
 			if typeof(price) == "number" then
-				label.Text = string.format("R$%d", price)
+				label.Text = string.format("R$ %d", price)
 			end
 		end
 	end
@@ -386,7 +594,7 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 		if starterLabel then
 			local price = priceForItemId(STARTER_PACK_ITEM_ID)
 			if typeof(price) == "number" then
-				starterLabel.Text = string.format("R$%d", price)
+				starterLabel.Text = string.format("R$ %d", price)
 			end
 		end
 		table.insert(connections, starterBuy.Activated:Connect(function()
@@ -416,7 +624,7 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 		if earlyLabel then
 			local price = priceForItemId(EARLY_SUPPORTER_ITEM_ID)
 			if typeof(price) == "number" then
-				earlyLabel.Text = string.format("R$%d", price)
+				earlyLabel.Text = string.format("R$ %d", price)
 			end
 		end
 		table.insert(connections, earlyBuy.Activated:Connect(function()
@@ -439,6 +647,8 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 		)
 	end
 
+	wireCashPlacards(screen, remotes)
+
 	snapshotInitialOwnership(remotes)
 	repaintAllCards()
 
@@ -455,6 +665,7 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 		ownedBoatSet = readOwnedBoats(snap)
 		purchasedOneTimeSet = readPurchasedOneTime(snap)
 		repaintAllCards()
+		repaintCashPackAmounts(remotes)
 	end))
 
 	-- Surface failure codes to the console. We do NOT toast in this panel because
@@ -486,11 +697,49 @@ local function wireRobuxShop(_playerGui: PlayerGui, screen: ScreenGui)
 	end))
 end
 
+--- `FTUEDialogueGui` often uses a higher `DisplayOrder` than modals; the HUD chrome can too.
+--- Match `SettingsPanel` so the opened shop renders above blocking layers (otherwise opens
+--- `Enabled=true` behind them and clicks feel broken).
+local function wrapRobuxShopControllerForInputStacking(playerGui: PlayerGui, ctrl: HudPanelTypes.HudPanelController)
+	local sg = ctrl.ScreenGui
+	local savedDisplayOrder = sg.DisplayOrder
+	local innerOpen = ctrl.Open
+	local innerClose = ctrl.Close
+	local function findFtueScreen(): ScreenGui?
+		for _, n in ipairs({ "FTUEDialogueGui", "FtueDialogueGui" }) do
+			local g = playerGui:FindFirstChild(n)
+			if g and g:IsA("ScreenGui") then
+				return g
+			end
+		end
+		return nil
+	end
+	ctrl.Open = function()
+		innerOpen()
+		local hud = playerGui:FindFirstChild("HUD")
+		local hudHint = 0
+		if hud and hud:IsA("ScreenGui") then
+			hudHint = hud.DisplayOrder + 25
+		end
+		local ftue = findFtueScreen()
+		if ftue then
+			sg.DisplayOrder = math.max(ftue.DisplayOrder + 250, savedDisplayOrder, 500, hudHint)
+		else
+			sg.DisplayOrder = math.max(savedDisplayOrder, hudHint, 2000)
+		end
+	end
+	ctrl.Close = function()
+		innerClose()
+		sg.DisplayOrder = savedDisplayOrder
+	end
+end
+
 function RobuxShopPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelController?
 	local ctrl = HudPanelBase.tryBind(playerGui, SCREEN_NAME)
 	if not ctrl then
 		return nil
 	end
+	wrapRobuxShopControllerForInputStacking(playerGui, ctrl)
 	if wiredScreen ~= ctrl.ScreenGui then
 		wireRobuxShop(playerGui, ctrl.ScreenGui)
 	end

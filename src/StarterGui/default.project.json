@@ -1,0 +1,2273 @@
+{
+	"name": "StarterGui",
+	"tree": {
+		"$className": "StarterGui",
+		"$ignoreUnknownInstances": true,
+		"RebirthShopPanelGui": {
+			"$className": "ScreenGui",
+			"$properties": {
+				"Enabled": false,
+				"ResetOnSpawn": false,
+				"ZIndexBehavior": "Sibling",
+				"IgnoreGuiInset": true,
+				"DisplayOrder": 40
+			},
+			"Canvas": {
+				"$className": "Frame",
+				"$properties": {
+					"BackgroundTransparency": 1,
+					"BorderSizePixel": 0,
+					"Size": {
+						"UDim2": [
+							[
+								1,
+								0
+							],
+							[
+								1,
+								0
+							]
+						]
+					},
+					"Position": {
+						"UDim2": [
+							[
+								0.5,
+								0
+							],
+							[
+								0.5,
+								0
+							]
+						]
+					},
+					"AnchorPoint": [
+						0.5,
+						0.5
+					]
+				},
+				"CanvasPadding": {
+					"$className": "UIPadding",
+					"$properties": {
+						"PaddingTop": {
+							"UDim": [
+								0.02,
+								0
+							]
+						},
+						"PaddingBottom": {
+							"UDim": [
+								0.02,
+								0
+							]
+						},
+						"PaddingLeft": {
+							"UDim": [
+								0.03,
+								0
+							]
+						},
+						"PaddingRight": {
+							"UDim": [
+								0.03,
+								0
+							]
+						}
+					}
+				},
+				"Dimmer": {
+					"$className": "TextButton",
+					"$properties": {
+						"BackgroundColor3": [
+							0,
+							0,
+							0
+						],
+						"BackgroundTransparency": 0.45,
+						"BorderSizePixel": 0,
+						"AutoButtonColor": false,
+						"Text": "",
+						"Size": {
+							"UDim2": [
+								[
+									1,
+									0
+								],
+								[
+									1,
+									0
+								]
+							]
+						},
+						"Position": {
+							"UDim2": [
+								[
+									0.5,
+									0
+								],
+								[
+									0.5,
+									0
+								]
+							]
+						},
+						"AnchorPoint": [
+							0.5,
+							0.5
+						],
+						"ZIndex": 0
+					}
+				},
+				"PanelHost": {
+					"$className": "Frame",
+					"$properties": {
+						"BackgroundTransparency": 1,
+						"BorderSizePixel": 0,
+						"Size": {
+							"UDim2": [
+								[
+									0.92,
+									0
+								],
+								[
+									0.88,
+									0
+								]
+							]
+						},
+						"Position": {
+							"UDim2": [
+								[
+									0.5,
+									0
+								],
+								[
+									0.5,
+									0
+								]
+							]
+						},
+						"AnchorPoint": [
+							0.5,
+							0.5
+						],
+						"ZIndex": 1
+					},
+					"Aspect": {
+						"$className": "UIAspectRatioConstraint",
+						"$properties": {
+							"AspectRatio": 1.55,
+							"AspectType": "FitWithinMaxSize",
+							"DominantAxis": "Width"
+						}
+					},
+					"Panel": {
+						"$className": "Frame",
+						"$properties": {
+							"BackgroundColor3": [
+								0.0392156862745098,
+								0.08627450980392157,
+								0.13333333333333333
+							],
+							"BackgroundTransparency": 0,
+							"BorderSizePixel": 0,
+							"Size": {
+								"UDim2": [
+									[
+										1,
+										0
+									],
+									[
+										1,
+										0
+									]
+								]
+							},
+							"Position": {
+								"UDim2": [
+									[
+										0.5,
+										0
+									],
+									[
+										0.5,
+										0
+									]
+								]
+							},
+							"AnchorPoint": [
+								0.5,
+								0.5
+							]
+						},
+						"PanelCorner": {
+							"$className": "UICorner",
+							"$properties": {
+								"CornerRadius": {
+									"UDim": [
+										0.025,
+										0
+									]
+								}
+							}
+						},
+						"PanelStroke": {
+							"$className": "UIStroke",
+							"$properties": {
+								"Thickness": 1.5,
+								"Transparency": 0.15,
+								"Color": [
+									0.8313725490196079,
+									0.6980392156862745,
+									0.47843137254901963
+								]
+							}
+						},
+						"Body": {
+							"$className": "Frame",
+							"$properties": {
+								"BackgroundTransparency": 1,
+								"BorderSizePixel": 0,
+								"Size": {
+									"UDim2": [
+										[
+											1,
+											0
+										],
+										[
+											1,
+											0
+										]
+									]
+								},
+								"ClipsDescendants": true
+							},
+							"Pad": {
+								"$className": "UIPadding",
+								"$properties": {
+									"PaddingTop": {
+										"UDim": [
+											0.02,
+											0
+										]
+									},
+									"PaddingBottom": {
+										"UDim": [
+											0.02,
+											0
+										]
+									},
+									"PaddingLeft": {
+										"UDim": [
+											0.028,
+											0
+										]
+									},
+									"PaddingRight": {
+										"UDim": [
+											0.028,
+											0
+										]
+									}
+								}
+							},
+							"VList": {
+								"$className": "UIListLayout",
+								"$properties": {
+									"FillDirection": "Vertical",
+									"HorizontalAlignment": "Center",
+									"VerticalAlignment": "Top",
+									"SortOrder": "LayoutOrder",
+									"Padding": {
+										"UDim": [
+											0.014,
+											0
+										]
+									}
+								}
+							},
+							"Banner": {
+								"$className": "Frame",
+								"$properties": {
+									"BackgroundTransparency": 1,
+									"BorderSizePixel": 0,
+									"Size": {
+										"UDim2": [
+											[
+												1,
+												0
+											],
+											[
+												0.07,
+												0
+											]
+										]
+									},
+									"LayoutOrder": 1
+								},
+								"BannerLayout": {
+									"$className": "UIListLayout",
+									"$properties": {
+										"FillDirection": "Horizontal",
+										"VerticalAlignment": "Center",
+										"HorizontalAlignment": "Center",
+										"Padding": {
+											"UDim": [
+												0.015,
+												0
+											]
+										}
+									}
+								},
+								"BannerSpacerLeft": {
+									"$className": "Frame",
+									"$properties": {
+										"BackgroundTransparency": 1,
+										"Size": {
+											"UDim2": [
+												[
+													0.1,
+													0
+												],
+												[
+													1,
+													0
+												]
+											]
+										},
+										"LayoutOrder": 1
+									}
+								},
+								"BannerTitle": {
+									"$className": "TextLabel",
+									"$properties": {
+										"BackgroundTransparency": 1,
+										"Text": "REBIRTH SHOP",
+										"TextColor3": [
+											0.93,
+											0.94,
+											0.96
+										],
+										"TextScaled": true,
+										"TextXAlignment": "Center",
+										"FontFace": {
+											"family": "rbxasset://fonts/families/Merriweather.json",
+											"weight": "Bold",
+											"style": "Normal"
+										},
+										"BorderSizePixel": 0,
+										"Size": {
+											"UDim2": [
+												[
+													0.7,
+													0
+												],
+												[
+													1,
+													0
+												]
+											]
+										},
+										"LayoutOrder": 2
+									},
+									"BannerTitleTc": {
+										"$className": "UITextSizeConstraint",
+										"$properties": {
+											"MinTextSize": 14,
+											"MaxTextSize": 28
+										}
+									}
+								},
+								"CloseButton": {
+									"$className": "TextButton",
+									"$properties": {
+										"Size": {
+											"UDim2": [
+												[
+													0.1,
+													0
+												],
+												[
+													1,
+													0
+												]
+											]
+										},
+										"BackgroundTransparency": 1,
+										"Text": "✕",
+										"TextColor3": [
+											0.75,
+											0.78,
+											0.82
+										],
+										"TextScaled": true,
+										"FontFace": {
+											"family": "rbxasset://fonts/families/SourceSansPro.json",
+											"weight": "Bold",
+											"style": "Normal"
+										},
+										"AutoButtonColor": false,
+										"LayoutOrder": 3
+									},
+									"CloseTc": {
+										"$className": "UITextSizeConstraint",
+										"$properties": {
+											"MinTextSize": 16,
+											"MaxTextSize": 28
+										}
+									}
+								}
+							},
+							"HeaderDivider": {
+								"$className": "Frame",
+								"$properties": {
+									"BorderSizePixel": 0,
+									"BackgroundColor3": [
+										0.8313725490196079,
+										0.6980392156862745,
+										0.47843137254901963
+									],
+									"Size": {
+										"UDim2": [
+											[
+												1,
+												0
+											],
+											[
+												0.0035,
+												0
+											]
+										]
+									},
+									"LayoutOrder": 2,
+									"BackgroundTransparency": 0.35
+								}
+							},
+							"BoostsSection": {
+								"$className": "Frame",
+								"$properties": {
+									"BackgroundTransparency": 1,
+									"BorderSizePixel": 0,
+									"Size": {
+										"UDim2": [
+											[
+												1,
+												0
+											],
+											[
+												0.19,
+												0
+											]
+										]
+									},
+									"LayoutOrder": 3
+								},
+								"BSecLayout": {
+									"$className": "UIListLayout",
+									"$properties": {
+										"FillDirection": "Vertical",
+										"Padding": {
+											"UDim": [
+												0.025,
+												0
+											]
+										},
+										"HorizontalAlignment": "Center",
+										"VerticalAlignment": "Top"
+									}
+								},
+								"BoostsLabel": {
+									"$className": "TextLabel",
+									"$properties": {
+										"BackgroundTransparency": 1,
+										"Text": "REBIRTH BOOSTS",
+										"TextColor3": [
+											0.55,
+											0.6,
+											0.65
+										],
+										"TextScaled": true,
+										"TextXAlignment": "Center",
+										"FontFace": {
+											"family": "rbxasset://fonts/families/SourceSansPro.json",
+											"weight": "Medium",
+											"style": "Normal"
+										},
+										"Size": {
+											"UDim2": [
+												[
+													1,
+													0
+												],
+												[
+													0.22,
+													0
+												]
+											]
+										},
+										"LayoutOrder": 1
+									},
+									"BoostsLabelTc": {
+										"$className": "UITextSizeConstraint",
+										"$properties": {
+											"MinTextSize": 10,
+											"MaxTextSize": 16
+										}
+									}
+								},
+								"BoostsRow": {
+									"$className": "Frame",
+									"$properties": {
+										"BackgroundTransparency": 1,
+										"Size": {
+											"UDim2": [
+												[
+													1,
+													0
+												],
+												[
+													0.78,
+													0
+												]
+											]
+										},
+										"Position": {
+											"UDim2": [
+												[
+													0,
+													0
+												],
+												[
+													0.22,
+													0
+												]
+											]
+										},
+										"LayoutOrder": 2
+									},
+									"BoostRowLayout": {
+										"$className": "UIListLayout",
+										"$properties": {
+											"FillDirection": "Horizontal",
+											"HorizontalAlignment": "Center",
+											"VerticalAlignment": "Center",
+											"Padding": {
+												"UDim": [
+													0.008,
+													0
+												]
+											}
+										}
+									},
+									"Boost_ShipSpeed": {
+										"$className": "Frame",
+										"$properties": {
+											"BackgroundColor3": [
+												0.10196078431372549,
+												0.16862745098039217,
+												0.23529411764705882
+											],
+											"BackgroundTransparency": 0,
+											"BorderSizePixel": 0,
+											"Size": {
+												"UDim2": [
+													[
+														0.31,
+														0
+													],
+													[
+														1,
+														0
+													]
+												]
+											},
+											"LayoutOrder": 1
+										},
+										"BC1": {
+											"$className": "UICorner",
+											"$properties": {
+												"CornerRadius": {
+													"UDim": [
+														0.08,
+														0
+													]
+												}
+											}
+										},
+										"BS1": {
+											"$className": "UIStroke",
+											"$properties": {
+												"Thickness": 1,
+												"Color": [
+													0.21568627450980393,
+													0.37254901960784315,
+													0.43137254901960786
+												],
+												"Transparency": 0.2
+											}
+										},
+										"HP1": {
+											"$className": "UIListLayout",
+											"$properties": {
+												"FillDirection": "Horizontal",
+												"VerticalAlignment": "Center",
+												"Padding": {
+													"UDim": [
+														0.06,
+														0
+													]
+												}
+											}
+										},
+										"Icon1": {
+											"$className": "ImageLabel",
+											"$properties": {
+												"BackgroundTransparency": 1,
+												"Size": {
+													"UDim2": [
+														[
+															0.22,
+															0
+														],
+														[
+															0.72,
+															0
+														]
+													]
+												},
+												"LayoutOrder": 1,
+												"Image": "",
+												"ScaleType": "Fit"
+											},
+											"AR1": {
+												"$className": "UIAspectRatioConstraint",
+												"$properties": {
+													"AspectRatio": 1,
+													"AspectType": "FitWithinMaxSize",
+													"DominantAxis": "Height"
+												}
+											}
+										},
+										"Txt1": {
+											"$className": "Frame",
+											"$properties": {
+												"BackgroundTransparency": 1,
+												"Size": {
+													"UDim2": [
+														[
+															0.72,
+															0
+														],
+														[
+															1,
+															0
+														]
+													]
+												},
+												"LayoutOrder": 2
+											},
+											"V1": {
+												"$className": "UIListLayout",
+												"$properties": {
+													"FillDirection": "Vertical",
+													"Padding": {
+														"UDim": [
+															0.04,
+															0
+														]
+													},
+													"VerticalAlignment": "Center"
+												}
+											},
+											"N1": {
+												"$className": "TextLabel",
+												"$properties": {
+													"BackgroundTransparency": 1,
+													"Text": "SHIP SPEED",
+													"TextColor3": [
+														0.75,
+														0.78,
+														0.82
+													],
+													"TextScaled": true,
+													"TextXAlignment": "Left",
+													"FontFace": {
+														"family": "rbxasset://fonts/families/SourceSansPro.json",
+														"weight": "SemiBold",
+														"style": "Normal"
+													},
+													"Size": {
+														"UDim2": [
+															[
+																1,
+																0
+															],
+															[
+																0.45,
+																0
+															]
+														]
+													},
+													"LayoutOrder": 1
+												},
+												"NT1": {
+													"$className": "UITextSizeConstraint",
+													"$properties": {
+														"MinTextSize": 9,
+														"MaxTextSize": 14
+													}
+												}
+											},
+											"V1a": {
+												"$className": "TextLabel",
+												"$properties": {
+													"BackgroundTransparency": 1,
+													"Text": "+0%",
+													"TextColor3": [
+														0.8313725490196079,
+														0.6980392156862745,
+														0.47843137254901963
+													],
+													"TextScaled": true,
+													"TextXAlignment": "Left",
+													"FontFace": {
+														"family": "rbxasset://fonts/families/SourceSansPro.json",
+														"weight": "Bold",
+														"style": "Normal"
+													},
+													"Size": {
+														"UDim2": [
+															[
+																1,
+																0
+															],
+															[
+																0.5,
+																0
+															]
+														]
+													},
+													"LayoutOrder": 2
+												},
+												"Va1": {
+													"$className": "UITextSizeConstraint",
+													"$properties": {
+														"MinTextSize": 10,
+														"MaxTextSize": 18
+													}
+												}
+											}
+										}
+									},
+									"D1": {
+										"$className": "Frame",
+										"$properties": {
+											"BackgroundColor3": [
+												0.21568627450980393,
+												0.37254901960784315,
+												0.43137254901960786
+											],
+											"BackgroundTransparency": 0.7,
+											"BorderSizePixel": 0,
+											"Size": {
+												"UDim2": [
+													[
+														0.002,
+														0
+													],
+													[
+														0.72,
+														0
+													]
+												]
+											},
+											"LayoutOrder": 2
+										}
+									},
+									"Boost_WarehouseStorage": {
+										"$className": "Frame",
+										"$properties": {
+											"BackgroundColor3": [
+												0.10196078431372549,
+												0.16862745098039217,
+												0.23529411764705882
+											],
+											"BorderSizePixel": 0,
+											"Size": {
+												"UDim2": [
+													[
+														0.31,
+														0
+													],
+													[
+														1,
+														0
+													]
+												]
+											},
+											"LayoutOrder": 3
+										},
+										"BC2": {
+											"$className": "UICorner",
+											"$properties": {
+												"CornerRadius": {
+													"UDim": [
+														0.08,
+														0
+													]
+												}
+											}
+										},
+										"BS2": {
+											"$className": "UIStroke",
+											"$properties": {
+												"Thickness": 1,
+												"Color": [
+													0.21568627450980393,
+													0.37254901960784315,
+													0.43137254901960786
+												],
+												"Transparency": 0.2
+											}
+										},
+										"B2L": {
+											"$className": "UIListLayout",
+											"$properties": {
+												"FillDirection": "Horizontal",
+												"VerticalAlignment": "Center",
+												"Padding": {
+													"UDim": [
+														0.06,
+														0
+													]
+												}
+											}
+										},
+										"I2": {
+											"$className": "ImageLabel",
+											"$properties": {
+												"BackgroundTransparency": 1,
+												"Size": {
+													"UDim2": [
+														[
+															0.22,
+															0
+														],
+														[
+															0.72,
+															0
+														]
+													]
+												},
+												"Image": "",
+												"ScaleType": "Fit"
+											},
+											"AR2": {
+												"$className": "UIAspectRatioConstraint",
+												"$properties": {
+													"AspectRatio": 1,
+													"AspectType": "FitWithinMaxSize",
+													"DominantAxis": "Height"
+												}
+											}
+										},
+										"T2w": {
+											"$className": "Frame",
+											"$properties": {
+												"BackgroundTransparency": 1,
+												"Size": {
+													"UDim2": [
+														[
+															0.72,
+															0
+														],
+														[
+															1,
+															0
+														]
+													]
+												}
+											},
+											"V2": {
+												"$className": "UIListLayout",
+												"$properties": {
+													"FillDirection": "Vertical",
+													"Padding": {
+														"UDim": [
+															0.04,
+															0
+														]
+													},
+													"VerticalAlignment": "Center"
+												}
+											},
+											"N2": {
+												"$className": "TextLabel",
+												"$properties": {
+													"BackgroundTransparency": 1,
+													"Text": "WAREHOUSE STORAGE",
+													"TextColor3": [
+														0.75,
+														0.78,
+														0.82
+													],
+													"TextScaled": true,
+													"TextXAlignment": "Left",
+													"FontFace": {
+														"family": "rbxasset://fonts/families/SourceSansPro.json",
+														"weight": "SemiBold",
+														"style": "Normal"
+													},
+													"Size": {
+														"UDim2": [
+															[
+																1,
+																0
+															],
+															[
+																0.45,
+																0
+															]
+														]
+													}
+												},
+												"t2": {
+													"$className": "UITextSizeConstraint",
+													"$properties": {
+														"MinTextSize": 9,
+														"MaxTextSize": 14
+													}
+												}
+											},
+											"V2v": {
+												"$className": "TextLabel",
+												"$properties": {
+													"BackgroundTransparency": 1,
+													"Text": "+0",
+													"TextColor3": [
+														0.8313725490196079,
+														0.6980392156862745,
+														0.47843137254901963
+													],
+													"TextScaled": true,
+													"TextXAlignment": "Left",
+													"FontFace": {
+														"family": "rbxasset://fonts/families/SourceSansPro.json",
+														"weight": "Bold",
+														"style": "Normal"
+													},
+													"Size": {
+														"UDim2": [
+															[
+																1,
+																0
+															],
+															[
+																0.5,
+																0
+															]
+														]
+													}
+												},
+												"v2tc": {
+													"$className": "UITextSizeConstraint",
+													"$properties": {
+														"MinTextSize": 10,
+														"MaxTextSize": 18
+													}
+												}
+											}
+										}
+									},
+									"D2": {
+										"$className": "Frame",
+										"$properties": {
+											"BackgroundColor3": [
+												0.21568627450980393,
+												0.37254901960784315,
+												0.43137254901960786
+											],
+											"BackgroundTransparency": 0.7,
+											"BorderSizePixel": 0,
+											"Size": {
+												"UDim2": [
+													[
+														0.002,
+														0
+													],
+													[
+														0.72,
+														0
+													]
+												]
+											},
+											"LayoutOrder": 4
+										}
+									},
+									"Boost_SellPrice": {
+										"$className": "Frame",
+										"$properties": {
+											"BackgroundColor3": [
+												0.10196078431372549,
+												0.16862745098039217,
+												0.23529411764705882
+											],
+											"BorderSizePixel": 0,
+											"Size": {
+												"UDim2": [
+													[
+														0.31,
+														0
+													],
+													[
+														1,
+														0
+													]
+												]
+											},
+											"LayoutOrder": 5
+										},
+										"BC3": {
+											"$className": "UICorner",
+											"$properties": {
+												"CornerRadius": {
+													"UDim": [
+														0.08,
+														0
+													]
+												}
+											}
+										},
+										"BS3": {
+											"$className": "UIStroke",
+											"$properties": {
+												"Thickness": 1,
+												"Color": [
+													0.21568627450980393,
+													0.37254901960784315,
+													0.43137254901960786
+												],
+												"Transparency": 0.2
+											}
+										},
+										"B3L": {
+											"$className": "UIListLayout",
+											"$properties": {
+												"FillDirection": "Horizontal",
+												"VerticalAlignment": "Center",
+												"Padding": {
+													"UDim": [
+														0.06,
+														0
+													]
+												}
+											}
+										},
+										"I3": {
+											"$className": "ImageLabel",
+											"$properties": {
+												"BackgroundTransparency": 1,
+												"Size": {
+													"UDim2": [
+														[
+															0.22,
+															0
+														],
+														[
+															0.72,
+															0
+														]
+													]
+												},
+												"Image": "",
+												"ScaleType": "Fit"
+											},
+											"AR3": {
+												"$className": "UIAspectRatioConstraint",
+												"$properties": {
+													"AspectRatio": 1,
+													"AspectType": "FitWithinMaxSize",
+													"DominantAxis": "Height"
+												}
+											}
+										},
+										"T3w": {
+											"$className": "Frame",
+											"$properties": {
+												"BackgroundTransparency": 1,
+												"Size": {
+													"UDim2": [
+														[
+															0.72,
+															0
+														],
+														[
+															1,
+															0
+														]
+													]
+												}
+											},
+											"V3": {
+												"$className": "UIListLayout",
+												"$properties": {
+													"FillDirection": "Vertical",
+													"Padding": {
+														"UDim": [
+															0.04,
+															0
+														]
+													},
+													"VerticalAlignment": "Center"
+												}
+											},
+											"N3": {
+												"$className": "TextLabel",
+												"$properties": {
+													"BackgroundTransparency": 1,
+													"Text": "SELL PRICE",
+													"TextColor3": [
+														0.75,
+														0.78,
+														0.82
+													],
+													"TextScaled": true,
+													"TextXAlignment": "Left",
+													"FontFace": {
+														"family": "rbxasset://fonts/families/SourceSansPro.json",
+														"weight": "SemiBold",
+														"style": "Normal"
+													},
+													"Size": {
+														"UDim2": [
+															[
+																1,
+																0
+															],
+															[
+																0.45,
+																0
+															]
+														]
+													}
+												},
+												"t3": {
+													"$className": "UITextSizeConstraint",
+													"$properties": {
+														"MinTextSize": 9,
+														"MaxTextSize": 14
+													}
+												}
+											},
+											"V3v": {
+												"$className": "TextLabel",
+												"$properties": {
+													"BackgroundTransparency": 1,
+													"Text": "+0%",
+													"TextColor3": [
+														0.8313725490196079,
+														0.6980392156862745,
+														0.47843137254901963
+													],
+													"TextScaled": true,
+													"TextXAlignment": "Left",
+													"FontFace": {
+														"family": "rbxasset://fonts/families/SourceSansPro.json",
+														"weight": "Bold",
+														"style": "Normal"
+													},
+													"Size": {
+														"UDim2": [
+															[
+																1,
+																0
+															],
+															[
+																0.5,
+																0
+															]
+														]
+													}
+												},
+												"v3tc": {
+													"$className": "UITextSizeConstraint",
+													"$properties": {
+														"MinTextSize": 10,
+														"MaxTextSize": 18
+													}
+												}
+											}
+										}
+									}
+								}
+							},
+							"ConversionRow": {
+								"$className": "Frame",
+								"$properties": {
+									"BackgroundColor3": [
+										0.10196078431372549,
+										0.16862745098039217,
+										0.23529411764705882
+									],
+									"BackgroundTransparency": 0.15,
+									"BorderSizePixel": 0,
+									"Size": {
+										"UDim2": [
+											[
+												1,
+												0
+											],
+											[
+												0.12,
+												0
+											]
+										]
+									},
+									"LayoutOrder": 4
+								},
+								"CRC": {
+									"$className": "UICorner",
+									"$properties": {
+										"CornerRadius": {
+											"UDim": [
+												0.06,
+												0
+											]
+										}
+									}
+								},
+								"CRS": {
+									"$className": "UIStroke",
+									"$properties": {
+										"Thickness": 1,
+										"Color": [
+											0.21568627450980393,
+											0.37254901960784315,
+											0.43137254901960786
+										],
+										"Transparency": 0.35
+									}
+								},
+								"CvtPad": {
+									"$className": "UIPadding",
+									"$properties": {
+										"PaddingTop": {
+											"UDim": [
+												0.06,
+												0
+											]
+										},
+										"PaddingBottom": {
+											"UDim": [
+												0.06,
+												0
+											]
+										},
+										"PaddingLeft": {
+											"UDim": [
+												0.04,
+												0
+											]
+										},
+										"PaddingRight": {
+											"UDim": [
+												0.04,
+												0
+											]
+										}
+									}
+								},
+								"CvtLayout": {
+									"$className": "UIListLayout",
+									"$properties": {
+										"FillDirection": "Horizontal",
+										"VerticalAlignment": "Center",
+										"HorizontalAlignment": "Left",
+										"Padding": {
+											"UDim": [
+												0.02,
+												0
+											]
+										}
+									}
+								},
+								"ConvertRateLabel": {
+									"$className": "TextLabel",
+									"$properties": {
+										"BackgroundTransparency": 1,
+										"Text": "1M Cash → 1 Rebirth Token",
+										"TextColor3": [
+											0.72,
+											0.76,
+											0.8
+										],
+										"TextScaled": true,
+										"TextXAlignment": "Left",
+										"TextTruncate": "AtEnd",
+										"FontFace": {
+											"family": "rbxasset://fonts/families/SourceSansPro.json",
+											"weight": "Regular",
+											"style": "Normal"
+										},
+										"Size": {
+											"UDim2": [
+												[
+													0.45,
+													0
+												],
+												[
+													1,
+													0
+												]
+											]
+										},
+										"LayoutOrder": 1
+									},
+									"CRtc": {
+										"$className": "UITextSizeConstraint",
+										"$properties": {
+											"MinTextSize": 9,
+											"MaxTextSize": 15
+										}
+									}
+								},
+								"FlexSpacer": {
+									"$className": "Frame",
+									"$properties": {
+										"BackgroundTransparency": 1,
+										"Size": {
+											"UDim2": [
+												[
+													0.27,
+													0
+												],
+												[
+													1,
+													0
+												]
+											]
+										},
+										"LayoutOrder": 2
+									}
+								},
+								"ConvertButton": {
+									"$className": "TextButton",
+									"$properties": {
+										"BackgroundColor3": [
+											0.78,
+											0.65,
+											0.42
+										],
+										"Text": "CONVERT",
+										"TextColor3": [
+											0.12,
+											0.1,
+											0.08
+										],
+										"TextScaled": true,
+										"FontFace": {
+											"family": "rbxasset://fonts/families/SourceSansPro.json",
+											"weight": "Bold",
+											"style": "Normal"
+										},
+										"AutoButtonColor": true,
+										"Size": {
+											"UDim2": [
+												[
+													0.24,
+													0
+												],
+												[
+													1,
+													0
+												]
+											]
+										},
+										"LayoutOrder": 3,
+										"BorderSizePixel": 0
+									},
+									"CtCnr": {
+										"$className": "UICorner",
+										"$properties": {
+											"CornerRadius": {
+												"UDim": [
+													0.2,
+													0
+												]
+											}
+										}
+									},
+									"CvtBtnTc": {
+										"$className": "UITextSizeConstraint",
+										"$properties": {
+											"MinTextSize": 11,
+											"MaxTextSize": 18
+										}
+									}
+								}
+							},
+							"MainSplit": {
+								"$className": "Frame",
+								"$properties": {
+									"BackgroundTransparency": 1,
+									"BorderSizePixel": 0,
+									"Size": {
+										"UDim2": [
+											[
+												1,
+												0
+											],
+											[
+												0.48,
+												0
+											]
+										]
+									},
+									"LayoutOrder": 5
+								},
+								"SplitLayout": {
+									"$className": "UIListLayout",
+									"$properties": {
+										"FillDirection": "Horizontal",
+										"VerticalAlignment": "Top",
+										"HorizontalAlignment": "Center",
+										"Padding": {
+											"UDim": [
+												0.015,
+												0
+											]
+										}
+									}
+								},
+								"ShopScroll": {
+									"$className": "ScrollingFrame",
+									"$properties": {
+										"BackgroundTransparency": 1,
+										"BorderSizePixel": 0,
+										"Size": {
+											"UDim2": [
+												[
+													0.43,
+													0
+												],
+												[
+													1,
+													0
+												]
+											]
+										},
+										"CanvasSize": {
+											"UDim2": [
+												[
+													0,
+													0
+												],
+												[
+													0,
+													0
+												]
+											]
+										},
+										"AutomaticCanvasSize": "Y",
+										"ScrollingDirection": "Y",
+										"ScrollBarThickness": 6,
+										"ScrollBarImageTransparency": 0.3,
+										"LayoutOrder": 1
+									},
+									"ShopGrid": {
+										"$className": "Frame",
+										"$properties": {
+											"BackgroundTransparency": 1,
+											"Size": {
+												"UDim2": [
+													[
+														1,
+														0
+													],
+													[
+														0,
+														0
+													]
+												]
+											},
+											"AutomaticSize": "Y"
+										},
+										"GridLayout": {
+											"$className": "UIGridLayout",
+											"$properties": {
+												"FillDirectionMaxCells": 2,
+												"CellPadding": {
+													"UDim2": [
+														[
+															0.02,
+															0
+														],
+														[
+															0.02,
+															0
+														]
+													]
+												},
+												"CellSize": {
+													"UDim2": [
+														[
+															0.46,
+															0
+														],
+														[
+															0.18,
+															0
+														]
+													]
+												},
+												"SortOrder": "LayoutOrder",
+												"HorizontalAlignment": "Center",
+												"VerticalAlignment": "Top",
+												"FillDirection": "Horizontal"
+											}
+										},
+										"ShopTile_Drill": {
+											"$className": "ImageButton",
+											"$properties": {
+												"BackgroundColor3": [
+													0.10196078431372549,
+													0.16862745098039217,
+													0.23529411764705882
+												],
+												"AutoButtonColor": false,
+												"BorderSizePixel": 0,
+												"LayoutOrder": 1,
+												"Image": "",
+												"ScaleType": "Fit",
+												"Size": {
+													"UDim2": [
+														[
+															1,
+															0
+														],
+														[
+															1,
+															0
+														]
+													]
+												}
+											},
+											"STC1": {
+												"$className": "UIStroke",
+												"$properties": {
+													"Thickness": 1,
+													"Color": [
+														0.21568627450980393,
+														0.37254901960784315,
+														0.43137254901960786
+													],
+													"Transparency": 0.15,
+													"ApplyStrokeMode": "Border"
+												}
+											},
+											"TCC1": {
+												"$className": "UICorner",
+												"$properties": {
+													"CornerRadius": {
+														"UDim": [
+															0.08,
+															0
+														]
+													}
+												}
+											},
+											"TileLabel": {
+												"$className": "TextLabel",
+												"$properties": {
+													"BackgroundTransparency": 1,
+													"Text": "DRILL",
+													"TextColor3": [
+														0.9,
+														0.92,
+														0.95
+													],
+													"TextScaled": true,
+													"Position": {
+														"UDim2": [
+															[
+																0.5,
+																0
+															],
+															[
+																0.88,
+																0
+															]
+														]
+													},
+													"AnchorPoint": [
+														0.5,
+														0.5
+													],
+													"Size": {
+														"UDim2": [
+															[
+																0.9,
+																0
+															],
+															[
+																0.2,
+																0
+															]
+														]
+													},
+													"FontFace": {
+														"family": "rbxasset://fonts/families/SourceSansPro.json",
+														"weight": "SemiBold",
+														"style": "Normal"
+													}
+												},
+												"Tb1": {
+													"$className": "UITextSizeConstraint",
+													"$properties": {
+														"MinTextSize": 8,
+														"MaxTextSize": 14
+													}
+												}
+											}
+										},
+										"ShopTile_Refiner": {
+											"$className": "ImageButton",
+											"$properties": {
+												"BackgroundColor3": [
+													0.10196078431372549,
+													0.16862745098039217,
+													0.23529411764705882
+												],
+												"AutoButtonColor": false,
+												"BorderSizePixel": 0,
+												"LayoutOrder": 2,
+												"Image": "",
+												"ScaleType": "Fit",
+												"Size": {
+													"UDim2": [
+														[
+															1,
+															0
+														],
+														[
+															1,
+															0
+														]
+													]
+												}
+											},
+											"Tst2": {
+												"$className": "UIStroke",
+												"$properties": {
+													"Thickness": 1,
+													"Color": [
+														0.21568627450980393,
+														0.37254901960784315,
+														0.43137254901960786
+													],
+													"ApplyStrokeMode": "Border",
+													"Transparency": 0.15
+												}
+											},
+											"TCC2": {
+												"$className": "UICorner",
+												"$properties": {
+													"CornerRadius": {
+														"UDim": [
+															0.08,
+															0
+														]
+													}
+												}
+											},
+											"Tls2": {
+												"$className": "TextLabel",
+												"$properties": {
+													"BackgroundTransparency": 1,
+													"Text": "REFINER",
+													"TextColor3": [
+														0.9,
+														0.92,
+														0.95
+													],
+													"TextScaled": true,
+													"Position": {
+														"UDim2": [
+															[
+																0.5,
+																0
+															],
+															[
+																0.88,
+																0
+															]
+														]
+													},
+													"AnchorPoint": [
+														0.5,
+														0.5
+													],
+													"Size": {
+														"UDim2": [
+															[
+																0.9,
+																0
+															],
+															[
+																0.2,
+																0
+															]
+														]
+													},
+													"FontFace": {
+														"family": "rbxasset://fonts/families/SourceSansPro.json",
+														"weight": "SemiBold",
+														"style": "Normal"
+													}
+												}
+											}
+										},
+										"ShopTile_Cannon": {
+											"$className": "ImageButton",
+											"$properties": {
+												"BackgroundColor3": [
+													0.10196078431372549,
+													0.16862745098039217,
+													0.23529411764705882
+												],
+												"AutoButtonColor": false,
+												"BorderSizePixel": 0,
+												"LayoutOrder": 3,
+												"Image": "",
+												"ScaleType": "Fit",
+												"Size": {
+													"UDim2": [
+														[
+															1,
+															0
+														],
+														[
+															1,
+															0
+														]
+													]
+												}
+											},
+											"Tst3": {
+												"$className": "UIStroke",
+												"$properties": {
+													"Thickness": 1,
+													"Color": [
+														0.21568627450980393,
+														0.37254901960784315,
+														0.43137254901960786
+													],
+													"ApplyStrokeMode": "Border",
+													"Transparency": 0.15
+												}
+											},
+											"TCC3": {
+												"$className": "UICorner",
+												"$properties": {
+													"CornerRadius": {
+														"UDim": [
+															0.08,
+															0
+														]
+													}
+												}
+											},
+											"Tls3": {
+												"$className": "TextLabel",
+												"$properties": {
+													"BackgroundTransparency": 1,
+													"Text": "CANNON",
+													"TextColor3": [
+														0.9,
+														0.92,
+														0.95
+													],
+													"TextScaled": true,
+													"Position": {
+														"UDim2": [
+															[
+																0.5,
+																0
+															],
+															[
+																0.88,
+																0
+															]
+														]
+													},
+													"AnchorPoint": [
+														0.5,
+														0.5
+													],
+													"Size": {
+														"UDim2": [
+															[
+																0.9,
+																0
+															],
+															[
+																0.2,
+																0
+															]
+														]
+													},
+													"FontFace": {
+														"family": "rbxasset://fonts/families/SourceSansPro.json",
+														"weight": "SemiBold",
+														"style": "Normal"
+													}
+												}
+											}
+										},
+										"ShopTile_Ship": {
+											"$className": "ImageButton",
+											"$properties": {
+												"BackgroundColor3": [
+													0.10196078431372549,
+													0.16862745098039217,
+													0.23529411764705882
+												],
+												"AutoButtonColor": false,
+												"BorderSizePixel": 0,
+												"LayoutOrder": 4,
+												"Image": "",
+												"ScaleType": "Fit",
+												"Size": {
+													"UDim2": [
+														[
+															1,
+															0
+														],
+														[
+															1,
+															0
+														]
+													]
+												}
+											},
+											"Tst4": {
+												"$className": "UIStroke",
+												"$properties": {
+													"Thickness": 1,
+													"Color": [
+														0.21568627450980393,
+														0.37254901960784315,
+														0.43137254901960786
+													],
+													"ApplyStrokeMode": "Border",
+													"Transparency": 0.15
+												}
+											},
+											"TCC4": {
+												"$className": "UICorner",
+												"$properties": {
+													"CornerRadius": {
+														"UDim": [
+															0.08,
+															0
+														]
+													}
+												}
+											},
+											"Tls4": {
+												"$className": "TextLabel",
+												"$properties": {
+													"BackgroundTransparency": 1,
+													"Text": "SHIP",
+													"TextColor3": [
+														0.9,
+														0.92,
+														0.95
+													],
+													"TextScaled": true,
+													"Position": {
+														"UDim2": [
+															[
+																0.5,
+																0
+															],
+															[
+																0.88,
+																0
+															]
+														]
+													},
+													"AnchorPoint": [
+														0.5,
+														0.5
+													],
+													"Size": {
+														"UDim2": [
+															[
+																0.9,
+																0
+															],
+															[
+																0.2,
+																0
+															]
+														]
+													},
+													"FontFace": {
+														"family": "rbxasset://fonts/families/SourceSansPro.json",
+														"weight": "SemiBold",
+														"style": "Normal"
+													}
+												}
+											}
+										}
+									}
+								},
+								"DetailPanel": {
+									"$className": "Frame",
+									"$properties": {
+										"BackgroundColor3": [
+											0.10196078431372549,
+											0.16862745098039217,
+											0.23529411764705882
+										],
+										"BackgroundTransparency": 0,
+										"BorderSizePixel": 0,
+										"Size": {
+											"UDim2": [
+												[
+													0.545,
+													0
+												],
+												[
+													1,
+													0
+												]
+											]
+										},
+										"LayoutOrder": 2
+									},
+									"DPC": {
+										"$className": "UICorner",
+										"$properties": {
+											"CornerRadius": {
+												"UDim": [
+													0.06,
+													0
+												]
+											}
+										}
+									},
+									"DPS": {
+										"$className": "UIStroke",
+										"$properties": {
+											"Thickness": 1,
+											"Color": [
+												0.21568627450980393,
+												0.37254901960784315,
+												0.43137254901960786
+											],
+											"Transparency": 0.25
+										}
+									},
+									"DPPad": {
+										"$className": "UIPadding",
+										"$properties": {
+											"PaddingTop": {
+												"UDim": [
+													0.035,
+													0
+												]
+											},
+											"PaddingBottom": {
+												"UDim": [
+													0.035,
+													0
+												]
+											},
+											"PaddingLeft": {
+												"UDim": [
+													0.04,
+													0
+												]
+											},
+											"PaddingRight": {
+												"UDim": [
+													0.04,
+													0
+												]
+											}
+										}
+									},
+									"DList": {
+										"$className": "UIListLayout",
+										"$properties": {
+											"FillDirection": "Vertical",
+											"HorizontalAlignment": "Center",
+											"Padding": {
+												"UDim": [
+													0.02,
+													0
+												]
+											},
+											"VerticalAlignment": "Top"
+										}
+									},
+									"DetailIcon": {
+										"$className": "ImageLabel",
+										"$properties": {
+											"BackgroundTransparency": 0.92,
+											"BackgroundColor3": [
+												0.0392156862745098,
+												0.08627450980392157,
+												0.13333333333333333
+											],
+											"Size": {
+												"UDim2": [
+													[
+														0.75,
+														0
+													],
+													[
+														0.34,
+														0
+													]
+												]
+											},
+											"Image": "",
+											"ScaleType": "Fit"
+										},
+										"DIA": {
+											"$className": "UIAspectRatioConstraint",
+											"$properties": {
+												"AspectRatio": 1.15,
+												"AspectType": "FitWithinMaxSize",
+												"DominantAxis": "Width"
+											}
+										},
+										"DIC": {
+											"$className": "UICorner",
+											"$properties": {
+												"CornerRadius": {
+													"UDim": [
+														0.06,
+														0
+													]
+												}
+											}
+										}
+									},
+									"DetailTitle": {
+										"$className": "TextLabel",
+										"$properties": {
+											"BackgroundTransparency": 1,
+											"Text": "SELECT AN ITEM",
+											"TextColor3": [
+												0.93,
+												0.94,
+												0.96
+											],
+											"TextScaled": true,
+											"TextXAlignment": "Center",
+											"FontFace": {
+												"family": "rbxasset://fonts/families/SourceSansPro.json",
+												"weight": "Bold",
+												"style": "Normal"
+											},
+											"Size": {
+												"UDim2": [
+													[
+														1,
+														0
+													],
+													[
+														0.1,
+														0
+													]
+												]
+											},
+											"LayoutOrder": 2
+										},
+										"DTtc": {
+											"$className": "UITextSizeConstraint",
+											"$properties": {
+												"MinTextSize": 11,
+												"MaxTextSize": 20
+											}
+										}
+									},
+									"DetailDescription": {
+										"$className": "TextLabel",
+										"$properties": {
+											"BackgroundTransparency": 1,
+											"Text": "Choose a rebirth upgrade from the grid.",
+											"TextColor3": [
+												0.62,
+												0.66,
+												0.71
+											],
+											"TextScaled": true,
+											"TextWrapped": true,
+											"TextXAlignment": "Center",
+											"TextYAlignment": "Top",
+											"FontFace": {
+												"family": "rbxasset://fonts/families/SourceSansPro.json",
+												"weight": "Regular",
+												"style": "Normal"
+											},
+											"Size": {
+												"UDim2": [
+													[
+														1,
+														0
+													],
+													[
+														0.2,
+														0
+													]
+												]
+											},
+											"LayoutOrder": 3
+										},
+										"DDtc": {
+											"$className": "UITextSizeConstraint",
+											"$properties": {
+												"MinTextSize": 9,
+												"MaxTextSize": 14
+											}
+										}
+									},
+									"DetailPriceRow": {
+										"$className": "Frame",
+										"$properties": {
+											"BackgroundTransparency": 1,
+											"Size": {
+												"UDim2": [
+													[
+														1,
+														0
+													],
+													[
+														0.08,
+														0
+													]
+												]
+											},
+											"LayoutOrder": 4
+										},
+										"PRl": {
+											"$className": "UIListLayout",
+											"$properties": {
+												"FillDirection": "Horizontal",
+												"VerticalAlignment": "Center",
+												"HorizontalAlignment": "Center",
+												"Padding": {
+													"UDim": [
+														0.015,
+														0
+													]
+												}
+											}
+										},
+										"DetailPriceLabel": {
+											"$className": "TextLabel",
+											"$properties": {
+												"BackgroundTransparency": 1,
+												"Text": "-- tokens",
+												"TextColor3": [
+													0.8313725490196079,
+													0.6980392156862745,
+													0.47843137254901963
+												],
+												"TextScaled": true,
+												"FontFace": {
+													"family": "rbxasset://fonts/families/SourceSansPro.json",
+													"weight": "SemiBold",
+													"style": "Normal"
+												},
+												"Size": {
+													"UDim2": [
+														[
+															0.85,
+															0
+														],
+														[
+															1,
+															0
+														]
+													]
+												}
+											},
+											"DPlc": {
+												"$className": "UITextSizeConstraint",
+												"$properties": {
+													"MinTextSize": 11,
+													"MaxTextSize": 18
+												}
+											}
+										}
+									},
+									"BuyButton": {
+										"$className": "TextButton",
+										"$properties": {
+											"BackgroundColor3": [
+												0.78,
+												0.65,
+												0.42
+											],
+											"Text": "BUY",
+											"TextColor3": [
+												0.12,
+												0.1,
+												0.08
+											],
+											"TextScaled": true,
+											"FontFace": {
+												"family": "rbxasset://fonts/families/SourceSansPro.json",
+												"weight": "Bold",
+												"style": "Normal"
+											},
+											"AutoButtonColor": true,
+											"Size": {
+												"UDim2": [
+													[
+														0.92,
+														0
+													],
+													[
+														0.12,
+														0
+													]
+												]
+											},
+											"LayoutOrder": 5,
+											"BorderSizePixel": 0
+										},
+										"BBC": {
+											"$className": "UICorner",
+											"$properties": {
+												"CornerRadius": {
+													"UDim": [
+														0.25,
+														0
+													]
+												}
+											}
+										},
+										"BBtc": {
+											"$className": "UITextSizeConstraint",
+											"$properties": {
+												"MinTextSize": 12,
+												"MaxTextSize": 22
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}

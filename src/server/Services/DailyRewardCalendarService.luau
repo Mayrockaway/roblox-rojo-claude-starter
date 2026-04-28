@@ -24,6 +24,25 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local DailyRewardCalendarConfig = require(Shared:WaitForChild("Config"):WaitForChild("DailyRewardCalendarConfig"))
 local BoatCatalog = require(Shared:WaitForChild("Config"):WaitForChild("BoatCatalog"))
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
+
+--- Cash payout when every boat in a `boatPool` slot is already owned. Hoisted
+--- from inside `_grantReward` so the per-claim telemetry hook in
+--- `_handleClaim` can stamp the same number on `daily_reward_cash` /
+--- `daily_reward_claimed` without duplicating the literal.
+local BOAT_POOL_CASH_FALLBACK = 25000
+
+--- Grant outcome metadata returned alongside `(ok, code)` from `_grantReward`,
+--- used by `_handleClaim` to populate the `daily_reward_claimed` Track event
+--- and (when `cashAmount` is set) the `daily_reward_cash` Economy event.
+--- Every field is optional — an absent field means the branch did not produce
+--- a value of that shape (e.g. an `OK_NO_OP` cash claim sets none of them).
+type RewardGrantDetails = {
+	cashAmount: number?,
+	boatId: string?,
+	itemId: string?,
+	qty: number?,
+}
 
 local DailyRewardCalendarService = {}
 
@@ -90,7 +109,7 @@ end
 --- and return success — the player still progresses through the calendar
 --- so the flow is testable end-to-end while gameplay-side rewards are
 --- being wired.
-function DailyRewardCalendarService:_grantReward(player: Player, reward: any): (boolean, string)
+function DailyRewardCalendarService:_grantReward(player: Player, reward: any): (boolean, string, RewardGrantDetails?)
 	local kind = (reward and reward.kind) or "noop"
 	local payload = (reward and reward.payload) or {}
 	local userId = player.UserId
@@ -102,14 +121,14 @@ function DailyRewardCalendarService:_grantReward(player: Player, reward: any): (
 				"[DailyRewardCalendar] %s (%s): cash reward has non-positive amount=%s — granting nothing",
 				reward.id or "?", player.Name, tostring(payload.amount)
 			))
-			return true, "OK_NO_OP"
+			return true, "OK_NO_OP", nil
 		end
 		local ok = self._oilState:AddCash(userId, amount, { skipMultiplier = true })
 		if ok then
 			self._oilState:PushState(userId)
-			return true, "OK"
+			return true, "OK", { cashAmount = amount }
 		end
-		return false, "ERR_ADD_CASH_FAILED"
+		return false, "ERR_ADD_CASH_FAILED", nil
 
 	elseif kind == "boat" then
 		local boatId = payload.boatId
@@ -118,21 +137,21 @@ function DailyRewardCalendarService:_grantReward(player: Player, reward: any): (
 				"[DailyRewardCalendar] %s (%s): boat reward has no boatId — TODO: wire BoatCatalog id, granting nothing",
 				reward.id or "?", player.Name
 			))
-			return true, "OK_TODO_BOAT_ID"
+			return true, "OK_TODO_BOAT_ID", nil
 		end
 		if not BoatCatalog.IsBoatPurchasable(boatId) then
 			warn(string.format(
 				"[DailyRewardCalendar] %s (%s): boat reward boatId=%q not in BoatCatalog — granting nothing",
 				reward.id or "?", player.Name, boatId
 			))
-			return true, "OK_BAD_BOAT_ID"
+			return true, "OK_BAD_BOAT_ID", nil
 		end
 		local granted, code = self._oilState:GrantBoat(userId, boatId)
 		if granted or code == "OK_ALREADY_OWNED" then
 			self._oilState:PushState(userId)
-			return true, code or "OK"
+			return true, code or "OK", { boatId = boatId }
 		end
-		return false, code or "ERR_GRANT_BOAT"
+		return false, code or "ERR_GRANT_BOAT", nil
 
 	elseif kind == "boatPool" then
 		--- Random-boat slot. Pick uniformly from the named pool, persist
@@ -162,7 +181,7 @@ function DailyRewardCalendarService:_grantReward(player: Player, reward: any): (
 				"[DailyRewardCalendar] %s (%s): boatPool reward has no poolKey — granting nothing",
 				reward.id or "?", player.Name
 			))
-			return true, "OK_BAD_POOL_KEY"
+			return true, "OK_BAD_POOL_KEY", nil
 		end
 		local pool = DailyRewardCalendarConfig.BoatPools and DailyRewardCalendarConfig.BoatPools[poolKey]
 		if typeof(pool) ~= "table" or #pool == 0 then
@@ -170,7 +189,7 @@ function DailyRewardCalendarService:_grantReward(player: Player, reward: any): (
 				"[DailyRewardCalendar] %s (%s): boatPool poolKey=%q is empty/missing",
 				reward.id or "?", player.Name, poolKey
 			))
-			return true, "OK_EMPTY_POOL"
+			return true, "OK_EMPTY_POOL", nil
 		end
 		--- Filter: only consider pool entries the player doesn't already own
 		--- AND that are still purchasable in the catalog (defends against
@@ -191,10 +210,9 @@ function DailyRewardCalendarService:_grantReward(player: Player, reward: any): (
 			--- average so the duplicate fallback feels rewarding rather
 			--- than a downgrade. `skipMultiplier = true` keeps it as a
 			--- gift (DoubleEarnings / cash buffs don't double-dip).
-			local fallbackAmount = 25000
-			local cashOk = self._oilState:AddCash(userId, fallbackAmount, { skipMultiplier = true })
+			local cashOk = self._oilState:AddCash(userId, BOAT_POOL_CASH_FALLBACK, { skipMultiplier = true })
 			if not cashOk then
-				return false, "ERR_ADD_CASH_FAILED"
+				return false, "ERR_ADD_CASH_FAILED", nil
 			end
 			--- Do NOT touch `dailyRewardSlot2BoatId` here — leave any prior
 			--- rolled id intact so the panel keeps showing the last hull
@@ -204,10 +222,10 @@ function DailyRewardCalendarService:_grantReward(player: Player, reward: any): (
 			if RunService:IsStudio() then
 				print(string.format(
 					"[DailyRewardCalendar] %s rolled boatPool %q with all owned -> cash fallback $%d",
-					player.Name, poolKey, fallbackAmount
+					player.Name, poolKey, BOAT_POOL_CASH_FALLBACK
 				))
 			end
-			return true, "OK_CASH_FALLBACK"
+			return true, "OK_CASH_FALLBACK", { cashAmount = BOAT_POOL_CASH_FALLBACK }
 		end
 
 		local rolled = unowned[math.random(1, #unowned)]
@@ -219,9 +237,9 @@ function DailyRewardCalendarService:_grantReward(player: Player, reward: any): (
 		self._oilState:SetDailyRewardSlot2BoatId(userId, rolled)
 		if granted or code == "OK_ALREADY_OWNED" then
 			self._oilState:PushState(userId)
-			return true, code or "OK"
+			return true, code or "OK", { boatId = rolled }
 		end
-		return false, code or "ERR_GRANT_BOAT"
+		return false, code or "ERR_GRANT_BOAT", nil
 
 	elseif kind == "equipment" then
 		local itemId = payload.itemId
@@ -231,19 +249,20 @@ function DailyRewardCalendarService:_grantReward(player: Player, reward: any): (
 				"[DailyRewardCalendar] %s (%s): equipment reward bad payload (itemId=%s, qty=%s) — granting nothing",
 				reward.id or "?", player.Name, tostring(itemId), tostring(qty)
 			))
-			return true, "OK_BAD_EQUIPMENT_PAYLOAD"
+			return true, "OK_BAD_EQUIPMENT_PAYLOAD", nil
 		end
 		if not (self._equipmentShop and typeof(self._equipmentShop.GrantFreeOwnedEquipment) == "function") then
 			warn(string.format(
 				"[DailyRewardCalendar] %s (%s): EquipmentShopService unavailable — cannot grant %dx %s",
 				reward.id or "?", player.Name, qty, itemId
 			))
-			return false, "ERR_NO_EQUIPMENT_SHOP"
+			return false, "ERR_NO_EQUIPMENT_SHOP", nil
 		end
-		self._equipmentShop:GrantFreeOwnedEquipment(player, itemId, math.floor(qty))
+		local grantedQty = math.floor(qty)
+		self._equipmentShop:GrantFreeOwnedEquipment(player, itemId, grantedQty)
 		--- `GrantFreeOwnedEquipment` already pushes state internally, so no
 		--- explicit `PushState` here.
-		return true, "OK"
+		return true, "OK", { itemId = itemId, qty = grantedQty }
 
 	elseif kind == "runUpgrade" then
 		local itemId = payload.itemId
@@ -253,15 +272,16 @@ function DailyRewardCalendarService:_grantReward(player: Player, reward: any): (
 				"[DailyRewardCalendar] %s (%s): runUpgrade reward bad payload (itemId=%s, qty=%s) — granting nothing",
 				reward.id or "?", player.Name, tostring(itemId), tostring(qty)
 			))
-			return true, "OK_BAD_RUN_UPGRADE_PAYLOAD"
+			return true, "OK_BAD_RUN_UPGRADE_PAYLOAD", nil
 		end
-		self._oilState:AddRunUpgradeOwned(userId, itemId, math.floor(qty))
+		local grantedQty = math.floor(qty)
+		self._oilState:AddRunUpgradeOwned(userId, itemId, grantedQty)
 		self._oilState:PushState(userId)
-		return true, "OK"
+		return true, "OK", { itemId = itemId, qty = grantedQty }
 	end
 
 	--- "noop" or unknown kind: explicit no-grant slot.
-	return true, "OK_NOOP"
+	return true, "OK_NOOP", nil
 end
 
 --- Validate + grant the next claimable reward. Called from the client's
@@ -319,7 +339,7 @@ function DailyRewardCalendarService:_handleClaim(player: Player)
 		return
 	end
 
-	local ok, code = self:_grantReward(player, reward)
+	local ok, code, details = self:_grantReward(player, reward)
 	if not ok then
 		warn(string.format(
 			"[DailyRewardCalendar] %s claim grant failed at index %d (id=%s, code=%s)",
@@ -349,6 +369,39 @@ function DailyRewardCalendarService:_handleClaim(player: Player)
 	})
 
 	self:_pushState(player)
+
+	--- Telemetry: one Track event per successful claim (regardless of kind)
+	--- so the dashboard can answer "how many players reach slot N" by binning
+	--- on `slotIndex`. Cash-bearing claims (kind=cash, plus the boatPool→cash
+	--- fallback) also fire `Telemetry.Economy` so the soft-currency `Source`
+	--- flow on the Roblox dashboard counts the grant. Fired AFTER the client
+	--- response + state push so a Telemetry hiccup never blocks the player's
+	--- claim from completing visually.
+	local claimedProps: { [string]: any } = {
+		slotIndex = nextIndex,
+		rewardId = reward.id,
+		kind = reward.kind,
+		grantCode = code,
+		totalRewards = DailyRewardCalendarConfig.TotalRewards,
+	}
+	if details then
+		if details.cashAmount then
+			claimedProps.cashAmount = details.cashAmount
+		end
+		if details.boatId then
+			claimedProps.boatId = details.boatId
+		end
+		if details.itemId then
+			claimedProps.itemId = details.itemId
+		end
+		if details.qty then
+			claimedProps.qty = details.qty
+		end
+	end
+	Telemetry.Track(player, "daily_reward_claimed", claimedProps)
+	if details and details.cashAmount and details.cashAmount > 0 then
+		Telemetry.Economy(player, "Source", details.cashAmount, "cash", "daily_reward_cash", reward.id)
+	end
 
 	if RunService:IsStudio() then
 		print(string.format(

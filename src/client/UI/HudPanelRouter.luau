@@ -2,7 +2,8 @@
 -- Wires HUD modal-toggle buttons to `ScreenGui`s (exclusive group; second press closes).
 -- Buttons live in authored regions of `HUD.Canvas` (see live Studio layout):
 --   * `TopRow`         — OilPriceButton, StraitStatusButton
---   * `Canvas` direct  — StraitControlCta (aliases `StraitControlCTA`), RobuxShop
+--   * `Canvas` direct  — StraitControlCta (aliases `StraitControlCTA`); Robux shop
+--     opener is `CashStripPlus` inside `CashStrip` (aliases `RobuxShop` on Canvas)
 --   * `Canvas.Buttons` — DailyButton, SettingsButton
 -- Shop / ship oil / sell / manage-ship entrypoints are **not** required here when those
 -- buttons were removed or moved (e.g. world `ProximityPrompt` + `openScreen`). `openScreen` lazy-binds
@@ -11,8 +12,120 @@
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
 local getClientRemotes = require(script.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
+
+--- Verbose HUD modal traces. On by default in Studio; set `HudModalDebug` = false on LocalPlayer
+--- to silence. Outside Studio, set `HudModalDebug` = true on the client to trace the same lines.
+local function hudModalDebugEnabled(): boolean
+	local lp = Players.LocalPlayer
+	if lp and lp:GetAttribute("HudModalDebug") == false then
+		return false
+	end
+	if RunService:IsStudio() then
+		return true
+	end
+	return lp ~= nil and lp:GetAttribute("HudModalDebug") == true
+end
+
+local function dbgModal(...)
+	if not hudModalDebugEnabled() then
+		return
+	end
+	print("[HudModalDebug]", ...)
+end
+
+local function formatHudGuiHitLine(go: GuiObject, index: number): string
+	-- `Interactable` was added in a later GuiObject version; older instances
+	-- raise on the read, so we wrap in pcall. The string we hand `%s` MUST
+	-- be a string — Luau's `string.format` rejects raw booleans (which is
+	-- what the previous `... and interactVal or "?"` expression would
+	-- collapse to when the property read succeeded). `tostring` gives us
+	-- "true" / "false" cleanly, with "?" as the fallback when the read
+	-- raised or returned a non-boolean.
+	local interactStr = "?"
+	local interactableOk, interactVal = pcall(function()
+		return (go :: any).Interactable
+	end)
+	if interactableOk and typeof(interactVal) == "boolean" then
+		interactStr = tostring(interactVal)
+	end
+	return string.format(
+		"[%d] %s %q | Visible=%s Active=%s Interactable=%s ZIndex=%d LayoutOrder=%d",
+		index,
+		go.ClassName,
+		go.Name,
+		tostring(go.Visible),
+		tostring(go.Active),
+		interactStr,
+		go.ZIndex,
+		go.LayoutOrder
+	)
+end
+
+local function logGuiStackBelowCursor(playerGui: PlayerGui, tag: string, maxLen: number)
+	local pos = UserInputService:GetMouseLocation()
+	local ok, objs = pcall(function()
+		return playerGui:GetGuiObjectsAtPosition(pos.X, pos.Y)
+	end)
+	if not ok or typeof(objs) ~= "table" then
+		dbgModal(tag .. " GetGuiObjectsAtPosition failed:", tostring(objs))
+		return
+	end
+	dbgModal(tag, string.format(" mouse=(%.0f,%.0f) hits=%d", pos.X, pos.Y, #objs))
+	for i = 1, math.min(maxLen, #objs) do
+		local o = objs[i]
+		if o:IsA("GuiObject") then
+			dbgModal(" ", formatHudGuiHitLine(o :: GuiObject, i))
+		end
+	end
+end
+
+local function describeModalHudButton(btn: GuiButton): string
+	local sg = btn:FindFirstAncestorWhichIsA("ScreenGui")
+	local sge = "?"
+	local dor = "?"
+	local sn = "?"
+	if sg and sg:IsA("ScreenGui") then
+		local s = sg :: ScreenGui
+		sn = s.Name
+		sge = tostring(s.Enabled)
+		dor = tostring(s.DisplayOrder)
+	end
+	return string.format(
+		"%s | Btn Visible=%s Active=%s | ScreenGui=%s Enabled=%s DisplayOrder=%s",
+		btn:GetFullName(),
+		tostring(btn.Visible),
+		tostring(btn.Active),
+		sn,
+		sge,
+		dor
+	)
+end
+
+--- One-shot: every GuiButton under HUD whose name suggests store/Robux/cash "+" (screenshot STORE vs CashStrip wiring).
+local function dbgDumpHudStoreRelatedButtons(hud: Instance)
+	dbgModal("HudButton name scan under HUD (substrings store, robux, plus):")
+	local lines: { string } = {}
+	for _, d in ipairs(hud:GetDescendants()) do
+		if d:IsA("GuiButton") then
+			local nm = string.lower(d.Name)
+			if
+				string.find(nm, "store", 1, true)
+				or string.find(nm, "robux", 1, true)
+				or string.find(nm, "plus", 1, true)
+			then
+				table.insert(lines, describeModalHudButton(d))
+			end
+		end
+	end
+	table.sort(lines)
+	for _, ln in ipairs(lines) do
+		dbgModal(" ", ln)
+	end
+	dbgModal("Matching GuiButtons count:", #lines)
+end
 
 local ActiveManifestController = require(script.Parent.ActiveManifestController)
 local DailyPanel = require(script.Parent.HudPanels.DailyPanel)
@@ -30,6 +143,10 @@ local HudPanelTypes = require(script.Parent.HudPanelTypes)
 local HudTriggerHover = require(script.Parent.HudTriggerHover)
 
 local STRAIT_CONTROL_CTA_ALIASES = { "StraitControlCta", "StraitControlCTA" }
+
+-- Robux modal openers moved from Canvas root into `CashStrip` (Plus). Try the
+-- new name first, then legacy top-level `RobuxShop`, so StarterGui mismatches warn once.
+local ROBUX_SHOP_TRIGGER_ALIASES = { "CashStripPlus", "RobuxShop" }
 
 -- Maps **HUD GuiButton.Name** → **target ScreenGui name**. `findHudModalButton`
 -- searches `Canvas` direct children, then `Canvas.Buttons`, then `Canvas.TopRow`,
@@ -175,6 +292,30 @@ local function isComingSoonGated(btn: GuiButton): boolean
 	return btn:FindFirstChild(COMING_SOON_OVERLAY_NAME) ~= nil
 end
 
+--- `CashStripPlus` may be authored as a sizing `Frame` with the real hit target as a child
+--- `GuiButton`. `FindFirstChild` returns the Frame — convert to the clickable button.
+local function coerceRobuxShopModalTrigger(raw: Instance?): GuiButton?
+	if not raw then
+		return nil
+	end
+	if raw:IsA("GuiButton") then
+		return raw :: GuiButton
+	end
+	if raw:IsA("Frame") then
+		-- Invisible Frames often ship `Active=true` and swallow hits before any child GuiButton receives them.
+		(raw :: Frame).Active = false
+		local direct = raw:FindFirstChildWhichIsA("GuiButton", false)
+		if direct and direct:IsA("GuiButton") then
+			return direct :: GuiButton
+		end
+		local deep = raw:FindFirstChildWhichIsA("GuiButton", true)
+		if deep and deep:IsA("GuiButton") then
+			return deep :: GuiButton
+		end
+	end
+	return nil
+end
+
 local function passthroughDecorationsToTrigger(btn: GuiButton)
 	for _, d in ipairs(btn:GetDescendants()) do
 		if d:IsA("GuiObject") and not d:IsA("GuiButton") then
@@ -258,6 +399,7 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 				if isComingSoonGated(btn) then
 					btn.Active = false
 					btn.AutoButtonColor = false
+					dbgModal("wireTrigger SKIPPED (ComingSoonOverlay):", screenName, btn:GetFullName())
 					return
 				end
 				-- Defensive: ensure the button itself receives input. Many StarterGui HUD
@@ -265,9 +407,21 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 				-- (FTUE pointer, hotbar strip, popups) swallow the click before it reaches
 				-- the trigger — manifests as "modal sometimes doesn't open".
 				btn.Active = true
+				btn.Selectable = true
+				btn.Interactable = true
 				passthroughDecorationsToTrigger(btn)
+				dbgModal("wireTrigger CONNECT:", screenName, describeModalHudButton(btn))
 				local armed = false
-				local function onPress()
+				local function onPress(inputKind: string)
+					dbgModal(string.format(
+						"modal press BEGIN kind=%s screen=%s target=%s",
+						inputKind,
+						screenName,
+						btn:GetFullName()
+					))
+					if screenName == "RobuxShop" then
+						logGuiStackBelowCursor(playerGui, "[RobuxShop] top GuiObjects under cursor @ handler]", 12)
+					end
 					-- Live coming-soon recheck: if the overlay was added to
 					-- the button after wiring (Studio edit, runtime authoring
 					-- pass), this short-circuits the press without requiring
@@ -275,9 +429,11 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 					-- the overlay can be toggled either way and behavior
 					-- tracks immediately.
 					if isComingSoonGated(btn) then
+						dbgModal("  SKIPPED overlay gate at handler time:", screenName)
 						return
 					end
 					if armed then
+						dbgModal("  SKIPPED armed debounce (duplicate Activated+M1?):", screenName)
 						return
 					end
 					armed = true
@@ -291,22 +447,36 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 					-- destroyed instance and the press would no-op.
 					local ctrl = bindPanelForScreen(playerGui, screenName)
 					if not ctrl then
+						dbgModal("  SKIPPED bindPanelForScreen(nil):", screenName, "Does PlayerGui have this ScreenGui?")
 						return
 					end
 					if ctrl.IsOpen() then
+						dbgModal("  CLOSE modal (already open):", screenName)
 						ctrl.Close()
 						return
 					end
+					dbgModal("  OPEN modal:", screenName)
 					closeAllExcept(nil)
 					ctrl.Open()
 				end
-				btn.Activated:Connect(onPress)
-				btn.MouseButton1Click:Connect(onPress)
+				btn.Activated:Connect(function()
+					onPress("Activated")
+				end)
+				btn.MouseButton1Click:Connect(function()
+					onPress("MouseButton1Click")
+				end)
 				HudTriggerHover.attach(btn)
 			end
 
 			local function findHudModalButton(name: string): GuiButton?
-				local names = if name == "StraitControlCta" then STRAIT_CONTROL_CTA_ALIASES else { name }
+				local names: { string }
+				if name == "StraitControlCta" then
+					names = STRAIT_CONTROL_CTA_ALIASES
+				elseif name == "RobuxShop" then
+					names = ROBUX_SHOP_TRIGGER_ALIASES
+				else
+					names = { name }
+				end
 				-- Search order:
 				--   1. Direct child of `Canvas`  (e.g. `StraitControlCta`)
 				--   2. `Canvas.Buttons`           (right-side grid: DailyButton, SettingsButton)
@@ -321,11 +491,34 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 					for i, root in ipairs(roots) do
 						-- Direct child first when the root is `Canvas` so we don't recurse
 						-- into `Buttons` / `TopRow` / etc. and grab the wrong one.
-						local b: Instance? = if i == 1 and root == canvas
+						local raw: Instance? = if i == 1 and root == canvas
 							then root:FindFirstChild(tryName)
 							else root:FindFirstChild(tryName, true)
-						if b and b:IsA("GuiButton") then
-							return b :: GuiButton
+						if not raw then
+							continue
+						end
+						if name == "RobuxShop" then
+							local robuxBtn = coerceRobuxShopModalTrigger(raw)
+							if robuxBtn then
+								dbgModal(
+									"RobuxHudButton resolver:",
+									string.format(
+										"tryName=%q raw=%s -> clickTarget=%s",
+										tryName,
+										raw:GetFullName(),
+										robuxBtn:GetFullName()
+									)
+								)
+								return robuxBtn
+							elseif hudModalDebugEnabled() then
+								dbgModal(
+									"RobuxHudButton resolver: SKIP (not a clickable GuiButton after coerce) raw=",
+									raw:GetFullName(),
+									raw.ClassName
+								)
+							end
+						elseif raw:IsA("GuiButton") then
+							return raw :: GuiButton
 						end
 					end
 				end
@@ -407,6 +600,62 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 				if wiredButton[buttonName] then
 					continue
 				end
+
+				-- Special case: RobuxShop has TWO authored triggers in the HUD
+				-- and the player should be able to use either. The previous
+				-- implementation called `findHudModalButton(buttonName)` which
+				-- short-circuits on the first alias match — `CashStripPlus`
+				-- always wins (deep-search hits it under `CashStrip`) and the
+				-- legacy `Canvas.RobuxShop` STORE button never gets wired.
+				-- Symptom the player sees: clicking the big STORE button does
+				-- nothing and there's no hover lift. Fix: iterate every alias
+				-- explicitly, wire each unique button we find, and dedupe via
+				-- `seenButtons` so a coerce that resolves to the same instance
+				-- doesn't double-bind.
+				if buttonName == "RobuxShop" then
+					local ctrl = byScreen[screenName]
+					if not ctrl then
+						continue
+					end
+					local wiredAny = false
+					local seenButtons: { [GuiButton]: boolean } = {}
+					for _, alias in ipairs(ROBUX_SHOP_TRIGGER_ALIASES) do
+						-- Same search precedence as `findHudModalButton`:
+						-- direct on Canvas, then Buttons, then TopRow, then a
+						-- recursive HUD fallback.
+						local raw: Instance? = canvas:FindFirstChild(alias)
+						if not raw and buttonsFrame and buttonsFrame:IsA("GuiObject") then
+							raw = buttonsFrame:FindFirstChild(alias, true)
+						end
+						if not raw and topRow and topRow:IsA("GuiObject") then
+							raw = topRow:FindFirstChild(alias, true)
+						end
+						if not raw then
+							raw = hud:FindFirstChild(alias, true)
+						end
+						if raw then
+							local btn = coerceRobuxShopModalTrigger(raw)
+							if btn and not seenButtons[btn] then
+								seenButtons[btn] = true
+								wireTrigger(btn, screenName)
+								wiredAny = true
+								dbgModal("RobuxHud wired alias:", alias, "->", btn:GetFullName())
+							end
+						end
+					end
+					if wiredAny then
+						wiredButton[buttonName] = true
+					elseif not warnedMissingButton[buttonName] then
+						warnedMissingButton[buttonName] = true
+						warn(
+							"[Client] HudPanelRouter: no HUD button matched any RobuxShop alias",
+							table.concat(ROBUX_SHOP_TRIGGER_ALIASES, " / "),
+							"(modal still openable via openScreen). Skipping wire."
+						)
+					end
+					continue
+				end
+
 				local btn = findHudModalButton(buttonName)
 				local ctrl = byScreen[screenName]
 				if not (btn and btn:IsA("GuiButton")) then
@@ -439,6 +688,9 @@ function HudPanelRouter.start(playerGui: PlayerGui)
 
 			if wired >= needButtons then
 				started = true
+				if hudModalDebugEnabled() then
+					dbgDumpHudStoreRelatedButtons(hud)
+				end
 				if RunService:IsStudio() then
 					print("[Client] HudPanelRouter: HUD modal buttons wired (" .. tostring(wired) .. "/" .. tostring(needButtons) .. ").")
 				end

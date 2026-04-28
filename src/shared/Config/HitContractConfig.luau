@@ -28,10 +28,17 @@ local HitContractConfig = {
 	--- Flat in-game cash cost to place a contract. Refundable as a free hit
 	--- token if the contract can't be fulfilled (target leaves, no shipment,
 	--- etc.) — see `HitContractService:RefundContract`.
-	Cost = 5000,
+	---
+	--- Robux variants (`consumable.pirate_hire_x1`) ignore this — they pay in
+	--- Robux at the receipt boundary and bypass the same-target cooldown
+	--- below. Cash hires are the only path that pays this number AND stamps
+	--- the cooldown.
+	Cost = 10000,
 
-	--- Seconds before the same contractor can place another hire on the **same**
-	--- victim (anti-spam). Starts when a hire is accepted (cash/token consumed).
+	--- Seconds before the same contractor can place another **cash** hire on
+	--- the same victim (anti-spam). Starts when a cash hire is accepted
+	--- (cash/token consumed). Robux hires neither check nor stamp this — by
+	--- design, paying Robux skips the cooldown gate entirely.
 	SameTargetHireCooldownSeconds = 120,
 }
 

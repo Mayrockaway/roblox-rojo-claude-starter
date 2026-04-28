@@ -135,6 +135,15 @@ EventCatalog.Events = {
 	boat_unlocked           = { category = "custom",  gaCategory = "design",   sampleRate = 1.0 },
 	equipment_shop_rotated  = { category = "custom",  gaCategory = "design",   sampleRate = 1.0 },
 
+	-- Daily reward calendar (`DailyRewardCalendarService`). One Track event per
+	-- successful claim regardless of reward kind so the dashboard can answer
+	-- "how far do players progress through the 7-slot calendar". Cash-bearing
+	-- claims (kind=cash, plus the boatPool→cash fallback) ALSO emit
+	-- `daily_reward_cash` through `Telemetry.Economy` so the soft-currency
+	-- source flow on the Roblox dashboard counts the grant.
+	daily_reward_claimed    = { category = "custom",  gaCategory = "design",   sampleRate = 1.0 },
+	daily_reward_cash       = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
+
 	--==========================================================================
 	-- 6.5 Strait / world events
 	--==========================================================================
