@@ -28,6 +28,9 @@ local OilStateService = {}
 local _ftueService: any = nil
 
 local SAVE_INTERVAL_SECONDS = 25
+--- PushState throttle: max one network push per this many seconds per player.
+--- Calls within the window mark the userId pending; a flush loop drains them.
+local PUSH_THROTTLE_SECONDS = 0.5
 --- Avoid stacking multiple `SetAsync` calls for the same profile key in one burst (queue / throttling).
 local MIN_DATASTORE_SET_INTERVAL_SECONDS = 7
 local FLUSH_MULTI_USER_SPACING_SECONDS = 0.2
@@ -658,6 +661,11 @@ function OilStateService:Init(remoteService, plotService)
 	self._stateReadyForTimersCallback = nil :: ((number, { any }) -> ())?
 		self._dataStore = nil
 	self._devSkipSaveOnNextDrop = {} :: { [number]: boolean }
+	--- PushState throttle: at most one push per PUSH_THROTTLE_SECONDS per player.
+	--- Calls within the throttle window mark the userId pending; a periodic flush
+	--- loop in Start() drains the pending set.
+	self._lastPushClockByUserId = {} :: { [number]: number }
+	self._pendingPushByUserId = {} :: { [number]: boolean }
 	--- Set by `init.server` after `MonetizationService` is required. Used by
 	--- `AddCash` to apply the **DoubleEarnings** GamePass multiplier to every
 	--- gameplay cash credit. Refunds and direct Robux currency packs opt out
@@ -1018,6 +1026,8 @@ function OilStateService:Start()
 			self:CaptureFtueSpawnSnapshot(player.UserId)
 		end
 		self:_flushAndDropUser(player.UserId)
+		self._lastPushClockByUserId[player.UserId] = nil
+		self._pendingPushByUserId[player.UserId] = nil
 	end))
 
 	self._autosaveThread = task.spawn(function()
@@ -1025,6 +1035,18 @@ function OilStateService:Start()
 		while self._running do
 			task.wait(SAVE_INTERVAL_SECONDS)
 			self:_flushDirtyUsers()
+		end
+	end)
+
+	-- PushState throttle flush: drain pending pushes that were deferred.
+	self._pushThrottleThread = task.spawn(function()
+		while self._running do
+			task.wait(PUSH_THROTTLE_SECONDS)
+			for pendingUserId, _ in pairs(self._pendingPushByUserId) do
+				self._pendingPushByUserId[pendingUserId] = nil
+				self._lastPushClockByUserId[pendingUserId] = os.clock()
+				self:_doPushState(pendingUserId)
+			end
 		end
 	end)
 
@@ -1483,6 +1505,21 @@ function OilStateService:GetStateForClient(userId: number)
 end
 
 function OilStateService:PushState(userId: number)
+	local now = os.clock()
+	local last = self._lastPushClockByUserId[userId] or 0
+	if now - last < PUSH_THROTTLE_SECONDS then
+		-- Within throttle window — mark pending for the flush loop.
+		self._pendingPushByUserId[userId] = true
+		return
+	end
+	self._lastPushClockByUserId[userId] = now
+	self._pendingPushByUserId[userId] = nil
+	self:_doPushState(userId)
+end
+
+--- Internal: builds snapshot, fires BindableEvent + RemoteEvent. Called by
+--- `PushState` (when allowed) and by the periodic throttle flush loop.
+function OilStateService:_doPushState(userId: number)
 	local perf = _G.Perf
 	local hBuild = perf and perf:OpenSpan("PushState.build")
 	local snapshot = self:GetStateForClient(userId)

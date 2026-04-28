@@ -402,7 +402,21 @@ local function prepareTargets(group: LoadingGroup, seenInstances: InstanceDedupe
 				end
 				if group.kind == "instance_tree" or entry.includeDescendants == true then
 					for _, descendant in ipairs(resolved:GetDescendants()) do
-						if not seenInstances[descendant] then
+						if seenInstances[descendant] then continue end
+						-- Skip non-preloadable types
+						local dominated = false
+						if descendant:IsA("ImageLabel") or descendant:IsA("ImageButton") then
+							dominated = (descendant :: any).Image ~= ""
+						elseif descendant:IsA("Sound") then
+							dominated = (descendant :: any).SoundId ~= ""
+						elseif descendant:IsA("Decal") or descendant:IsA("Texture") then
+							dominated = (descendant :: any).Texture ~= ""
+						elseif descendant:IsA("MeshPart") or descendant:IsA("SpecialMesh")
+							or descendant:IsA("Animation") or descendant:IsA("VideoFrame")
+							or descendant:IsA("ParticleEmitter") or descendant:IsA("Sky") then
+							dominated = true
+						end
+						if dominated then
 							seenInstances[descendant] = true
 							table.insert(targets, descendant)
 						end

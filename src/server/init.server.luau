@@ -122,11 +122,7 @@ DevLog.SetBroadcaster(function(msg)
 	ev:FireAllClients(msg)
 end)
 end
-LeaderboardService:Init()
-StraitStateService:Init(RemoteService)
-PlotService:Init()
-OilStateService:Init(RemoteService, PlotService)
--- Plumb the post-transaction cash balance into `LogEconomyEvent` via the
+LeaderboardService:Init()StraitStateService:Init(RemoteService)PlotService:Init()OilStateService:Init(RemoteService, PlotService)-- Plumb the post-transaction cash balance into `LogEconomyEvent` via the
 -- registered wallet reader. Done here (after `OilStateService:Init`, before
 -- any service `:Start()` could emit) so every `Telemetry.Economy` call from
 -- this point on stamps a real `endingBalance` on the Roblox dashboard

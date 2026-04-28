@@ -60,6 +60,7 @@ function OilMarketService:Init(remoteService, straitStateService, warehouseServi
 
 	self._rng = Random.new()
 	self._running = false
+	self._connections = {}
 	self._currentStraitState = "Open"
 	self._baseOilPrice = PricingConfig.BasePrice -- the ONE price that fluctuates
 	self._currentPrices = {} -- derived per QualityConfig.Tiers keys
@@ -83,12 +84,13 @@ function OilMarketService:Start()
 	self:_broadcastMarketUpdate()
 
 	-- Subscribe to strait state changes
-	self._straitStateService:OnStateChanged(function(newSnapshot)
+	local straitConn = self._straitStateService:OnStateChanged(function(newSnapshot)
 		if not self._running then return end
 		self._currentStraitState = newSnapshot.state or "Open"
 		self:_rollPrice(self._currentStraitState)
 		self:_broadcastMarketUpdate()
 	end)
+	table.insert(self._connections, straitConn)
 
 	-- Micro-tick loop
 	self._nextMicroTickAt = workspace:GetServerTimeNow() + self:_sampleMicroTickDelay()
@@ -133,16 +135,25 @@ function OilMarketService:Start()
 	end
 
 	-- Push market state to players who join mid-session
-	Players.PlayerAdded:Connect(function(player)
+	table.insert(self._connections, Players.PlayerAdded:Connect(function(player)
 		task.defer(function()
 			local event = self._remoteService:GetEvent(RemoteNames.MarketPriceUpdate)
 			event:FireClient(player, self:GetMarketSnapshot())
 		end)
-	end)
+	end))
+
+	-- Clean up first-sale tracking on leave
+	table.insert(self._connections, Players.PlayerRemoving:Connect(function(player)
+		_firstSaleByUserId[player.UserId] = nil
+	end))
 end
 
 function OilMarketService:Stop()
 	self._running = false
+	for _, conn in ipairs(self._connections) do
+		conn:Disconnect()
+	end
+	table.clear(self._connections)
 end
 
 -- =================== PRICING ===================

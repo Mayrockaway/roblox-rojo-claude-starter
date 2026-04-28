@@ -46,6 +46,7 @@ local function applyVisualVisibility(inst: Instance, visible: boolean)
 		or inst:IsA("PointLight")
 		or inst:IsA("SpotLight")
 		or inst:IsA("SurfaceLight")
+		or inst:IsA("BillboardGui")
 	then
 		if originalEnabled[inst] == nil then
 			originalEnabled[inst] = inst.Enabled
@@ -74,6 +75,8 @@ local function refreshPlot(plot: Instance)
 
 	local barrels = visuals:FindFirstChild("Barrels")
 	local sprays = visuals:FindFirstChild("OilSprays")
+	local drills = visuals:FindFirstChild("Drills")
+	local activeDrills = visuals:FindFirstChild("ActiveDrills")
 
 	if barrels then
 		applyBranchVisibility(barrels, visible)
@@ -85,6 +88,14 @@ local function refreshPlot(plot: Instance)
 				applyBranchVisibility(child, visible)
 			end
 		end
+	end
+
+	if drills then
+		applyBranchVisibility(drills, visible)
+	end
+
+	if activeDrills then
+		applyBranchVisibility(activeDrills, visible)
 	end
 end
 
@@ -116,7 +127,7 @@ end
 local function isManagedHeavyVfxInstance(inst: Instance): boolean
 	local cursor: Instance? = inst
 	while cursor and cursor ~= plotsFolder do
-		if cursor.Name == "Barrels" then
+		if cursor.Name == "Barrels" or cursor.Name == "Drills" or cursor.Name == "ActiveDrills" then
 			return true
 		end
 		if cursor:IsA("Folder") and cursor.Name:sub(1, 8) == "OilTube_" then

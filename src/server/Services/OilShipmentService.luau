@@ -938,6 +938,12 @@ function OilShipmentService:Start()
 	table.insert(self._connections, pirateRaidResult.OnServerEvent:Connect(function(player, payload)
 		self:_handlePirateRaidInteractiveResult(player, payload)
 	end))
+
+	-- Clean up module-level userId tables on leave
+	table.insert(self._connections, Players.PlayerRemoving:Connect(function(player)
+		_firstDispatchedByUserId[player.UserId] = nil
+		_firstDeliveredByUserId[player.UserId] = nil
+	end))
 end
 
 function OilShipmentService:_handleTeleportToShip(player: Player, payload: any?)

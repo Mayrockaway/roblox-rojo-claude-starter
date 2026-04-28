@@ -221,6 +221,7 @@ function WarehouseService:Init(remoteService, oilStateService)
 	self._dataStoreStudioFallbackWarned = false
 	self._lastWarehouseDataStoreSaveClock = {} :: { [number]: number }
 	self._dataStore = nil
+	self._running = false
 	self._devSkipSaveOnNextDrop = {} :: { [number]: boolean }
 	self._woodSignPrototype = nil :: Model?
 	self._woodSignTemplateWarned = false
@@ -402,6 +403,8 @@ function WarehouseService:_ensureWarehouseOwnerBillboard(visual: Model, ownerNam
 end
 
 function WarehouseService:Start()
+	self._running = true
+
 	table.insert(self._connections, Players.PlayerAdded:Connect(function(player)
 		self:_onPlayerAdded(player)
 	end))
@@ -443,7 +446,7 @@ function WarehouseService:Start()
 	-- Autosave (offset from oil autosave to avoid paired bursts for the same user)
 	task.spawn(function()
 		task.wait(AUTOSAVE_START_OFFSET_SECONDS)
-		while true do
+		while self._running do
 			task.wait(SAVE_INTERVAL)
 			self:_flushDirty(false)
 		end
@@ -456,6 +459,7 @@ function WarehouseService:Start()
 end
 
 function WarehouseService:Stop()
+	self._running = false
 	self:_flushDirty(true)
 	for _, conn in ipairs(self._connections) do
 		conn:Disconnect()

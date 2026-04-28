@@ -602,6 +602,10 @@ function OilVisualService:_clearPlotVisuals(plot: Model)
 	if root then
 		root:Destroy()
 	end
+	local banners = plot:FindFirstChild("DepthBanners")
+	if banners then
+		banners:Destroy()
+	end
 end
 -- In-progress drills: spawn the tier's drill model at the tile, store StartTime/EndTime attributes
 -- so clients can run a local sink+spin animation. Destroyed when the activeDrill leaves the snapshot
