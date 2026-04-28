@@ -53,7 +53,7 @@ local OilHeavenConfig = {
 	},
 
 	--- BGM for Oil Heaven. Replace with actual heaven music asset id.
-	HeavenBgmSoundId = "rbxassetid://101298336573639", -- placeholder: same as main BGM for now
+	HeavenBgmSoundId = "rbxassetid://104020720458851",
 	HeavenBgmVolume = 0.07,
 }
 

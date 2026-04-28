@@ -964,13 +964,18 @@ function OilShipmentService:_handleTeleportToShip(player: Player, payload: any?)
 	end
 	if targetUserId == nil or targetUserId == player.UserId then
 		local ok, err = self._boatDockService:TeleportOwnerToSeat(player)
-		if not ok then
+		if ok then
+			player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
+		else
 			self:_sendActionResult(player, false, "ERR_BOAT_UNAVAILABLE", "Your ship is not available right now.", { reason = err })
 		end
 		return
 	end
 
 	local ok, err = self._boatDockService:TeleportSpectatorToBoat(player, targetUserId)
+	if ok then
+		player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
+	end
 	if not ok then
 		local msg = "That ship is not available right now."
 		if err == "TARGET_NOT_SAILING" then
@@ -1069,9 +1074,9 @@ function OilShipmentService:_handleTeleportToOilHeaven(player: Player)
 		return
 	end
 
-	local plot = self._oilHeavenPlotService:GetOrCreatePlot(player.UserId)
+	local plot = self._oilHeavenPlotService:GetAssignedPlot(player.UserId)
 	if not plot then
-		self:_sendActionResult(player, false, "ERR_OIL_HEAVEN_GENERATE", "Could not create Oil Heaven plot.")
+		self:_sendActionResult(player, false, "ERR_OIL_HEAVEN_NO_PLOT", "No Oil Heaven plot assigned.")
 		return
 	end
 
@@ -1127,6 +1132,7 @@ function OilShipmentService:_handleTeleportToDocks(player: Player)
 		-- Face away from the authored forward (e.g. into the shop) — 180° yaw in target-local space.
 		local targetCFrame = cf * CFrame.Angles(0, math.pi, 0)
 		CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportToDocks")
+		player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
 		notifyFtueIfTownLeg()
 		self:_fireCameraSnap(player, targetCFrame)
 		return
@@ -1143,6 +1149,7 @@ function OilShipmentService:_handleTeleportToDocks(player: Player)
 		--- LookVector is whatever the pad is authored to face, then lift Y.
 		local targetCFrame = boatSpawn.CFrame.Rotation + (boatSpawn.Position + Vector3.new(0, 5, 0))
 		CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportToDocks:fallback")
+		player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
 		notifyFtueIfTownLeg()
 		self:_fireCameraSnap(player, targetCFrame)
 	end
@@ -1182,6 +1189,7 @@ function OilShipmentService:_handleTeleportToHire(player: Player)
 	-- is in front of the authored target, so flipping puts the player nose-to-nose with them.
 	local targetCFrame = cf * CFrame.Angles(0, math.pi, 0)
 	CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportToHire")
+	player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
 	self:_fireCameraSnap(player, targetCFrame)
 end
 

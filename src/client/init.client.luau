@@ -181,6 +181,7 @@ local function requireStraitWaypointWorldFx(): StraitWaypointFxModule
 end
 
 local StraitWaypointWorldFx = requireStraitWaypointWorldFx()
+local ENABLE_SKY_MISSILE_AMBIENCE = false
 
 local getClientRemotes = require(resolveClientModule(script, "GetClientRemotes")) :: () -> any
 local Remotes = getClientRemotes()
@@ -326,7 +327,7 @@ end
 	return nil
 end
 
-local skyMissileAmbience = requireSkyMissileAmbience()
+local skyMissileAmbience = if ENABLE_SKY_MISSILE_AMBIENCE then requireSkyMissileAmbience() else nil
 if skyMissileAmbience then
 	skyMissileAmbience.Start()
 end

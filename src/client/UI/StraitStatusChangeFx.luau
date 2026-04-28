@@ -22,9 +22,15 @@ local SoundService = game:GetService("SoundService")
 
 local Lighting = game:GetService("Lighting")
 
+local Players = game:GetService("Players")
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Debris = game:GetService("Debris")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Constants = require(Shared:WaitForChild("Constants"))
+local LocalPlayer = Players.LocalPlayer
 
 --- Single-channel serial queue for the named event voice clips
 --- (`Pirates`, `StraitClosed`, `Coastguard`, …). Lives at
@@ -105,6 +111,9 @@ local FADE_OUT_DUR = SEQUENCE_DUR - FADE_IN_DUR - HOLD_DUR
 
 local activeToken = 0
 
+local pendingSkyState: string? = nil
+local pendingSkyApplyToken = 0
+
 
 
 --- Skies pulled from Lighting while Restricted/Closed StraitSky is active (not parented).
@@ -123,6 +132,10 @@ local function destroyStraitSkyClone()
 
 	end
 
+end
+
+local function isOilHeavenActive(): boolean
+	return LocalPlayer ~= nil and LocalPlayer:GetAttribute(Constants.CurrentWorldAttribute) == Constants.WorldOilHeaven
 end
 
 
@@ -407,6 +420,66 @@ local function buildStraitSkyFromDefaultAndTemplate(held: { Instance }, straitTe
 
 end
 
+local function applySkyState(newState: string)
+	destroyStraitSkyClone()
+
+	if newState == "Open" then
+		restorePersistentHeldSkies()
+		return
+	end
+
+	local template = getSkyTemplate(newState)
+	if not template then
+		return
+	end
+
+	if heldAuthorSkiesPersistent == nil then
+		heldAuthorSkiesPersistent = pullAllSkiesFromLighting()
+	end
+
+	local held = heldAuthorSkiesPersistent
+	if not held then
+		return
+	end
+
+	local merged = buildStraitSkyFromDefaultAndTemplate(held, template)
+	if merged then
+		merged.Parent = Lighting
+	else
+		local cloned = template:Clone()
+		cloned.Name = "StraitSky"
+		cloned.Parent = Lighting
+	end
+end
+
+local function schedulePendingSkyApply()
+	pendingSkyApplyToken += 1
+	local myToken = pendingSkyApplyToken
+	task.delay(0.25, function()
+		if pendingSkyApplyToken ~= myToken then
+			return
+		end
+		if isOilHeavenActive() then
+			return
+		end
+		if not pendingSkyState then
+			return
+		end
+
+		local state = pendingSkyState
+		pendingSkyState = nil
+		applySkyState(state)
+	end)
+end
+
+if LocalPlayer then
+	LocalPlayer:GetAttributeChangedSignal(Constants.CurrentWorldAttribute):Connect(function()
+		if not isOilHeavenActive() then
+			schedulePendingSkyApply()
+		end
+	end)
+end
+
 
 
 local function ensureScreenGui(playerGui: PlayerGui): ScreenGui
@@ -452,52 +525,11 @@ function StraitStatusChangeFx.trigger(playerGui: PlayerGui, newState: string, cu
 
 	local myToken = activeToken
 
-
-
-	destroyStraitSkyClone()
-
-
-
-	if newState == "Open" then
-
-		restorePersistentHeldSkies()
-
+	if isOilHeavenActive() then
+		pendingSkyState = newState
 	else
-
-		local template = getSkyTemplate(newState)
-
-		if template then
-
-			if heldAuthorSkiesPersistent == nil then
-
-				heldAuthorSkiesPersistent = pullAllSkiesFromLighting()
-
-			end
-
-			local held = heldAuthorSkiesPersistent
-
-			if held then
-
-				local merged = buildStraitSkyFromDefaultAndTemplate(held, template)
-
-				if merged then
-
-					merged.Parent = Lighting
-
-				else
-
-					local cloned = template:Clone()
-
-					cloned.Name = "StraitSky"
-
-					cloned.Parent = Lighting
-
-				end
-
-			end
-
-		end
-
+		pendingSkyState = nil
+		applySkyState(newState)
 	end
 
 

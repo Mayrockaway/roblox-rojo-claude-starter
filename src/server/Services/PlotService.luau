@@ -766,9 +766,8 @@ function PlotService:_releasePlot(plot: Model?)
 end
 
 function PlotService:_teleportCharacterToOwnedPlot(player: Player, character: Model)
-	-- Oil Heaven: if the player was in Oil Heaven when they died, respawn
-	-- them at their main plot (reset to Main world). The player can
-	-- explicitly teleport back up via the HUD button.
+	-- Oil Heaven: reset to Main on respawn. The client-side sky box exit
+	-- detection handles the transition when falling out of Oil Heaven.
 	local currentWorld = player:GetAttribute(Constants.CurrentWorldAttribute)
 	if currentWorld == Constants.WorldOilHeaven then
 		player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)

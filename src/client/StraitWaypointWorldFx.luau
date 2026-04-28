@@ -229,6 +229,7 @@ local STRAIT_FX_ASSETS_FOLDER = "StraitWaypointsFx"
 
 -- Missile barrage: one-shot when a cloned missile impacts the ship (hit / smallHit, not clean miss).
 local MISSILE_IMPACT_HIT_SFX_ID = "rbxassetid://111630360891423"
+local MISSILE_WORLD_FX_ENABLED = false
 local MISSILE_IMPACT_HIT_VOLUME = 0.55
 
 -- Mine field: one-shot when `didHit` — the surfacing mine detonates on the ship.
@@ -2121,6 +2122,9 @@ function StraitWaypointWorldFx.OnMissileStrikePayload(data: { [string]: any })
 	local missileIndex = tonumber(data.missileIndex) or 1
 	if missileIndex == 1 then
 		tryEnqueueOwnerVoice(data, "Missiles")
+	end
+	if not MISSILE_WORLD_FX_ENABLED then
+		return
 	end
 
 	task.spawn(function()

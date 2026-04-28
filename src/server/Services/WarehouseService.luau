@@ -13,6 +13,7 @@ local DataStoreWriteGate = require(script.Parent.Parent.Utils.DataStoreWriteGate
 local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"))
 local WarehouseConfig = require(Shared:WaitForChild("Config"):WaitForChild("WarehouseConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
+local Constants = require(Shared:WaitForChild("Constants"))
 local ResponsiveBillboard = require(Shared:WaitForChild("Utils"):WaitForChild("ResponsiveBillboard"))
 local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
@@ -1438,6 +1439,7 @@ function WarehouseService:TryTeleportPlayerToWarehouse(player: Player): boolean
 	--- and just lifts Y by 3.
 	local targetCFrame = spawn.CFrame.Rotation + (spawn.Position + Vector3.new(0, 3, 0))
 	CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportToWarehouse")
+	player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
 	--- Snap the client camera behind the character on the new LookVector. `PivotTo` does
 	--- not re-align the default follow camera's yaw on a live character, so without this
 	--- signal the player would end up staring at the back of their own head after landing.

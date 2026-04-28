@@ -40,7 +40,7 @@ local function stopAllTweens()
 end
 
 local function updateSectionLabels(plot: Model)
-	local labels = plot:FindFirstChild("SectionLabels")
+	local labels = plot:FindFirstChild("SectionLabels", true)
 	if not labels then return end
 
 	local rebirthCount = LocalPlayer:GetAttribute("RebirthCount") or 0
@@ -95,7 +95,7 @@ local function startGlowOnPlot(plot: Model)
 
 			-- Find all QMark mesh parts
 			local qmarks = {}
-			local tg = plot:FindFirstChild("TileGrid")
+			local tg = plot:FindFirstChild("TileGrid", true)
 			if tg then
 				for _, tile in ipairs(tg:GetChildren()) do
 					local qm = tile:FindFirstChild("QMark")
@@ -129,7 +129,7 @@ local function startGlowOnPlot(plot: Model)
 	-- Per-section outline color pulse
 	task.spawn(function()
 		local OUTLINE_SPEED = 2
-		local tg = plot:FindFirstChild("TileGrid")
+		local tg = plot:FindFirstChild("TileGrid", true)
 		if not tg then return end
 
 		-- Group highlights by section
@@ -166,7 +166,7 @@ local function startGlowOnPlot(plot: Model)
 		end
 	end)
 
-	local tileGrid = plot:FindFirstChild("TileGrid")
+	local tileGrid = plot:FindFirstChild("TileGrid", true)
 	if not tileGrid then return end
 
 	for _, tile in ipairs(tileGrid:GetChildren()) do
@@ -210,8 +210,17 @@ function OilHeavenTileGlow.start()
 		if world == Constants.WorldOilHeaven then
 			-- Find the player's Oil Heaven plot
 			task.delay(0.5, function() -- small delay to let the plot stream in
-				local plotName = string.format("OilHeavenPlot_%d", LocalPlayer.UserId)
-				local plot = Workspace:FindFirstChild(plotName)
+				-- Find the player's assigned sky plot by OwnerUserId attribute
+				local plot = nil
+				for _, child in ipairs(Workspace:GetChildren()) do
+					if child:IsA("Model")
+						and string.match(child.Name, "^OilHeavenPlot_%d%d$")
+						and child:GetAttribute("OwnerUserId") == LocalPlayer.UserId
+					then
+						plot = child
+						break
+					end
+				end
 				if plot then
 					startGlowOnPlot(plot)
 				end
