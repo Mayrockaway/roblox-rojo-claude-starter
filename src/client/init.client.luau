@@ -181,7 +181,7 @@ local function requireStraitWaypointWorldFx(): StraitWaypointFxModule
 end
 
 local StraitWaypointWorldFx = requireStraitWaypointWorldFx()
-local ENABLE_SKY_MISSILE_AMBIENCE = false
+local ENABLE_SKY_MISSILE_AMBIENCE = true
 
 local getClientRemotes = require(resolveClientModule(script, "GetClientRemotes")) :: () -> any
 local Remotes = getClientRemotes()

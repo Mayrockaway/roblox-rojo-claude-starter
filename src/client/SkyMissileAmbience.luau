@@ -3,6 +3,7 @@
 -- local camera. Zero server cost, zero network.
 
 local Debris = game:GetService("Debris")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
@@ -12,6 +13,10 @@ local AMBIENT_MISSILE_FLYBY_SOUND_ID = "rbxassetid://113742210459217"
 local AMBIENT_MISSILE_FLYBY_VOLUME = 0.4
 
 local SkyMissileAmbience = {}
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Constants = require(Shared:WaitForChild("Constants"))
+local LocalPlayer = Players.LocalPlayer
 
 local SPAWN_FOLDER_NAME = "_AmbientSkyMissilesClient"
 local TEMPLATE_FOLDER_NAME = "Assets"
@@ -95,6 +100,29 @@ local activeCount = 0
 local running = false
 local rng = Random.new()
 local spawnFolder: Folder? = nil
+
+local function isOilHeavenActive(): boolean
+	return LocalPlayer ~= nil and LocalPlayer:GetAttribute(Constants.CurrentWorldAttribute) == Constants.WorldOilHeaven
+end
+
+local function getAmbientMissileFlybyVolume(): number
+	if isOilHeavenActive() then
+		return 0
+	end
+	return AMBIENT_MISSILE_FLYBY_VOLUME
+end
+
+local function refreshAmbientMissileFlybySounds()
+	local folder = spawnFolder or Workspace:FindFirstChild(SPAWN_FOLDER_NAME)
+	if not folder or not folder:IsA("Folder") then
+		return
+	end
+	for _, desc in ipairs(folder:GetDescendants()) do
+		if desc:IsA("Sound") and desc.Name == "AmbientMissileFlyby" then
+			desc.Volume = getAmbientMissileFlybyVolume()
+		end
+	end
+end
 
 local function ensureFolder(): Folder
 	if spawnFolder and spawnFolder.Parent then
@@ -228,7 +256,7 @@ local function attachAmbientFlybySound(host: BasePart): Sound
 	local s = Instance.new("Sound")
 	s.Name = "AmbientMissileFlyby"
 	s.SoundId = AMBIENT_MISSILE_FLYBY_SOUND_ID
-	s.Volume = AMBIENT_MISSILE_FLYBY_VOLUME
+	s.Volume = getAmbientMissileFlybyVolume()
 	s.Looped = true
 	s.RollOffMode = Enum.RollOffMode.InverseTapered
 	s.RollOffMaxDistance = 1200
@@ -244,6 +272,7 @@ local function attachAmbientFlybySound(host: BasePart): Sound
 			end)
 		end
 		if s.Parent then
+			s.Volume = getAmbientMissileFlybyVolume()
 			s:Play()
 		end
 	end)
@@ -566,6 +595,7 @@ function SkyMissileAmbience.Start()
 		return
 	end
 	running = true
+	refreshAmbientMissileFlybySounds()
 	if RunService:IsStudio() then
 		print("[SkyMissileAmbience] started — ambient sky missiles active")
 	end
@@ -591,4 +621,9 @@ function SkyMissileAmbience.Stop()
 	running = false
 end
 
+if LocalPlayer then
+	LocalPlayer:GetAttributeChangedSignal(Constants.CurrentWorldAttribute):Connect(refreshAmbientMissileFlybySounds)
+end
+
 return SkyMissileAmbience
+

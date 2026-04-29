@@ -499,6 +499,21 @@ MonetizationCatalog.Items = {
 		grant = { kind = "Consumable", consumable = { id = "cargo_hauler", quantity = 1 } },
 	},
 
+	-- Oil Heaven reward doubler. Phase 1 uses a placeholder `productId = 0`
+	-- until the real DevProduct exists in the Roblox dashboard. The
+	-- consumable handler reads the player's single pending Heaven reward and
+	-- applies the exact same amount once more.
+	{
+		id = "consumable.heaven_reward_x2",
+		productKind = "DevProduct",
+		productId = 0,
+		robuxPrice = 100,
+		displayName = "2x Heaven Reward",
+		subtitle = "Doubles your last Heaven tile bonus",
+		category = "Boosts",
+		grant = { kind = "Consumable", consumable = { id = "heaven_reward_x2", quantity = 1 } },
+	},
+
 	-- Drills (equipment-shop Robux purchase paths) ------------------------
 	-- Only T4 / T5 / T6 are sold for Robux. T1-T3 are cash-only and have NO
 	-- entry here on purpose — the EquipmentShopPopulate UI uses a

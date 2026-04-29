@@ -13,6 +13,9 @@ local SoundService = game:GetService("SoundService")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Constants = require(Shared:WaitForChild("Constants"))
+
 local FirstPersonFistsController = require(script.Parent:WaitForChild("FirstPersonFistsController"))
 
 --- Serial event-voice queue (`Pirates`, `Storm`, `Coastguard`, …). Lazy
@@ -42,6 +45,11 @@ local function isLocalOwner(data: { [string]: any }): boolean
 	if not lp then return false end
 	local owner = data and data.ownerUserId
 	return typeof(owner) == "number" and owner == lp.UserId
+end
+
+local function isOilHeavenActive(): boolean
+	local lp = Players.LocalPlayer
+	return lp ~= nil and lp:GetAttribute(Constants.CurrentWorldAttribute) == Constants.WorldOilHeaven
 end
 
 --- Owner-gated wrapper around `tryEnqueueVoice` — call sites should use this
@@ -229,7 +237,7 @@ local STRAIT_FX_ASSETS_FOLDER = "StraitWaypointsFx"
 
 -- Missile barrage: one-shot when a cloned missile impacts the ship (hit / smallHit, not clean miss).
 local MISSILE_IMPACT_HIT_SFX_ID = "rbxassetid://111630360891423"
-local MISSILE_WORLD_FX_ENABLED = false
+local MISSILE_WORLD_FX_ENABLED = true
 local MISSILE_IMPACT_HIT_VOLUME = 0.55
 
 -- Mine field: one-shot when `didHit` — the surfacing mine detonates on the ship.
@@ -2289,7 +2297,7 @@ function StraitWaypointWorldFx.OnMissileStrikePayload(data: { [string]: any })
 						impactHitSfx.Loaded:Wait()
 					end)
 				end
-				if impactHitSfx.Parent then
+				if impactHitSfx.Parent and not isOilHeavenActive() then
 					impactHitSfx:Play()
 				end
 			end)
