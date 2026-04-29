@@ -210,6 +210,20 @@ function DrillingService:Start()
 	end))
 end
 
+--- Cancels every pending drill-completion task for `userId`. Called by
+--- `RebirthShopService` after `OilStateService:Rebirth` wipes
+--- `state.activeDrills` so the timers don't fire `CompleteDrill` against
+--- drillIds that no longer exist (which would warn or no-op, but it's
+--- cleaner to just kill the timers). Idempotent.
+function DrillingService:CancelDrillsForUser(userId: number)
+	for key, entry in pairs(self._pendingCompletions) do
+		if entry.userId == userId then
+			entry.cancelled = true
+			self._pendingCompletions[key] = nil
+		end
+	end
+end
+
 function DrillingService:Stop()
 	for _, c in ipairs(self._connections) do
 		c:Disconnect()

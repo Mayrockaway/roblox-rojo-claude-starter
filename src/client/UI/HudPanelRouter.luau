@@ -132,6 +132,8 @@ local DailyPanel = require(script.Parent.HudPanels.DailyPanel)
 local EquipmentShopPanel = require(script.Parent.HudPanels.EquipmentShopPanel)
 local FleetPanel = require(script.Parent.HudPanels.FleetPanel)
 local OilPriceInfoPanel = require(script.Parent.HudPanels.OilPriceInfoPanel)
+local RebirthPanel = require(script.Parent.HudPanels.RebirthPanel)
+local RebirthShopPanel = require(script.Parent.HudPanels.RebirthShopPanel)
 local RobuxShopPanel = require(script.Parent.HudPanels.RobuxShopPanel)
 local SellOilPanel = require(script.Parent.HudPanels.SellOilPanel)
 local ShipOilPanel = require(script.Parent.HudPanels.ShipOilPanel)
@@ -209,6 +211,13 @@ local SCREEN_BIND: { [string]: (PlayerGui) -> HudPanelTypes.HudPanelController? 
 	[SellOilPanel.screenName()] = SellOilPanel.bind,
 	[DailyPanel.screenName()] = DailyPanel.bind,
 	[RobuxShopPanel.screenName()] = RobuxShopPanel.bind,
+	-- Rebirth shop (`RebirthShopPanelGui`) — no HUD button, opened by the
+	-- HeavenShop Angel `ProximityPrompt` via `ProximityPanelOpener`.
+	[RebirthShopPanel.screenName()] = RebirthShopPanel.bind,
+	-- Rebirth modal (`RebirthPanelGui`) — opened by the Jesus2 NPC prompt
+	-- on each plot + the OilHeaven landing-area Jesus2. Body wiring lands
+	-- with the rebirth flow task.
+	[RebirthPanel.screenName()] = RebirthPanel.bind,
 }
 
 local HudPanelRouter = {}

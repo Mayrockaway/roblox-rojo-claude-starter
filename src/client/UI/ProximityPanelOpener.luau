@@ -30,6 +30,18 @@ local HudPanelRouter = require(script.Parent.HudPanelRouter)
 local getClientRemotes = require(script.Parent.Parent:WaitForChild("GetClientRemotes")) :: () -> any
 
 local OPENS_PANEL_ATTR = "OpensPanel"
+--- World prompts that should teleport the player to Oil Heaven set this
+--- boolean attribute. Wired on each plot's `heavengate` so stepping into the
+--- gate fires the same `RequestTeleportToOilHeaven` remote that the HUD's
+--- `RebirthButton` uses (see `HudTeleportRouter.luau`). Mutually exclusive
+--- with `OpensPanel` — opening a panel and teleporting at the same time is
+--- almost never what you want, so we short-circuit on the panel path first.
+local TELEPORT_OIL_HEAVEN_ATTR = "TeleportsToOilHeaven"
+--- Symmetric attribute for return-to-home teleports — wired on the OilHeaven
+--- ANGELGATE so a player in their sky plot can step through to teleport
+--- back to their main plot's ClaimPad. Fires `RequestTeleportHome` (same
+--- remote the HUD's `HomeButton` uses).
+local TELEPORT_HOME_ATTR = "TeleportsHome"
 local FLEET_PANEL_GUI = "FleetPanelGui"
 
 local ProximityPanelOpener = {}
@@ -44,6 +56,23 @@ function ProximityPanelOpener.start()
 
 	ProximityPromptService.PromptTriggered:Connect(function(prompt: ProximityPrompt, playerWhoTriggered: Player)
 		if playerWhoTriggered ~= Players.LocalPlayer then
+			return
+		end
+		--- Teleport prompts (heavengate) take precedence over panel-opening so a
+		--- prompt that's mis-authored with both attributes still produces a
+		--- clean outcome (player ends up in Oil Heaven, no panel opens locally).
+		if prompt:GetAttribute(TELEPORT_OIL_HEAVEN_ATTR) == true then
+			local remotes = getClientRemotes()
+			if remotes and remotes.requestTeleportToOilHeaven then
+				remotes.requestTeleportToOilHeaven:FireServer()
+			end
+			return
+		end
+		if prompt:GetAttribute(TELEPORT_HOME_ATTR) == true then
+			local remotes = getClientRemotes()
+			if remotes and remotes.requestTeleportHome then
+				remotes.requestTeleportHome:FireServer()
+			end
 			return
 		end
 		local screenName = prompt:GetAttribute(OPENS_PANEL_ATTR)

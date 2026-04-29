@@ -1231,6 +1231,25 @@ function OilShipmentService:Stop()
 	self._shipmentContexts = {}
 end
 
+--- Per-rebirth cancellation entry point. Drops the user's active shipment
+--- (if any) from `_activeShipmentByOwner` / `_shipmentContexts` /
+--- `_activeShips` so any in-flight `task.delay` callbacks find no entry on
+--- wake-up and short-circuit (every read site already nil-checks). The
+--- player's wiped state has `activeShipmentCount = 0` so the HUD reflects
+--- the cancellation immediately. Lane reservations for cancelled shipments
+--- are not explicitly released — they expire on the lane TTL and don't
+--- block other players. The visible boat model in workspace lingers until
+--- its own movement task finishes; cosmetic only, no payload delivery.
+function OilShipmentService:CancelShipmentsForUser(userId: number)
+	local shipmentId = self._activeShipmentByOwner[userId]
+	if not shipmentId then
+		return
+	end
+	self._activeShipmentByOwner[userId] = nil
+	self._shipmentContexts[shipmentId] = nil
+	self._activeShips[shipmentId] = nil
+end
+
 function OilShipmentService:QueueOrTriggerForcedPirateHit(victimUserId: number, contractorUserId: number, contractId: string): (boolean, string, string?)
 	local shipmentId = self._activeShipmentByOwner[victimUserId]
 	if not shipmentId then

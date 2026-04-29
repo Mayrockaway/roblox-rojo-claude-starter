@@ -12,6 +12,8 @@ local OilConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilConfig"
 local BiomeConfig = require(Shared:WaitForChild("Config"):WaitForChild("BiomeConfig"))
 local BoatCatalog = require(Shared:WaitForChild("Config"):WaitForChild("BoatCatalog"))
 local HeavenRewardConfig = require(Shared:WaitForChild("Config"):WaitForChild("HeavenRewardConfig"))
+local MonetizationCatalog = require(Shared:WaitForChild("Config"):WaitForChild("MonetizationCatalog"))
+local RebirthShopConfig = require(Shared:WaitForChild("Config"):WaitForChild("RebirthShopConfig"))
 local ShipStats = require(Shared:WaitForChild("Config"):WaitForChild("ShipStats"))
 local ShipUpgradeConfig = require(Shared:WaitForChild("Config"):WaitForChild("ShipUpgradeConfig"))
 local ShipProfileMigration = require(Shared:WaitForChild("Config"):WaitForChild("ShipProfileMigration"))
@@ -3158,6 +3160,18 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		--- first rebirth; `rebirthCount` tracks how many rebirths total.
 		oilHeavenUnlocked = false,
 		rebirthCount = 0,
+		--- Rebirth currency (`RebirthShopPanelGui`). Earned via the rebirth
+		--- flow (cash → tokens at rebirth time — see future `OilStateService:Rebirth`),
+		--- spent in the rebirth shop. Tokens AND `rebirthDrills` are intended to
+		--- persist through the rebirth wipe (preservation list). Mirrored to
+		--- `Constants.RebirthTokensAttribute` for live client reads.
+		rebirthTokens = 0,
+		--- One-time-use Heaven Drill consumable count. Bought from the rebirth
+		--- shop; consumed on each successful Oil Heaven tile drill
+		--- (`OilHeavenDrillService:_handleToolActivation`). Tool presence in
+		--- Backpack is gated by `> 0`. Mirrored to
+		--- `Constants.RebirthDrillsAttribute`.
+		rebirthDrills = 0,
 		oilHeavenState = normalizeOilHeavenState(nil),
 		-- `ftueDocksUpgradeSubStep` runtime mirror was deleted by Step 4
 		-- of the boat-progression refactor along with the upgrade leg.
@@ -3242,6 +3256,8 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 			plr:SetAttribute(Constants.OilHeavenUnlockedAttribute, state.oilHeavenUnlocked == true)
 			plr:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
 			plr:SetAttribute(Constants.RebirthCountAttribute, state.rebirthCount or 0)
+			plr:SetAttribute(Constants.RebirthTokensAttribute, state.rebirthTokens or 0)
+			plr:SetAttribute(Constants.RebirthDrillsAttribute, state.rebirthDrills or 0)
 		end
 	end
 
@@ -4139,6 +4155,12 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 	if typeof((persisted :: any).rebirthCount) == "number" and (persisted :: any).rebirthCount > 0 then
 		state.rebirthCount = math.floor((persisted :: any).rebirthCount)
 	end
+	if typeof((persisted :: any).rebirthTokens) == "number" and (persisted :: any).rebirthTokens > 0 then
+		state.rebirthTokens = math.floor((persisted :: any).rebirthTokens)
+	end
+	if typeof((persisted :: any).rebirthDrills) == "number" and (persisted :: any).rebirthDrills > 0 then
+		state.rebirthDrills = math.floor((persisted :: any).rebirthDrills)
+	end
 	if typeof((persisted :: any).oilHeavenState) == "table" then
 		state.oilHeavenState = normalizeOilHeavenState((persisted :: any).oilHeavenState)
 	else
@@ -4735,6 +4757,8 @@ function OilStateService:_serializeState(state)
 	-- Oil Heaven / rebirth
 	;(persisted :: any).oilHeavenUnlocked = state.oilHeavenUnlocked == true
 	;(persisted :: any).rebirthCount = if typeof(state.rebirthCount) == "number" then math.floor(state.rebirthCount) else 0
+	;(persisted :: any).rebirthTokens = if typeof(state.rebirthTokens) == "number" then math.max(0, math.floor(state.rebirthTokens)) else 0
+	;(persisted :: any).rebirthDrills = if typeof(state.rebirthDrills) == "number" then math.max(0, math.floor(state.rebirthDrills)) else 0
 	;(persisted :: any).oilHeavenState = normalizeOilHeavenState(state.oilHeavenState)
 
 	return persisted
@@ -5283,6 +5307,428 @@ function OilStateService:IncrementRebirth(userId: number): number
 		plr:SetAttribute(Constants.RebirthCountAttribute, state.rebirthCount)
 	end
 	return state.rebirthCount
+end
+
+--- Rebirth-token currency (`RebirthShopPanelGui`). Tokens are earned by the
+--- rebirth flow (cash → tokens conversion at rebirth time) and spent in the
+--- rebirth shop. The wallet is mirrored to `Constants.RebirthTokensAttribute`
+--- on every change so the panel's balance chip can update without an extra
+--- replication channel.
+function OilStateService:GetRebirthTokens(userId: number): number
+	local state = self._statesByUserId[userId]
+	if not state then
+		return 0
+	end
+	return state.rebirthTokens or 0
+end
+
+--- Adds (or, with negative `delta`, subtracts) rebirth tokens. Floors the
+--- result at 0 so callers can't drive the wallet negative even on a
+--- mis-accounted refund. Returns the resulting balance.
+function OilStateService:AddRebirthTokens(userId: number, delta: number): number
+	local state = self._statesByUserId[userId]
+	if not state then
+		return 0
+	end
+	if typeof(delta) ~= "number" or delta ~= delta then
+		return state.rebirthTokens or 0
+	end
+	local current = state.rebirthTokens or 0
+	local next_ = math.max(0, math.floor(current + delta))
+	if next_ == current then
+		return current
+	end
+	state.rebirthTokens = next_
+	self:_markDirty(userId)
+	local plr = Players:GetPlayerByUserId(userId)
+	if plr then
+		plr:SetAttribute(Constants.RebirthTokensAttribute, next_)
+	end
+	return next_
+end
+
+--- Rebirth-drill consumable count. Drives `OilHeavenDrillService` Backpack
+--- tool presence — > 0 means the player carries the Rebirth Drill, 0 means
+--- the tool is removed. Mirrored to `Constants.RebirthDrillsAttribute` so the
+--- drill service can react to changes without a callback wire.
+function OilStateService:GetRebirthDrills(userId: number): number
+	local state = self._statesByUserId[userId]
+	if not state then
+		return 0
+	end
+	return state.rebirthDrills or 0
+end
+
+function OilStateService:AddRebirthDrills(userId: number, delta: number): number
+	local state = self._statesByUserId[userId]
+	if not state then
+		return 0
+	end
+	if typeof(delta) ~= "number" or delta ~= delta then
+		return state.rebirthDrills or 0
+	end
+	local current = state.rebirthDrills or 0
+	local next_ = math.max(0, math.floor(current + delta))
+	if next_ == current then
+		return current
+	end
+	state.rebirthDrills = next_
+	self:_markDirty(userId)
+	local plr = Players:GetPlayerByUserId(userId)
+	if plr then
+		plr:SetAttribute(Constants.RebirthDrillsAttribute, next_)
+	end
+	return next_
+end
+
+--- Atomic decrement-by-1 for the consume-on-drill path. Returns true if a
+--- drill was decremented, false if the wallet was already 0 (so the caller
+--- can short-circuit the drill instead of letting the count underflow). The
+--- mirrored attribute is updated as a side effect.
+function OilStateService:ConsumeRebirthDrill(userId: number): boolean
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false
+	end
+	local current = state.rebirthDrills or 0
+	if current <= 0 then
+		return false
+	end
+	state.rebirthDrills = current - 1
+	self:_markDirty(userId)
+	local plr = Players:GetPlayerByUserId(userId)
+	if plr then
+		plr:SetAttribute(Constants.RebirthDrillsAttribute, state.rebirthDrills)
+	end
+	return true
+end
+
+--------------------------------------------------------------------------------
+-- Rebirth flow. Wipes progression in-place while preserving permanent unlocks
+-- + Robux-purchased items + the rebirth currency. Atomicity strategy: build
+-- every replacement value into locals BEFORE mutating the live state — if any
+-- step errors during the build phase, `_statesByUserId[userId]` is untouched
+-- and the player keeps their pre-rebirth state. The mutation phase is a tight
+-- run of synchronous assignments (no yields, no DataStore round-trips) so an
+-- autosave or another service callback can't interleave a half-rebirth into
+-- persistence. `_markDirty` is the LAST step so a successful build commits in
+-- one go.
+--
+-- Preservation list:
+--   * `rebirthCount` (+1), `rebirthTokens` (+ floor(cash / CashPerToken)),
+--     `rebirthDrills` (untouched — purchased with rebirth tokens).
+--   * `oilHeavenUnlocked`, `oilHeavenState` (drilled tiles, tile rewards,
+--     bonusTotals — the permanent boost stats). `pendingDoubleReward` is
+--     cleared (the prompt the player would have responded to is gone).
+--   * `purchasedOneTimeItemIds` (Robux one-time-purchase registry).
+--   * `runUpgradeOwnedByItemId` (Security Personnel charges, Cargo Hauler
+--     crew — Robux consumables).
+--   * Daily reward calendar progress + last-claim time + slot 2 boat id.
+--   * `robuxShopAutoOpenDismissed`, `legacyShipUpgradeRefunded` (one-shot
+--     UX flags that aren't progression).
+--   * Boats whose `BoatCatalog.Boats[id].unlock.kind` is `"robux"` or
+--     `"starter"` survive; cash boats are wiped.
+--   * Equipment ids that have a corresponding `MonetizationCatalog` entry
+--     (T4-T6 drills today) survive — these have a Robux purchase path so
+--     the player MIGHT have bought them with Robux, and we don't track
+--     funding-source provenance per-item. Cash-only items (T1-T3) wipe.
+--
+-- Wipe targets: cash → 500, oil tiers → 0, tank tiers → defaults, chunks /
+-- drills / activeDrills → fresh starter-only state, FTUE → completed (skip),
+-- equipped boat → starter if previously equipped boat got filtered out.
+--
+-- Returns `(ok, code, data)` where `data` carries the new wallet values for
+-- the client toast / panel close.
+
+--- Filters `state.ownedBoatIds` to keep only Robux + starter boats. Always
+--- preserves Tier1Boat as the baseline starter.
+local function filterOwnedBoatsForRebirth(ownedBoatIds: { [string]: boolean }): { [string]: boolean }
+	local out: { [string]: boolean } = { Tier1Boat = true }
+	if typeof(ownedBoatIds) ~= "table" then
+		return out
+	end
+	for boatId, owned in pairs(ownedBoatIds) do
+		if typeof(boatId) == "string" and owned == true then
+			local def = BoatCatalog.Boats[boatId]
+			if def then
+				local kind = def.unlock and def.unlock.kind
+				if kind == "robux" or kind == "starter" then
+					out[boatId] = true
+				end
+			end
+		end
+	end
+	return out
+end
+
+--- Translates an `EquipmentCatalog` id (`drill_t4`) into the matching
+--- `MonetizationCatalog` id (`drill.t4`). Mirrors the lookup convention in
+--- `EquipmentShopPanel.monetizationIdForEquipment`.
+local function monetizationIdForEquipmentId(equipmentId: string): string
+	return (string.gsub(equipmentId, "_", "."))
+end
+
+--- Filters `state.equipmentOwnedByItemId` to keep only items that have a
+--- Robux purchase path (i.e. an entry in MonetizationCatalog). Cash-only
+--- items (T1-T3 drills) are wiped. False positives are possible (a Robux
+--- item bought with cash via the rotating shop survives) but never false
+--- negatives — we won't accidentally wipe something a player paid Robux for.
+local function filterEquipmentForRebirth(owned: { [string]: number }): { [string]: number }
+	local out: { [string]: number } = {}
+	if typeof(owned) ~= "table" then
+		return out
+	end
+	for itemId, count in pairs(owned) do
+		if typeof(itemId) == "string" and itemId ~= "" and typeof(count) == "number" and count > 0 then
+			local monId = monetizationIdForEquipmentId(itemId)
+			local monItem = MonetizationCatalog.GetItem(monId)
+			if monItem then
+				out[itemId] = math.floor(count)
+			end
+		end
+	end
+	return out
+end
+
+--- Builds a fresh `chunksById` table from the plot's chunk definitions —
+--- mirrors the init loop in `_ensurePlayerState` (line ~3039) so a rebirth
+--- produces the same shape a brand-new join would. No DataStore reads.
+function OilStateService:_buildFreshChunksByIdForUser(userId: number, plot: Model)
+	local chunkDefs = self._plotService:GetPlotChunkDefinitions(plot)
+	local chunksById = {}
+	for _, def in ipairs(chunkDefs) do
+		local chunkData = {
+			chunkId = def.chunkId,
+			row = def.row,
+			col = def.col,
+			biome = def.biome,
+			unlocked = def.startingChunk,
+			revealed = def.startingChunk,
+			worldX = def.worldX,
+			worldZ = def.worldZ,
+		}
+		if def.startingChunk then
+			local VeinConfigStarter = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
+			local gt = VeinConfigStarter.GroundByRow[def.row] or VeinConfigStarter.GroundTypes.Bronze
+			chunkData.biome = gt.name
+			chunkData.groundType = gt.name
+			chunkData.revealed = true
+			chunkData.tiles = {}
+			local subTiles = staticGridConstants().subTilesPerSide
+			for tr = 1, subTiles do
+				for tc = 1, subTiles do
+					local tileKey = string.format("T%d%d", tr, tc)
+					chunkData.tiles[tileKey] = {
+						oilType = nil,
+						hasOil = true,
+						tileName = gt.name,
+						tileMaterial = gt.material.Name,
+						tileColorR = math.floor(gt.color.R * 255),
+						tileColorG = math.floor(gt.color.G * 255),
+						tileColorB = math.floor(gt.color.B * 255),
+						drillSeconds = gt.drillSeconds,
+						drilled = false,
+					}
+				end
+			end
+		end
+		chunksById[def.chunkId] = chunkData
+	end
+	return chunksById
+end
+
+function OilStateService:Rebirth(userId: number): (boolean, string, any)
+	local state = self._statesByUserId[userId]
+	if not state then
+		return false, "ERR_NO_STATE", nil
+	end
+	if not state.plot then
+		return false, "ERR_NO_PLOT", nil
+	end
+
+	local cashPerToken = RebirthShopConfig.CashPerToken
+	if typeof(cashPerToken) ~= "number" or cashPerToken <= 0 then
+		return false, "ERR_BAD_CONFIG", nil
+	end
+
+	local cash = floorPositive(state.cash or 0)
+	local tokensGranted = math.floor(cash / cashPerToken)
+	if tokensGranted < 1 then
+		return false, "ERR_NOT_ENOUGH_CASH", {
+			cash = cash,
+			cashPerToken = cashPerToken,
+		}
+	end
+
+	---------------------------------------------------------------------------
+	-- BUILD PHASE — every replacement value is computed into locals first so
+	-- a mid-build error leaves the live state untouched. No yields anywhere.
+	---------------------------------------------------------------------------
+
+	local newRebirthCount = (state.rebirthCount or 0) + 1
+	local newRebirthTokens = math.max(0, math.floor((state.rebirthTokens or 0) + tokensGranted))
+	local newRebirthDrills = math.max(0, math.floor(state.rebirthDrills or 0))
+
+	local freshChunksById
+	do
+		local ok, result = pcall(function()
+			return self:_buildFreshChunksByIdForUser(userId, state.plot)
+		end)
+		if not ok or typeof(result) ~= "table" then
+			-- Build failed BEFORE any mutation — state is untouched, safe to abort.
+			DevLog.log(string.format(
+				"[Rebirth] user=%d _buildFreshChunksByIdForUser failed: %s",
+				userId,
+				tostring(result)
+			))
+			return false, "ERR_BUILD_FAILED", nil
+		end
+		freshChunksById = result
+	end
+
+	local newOwnedBoatIds = filterOwnedBoatsForRebirth(state.ownedBoatIds or {})
+	local newEquipmentOwnedByItemId = filterEquipmentForRebirth(state.equipmentOwnedByItemId or {})
+	local prevEquippedBoatId = state.equippedBoatId
+	local newEquippedBoatId
+	if typeof(prevEquippedBoatId) == "string" and newOwnedBoatIds[prevEquippedBoatId] then
+		newEquippedBoatId = prevEquippedBoatId
+	else
+		newEquippedBoatId = "Tier1Boat"
+	end
+
+	-- Preserve the existing oilHeavenState but clear `pendingDoubleReward` —
+	-- the prompt the player would have responded to is invalidated by the wipe.
+	local preservedOilHeavenState = normalizeOilHeavenState(state.oilHeavenState)
+	preservedOilHeavenState.pendingDoubleReward = nil
+
+	local newDefaultTanks = defaultTankTiers()
+
+	---------------------------------------------------------------------------
+	-- MUTATION PHASE — synchronous assignments only, no yields. Each line is a
+	-- pure value write; no service calls that could throw.
+	---------------------------------------------------------------------------
+
+	state.cash = 500
+	state.rebirthCount = newRebirthCount
+	state.rebirthTokens = newRebirthTokens
+	state.rebirthDrills = newRebirthDrills
+	state.oilHeavenState = preservedOilHeavenState
+	-- oilHeavenUnlocked stays whatever it was (preserved by not assigning).
+	-- purchasedOneTimeItemIds stays (preserved).
+	-- runUpgradeOwnedByItemId stays (preserved — Security / Cargo Hauler).
+	-- robuxShopAutoOpenDismissed / legacyShipUpgradeRefunded stay (preserved).
+	-- dailyRewardClaimedCount / LastClaimAt / Slot2BoatId stay (preserved).
+	-- economicsSessions stays (preserved — analytics).
+
+	state.tankTiers = newDefaultTanks
+	state.totalOil = 0
+	state.oilByTier = { Crude = 0, Refined = 0, Premium = 0 }
+	state.pendingFloats = { Crude = 0, Refined = 0, Premium = 0 }
+	state.activeShipmentCount = 0
+	state.chunksById = freshChunksById
+	state.drillsById = {}
+	state.activeDrills = {}
+	state.nextDrillId = 1
+	state.activeDrillCount = 0
+	state.equipmentOwnedByItemId = newEquipmentOwnedByItemId
+	state.equipmentOwnedNeedsInventoryBackfill = false
+	state.runUpgradeOwnedByItemId = state.runUpgradeOwnedByItemId or {}
+	state.ownedBoatIds = newOwnedBoatIds
+	state.equippedBoatId = newEquippedBoatId
+
+	-- FTUE — skip on rebirth (player's already played through it).
+	state.ftueStep = nil
+	state.ftueCompleted = true
+	state.ftueDoneScreenAcknowledged = true
+	state.ftueEscortShipmentRemaining = 0
+	state.ftueDispatchCashGranted = false
+	state.ftueTutorialCompleteCashGranted = false
+	state.ftueFreeDocksDrillUsed = true
+	state.ftueFirstRevealApplied = true
+	state.ftueFirstBarrelGranted = true
+	state.ftueLastSpawn = nil
+
+	-- Re-derive storage capacity from the fresh tank tiers.
+	state.storageCapacity = totalTankCapacity(state)
+
+	-- Reset the running session-economics baseline so cash deltas after
+	-- rebirth don't include the wiped wallet as a "loss".
+	state.economicsSessionBaselineCash = 500
+
+	-- Re-place the center pump on every unlocked chunk (after rebirth that's
+	-- just the starter chunk). Mirrors the post-load loop at the end of
+	-- `_ensurePlayerState` so the player's plot doesn't render pump-less.
+	-- `_autoPlaceCenterPump` is synchronous (state mutation + workspace
+	-- lookups, no yields) so it doesn't break the no-yield mutation phase
+	-- guarantee. We pcall it defensively — if a chunk's plot model is
+	-- missing for any reason, we'd rather skip the pump than abort the
+	-- whole rebirth post-mutation.
+	local VeinConfigForRebirth = require(Shared:WaitForChild("Config"):WaitForChild("VeinConfig"))
+	for _, chunk in pairs(state.chunksById) do
+		if chunk.unlocked then
+			local hasCenterPump = false
+			for _, drill in pairs(state.drillsById) do
+				if drill.chunkId == chunk.chunkId and drill.isCenterPump then
+					hasCenterPump = true
+					break
+				end
+			end
+			if not hasCenterPump then
+				local gt = VeinConfigForRebirth.GroundByRow[chunk.row]
+					or VeinConfigForRebirth.GroundTypes.Bronze
+				pcall(function()
+					self:_autoPlaceCenterPump(userId, state, chunk, gt)
+				end)
+			end
+		end
+	end
+
+	---------------------------------------------------------------------------
+	-- COMMIT PHASE — mark dirty and sync the player attributes that drive
+	-- live UI (rebirth panel + shop panel + heaven drill backpack tool).
+	---------------------------------------------------------------------------
+	self:_markDirty(userId)
+
+	local plr = Players:GetPlayerByUserId(userId)
+	if plr then
+		plr:SetAttribute(Constants.RebirthCountAttribute, newRebirthCount)
+		plr:SetAttribute(Constants.RebirthTokensAttribute, newRebirthTokens)
+		plr:SetAttribute(Constants.RebirthDrillsAttribute, newRebirthDrills)
+		-- FTUE attributes — clear so any stale step / restrict state goes away
+		-- without needing the player to rejoin.
+		plr:SetAttribute(Constants.FtueStepAttribute, nil)
+		plr:SetAttribute(Constants.FtueRestrictDrillCellKeyAttribute, nil)
+		plr:SetAttribute(Constants.FtueRestrictDrillChunkIdAttribute, nil)
+		plr:SetAttribute(Constants.FtueDocksFleetPanelSubStepAttribute, nil)
+		plr:SetAttribute(Constants.FtueDocksEquipmentShopSubStepAttribute, nil)
+	end
+
+	DevLog.log(string.format(
+		"[Rebirth] user=%d rebirthCount=%d tokens=%d (+%d) drills=%d cashWiped=%d -> 500 ownedBoats=%d ownedEquip=%d",
+		userId,
+		newRebirthCount,
+		newRebirthTokens,
+		tokensGranted,
+		newRebirthDrills,
+		cash,
+		(function()
+			local n = 0
+			for _ in pairs(newOwnedBoatIds) do n += 1 end
+			return n
+		end)(),
+		(function()
+			local n = 0
+			for _ in pairs(newEquipmentOwnedByItemId) do n += 1 end
+			return n
+		end)()
+	))
+
+	return true, "OK", {
+		rebirthCount = newRebirthCount,
+		rebirthTokens = newRebirthTokens,
+		tokensGranted = tokensGranted,
+		rebirthDrills = newRebirthDrills,
+	}
 end
 
 function OilStateService:MarkEquipmentInventoryBackfillComplete(userId: number)

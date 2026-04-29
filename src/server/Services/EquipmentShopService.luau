@@ -347,6 +347,15 @@ function EquipmentShopService:_seedingCountsFromInventory(player: Player)
 	self._oilStateService:MarkEquipmentInventoryBackfillComplete(player.UserId)
 end
 
+--- Public entry point for the rebirth flow (`RebirthShopService` calls this
+--- after `OilStateService:Rebirth` filters `equipmentOwnedByItemId`). Drives
+--- the same reconciliation as the load / plot-assign / character-respawn
+--- paths — destroys cash-only tools whose ids dropped out of state and
+--- preserves Robux-purchased tools that survived the filter.
+function EquipmentShopService:ReconcileForUser(player: Player)
+	self:_reconcileOwnedShopTools(player)
+end
+
 function EquipmentShopService:_reconcileOwnedShopTools(player: Player)
 	if not self._running then
 		return

@@ -117,6 +117,13 @@ export type ClientRemotes = {
 	requestTeleportToOilHeaven: RemoteEvent,
 	heavenRewardEvent: RemoteEvent,
 	requestHeavenDrill: RemoteEvent,
+	--- Rebirth shop (`RebirthShopPanelGui`). `requestRebirthShopPurchase` is
+	--- the buy click; `requestRebirthShopSnapshot` is the open-time fetch for
+	--- `{ tokens, drills, bonusTotals }`. Purchase replies on `oilActionResult`
+	--- with `action = "RebirthShopPurchase"`.
+	requestRebirthShopPurchase: RemoteEvent,
+	requestRebirthShopSnapshot: RemoteFunction,
+	requestRebirth: RemoteEvent,
 }
 
 local Remotes: ClientRemotes = {
@@ -196,6 +203,9 @@ local Remotes: ClientRemotes = {
 	requestTeleportToOilHeaven = waitRemote(RemoteNames.RequestTeleportToOilHeaven) :: RemoteEvent,
 	heavenRewardEvent = waitRemote(RemoteNames.HeavenRewardEvent) :: RemoteEvent,
 	requestHeavenDrill = waitRemote(RemoteNames.RequestHeavenDrill) :: RemoteEvent,
+	requestRebirthShopPurchase = waitRemote(RemoteNames.RequestRebirthShopPurchase) :: RemoteEvent,
+	requestRebirthShopSnapshot = waitRemote(RemoteNames.RequestRebirthShopSnapshot) :: RemoteFunction,
+	requestRebirth = waitRemote(RemoteNames.RequestRebirth) :: RemoteEvent,
 }
 
 local devLogEvent = waitRemote(RemoteNames.DevLog) :: RemoteEvent

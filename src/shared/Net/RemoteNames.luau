@@ -139,6 +139,26 @@ local RemoteNames = {
 	-- Client → server: player activated the Rebirth Drill tool on a target.
 	RequestHeavenDrill = "RequestHeavenDrill",
 
+	-- Rebirth Shop (HeavenShop Angel ProximityPrompt → `RebirthShopPanelGui`).
+	-- Client → server: spend rebirth tokens on a `RebirthShopConfig.Items` row
+	-- (`{ itemId }`). Server validates, debits, applies the grant (today: only
+	-- `drill` is buyable, grants 1 rebirth-drill consumable). Replies on
+	-- `OilActionResult` with action `"RebirthShopPurchase"`.
+	RequestRebirthShopPurchase = "RequestRebirthShopPurchase",
+	-- Rebirth flow (Jesus2 NPC ProximityPrompt → `RebirthPanelGui` → "Rebirth Now"
+	-- button). Client → server: convert cash → tokens, wipe progression, reset
+	-- the player to a fresh post-FTUE state while preserving Robux items, the
+	-- rebirth currency, and oil heaven unlocks. Replies on `OilActionResult`
+	-- with action `"Rebirth"`. Codes: `OK`, `ERR_NO_STATE`, `ERR_NO_PLOT`,
+	-- `ERR_NOT_ENOUGH_CASH`, `ERR_BUILD_FAILED`, `ERR_RATE_LIMIT`.
+	RequestRebirth = "RequestRebirth",
+	-- Client → server: one-shot snapshot for panel open. Returns
+	-- `{ tokens, drills, bonusTotals }`. Tokens + drills also live on player
+	-- attributes for live updates after purchase; this is the open-time fetch
+	-- (Q7 — open-time snapshot only) so the boost row can display server-truth
+	-- bonus totals without a per-stat replication channel.
+	RequestRebirthShopSnapshot = "RequestRebirthShopSnapshot",
+
 	-- One-shot equipment shop (Tools cloned into `Player.Backpack`; cash via `OilStateService`).
 	RequestPurchaseEquipment = "RequestPurchaseEquipment",
 	RequestEquipmentShopCatalog = "RequestEquipmentShopCatalog",

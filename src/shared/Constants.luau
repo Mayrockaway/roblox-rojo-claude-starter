@@ -113,6 +113,15 @@ local Constants = {
 	WorldOilHeaven = "OilHeaven",
 	OilHeavenUnlockedAttribute = "OilHeavenUnlocked",
 	RebirthCountAttribute = "RebirthCount",
+	--- Mirrored from `OilStateService.state.rebirthTokens` on join + after every
+	--- earn/spend so the rebirth-shop balance chip can read it without an extra
+	--- remote roundtrip. Tokens persist across rebirths (the rebirth flow itself
+	--- is preservation-only for this currency).
+	RebirthTokensAttribute = "RebirthTokens",
+	--- Mirrored from `OilStateService.state.rebirthDrills` (one-time-use Heaven
+	--- drill consumable count). Drives `OilHeavenDrillService` tool presence —
+	--- > 0 = tool in Backpack, 0 = no tool. Decrements on each successful tile drill.
+	RebirthDrillsAttribute = "RebirthDrills",
 
 	-- Dev strait UI (3 buttons). Server accepts only in Studio unless this is true.
 	StraitDevUiEnabled = false,

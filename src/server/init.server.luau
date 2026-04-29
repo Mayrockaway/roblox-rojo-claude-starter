@@ -69,6 +69,7 @@ local GlobalEventService = require(serviceFolder:WaitForChild("GlobalEventServic
 local DailyRewardCalendarService = require(serviceFolder:WaitForChild("DailyRewardCalendarService"))
 local OilHeavenPlotService = require(serviceFolder:WaitForChild("OilHeavenPlotService"))
 local OilHeavenDrillService = require(serviceFolder:WaitForChild("OilHeavenDrillService"))
+local RebirthShopService = require(serviceFolder:WaitForChild("RebirthShopService"))
 
 local DevLog = require(Shared:WaitForChild("DevLog"))
 
@@ -146,6 +147,11 @@ CargoHaulerService:Init(OilStateService)
 AutoShipService:Init(RemoteService, OilStateService, WarehouseService, BoatDockService, OilShipmentService, MonetizationService)
 OilHeavenPlotService:Init(PlotService, OilStateService)
 OilHeavenDrillService:Init(RemoteService, OilStateService, OilHeavenPlotService, PlotService)
+RebirthShopService:Init(RemoteService, OilStateService)
+RebirthShopService:SetWarehouseService(WarehouseService)
+RebirthShopService:SetDrillingService(DrillingService)
+RebirthShopService:SetEquipmentShopService(EquipmentShopService)
+RebirthShopService:SetOilShipmentService(OilShipmentService)
 OilHeavenPlotService:SetHeavenDrillService(OilHeavenDrillService)
 OilShipmentService:SetOilHeavenPlotService(OilHeavenPlotService)
 OilShipmentService:SetHitContractService(HitContractService)
@@ -260,8 +266,10 @@ LeaderboardService:Start()
 GlobalEventService:Start()
 OilHeavenPlotService:Start()
 OilHeavenDrillService:Start()
+RebirthShopService:Start()
 
 game:BindToClose(function()
+	RebirthShopService:Stop()
 	OilHeavenDrillService:Stop()
 	OilHeavenPlotService:Stop()
 	GlobalEventService:Stop()
@@ -471,16 +479,18 @@ do
 		return newCount
 	end
 
-	local function devGiveRebirthDrill(player: Player): number
+	local function devGiveRebirthDrill(player: Player, count: number?): (number, number)
+		local n = if typeof(count) == "number" and count > 0 then math.floor(count) else 1
 		local rebirthCount = OilStateService:GetRebirthCount(player.UserId)
 		if rebirthCount < 1 then
 			rebirthCount = OilStateService:IncrementRebirth(player.UserId)
 		end
 		OilStateService:UnlockOilHeaven(player.UserId)
 		OilHeavenPlotService:RefreshUnlocks(player.UserId)
-		OilHeavenDrillService:GrantRebirthDrillTool(player)
+		OilHeavenDrillService:GrantRebirthDrillTool(player, n)
 		OilStateService:PushState(player.UserId)
-		return rebirthCount
+		local newDrillCount = OilStateService:GetRebirthDrills(player.UserId)
+		return rebirthCount, newDrillCount
 	end
 
 	-- Studio: wipe DataStore keys + skip leave-save so old state does not re-write after `RemoveAsync`.
@@ -869,9 +879,46 @@ do
 			local count = tonumber(arg) or 1
 			local newCount = devGrantRebirths(player, count)
 			print(string.format("[Dev] /giverebirth by %s -> rebirthCount=%d", player.Name, newCount))
-		elseif cmd == "/giverebirthdrill" or cmd == "/rebirthdrill" then
-			local rebirthCount = devGiveRebirthDrill(player)
-			print(string.format("[Dev] Rebirth Drill enabled for %s -> rebirthCount=%d", player.Name, rebirthCount))
+		elseif cmd:sub(1, 16) == "/giverebirthdrill" or cmd:sub(1, 12) == "/rebirthdrill" then
+			--- Optional count: `/giverebirthdrill 5` adds 5 drills (defaults to 1).
+			--- The dev command also unlocks Oil Heaven if needed (since carrying a
+			--- drill without heaven access would be a softlock for QA).
+			local prefixLen = if cmd:sub(1, 16) == "/giverebirthdrill" then 17 else 13
+			local arg = cmd:sub(prefixLen):gsub("^%s+", "")
+			local count = tonumber(arg) or 1
+			local rebirthCount, drillCount = devGiveRebirthDrill(player, count)
+			print(string.format("[Dev] Rebirth Drill +%d for %s -> rebirthCount=%d drills=%d", count, player.Name, rebirthCount, drillCount))
+		elseif cmd == "/rebirthnow" then
+			--- Forces the rebirth flow for the calling player, bypassing the
+			--- panel UX (handy for QA without grinding to $1M cash). Mirrors
+			--- exactly what `RebirthShopService:_handleRebirth` does so any
+			--- bug in the rebirth path also reproduces here.
+			local ok, code, data = OilStateService:Rebirth(player.UserId)
+			if not ok then
+				warn(string.format("[Dev] /rebirthnow %s -> %s", player.Name, code))
+			else
+				pcall(function() WarehouseService:ResetForRebirth(player.UserId) end)
+				pcall(function() DrillingService:CancelDrillsForUser(player.UserId) end)
+				pcall(function() EquipmentShopService:ReconcileForUser(player) end)
+				pcall(function() OilShipmentService:CancelShipmentsForUser(player.UserId) end)
+				pcall(function() OilStateService:PushState(player.UserId) end)
+				print(string.format(
+					"[Dev] /rebirthnow %s -> rebirthCount=%d tokens=%d (+%d) drills=%d",
+					player.Name,
+					data.rebirthCount, data.rebirthTokens, data.tokensGranted, data.rebirthDrills
+				))
+			end
+		elseif cmd:sub(1, 17) == "/giverebirthtokens" or cmd:sub(1, 7) == "/tokens" then
+			--- `/giverebirthtokens N` (alias `/tokens N`) — bumps the wallet that
+			--- the rebirth shop spends. Used for QA without needing to wire up
+			--- the rebirth flow that converts cash → tokens.
+			local prefixLen = if cmd:sub(1, 17) == "/giverebirthtokens" then 18 else 8
+			local arg = cmd:sub(prefixLen):gsub("^%s+", "")
+			local amount = tonumber(arg) or 10
+			amount = math.max(1, math.floor(amount))
+			local newTokens = OilStateService:AddRebirthTokens(player.UserId, amount)
+			OilStateService:PushState(player.UserId)
+			print(string.format("[Dev] Rebirth tokens +%d for %s -> total=%d", amount, player.Name, newTokens))
 		elseif cmd == "/unlockoilheaven" or cmd == "/oh" then
 			OilStateService:UnlockOilHeaven(player.UserId)
 			OilHeavenPlotService:RefreshUnlocks(player.UserId)
@@ -946,6 +993,8 @@ do
 		"/autoship",
 		"/security",
 		"/rebirth", "/giverebirth", "/giverebirthdrill", "/rebirthdrill",
+		"/giverebirthtokens", "/tokens",
+		"/rebirthnow",
 		"/event", "/eventlist", "/events",
 		"/unlockoilheaven", "/oh",
 	}

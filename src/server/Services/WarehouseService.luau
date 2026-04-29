@@ -1245,6 +1245,27 @@ function WarehouseService:RemoveBarrelsByType(userId: number, oilType: string): 
 	return count
 end
 
+--- Per-rebirth reset entry point (called by `RebirthShopService` after
+--- `OilStateService:Rebirth`). Wipes tier back to 1 and clears all stored
+--- barrels (base + hit-overflow). Keeps the player's slot assignment so they
+--- don't get re-assigned to a different warehouse mid-session. Mirrors the
+--- shape of `RemoveAllBarrels` + a tier reset.
+function WarehouseService:ResetForRebirth(userId: number)
+	local state = self._stateByUserId[userId]
+	if not state then
+		return
+	end
+	state.tier = 1
+	for _, tier in ipairs(TIER_ORDER) do
+		state.barrels[tier] = 0
+		state.hitOverflowBarrels[tier] = 0
+	end
+	self._dirtyByUserId[userId] = true
+	self:_syncBarrelVisuals(userId)
+	self:_updateSign(userId)
+	self:PushState(userId)
+end
+
 function WarehouseService:RemoveAllBarrels(userId: number)
 	local state = self._stateByUserId[userId]
 	if not state then return emptyBarrelMap() end

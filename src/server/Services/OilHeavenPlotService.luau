@@ -217,7 +217,12 @@ local function showRewardOnTile(tile: BasePart, displayText: string, rarity: str
 		label.Name = "RewardLabel"
 		label.Size = UDim2.fromScale(1, 1)
 		label.BackgroundTransparency = 1
-		label.Font = Enum.Font.GothamBlack
+		--- Merriweather is the canonical OilHeaven / OTS panel font (matches
+		--- `ShipOilPanel.PANEL_FONT`, `PlotService` floor labels, etc.).
+		--- `Enum.Font.MerriweatherBold` does NOT exist in the legacy font set —
+		--- only the regular weight is enum-accessible. For bolder weights swap
+		--- to `FontFace = Font.new(... Bold)` later if design wants it.
+		label.Font = Enum.Font.Merriweather
 		label.TextColor3 = Color3.fromRGB(255, 255, 255)
 		label.TextStrokeTransparency = 0
 		label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)

@@ -5,6 +5,7 @@ local ServerStorage = game:GetService("ServerStorage")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Constants = require(Shared:WaitForChild("Constants"))
 local HeavenRewardConfig = require(Shared:WaitForChild("Config"):WaitForChild("HeavenRewardConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
@@ -13,6 +14,12 @@ local OilHeavenDrillService = {}
 local PROMPT_NAME = "HeavenDrillPrompt"
 local REBIRTH_DRILL_TOOL_NAME = "Rebirth Drill"
 local REBIRTH_DRILL_TEMPLATE = "Drill_Rebirth"
+--- Hotbar (`EquipmentHotbarController`) keys stack-count display off these
+--- exact attributes — without `EquipmentShopConsumable=true` AND a non-empty
+--- `EquipmentItemId`, `stackCountForTool` returns 1 and no badge renders.
+--- The id namespace is shared with `EquipmentCatalog` ids; `rebirth_drill`
+--- is unique to this consumable and not a regular shop tier.
+local REBIRTH_DRILL_EQUIPMENT_ITEM_ID = "rebirth_drill"
 
 local function isSkyPlotModel(instance: Instance?): boolean
 	return instance ~= nil and instance:IsA("Model") and string.match(instance.Name, "^OilHeavenPlot_%d%d$") ~= nil
@@ -46,6 +53,7 @@ function OilHeavenDrillService:Init(remoteService, oilStateService, oilHeavenPlo
 	self._connections = {}
 	self._running = false
 	self._activeDrills = {} :: { [string]: boolean }
+	self._drillAttrConns = {} :: { [Player]: RBXScriptConnection }
 	self._rewardEvent = remoteService:GetEvent(RemoteNames.HeavenRewardEvent)
 	self._actionResultEvent = remoteService:GetEvent(RemoteNames.OilActionResult)
 	self._monetizationService = nil :: any
@@ -103,12 +111,15 @@ local function resolveHeavenTile(target: Instance?): BasePart?
 	return nil
 end
 
-local function playerHasRebirthDrill(player: Player): boolean
+--- Locates the player's existing Rebirth Drill Tool (if any) across both
+--- Backpack and Character. Used by `_syncDrillToolForPlayer` to decide
+--- whether to add or remove the tool when the count changes.
+local function findExistingRebirthDrillTool(player: Player): Tool?
 	local backpack = player:FindFirstChild("Backpack")
 	if backpack then
 		for _, child in ipairs(backpack:GetChildren()) do
 			if child:IsA("Tool") and child.Name == REBIRTH_DRILL_TOOL_NAME then
-				return true
+				return child :: Tool
 			end
 		end
 	end
@@ -116,15 +127,40 @@ local function playerHasRebirthDrill(player: Player): boolean
 	if character then
 		for _, child in ipairs(character:GetChildren()) do
 			if child:IsA("Tool") and child.Name == REBIRTH_DRILL_TOOL_NAME then
-				return true
+				return child :: Tool
 			end
 		end
 	end
-	return false
+	return nil
 end
 
-function OilHeavenDrillService:GrantRebirthDrillTool(player: Player)
-	if playerHasRebirthDrill(player) then
+--- Reconciles Backpack tool presence + stack-count badge with
+--- `OilStateService.rebirthDrills`:
+---   * count > 0 and no tool → clone the template into the player's Backpack,
+---     stamping the EquipmentShop-stack attributes so the hotbar renders a
+---     badge identical to other consumable drills.
+---   * count > 0 and tool exists → only refresh `EquipmentStackCount` (the
+---     hotbar's `GetAttributeChangedSignal(STACK_ATTR)` listener picks this up
+---     and repaints the badge live).
+---   * count == 0 and tool present → destroy the tool.
+--- Called whenever the mirrored attribute changes, on character respawn, on
+--- plot assignment, and on every `GrantRebirthDrillTool`.
+function OilHeavenDrillService:_syncDrillToolForPlayer(player: Player)
+	if not self._oilStateService then return end
+	local count = self._oilStateService:GetRebirthDrills(player.UserId)
+	local existing = findExistingRebirthDrillTool(player)
+
+	if count <= 0 then
+		if existing then
+			existing:Destroy()
+		end
+		return
+	end
+
+	if existing then
+		-- Refresh stack badge live without re-cloning the tool (avoids
+		-- snatching it out of the player's hands mid-equip).
+		existing:SetAttribute(Constants.EquipmentStackCountAttribute, count)
 		return
 	end
 	local folder = ServerStorage:FindFirstChild("EquipmentShopTemplates")
@@ -137,8 +173,38 @@ function OilHeavenDrillService:GrantRebirthDrillTool(player: Player)
 	local tool = template:Clone()
 	tool.Name = REBIRTH_DRILL_TOOL_NAME
 	tool:SetAttribute("ToolKind", "RebirthDrill")
-	tool:SetAttribute("RebirthDrillPermanent", true)
+	-- Stack-display contract — `EquipmentHotbarController.stackCountForTool`
+	-- requires both flags set before it'll read the count attribute.
+	tool:SetAttribute("EquipmentShopConsumable", true)
+	tool:SetAttribute("EquipmentItemId", REBIRTH_DRILL_EQUIPMENT_ITEM_ID)
+	tool:SetAttribute(Constants.EquipmentStackCountAttribute, count)
 	tool.Parent = backpack
+end
+
+--- Public grant API: bumps the rebirth-drill count by 1 (or `count` if given)
+--- and syncs the Backpack tool. Used by the `/giverebirthdrill` dev command
+--- and any future direct-grant code path; the rebirth shop bumps the count
+--- itself via `OilStateService:AddRebirthDrills` and relies on the attribute
+--- watcher in `Start()` to sync the tool, so it doesn't go through here.
+function OilHeavenDrillService:GrantRebirthDrillTool(player: Player, count: number?)
+	if not self._oilStateService then return end
+	local n = if typeof(count) == "number" and count > 0 then math.floor(count) else 1
+	self._oilStateService:AddRebirthDrills(player.UserId, n)
+	self:_syncDrillToolForPlayer(player)
+end
+
+--- Hooks per-player attribute change tracking so any update to
+--- `Constants.RebirthDrillsAttribute` (set by `OilStateService:Add/Consume`)
+--- immediately re-syncs the Backpack tool. This is what links the rebirth
+--- shop's purchase (which only mutates state, not tools) to the visible
+--- player inventory. Idempotent — keyed by `player` in `_drillAttrConns`.
+function OilHeavenDrillService:_attachDrillAttrWatcher(player: Player)
+	if self._drillAttrConns[player] then
+		return
+	end
+	self._drillAttrConns[player] = player:GetAttributeChangedSignal(Constants.RebirthDrillsAttribute):Connect(function()
+		self:_syncDrillToolForPlayer(player)
+	end)
 end
 
 function OilHeavenDrillService:Start()
@@ -146,42 +212,45 @@ function OilHeavenDrillService:Start()
 		return
 	end
 	self._running = true
+	self._drillAttrConns = self._drillAttrConns or ({} :: { [Player]: RBXScriptConnection })
 
-	-- Grant rebirth drill to players who already have heaven unlocked
+	-- Sync drill tool to count for players already in-game.
 	for _, player in ipairs(Players:GetPlayers()) do
-		if self._oilStateService:IsOilHeavenUnlocked(player.UserId) then
-			self:GrantRebirthDrillTool(player)
-		end
+		self:_syncDrillToolForPlayer(player)
+		self:_attachDrillAttrWatcher(player)
 	end
 
-	-- Re-grant on respawn
+	-- Re-sync on respawn (the new Character starts with an empty Backpack;
+	-- if `rebirthDrills > 0` we re-clone the tool, else we leave it empty).
 	table.insert(self._connections, Players.PlayerAdded:Connect(function(player: Player)
+		self:_attachDrillAttrWatcher(player)
 		player.CharacterAdded:Connect(function()
 			task.defer(function()
-				if self._oilStateService:IsOilHeavenUnlocked(player.UserId) then
-					self:GrantRebirthDrillTool(player)
-				end
+				self:_syncDrillToolForPlayer(player)
 			end)
 		end)
 	end))
 	for _, player in ipairs(Players:GetPlayers()) do
 		player.CharacterAdded:Connect(function()
 			task.defer(function()
-				if self._oilStateService:IsOilHeavenUnlocked(player.UserId) then
-					self:GrantRebirthDrillTool(player)
-				end
+				self:_syncDrillToolForPlayer(player)
 			end)
 		end)
 	end
 
 	table.insert(self._connections, self._plotService:OnPlotAssigned(function(userId: number, _plot: Model)
 		local player = Players:GetPlayerByUserId(userId)
-		if player and self._oilStateService:IsOilHeavenUnlocked(userId) then
-			self:GrantRebirthDrillTool(player)
+		if player then
+			self:_syncDrillToolForPlayer(player)
 		end
 		self:RefreshAllPrompts()
 	end))
-	table.insert(self._connections, Players.PlayerRemoving:Connect(function(_player: Player)
+	table.insert(self._connections, Players.PlayerRemoving:Connect(function(player: Player)
+		local conn = self._drillAttrConns[player]
+		if conn then
+			conn:Disconnect()
+			self._drillAttrConns[player] = nil
+		end
 		task.defer(function()
 			self:RefreshAllPrompts()
 		end)
@@ -201,6 +270,12 @@ function OilHeavenDrillService:Stop()
 		conn:Disconnect()
 	end
 	table.clear(self._connections)
+	if self._drillAttrConns then
+		for _, conn in pairs(self._drillAttrConns) do
+			conn:Disconnect()
+		end
+		table.clear(self._drillAttrConns)
+	end
 end
 
 function OilHeavenDrillService:_sendActionResult(player: Player, ok: boolean, code: string, message: string, data: any?)
@@ -260,6 +335,18 @@ function OilHeavenDrillService:_handleToolActivation(player: Player, target: any
 		self:_sendActionResult(player, false, "ERR_HEAVEN_DRILLING", "Already drilling this tile!", nil)
 		return
 	end
+
+	--- Consume the drill at *scheduling* time, not at the post-delay reward
+	--- claim, so the player can't fire `RequestHeavenDrill` against tile A then
+	--- tile B during the 3s window with a single drill in inventory. The
+	--- attribute-change watcher (`_attachDrillAttrWatcher`) syncs the Backpack
+	--- tool — when this drops the count to 0 the Tool is removed mid-animation,
+	--- which is fine because the active drill is keyed off the server-side
+	--- `_activeDrills` set, not tool presence.
+	if not self._oilStateService:ConsumeRebirthDrill(player.UserId) then
+		self:_sendActionResult(player, false, "ERR_HEAVEN_NO_DRILL", "You don't have a Rebirth Drill.", nil)
+		return
+	end
 	self._activeDrills[drillKey] = true
 
 	-- Tell client to spawn the drill visual + spin animation
@@ -276,6 +363,12 @@ function OilHeavenDrillService:_handleToolActivation(player: Player, target: any
 
 		local ok, code, message, reward = self._oilStateService:ClaimOilHeavenRewardTile(player.UserId, tilePart.Name)
 		if not ok or not reward then
+			--- Refund the drill we debited at scheduling time. Realistically
+			--- only `ERR_HEAVEN_TILE_CLAIMED` can fire here (a race with
+			--- another path claiming the same tile, e.g. dev tools) — every
+			--- other failure mode in `ClaimOilHeavenRewardTile` was checked
+			--- upfront. Refunding keeps the player whole on these edge cases.
+			self._oilStateService:AddRebirthDrills(player.UserId, 1)
 			self:_sendActionResult(player, false, code, message, nil)
 			return
 		end
