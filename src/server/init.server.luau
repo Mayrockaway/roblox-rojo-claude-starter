@@ -68,6 +68,7 @@ local LeaderboardService = require(serviceFolder:WaitForChild("LeaderboardServic
 local GlobalEventService = require(serviceFolder:WaitForChild("GlobalEventService"))
 local DailyRewardCalendarService = require(serviceFolder:WaitForChild("DailyRewardCalendarService"))
 local OilHeavenPlotService = require(serviceFolder:WaitForChild("OilHeavenPlotService"))
+local OilHeavenDrillService = require(serviceFolder:WaitForChild("OilHeavenDrillService"))
 
 local DevLog = require(Shared:WaitForChild("DevLog"))
 
@@ -144,6 +145,8 @@ SecurityPersonnelService:Init(OilStateService)
 CargoHaulerService:Init(OilStateService)
 AutoShipService:Init(RemoteService, OilStateService, WarehouseService, BoatDockService, OilShipmentService, MonetizationService)
 OilHeavenPlotService:Init(PlotService, OilStateService)
+OilHeavenDrillService:Init(RemoteService, OilStateService, OilHeavenPlotService, PlotService)
+OilHeavenPlotService:SetHeavenDrillService(OilHeavenDrillService)
 OilShipmentService:SetOilHeavenPlotService(OilHeavenPlotService)
 OilShipmentService:SetHitContractService(HitContractService)
 OilShipmentService:SetLeaderboardService(LeaderboardService)
@@ -170,6 +173,7 @@ HitContractService:SetMonetizationService(MonetizationService)
 SecurityPersonnelService:SetMonetizationService(MonetizationService)
 CargoHaulerService:SetMonetizationService(MonetizationService)
 EquipmentShopService:SetMonetizationService(MonetizationService)
+OilHeavenDrillService:SetMonetizationService(MonetizationService)
 -- GlobalEventService runs the server-wide buff/threat rotation
 -- (`cash_frenzy`, `express_convoy`). Inject into the two
 -- consumer services AFTER `Init` so the query API is available before
@@ -255,8 +259,10 @@ FighterPlaneWaveService:Start()
 LeaderboardService:Start()
 GlobalEventService:Start()
 OilHeavenPlotService:Start()
+OilHeavenDrillService:Start()
 
 game:BindToClose(function()
+	OilHeavenDrillService:Stop()
 	OilHeavenPlotService:Stop()
 	GlobalEventService:Stop()
 	KillZoneService:Stop()
@@ -451,6 +457,30 @@ do
 		WarehouseService:MarkDevSkipSaveOnNextDrop(userId)
 		OilStateService:DevRemovePersistedOilProfile(userId)
 		WarehouseService:DevRemovePersistedWarehouseProfile(userId)
+	end
+
+	local function devGrantRebirths(player: Player, count: number): number
+		local clampedCount = math.clamp(math.floor(count), 1, 99)
+		local newCount = OilStateService:GetRebirthCount(player.UserId)
+		for _ = 1, clampedCount do
+			newCount = OilStateService:IncrementRebirth(player.UserId)
+		end
+		OilStateService:UnlockOilHeaven(player.UserId)
+		OilHeavenPlotService:RefreshUnlocks(player.UserId)
+		OilStateService:PushState(player.UserId)
+		return newCount
+	end
+
+	local function devGiveRebirthDrill(player: Player): number
+		local rebirthCount = OilStateService:GetRebirthCount(player.UserId)
+		if rebirthCount < 1 then
+			rebirthCount = OilStateService:IncrementRebirth(player.UserId)
+		end
+		OilStateService:UnlockOilHeaven(player.UserId)
+		OilHeavenPlotService:RefreshUnlocks(player.UserId)
+		OilHeavenDrillService:GrantRebirthDrillTool(player)
+		OilStateService:PushState(player.UserId)
+		return rebirthCount
 	end
 
 	-- Studio: wipe DataStore keys + skip leave-save so old state does not re-write after `RemoveAsync`.
@@ -829,8 +859,22 @@ do
 			else
 				warn(string.format("[Dev] /giveboat by %s -> failed for %s boat '%s': %s", player.Name, target.Name, boatIdArg, tostring(code)))
 			end
+		elseif cmd:sub(1, 8) == "/rebirth" then
+			local arg = cmd:sub(9):gsub("^%s+", "")
+			local count = tonumber(arg) or 1
+			local newCount = devGrantRebirths(player, count)
+			print(string.format("[Dev] /rebirth by %s -> rebirthCount=%d", player.Name, newCount))
+		elseif cmd:sub(1, 12) == "/giverebirth" then
+			local arg = cmd:sub(13):gsub("^%s+", "")
+			local count = tonumber(arg) or 1
+			local newCount = devGrantRebirths(player, count)
+			print(string.format("[Dev] /giverebirth by %s -> rebirthCount=%d", player.Name, newCount))
+		elseif cmd == "/giverebirthdrill" or cmd == "/rebirthdrill" then
+			local rebirthCount = devGiveRebirthDrill(player)
+			print(string.format("[Dev] Rebirth Drill enabled for %s -> rebirthCount=%d", player.Name, rebirthCount))
 		elseif cmd == "/unlockoilheaven" or cmd == "/oh" then
 			OilStateService:UnlockOilHeaven(player.UserId)
+			OilHeavenPlotService:RefreshUnlocks(player.UserId)
 			OilStateService:PushState(player.UserId)
 			print(string.format("[Dev] Oil Heaven unlocked for %s", player.Name))
 		elseif cmd == "/hideui" then
@@ -901,6 +945,7 @@ do
 		"/hideui",
 		"/autoship",
 		"/security",
+		"/rebirth", "/giverebirth", "/giverebirthdrill", "/rebirthdrill",
 		"/event", "/eventlist", "/events",
 		"/unlockoilheaven", "/oh",
 	}
@@ -923,4 +968,3 @@ do
 		end
 	end
 end
-

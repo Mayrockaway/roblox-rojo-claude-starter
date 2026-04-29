@@ -204,6 +204,15 @@ local function totalBarrels(barrels)
 	return t
 end
 
+local function resolvedWarehouseCapacity(self, userId: number, state: any): number
+	local baseCapacity = WarehouseConfig.GetCapacity(state.tier)
+	local bonusTotals = self._oilStateService and self._oilStateService:GetOilHeavenBonusTotals(userId) or nil
+	local bonus = if typeof(bonusTotals) == "table" and typeof(bonusTotals.warehouseCapacityFlat) == "number"
+		then math.max(0, math.floor(bonusTotals.warehouseCapacityFlat))
+		else 0
+	return baseCapacity + bonus
+end
+
 local function totalBarrelsCombined(baseBarrels, overflowBarrels)
 	return totalBarrels(baseBarrels) + totalBarrels(overflowBarrels)
 end
@@ -629,7 +638,7 @@ function WarehouseService:_syncWoodSignGui(signPart: BasePart, userId: number)
 			end
 		end
 		if signLabel and signLabel:IsA("TextLabel") then
-			local cap = WarehouseConfig.GetCapacity(state.tier)
+			local cap = resolvedWarehouseCapacity(self, userId, state)
 			local total = totalBarrels(state.barrels)
 			local nextCost = WarehouseConfig.GetUpgradeCost(state.tier)
 			if state.tier >= MAX_WAREHOUSE_TIER or nextCost == nil then
@@ -1004,7 +1013,7 @@ end
 function WarehouseService:GetCapacity(userId: number): number
 	local state = self._stateByUserId[userId]
 	if not state then return 20 end
-	return WarehouseConfig.GetCapacity(state.tier)
+	return resolvedWarehouseCapacity(self, userId, state)
 end
 
 function WarehouseService:GetTotalBarrels(userId: number): number
@@ -1016,7 +1025,7 @@ end
 function WarehouseService:CanShip(userId: number, barrelCount: number): boolean
 	local state = self._stateByUserId[userId]
 	if not state then return false end
-	local cap = WarehouseConfig.GetCapacity(state.tier)
+	local cap = resolvedWarehouseCapacity(self, userId, state)
 	return totalBarrels(state.barrels) + barrelCount <= cap
 end
 
@@ -1024,7 +1033,7 @@ function WarehouseService:DeliverBarrels(userId: number, manifest): boolean
 	local state = self._stateByUserId[userId]
 	if not state then return false end
 
-	local cap = WarehouseConfig.GetCapacity(state.tier)
+	local cap = resolvedWarehouseCapacity(self, userId, state)
 	local current = totalBarrels(state.barrels)
 	local incoming = 0
 	for _, tier in ipairs(TIER_ORDER) do
@@ -1050,7 +1059,7 @@ function WarehouseService:DeliverHitBarrels(userId: number, manifest): boolean
 	local state = self._stateByUserId[userId]
 	if not state then return false end
 
-	local cap = WarehouseConfig.GetCapacity(state.tier)
+	local cap = resolvedWarehouseCapacity(self, userId, state)
 	local currentBase = totalBarrels(state.barrels)
 	local manifestIn = copyBarrelMap(manifest)
 	local remainingRoom = math.max(0, cap - currentBase)
@@ -1265,7 +1274,7 @@ function WarehouseService:GetWarehouseForClient(userId: number)
 			Premium = (state.barrels.Premium or 0) + (state.hitOverflowBarrels.Premium or 0),
 		},
 		hitOverflowBarrels = copyBarrelMap(state.hitOverflowBarrels),
-		capacity = WarehouseConfig.GetCapacity(state.tier),
+		capacity = resolvedWarehouseCapacity(self, userId, state),
 		totalBarrels = totalBarrelsCombined(state.barrels, state.hitOverflowBarrels),
 		slotId = state.slotId,
 		upgradeCost = WarehouseConfig.GetUpgradeCost(state.tier),
@@ -1397,7 +1406,7 @@ function WarehouseService:_updateSign(userId: number)
 		if gui then
 			local tierLabel = gui:FindFirstChild("TierLabel")
 			if tierLabel then
-				local cap = WarehouseConfig.GetCapacity(state.tier)
+				local cap = resolvedWarehouseCapacity(self, userId, state)
 				tierLabel.Text = string.format(
 					"Tier %d/%d | %d/%d",
 					state.tier,

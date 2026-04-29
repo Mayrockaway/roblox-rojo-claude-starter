@@ -406,6 +406,7 @@ end
 -- returns nil so the ghost stays hidden.
 local function resolveGhostTemplateName(): string?
 	local kind, tier = ClientPlotGrid.getEquippedToolInfo()
+	if kind == "RebirthDrill" then return "Drill_Rebirth" end
 	if kind == "Drill" and tier then return "Drill_" .. tier end
 	if ClientPlotGrid.getEquippedToolName() == TOOL_DRILL then return "Drill_T1" end
 	return nil
@@ -749,10 +750,51 @@ end
 local function updateGhost()
 	local kind = select(1, ClientPlotGrid.getEquippedToolInfo())
 	local equipped = ClientPlotGrid.getEquippedToolName()
+
+	-- Rebirth Drill ghost: follows mouse, green on valid heaven tiles, red elsewhere
+	if kind == "RebirthDrill" then
+		local target = mouse.Target
+		if not target then
+			hideGhost()
+			return
+		end
+		local g = ensureGhost()
+		if not g then return end
+		local hitPos = mouse.Hit.Position
+		local surfaceY = if target:IsA("BasePart") then (target.Position.Y + target.Size.Y / 2) else hitPos.Y
+		local pivotToBottom = 0
+		if g:IsA("Model") then
+			pivotToBottom = PlacementAnchor.pivotYMinusBottomWorldY(g)
+		end
+		g:PivotTo(CFrame.new(hitPos.X, surfaceY + pivotToBottom, hitPos.Z))
+		if ghostTimerAnchor then
+			ghostTimerAnchor.Position = getGhostTimerAnchorPosition(g, Vector3.new(hitPos.X, surfaceY + 3, hitPos.Z))
+		end
+		if ghostHighlight then
+			local valid = false
+			if target:IsA("BasePart") and target.Parent and target.Parent:IsA("Folder") and target.Parent.Name == "TileGrid" then
+				local cursor: Instance? = target.Parent
+				while cursor do
+					if cursor:IsA("Model") and string.match(cursor.Name, "^OilHeavenPlot_%d%d$") then
+						valid = target:GetAttribute("Locked") ~= true
+						break
+					end
+					cursor = cursor.Parent
+				end
+			end
+			if valid then
+				ghostHighlight.FillColor = Color3.fromRGB(80, 220, 120)
+				ghostHighlight.OutlineColor = Color3.fromRGB(190, 255, 200)
+			else
+				ghostHighlight.FillColor = Color3.fromRGB(220, 70, 70)
+				ghostHighlight.OutlineColor = Color3.fromRGB(255, 180, 180)
+			end
+		end
+		if ghostTimerBB then ghostTimerBB.Enabled = false end
+		return
+	end
+
 	if kind ~= "Drill" and equipped ~= TOOL_DRILL then
-		-- Off-Drill: hide the ghost. Touch projection is computed live every
-		-- frame from `getDesiredPlacementHit`, so there's no preview state
-		-- left to clear here (the old tap-to-preview lock was retired).
 		hideGhost()
 		return
 	end

@@ -73,14 +73,194 @@ local function getSkyPlotSpreadOffset(plotNumber: number, orderedPlotCount: numb
 	return Vector3.new(centeredIndex * HEAVEN_PLOT_EXTRA_SLOT_SPACING, 0, 0)
 end
 
+local function ensureTileBaseStyleStored(tile: BasePart)
+	if tile:GetAttribute("HeavenBaseTransparency") == nil then
+		tile:SetAttribute("HeavenBaseTransparency", tile.Transparency)
+	end
+	if tile:GetAttribute("HeavenBaseMaterial") == nil then
+		tile:SetAttribute("HeavenBaseMaterial", tile.Material.Name)
+	end
+end
+
+local function restoreTileBaseStyle(tile: BasePart)
+	local baseTransparency = tile:GetAttribute("HeavenBaseTransparency")
+	if typeof(baseTransparency) == "number" then
+		tile.Transparency = baseTransparency
+	end
+	local baseMaterialName = tile:GetAttribute("HeavenBaseMaterial")
+	if typeof(baseMaterialName) == "string" and Enum.Material[baseMaterialName] ~= nil then
+		tile.Material = Enum.Material[baseMaterialName]
+	end
+end
+
+local function setQMarkVisible(tile: BasePart, visible: boolean)
+	local qmark = tile:FindFirstChild("QMark")
+	if not qmark then
+		return
+	end
+	for _, descendant in ipairs(qmark:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.Transparency = if visible then 0 else 1
+		end
+	end
+end
+
+local RARITY_COLORS = {
+	Common = Color3.fromRGB(200, 200, 200),
+	Rare = Color3.fromRGB(0, 150, 255),
+	Epic = Color3.fromRGB(180, 0, 255),
+	Legendary = Color3.fromRGB(255, 170, 0),
+	Mythic = Color3.fromRGB(255, 50, 50),
+}
+
+--- Reshapes the tile grid from the template's 6×3 layout to the configured
+--- RowsPerSection×Columns layout with gaps between sections.
+--- Uses ClaimPad CFrame for orientation so the grid matches the plot's rotation.
+local function reshapeTileGrid(plot: Model)
+	local specialPlot = plot:FindFirstChild("SpecialPlot")
+	local tileGrid = specialPlot and specialPlot:FindFirstChild("TileGrid")
+	if not tileGrid then return end
+
+	local claimPad = plot:FindFirstChild("ClaimPad", true)
+	if not claimPad or not claimPad:IsA("BasePart") then return end
+
+	local tileSize = OilHeavenConfig.TileSize
+	local cols = OilHeavenConfig.Columns
+	local rowsPerSec = OilHeavenConfig.RowsPerSection
+	local sectionGap = OilHeavenConfig.SectionGap or 0
+
+	local s1CenterRow = math.ceil(rowsPerSec / 2)
+	local s1CenterCol = math.ceil(cols / 2)
+	local claimCF = claimPad.CFrame
+
+	-- Group tiles by section (RebirthRequired value)
+	local tilesByReq: { [number]: { BasePart } } = {}
+	for _, tile in ipairs(tileGrid:GetChildren()) do
+		if tile:IsA("BasePart") then
+			local req = tile:GetAttribute("RebirthRequired")
+			if typeof(req) == "number" then
+				if not tilesByReq[req] then tilesByReq[req] = {} end
+				table.insert(tilesByReq[req], tile)
+			end
+		end
+	end
+
+	for sectionIdx, sectionCfg in ipairs(OilHeavenConfig.Sections) do
+		local tiles = tilesByReq[sectionCfg.rebirthRequired] or {}
+
+		-- Sort tiles in ClaimPad's local space (local Z then local X)
+		table.sort(tiles, function(a, b)
+			local aLocal = claimCF:PointToObjectSpace(a.Position)
+			local bLocal = claimCF:PointToObjectSpace(b.Position)
+			if math.abs(aLocal.Z - bLocal.Z) > 1 then
+				return aLocal.Z < bLocal.Z
+			end
+			return aLocal.X < bLocal.X
+		end)
+
+		local maxTiles = rowsPerSec * cols
+		for i = maxTiles + 1, #tiles do
+			tiles[i]:Destroy()
+		end
+
+		-- Compute section offset in ClaimPad's local Z + staircase Y
+		local sectionLocalZ = (sectionIdx - 1) * (rowsPerSec * tileSize + sectionGap)
+		local sectionHeight = (sectionIdx - 1) * 8 -- floating staircase: +8 studs per section
+
+		for i = 1, math.min(maxTiles, #tiles) do
+			local row = math.ceil(i / cols)
+			local col = ((i - 1) % cols) + 1
+
+			local localX = (col - s1CenterCol) * tileSize
+			local localZ = (row - s1CenterRow) * tileSize + sectionLocalZ
+			local targetPos = (claimCF * CFrame.new(localX, -1 + sectionHeight, localZ)).Position
+
+			local moveDelta = targetPos - tiles[i].Position
+			tiles[i].CFrame = tiles[i].CFrame + moveDelta
+			-- Close grid-line gaps: ensure tile fills the full cell
+			tiles[i].Size = Vector3.new(tileSize, tiles[i].Size.Y, tileSize)
+			for _, desc in ipairs(tiles[i]:GetDescendants()) do
+				if desc:IsA("BasePart") then
+					desc.CFrame = desc.CFrame + moveDelta
+				end
+			end
+		end
+	end
+end
+
+local function showRewardOnTile(tile: BasePart, displayText: string, rarity: string?)
+	setQMarkVisible(tile, false)
+
+	-- Compute offset from tile center to QMark mesh position
+	local studsOffset = Vector3.new(0, 2, 0)
+	local qmark = tile:FindFirstChild("QMark")
+	if qmark then
+		local meshPart = qmark:FindFirstChildWhichIsA("BasePart", true)
+		if meshPart then
+			studsOffset = meshPart.Position - tile.Position
+		end
+	end
+
+	local gui = tile:FindFirstChild("HeavenRewardGui")
+	if not gui then
+		gui = Instance.new("BillboardGui")
+		gui.Name = "HeavenRewardGui"
+		gui.Size = UDim2.new(8, 0, 4, 0)
+		gui.StudsOffset = studsOffset
+		gui.Adornee = tile
+		gui.AlwaysOnTop = true
+		gui.LightInfluence = 0
+		gui.MaxDistance = math.huge
+		gui.Parent = tile
+
+		local label = Instance.new("TextLabel")
+		label.Name = "RewardLabel"
+		label.Size = UDim2.fromScale(1, 1)
+		label.BackgroundTransparency = 1
+		label.Font = Enum.Font.GothamBlack
+		label.TextColor3 = Color3.fromRGB(255, 255, 255)
+		label.TextStrokeTransparency = 0
+		label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		label.TextScaled = true
+		label.TextWrapped = true
+		label.Parent = gui
+
+	else
+		gui.StudsOffset = studsOffset
+	end
+
+	local color = RARITY_COLORS[rarity or "Common"] or RARITY_COLORS.Common
+	local label = gui:FindFirstChild("RewardLabel")
+	if label then
+		label.Text = displayText
+		label.TextColor3 = color
+	end
+end
+
+local function hideRewardOnTile(tile: BasePart)
+	setQMarkVisible(tile, true)
+	local gui = tile:FindFirstChild("HeavenRewardGui")
+	if gui then gui:Destroy() end
+	-- Clean up legacy markers from previous approaches
+	local oldMarker = tile:FindFirstChild("HeavenRewardMarker")
+	if oldMarker then oldMarker:Destroy() end
+	local oldAnchor = tile:FindFirstChild("HeavenRewardAnchor")
+	if oldAnchor then oldAnchor:Destroy() end
+end
+
 function OilHeavenPlotService:Init(plotService: any, oilStateService: any)
 	self._plotService = plotService
 	self._oilStateService = oilStateService
+	self._heavenDrillService = nil :: any
 	self._assignedByUserId = {} :: { [number]: Model }
 	self._skyPlots = {} :: { [number]: Model } -- plotNumber -> sky plot model
 	self._skyBox = nil :: Model?
 	self._connections = {} :: { RBXScriptConnection }
 	self._template = nil :: Model?
+end
+
+function OilHeavenPlotService:SetHeavenDrillService(heavenDrillService: any)
+	self._heavenDrillService = heavenDrillService
 end
 
 function OilHeavenPlotService:Start()
@@ -170,6 +350,7 @@ function OilHeavenPlotService:Start()
 		local delta = skyCenter - templatePivot.Position
 		translateDescendants(skyPlot, delta)
 
+
 		skyPlot:SetAttribute("OwnerUserId", 0)
 		skyPlot:SetAttribute("PlotNumber", plotNumber)
 		skyPlot.Parent = workspace
@@ -247,10 +428,17 @@ function OilHeavenPlotService:RefreshUnlocks(userId: number)
 		return
 	end
 	self:_applyLockState(plot, userId)
+	if self._heavenDrillService and typeof(self._heavenDrillService.RefreshPlayerPrompts) == "function" then
+		self._heavenDrillService:RefreshPlayerPrompts(userId)
+	end
 end
 
 function OilHeavenPlotService:GetSkyBox(): Instance?
 	return self._skyBox
+end
+
+function OilHeavenPlotService:GetAllSkyPlots(): { [number]: Model }
+	return self._skyPlots
 end
 
 function OilHeavenPlotService:Stop()
@@ -274,6 +462,7 @@ function OilHeavenPlotService:_applyLockState(plot: Model, userId: number)
 	if tileGrid then
 		for _, tile in ipairs(tileGrid:GetChildren()) do
 			if tile:IsA("BasePart") then
+				ensureTileBaseStyleStored(tile)
 				local required = tile:GetAttribute("RebirthRequired")
 				if typeof(required) == "number" then
 					local locked = rebirthCount < required
@@ -282,9 +471,9 @@ function OilHeavenPlotService:_applyLockState(plot: Model, userId: number)
 						tile.Transparency = OilHeavenConfig.LockedTileTransparency
 						tile.Material = OilHeavenConfig.LockedTileMaterial
 					else
-						tile.Transparency = 0
-						tile.Material = OilHeavenConfig.UnlockedTileMaterial
+						restoreTileBaseStyle(tile)
 					end
+					self:_applyTileRewardVisual(tile, userId)
 				end
 			end
 		end
@@ -296,6 +485,18 @@ function OilHeavenPlotService:_applyLockState(plot: Model, userId: number)
 		oldBarriers:Destroy()
 	end
 	self:_buildBarriers(plot, rebirthCount)
+end
+
+function OilHeavenPlotService:_applyTileRewardVisual(tile: BasePart, userId: number)
+	local reward = self._oilStateService:GetOilHeavenTileReward(userId, tile.Name)
+	local claimed = self._oilStateService:IsOilHeavenTileDrilled(userId, tile.Name)
+	if reward then
+		showRewardOnTile(tile, reward.displayText, reward.rarity)
+	elseif claimed then
+		showRewardOnTile(tile, "CLAIMED", "Common")
+	else
+		hideRewardOnTile(tile)
+	end
 end
 
 function OilHeavenPlotService:_buildBarriers(plot: Model, rebirthCount: number)
@@ -311,10 +512,8 @@ function OilHeavenPlotService:_buildBarriers(plot: Model, rebirthCount: number)
 	end
 
 	local s1CenterRow = math.ceil(rowsPerSec / 2)
-	local s1CenterCol = math.ceil(cols / 2)
-	local gridOriginX = claimPad.Position.X - (s1CenterCol - 1) * tileSize
-	local gridOriginZ = claimPad.Position.Z - (s1CenterRow - 1) * tileSize
-	local tileY = claimPad.Position.Y - 1
+	local claimCF = claimPad.CFrame
+	local sectionGap = OilHeavenConfig.SectionGap or 0
 
 	local barriers = Instance.new("Folder")
 	barriers.Name = "Barriers"
@@ -324,16 +523,17 @@ function OilHeavenPlotService:_buildBarriers(plot: Model, rebirthCount: number)
 		if rebirthCount < section.rebirthRequired then
 			local sectionIndex = table.find(OilHeavenConfig.Sections, section)
 			if not sectionIndex then break end
-			local rowOffset = (sectionIndex - 1) * rowsPerSec
-			local barrierZ = gridOriginZ + (rowOffset - 0.5) * tileSize
-			local barrierX = gridOriginX + (gridWidth / 2) - (tileSize / 2)
+			-- Barrier in the gap before this section, in ClaimPad local space
+			local sectionLocalZ = (sectionIndex - 1) * (rowsPerSec * tileSize + sectionGap)
+			local barrierLocalZ = sectionLocalZ - (s1CenterRow - 1) * tileSize - sectionGap * 0.5
+			local barrierCF = claimCF * CFrame.new(0, OilHeavenConfig.BarrierHeight / 2 - 1, barrierLocalZ)
 
 			local wall = Instance.new("Part")
 			wall.Name = string.format("Barrier_%s", section.id)
 			wall.Anchored = true
 			wall.CanCollide = true
 			wall.Size = Vector3.new(gridWidth, OilHeavenConfig.BarrierHeight, OilHeavenConfig.BarrierThickness)
-			wall.CFrame = CFrame.new(barrierX, tileY + OilHeavenConfig.BarrierHeight / 2, barrierZ)
+			wall.CFrame = barrierCF
 			wall.Color = OilHeavenConfig.BarrierColor
 			wall.Transparency = OilHeavenConfig.BarrierTransparency
 			wall.Material = Enum.Material.ForceField

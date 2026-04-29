@@ -115,6 +115,8 @@ export type ClientRemotes = {
 	dailyRewardUpdate: RemoteEvent,
 	--- Oil Heaven teleport (rebirth sky-island).
 	requestTeleportToOilHeaven: RemoteEvent,
+	heavenRewardEvent: RemoteEvent,
+	requestHeavenDrill: RemoteEvent,
 }
 
 local Remotes: ClientRemotes = {
@@ -192,6 +194,8 @@ local Remotes: ClientRemotes = {
 	requestClaimDailyReward = waitRemote(RemoteNames.RequestClaimDailyReward) :: RemoteEvent,
 	dailyRewardUpdate = waitRemote(RemoteNames.DailyRewardUpdate) :: RemoteEvent,
 	requestTeleportToOilHeaven = waitRemote(RemoteNames.RequestTeleportToOilHeaven) :: RemoteEvent,
+	heavenRewardEvent = waitRemote(RemoteNames.HeavenRewardEvent) :: RemoteEvent,
+	requestHeavenDrill = waitRemote(RemoteNames.RequestHeavenDrill) :: RemoteEvent,
 }
 
 local devLogEvent = waitRemote(RemoteNames.DevLog) :: RemoteEvent

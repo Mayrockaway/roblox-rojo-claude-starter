@@ -231,6 +231,23 @@ local ITEMS: { EquipmentRow } = {
 			Mythic = 1.5,
 		},
 	},
+	-- Rebirth Drill: permanent, non-purchasable tool granted on rebirth.
+	-- Uses Drill_T1 as placeholder asset.
+	{
+		id = "rebirth_drill",
+		toolName = "Drill_Rebirth",
+		toolKind = "RebirthDrill",
+		tierKey = nil,
+		displayName = "Rebirth Drill",
+		cashCost = 0,
+		shopPrice = nil,
+		purchasable = false,
+		sortOrder = 100,
+		drillTimeDivisor = nil,
+		drillFallbackSeconds = nil,
+		rarity = "LEGENDARY",
+		iconAssetId = "rbxassetid://113114378488316",
+	},
 }
 
 export type ShopCatalogRow = {

@@ -1,13 +1,15 @@
 --!strict
 --- Configuration for the Oil Heaven rebirth sky-island tile grid.
 --- Each player's Oil Heaven plot is generated at Y=3000 above their main plot.
---- The grid is 3 columns × 36 rows (6 sections of 6 rows each), for 108 tiles total.
+--- The grid is 3 columns × 3 rows per section (5 sections), for 45 tiles total.
 --- Sections unlock progressively as the player's rebirth count increases.
+--- A small gap separates each section so players must jump between them.
 
 local OilHeavenConfig = {
 	TileSize = 20, -- studs per tile side (square tiles)
 	Columns = 3, -- tiles per row
-	RowsPerSection = 6, -- tiles per section vertically
+	RowsPerSection = 3, -- tiles per section vertically
+	SectionGap = 5, -- studs of empty space between sections (jumpable)
 
 	--- Ordered top-to-bottom. `rebirthRequired` = minimum rebirth count to unlock.
 	--- Every other rebirth unlocks the next 3×6 chunk.

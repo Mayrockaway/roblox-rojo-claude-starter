@@ -29,46 +29,12 @@ local WALK_SPEED_BOOST = 20
 local NORMAL_WALK_SPEED = 16
 
 local function createWings(character: Model)
-	local upperTorso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
-	if not upperTorso or not upperTorso:IsA("BasePart") then return nil end
-
+	-- Visual wings are now handled by server-side Angel accessories
+	-- (ServerStorage.HeavenAccessories). This function only creates a
+	-- tracking Model so the flight mechanics code can check if "wings"
+	-- are active.
 	local wings = Instance.new("Model")
 	wings.Name = "HeavenWings"
-
-	local leftWing = Instance.new("Part")
-	leftWing.Name = "LeftWing"
-	leftWing.Anchored = false
-	leftWing.CanCollide = false
-	leftWing.CastShadow = false
-	leftWing.Size = Vector3.new(0.3, 3, 4)
-	leftWing.Color = Color3.fromRGB(255, 255, 255)
-	leftWing.Material = Enum.Material.Neon
-	leftWing.Transparency = 0.3
-	leftWing.Parent = wings
-
-	local leftWeld = Instance.new("Weld")
-	leftWeld.Part0 = upperTorso
-	leftWeld.Part1 = leftWing
-	leftWeld.C0 = CFrame.new(-1.8, 0.3, 0.8) * CFrame.Angles(0, 0, math.rad(-20))
-	leftWeld.Parent = leftWing
-
-	local rightWing = Instance.new("Part")
-	rightWing.Name = "RightWing"
-	rightWing.Anchored = false
-	rightWing.CanCollide = false
-	rightWing.CastShadow = false
-	rightWing.Size = Vector3.new(0.3, 3, 4)
-	rightWing.Color = Color3.fromRGB(255, 255, 255)
-	rightWing.Material = Enum.Material.Neon
-	rightWing.Transparency = 0.3
-	rightWing.Parent = wings
-
-	local rightWeld = Instance.new("Weld")
-	rightWeld.Part0 = upperTorso
-	rightWeld.Part1 = rightWing
-	rightWeld.C0 = CFrame.new(1.8, 0.3, 0.8) * CFrame.Angles(0, 0, math.rad(20))
-	rightWeld.Parent = rightWing
-
 	wings.Parent = character
 	return wings
 end

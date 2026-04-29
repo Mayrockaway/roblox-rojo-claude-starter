@@ -133,6 +133,11 @@ local RemoteNames = {
 	-- player's personal sky island at Y=3000 above their main plot.
 	-- Server generates the plot on first visit (`OilHeavenPlotService`).
 	RequestTeleportToOilHeaven = "RequestTeleportToOilHeaven",
+	-- Server → one client: Heaven drill reward flow (prompt success →
+	-- spinner payload, double-reward resolution).
+	HeavenRewardEvent = "HeavenRewardEvent",
+	-- Client → server: player activated the Rebirth Drill tool on a target.
+	RequestHeavenDrill = "RequestHeavenDrill",
 
 	-- One-shot equipment shop (Tools cloned into `Player.Backpack`; cash via `OilStateService`).
 	RequestPurchaseEquipment = "RequestPurchaseEquipment",

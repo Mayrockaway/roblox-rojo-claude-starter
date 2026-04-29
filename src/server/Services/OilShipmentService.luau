@@ -30,6 +30,16 @@ local BoatCollisionContract = require(script.Parent.Parent.Utils.BoatCollisionCo
 local DevLog = require(Shared:WaitForChild("DevLog"))
 local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
+local ServerStorage = game:GetService("ServerStorage")
+
+local function removeHeavenAccessories(character: Model)
+	for _, child in ipairs(character:GetChildren()) do
+		if child:IsA("Accessory") and child:GetAttribute("HeavenAccessory") == true then
+			child:Destroy()
+		end
+	end
+end
+
 local OilShipmentService = {}
 
 -- Per-server, UserId-keyed flags for "first per server lifetime" funnel
@@ -965,6 +975,7 @@ function OilShipmentService:_handleTeleportToShip(player: Player, payload: any?)
 	if targetUserId == nil or targetUserId == player.UserId then
 		local ok, err = self._boatDockService:TeleportOwnerToSeat(player)
 		if ok then
+			if character then removeHeavenAccessories(character) end
 			player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
 		else
 			self:_sendActionResult(player, false, "ERR_BOAT_UNAVAILABLE", "Your ship is not available right now.", { reason = err })
@@ -974,6 +985,7 @@ function OilShipmentService:_handleTeleportToShip(player: Player, payload: any?)
 
 	local ok, err = self._boatDockService:TeleportSpectatorToBoat(player, targetUserId)
 	if ok then
+		if character then removeHeavenAccessories(character) end
 		player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
 	end
 	if not ok then
@@ -1053,6 +1065,7 @@ function OilShipmentService:_handleTeleportHome(player: Player)
 		--- the Delivery Man. `CFrame + Vector3` translates in world space without touching the
 		--- pad's LookVector.
 		local targetCFrame = claimPad.CFrame + Vector3.new(0, 5, 0)
+		removeHeavenAccessories(character)
 		CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportHome")
 		player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
 		self:_fireCameraSnap(player, targetCFrame)
@@ -1086,6 +1099,19 @@ function OilShipmentService:_handleTeleportToOilHeaven(player: Player)
 	CharacterTeleport.teleportWithUnseat(character, spawnCFrame, "RequestTeleportToOilHeaven")
 	player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldOilHeaven)
 	self:_fireCameraSnap(player, spawnCFrame)
+
+	-- Equip angel wings + halo
+	local humanoid = character:FindFirstChildWhichIsA("Humanoid")
+	local accessoryFolder = ServerStorage:FindFirstChild("HeavenAccessories")
+	if humanoid and accessoryFolder then
+		for _, acc in ipairs(accessoryFolder:GetChildren()) do
+			if acc:IsA("Accessory") then
+				local clone = acc:Clone()
+				clone:SetAttribute("HeavenAccessory", true)
+				humanoid:AddAccessory(clone)
+			end
+		end
+	end
 end
 
 --- `Workspace.DocksShop.DocksTeleportTarget` (or `Workspace.DocksTeleportTarget`): Attachment / BasePart / Model pivot.
@@ -1131,6 +1157,7 @@ function OilShipmentService:_handleTeleportToDocks(player: Player)
 	if cf then
 		-- Face away from the authored forward (e.g. into the shop) — 180° yaw in target-local space.
 		local targetCFrame = cf * CFrame.Angles(0, math.pi, 0)
+		removeHeavenAccessories(character)
 		CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportToDocks")
 		player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
 		notifyFtueIfTownLeg()
@@ -1148,6 +1175,7 @@ function OilShipmentService:_handleTeleportToDocks(player: Player)
 		--- same bug shape as the Home teleport). Use `CFrame.Rotation + Vector3` so the
 		--- LookVector is whatever the pad is authored to face, then lift Y.
 		local targetCFrame = boatSpawn.CFrame.Rotation + (boatSpawn.Position + Vector3.new(0, 5, 0))
+		removeHeavenAccessories(character)
 		CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportToDocks:fallback")
 		player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
 		notifyFtueIfTownLeg()
@@ -1188,6 +1216,7 @@ function OilShipmentService:_handleTeleportToHire(player: Player)
 	-- Face away from the authored forward (180° yaw in target-local space) — the Hire NPC
 	-- is in front of the authored target, so flipping puts the player nose-to-nose with them.
 	local targetCFrame = cf * CFrame.Angles(0, math.pi, 0)
+	removeHeavenAccessories(character)
 	CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportToHire")
 	player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
 	self:_fireCameraSnap(player, targetCFrame)
@@ -1293,6 +1322,13 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 			if capacityMul > 0 and capacityMul ~= 1 then
 				stats.capacity = math.floor(stats.capacity * capacityMul + 0.5)
 			end
+		end
+	end
+	if self._oilStateService then
+		local heavenBonuses = self._oilStateService:GetOilHeavenBonusTotals(player.UserId)
+		local shipSpeedPct = heavenBonuses.shipSpeedPct or 0
+		if shipSpeedPct > 0 then
+			stats.travelSeconds = math.max(1, stats.travelSeconds / (1 + (shipSpeedPct / 100)))
 		end
 	end
 	local travelSeconds = stats.travelSeconds

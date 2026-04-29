@@ -10,6 +10,8 @@ local Lighting = game:GetService("Lighting")
 local ContentProvider = game:GetService("ContentProvider")
 local Workspace = game:GetService("Workspace")
 
+local HeavenPillarFloat = require(script.Parent:WaitForChild("HeavenPillarFloat"))
+
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local OilHeavenConfig = require(Shared:WaitForChild("Config"):WaitForChild("OilHeavenConfig"))
@@ -164,6 +166,8 @@ local function transitionToHeaven()
 	heavenBgm.Volume = 0
 	heavenBgm.Playing = true
 	fadeSound(heavenBgm, OilHeavenConfig.HeavenBgmVolume, FADE_DURATION)
+
+	HeavenPillarFloat.start()
 end
 
 local function transitionToMain()
@@ -177,6 +181,8 @@ local function transitionToMain()
 	if heavenBgm and heavenBgm:IsA("Sound") and heavenBgm.Playing then
 		fadeSound(heavenBgm, 0, FADE_DURATION, true)
 	end
+
+	HeavenPillarFloat.stop()
 
 	-- Fade in main BGM
 	if mainBgm and mainBgm:IsA("Sound") then
