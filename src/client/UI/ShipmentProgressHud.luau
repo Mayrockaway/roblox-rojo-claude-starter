@@ -91,6 +91,15 @@ local IDLE_STATUS_TEXT = ""
 --- time before cruise dots come back.
 local CRUISE_RESUME_READ_SECONDS = 5
 
+--- Cinematic events (Mine/Storm/Tornado/Coast Guard) hold the warning text
+--- for the full event sequence, then transition to a green "Evaded/Cleared/
+--- Passed" tail message AFTER the event finishes so the line never claims
+--- victory while the cinematic is still playing. This is how long that
+--- tail message stays on screen before cruise dots resume — long enough
+--- to read, short enough that the progress bar doesn't lag too far behind
+--- the boat (showEvaded re-freezes the bar for this duration).
+local EVADED_TAIL_HOLD_SECONDS = 2.5
+
 local playerGuiRef: PlayerGui? = nil
 local hudChildConn: RBXScriptConnection? = nil
 local voyageProgressThread: thread? = nil
@@ -1802,20 +1811,15 @@ function ShipmentProgressHud.onVisualPacket(kind: string, data: Packet, localPla
 			-- subsequent total-loss handler will paint the lost state.
 			showHalted(sev, total, alertLabel)
 		else
-			-- Hold "⚠ Mine Strike!" for a full 4s so the player has time
-			-- to read the threat before it transitions to the green
-			-- "✓ Mine Strike Evaded!" line. Capped to leave at least 0.5s
-			-- of evaded message before cruise dots resume on shorter halts.
-			-- `showEvaded` calls `cancelAllHintFx` which bumps
-			-- `haltGeneration`, so the showHalted resume thread no-ops
-			-- and the evaded hold-window cleanly takes over.
-			local alertHold = math.min(4, math.max(0.35, total - 0.5))
-			showHalted(sev, alertHold, alertLabel)
-			task.delay(alertHold, function()
-				local remaining = total - alertHold
-				if remaining > 0 then
-					showEvaded(decoratedAlertText("Mine Strike Evaded!", "✓"), remaining)
-				end
+			-- Hold "⚠ Mine Strike!" for the full mine sequence so the
+			-- green "Evaded!" line doesn't claim victory while mines are
+			-- still surfacing. Fire showEvaded ~0.1s before showHalted's
+			-- resume thread so its `cancelAllHintFx` bumps
+			-- `haltGeneration` first and the racing cruise-resume no-ops.
+			showHalted(sev, total, alertLabel)
+			local successFireDelay = math.max(0.35, total - 0.1)
+			task.delay(successFireDelay, function()
+				showEvaded(decoratedAlertText("Mine Strike Evaded!", "✓"), EVADED_TAIL_HOLD_SECONDS)
 			end)
 		end
 		return
@@ -1851,16 +1855,13 @@ function ShipmentProgressHud.onVisualPacket(kind: string, data: Packet, localPla
 			showHalted(sev, total, alertLabel)
 		else
 			-- Harmless storm (FTUE showcase or a real storm whose rolls came
-			-- up empty) — lead with the alert, then transition to a green
-			-- "Storm Passed!" so the player isn't left wondering whether
-			-- they took damage.
-			local alertHold = math.min(4, math.max(0.35, total - 0.5))
-			showHalted(sev, alertHold, alertLabel)
-			task.delay(alertHold, function()
-				local remaining = total - alertHold
-				if remaining > 0 then
-					showEvaded(decoratedAlertText("Storm Passed!", "✓"), remaining)
-				end
+			-- up empty) — hold the warning for the whole sequence, then
+			-- transition to a green "Storm Passed!" tail AFTER the cinematic
+			-- ends so the line never claims victory mid-event.
+			showHalted(sev, total, alertLabel)
+			local successFireDelay = math.max(0.35, total - 0.1)
+			task.delay(successFireDelay, function()
+				showEvaded(decoratedAlertText("Storm Passed!", "✓"), EVADED_TAIL_HOLD_SECONDS)
 			end)
 		end
 		return
@@ -1874,13 +1875,10 @@ function ShipmentProgressHud.onVisualPacket(kind: string, data: Packet, localPla
 		if hadLoss then
 			showHalted(sev, total, alertLabel)
 		else
-			local alertHold = math.min(4, math.max(0.35, total - 0.5))
-			showHalted(sev, alertHold, alertLabel)
-			task.delay(alertHold, function()
-				local remaining = total - alertHold
-				if remaining > 0 then
-					showEvaded(decoratedAlertText("Tornado Cleared!", "✓"), remaining)
-				end
+			showHalted(sev, total, alertLabel)
+			local successFireDelay = math.max(0.35, total - 0.1)
+			task.delay(successFireDelay, function()
+				showEvaded(decoratedAlertText("Tornado Cleared!", "✓"), EVADED_TAIL_HOLD_SECONDS)
 			end)
 		end
 		return
@@ -1889,16 +1887,14 @@ function ShipmentProgressHud.onVisualPacket(kind: string, data: Packet, localPla
 	if kind == "CoastGuardInspectionEvent" then
 		-- Coast Guard inspections never apply barrel loss in any mode (regular
 		-- gameplay or FTUE showcase) — they're a cinematic boarding sequence,
-		-- not a damage event. Always paint the alert first, then resolve to a
-		-- green "Inspection Cleared!" so the line tells a complete story.
+		-- not a damage event. Hold the warning for the full sequence, then
+		-- resolve to a green "Inspection Cleared!" tail AFTER the cinematic
+		-- finishes so the line tells a complete story.
 		local total = StraitEventCatalog.CoastGuardInspectionConfig.SequenceDuration
-		local alertHold = math.min(4, math.max(0.35, total - 0.5))
-		showHalted("Low", alertHold, decoratedAlertText("Coast Guard Inspection!", "⚠"))
-		task.delay(alertHold, function()
-			local remaining = total - alertHold
-			if remaining > 0 then
-				showEvaded(decoratedAlertText("Inspection Cleared!", "✓"), remaining)
-			end
+		showHalted("Low", total, decoratedAlertText("Coast Guard Inspection!", "⚠"))
+		local successFireDelay = math.max(0.35, total - 0.1)
+		task.delay(successFireDelay, function()
+			showEvaded(decoratedAlertText("Inspection Cleared!", "✓"), EVADED_TAIL_HOLD_SECONDS)
 		end)
 		return
 	end

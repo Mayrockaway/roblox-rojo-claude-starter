@@ -27,6 +27,18 @@ local FtueConfig = {
 	--- Granted when the player reaches the final **Done** step (before Complete!). See `OilStateService.SetFtueProgress`.
 	TutorialCompleteCashReward = 500,
 
+	--- Disconnect-mid-FTUE-shipment recovery cargo. When a player quits during
+	--- `WaitShipment` and rejoins, `FtueService.SyncFromOilState` advances them
+	--- to `WaitWarehouseSell` (assuming the boat arrived) — see the rejoin
+	--- branch in that function. Without crediting cargo to the warehouse on
+	--- that path, `OnFtueWarehouseSaleSuccess` would softlock the player at
+	--- the sell terminal because it requires `payout > 0`. This manifest is
+	--- delivered to `WarehouseService:DeliverBarrels` so the leg can complete.
+	--- This is a strict one-shot per profile — `WaitShipment` is hit exactly
+	--- once during the FTUE flow and `ftueStep` is cleared after `Done` — so
+	--- the value just needs to be enough to make the sale payout non-zero.
+	FtueRejoinRecoveryWarehouseCargo = { Crude = 3 } :: { [string]: number },
+
 	--- First FTUE strait shipment: cosmetic + guaranteed safe crossing (see
 	--- `OilShipmentService`). The protected dispatch projects the boat to
 	--- `ShipUpgradeConfig.MaxSpeedLevel` and divides the resulting
@@ -48,14 +60,15 @@ local FtueConfig = {
 	---   * `"CoastGuardInspection"` → coast guard cinematic + boat freeze
 	---     (`_runFtueTutorialCoastGuardShowcase`).
 	---   * `"Storm"`                → thunderstorm cinematic, no delay /
-	---     no barrel loss (`_runFtueTutorialStormShowcase`).
+	---     no barrel loss (`_runFtueTutorialStormShowcase`). Not currently
+	---     wired into the live FTUE flow, but the showcase function is
+	---     kept around for re-enabling.
 	--- The trigger waypoint must be inside the union of bracket allow-lists
 	--- (currently `Closed = {2..9}` covers every reasonable choice). Set
 	--- the table to `{}` (or `nil`) to skip the showcase entirely.
 	FtueTutorialShowcasesByLaneWaypoint = {
 		[3] = "CoastGuardInspection",
-		[6] = "MineStrike",
-		[9] = "Storm",
+		[7] = "MineStrike",
 	} :: { [number]: string },
 
 	DrillItemId = "drill_t1",

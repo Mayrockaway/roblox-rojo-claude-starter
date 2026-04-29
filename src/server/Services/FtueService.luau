@@ -482,20 +482,65 @@ function FtueService:SyncFromOilState(userId: number)
 	--- Rejoin recovery: `OilShipmentService` keeps active voyages in memory only
 	--- (`_activeShipmentByOwner` / `_activeShips` — see `OilShipmentService.luau`),
 	--- so a player who quit mid-strait rejoins with `ftueStep == WaitShipment`
-	--- but no actual ship to wait for (they'd be stranded on a beam to a vessel
-	--- that doesn't exist). Drop back to `WaitPlotShipment` so they can re-dispatch.
+	--- but no actual ship to wait for. Without intervention they spawn at the
+	--- last persisted `ftueLastSpawn` snapshot — which during `WaitShipment` is
+	--- somewhere out on the strait — leaving them floating in open ocean.
+	---
+	--- Recovery: pretend the boat finished the run and bump them straight to
+	--- `WaitWarehouseSell`. The existing safety net in
+	--- `_onCharacterSpawnedDuringFtue` (`WaitWarehouseSell` branch) will then
+	--- teleport the character to `WarehouseSpawn` via `_ensureAtWarehouse`.
+	--- We also credit the warehouse with `FtueRejoinRecoveryWarehouseCargo` so
+	--- the upcoming sell leg has barrels to sell — without it
+	--- `OnFtueWarehouseSaleSuccess` would softlock since it requires
+	--- `payout > 0`. The cargo amount is intentionally small to avoid making
+	--- this an exploitable "dispatch → quit → rejoin → free barrels" loop.
 	if step == FtueConfig.Step.WaitShipment then
 		local hasShip = false
 		if self._shipment and typeof((self._shipment :: any).HasActiveShipment) == "function" then
 			hasShip = (self._shipment :: any):HasActiveShipment(userId) == true
 		end
 		if not hasShip then
-			step = FtueConfig.Step.WaitPlotShipment
+			step = FtueConfig.Step.WaitWarehouseSell
 			if self._oilState and typeof((self._oilState :: any).SetFtueProgress) == "function" then
 				(self._oilState :: any):SetFtueProgress(userId, step)
 			end
+			--- Credit recovery cargo in the background with retries — the
+			--- warehouse profile load (`WarehouseService:_loadProfile`) yields
+			--- on a DataStore call, so `_stateByUserId[userId]` may not be
+			--- populated yet when `SyncFromOilState` first runs. Without this
+			--- retry the very first `DeliverBarrels` would no-op silently
+			--- (it short-circuits on missing state) and the player would
+			--- still softlock at the sell terminal. Cap at the same ~6s
+			--- window `_ensureAtWarehouse` uses so a genuinely broken
+			--- warehouse service eventually gives up rather than spinning.
+			local recoveryCargo = FtueConfig.FtueRejoinRecoveryWarehouseCargo or { Crude = 3 }
+			local warehouse = self._warehouse
+			task.spawn(function()
+				for attempt = 1, 12 do
+					if not Players:GetPlayerByUserId(userId) then
+						return
+					end
+					if warehouse and typeof((warehouse :: any).DeliverBarrels) == "function" then
+						local ok = (warehouse :: any):DeliverBarrels(userId, recoveryCargo) == true
+						if ok then
+							ftueDbg(
+								"SyncFromOilState uid=%d recover credit ok on attempt %d",
+								userId,
+								attempt
+							)
+							return
+						end
+					end
+					task.wait(0.5)
+				end
+				warn(string.format(
+					"[FtueService] uid=%d WaitShipment-recover: failed to credit recovery cargo after 12 attempts; sell leg may softlock",
+					userId
+				))
+			end)
 			ftueDbg(
-				"SyncFromOilState uid=%d branch=recover WaitShipment->WaitPlotShipment (no active ship)",
+				"SyncFromOilState uid=%d branch=recover WaitShipment->WaitWarehouseSell (no active ship, credit deferred)",
 				userId
 			)
 		end

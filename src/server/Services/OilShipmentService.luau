@@ -1317,7 +1317,10 @@ function OilShipmentService:_handleDispatch(player: Player, payload)
 		-- play their full duration since they're fired by lane waypoint
 		-- and `task.wait`/`voyageClock` shifts inside each helper.
 		-- Capacity level doesn't affect `travelSeconds`, so we pass
-		-- `MaxCapacityLevel` purely for symmetry.
+		-- `MaxCapacityLevel` purely for symmetry. The hull `MaxVelocity`
+		-- override below must scale with this divisor — at 4× carrot
+		-- speed (~133 studs/s on a ~1000-stud path) the hull cap has to
+		-- be raised in lockstep or the boat just rides the cap.
 		local maxStats = ShipStats.Resolve(ShipUpgradeConfig.MaxSpeedLevel, ShipUpgradeConfig.MaxCapacityLevel)
 		travelSeconds = maxStats.travelSeconds / 4
 		local tutSkin = FtueConfig.FtueTutorialShipmentSkinId
@@ -1608,21 +1611,64 @@ function OilShipmentService:_runShipment(shipment)
 	-- Setup physics-driven ship
 	self:_setupShip(shipment.shipmentId, boat, startRaised, initDir)
 
-	-- Tutorial escort speed override. `_setupShip` clamps every dispatch's
-	-- `alignPos.MaxVelocity` to 60 studs/s — that's the **hull** physics
-	-- cap, separate from the carrot speed (`totalPathLen / travelSeconds`).
-	-- Lower `travelSeconds` only moves the carrot faster; the hull stays
-	-- bound by `MaxVelocity`. The tutorial dispatch already cuts
-	-- `travelSeconds` to `maxStats.travelSeconds / 4` (carrot ~133 studs/s
-	-- on a ~1000-stud path), so without raising the hull cap the new
-	-- player still saw a 60-stud/s boat regardless of `travelSeconds`
-	-- changes. Bump the cap for the protected voyage only — non-tutorial
-	-- dispatches keep the original 60 studs/s value so player upgrade
-	-- speed levels still drive perceived progression.
+	-- Tutorial escort speed override. The `AlignPosition` constraint that
+	-- drives the hull is created in `_setupShip` with **two** speed-related
+	-- knobs that together cap how fast the boat can actually go:
+	--
+	--   * `MaxVelocity = 60`        — hard cap on the velocity the constraint
+	--                                  may apply to the hull assembly.
+	--   * `Responsiveness = 5`      — proportional gain. The constraint's
+	--                                  output velocity in steady state is
+	--                                  roughly `Responsiveness × (gap to
+	--                                  carrot)`. The carrot itself is
+	--                                  capped to sit at most
+	--                                  `VOYAGE_MAX_LEAD_STUDS = 55` studs
+	--                                  ahead of the hull, so the
+	--                                  controller's effective ceiling is
+	--                                  `min(MaxVelocity, Responsiveness × 55)`.
+	--
+	-- With the original 60/5 pair, the hull tops out at ~60 studs/s. The
+	-- old FTUE override only bumped `MaxVelocity` to 240, leaving the
+	-- controller's *output* ceiling at `5 × 55 = 275` — fine on paper, but
+	-- the practical observation was that 3×, 4×, and 8× tutorial divisors
+	-- all felt identical, meaning the carrot speed at `/4` was already
+	-- exceeding the binding cap. Raise *both* knobs together so the hull
+	-- can actually track the much-faster carrot:
+	--
+	--   * `MaxVelocity = 500`       — generous headroom above 4× max-tier
+	--                                  carrot speed for any reasonable
+	--                                  lane path length.
+	--   * `Responsiveness = 8`      — matches the documented "boat blasts
+	--                                  from 0 to cruise speed inside a
+	--                                  single physics step" config (see
+	--                                  `FREEZE_RESUME_RAMP_SECONDS`
+	--                                  doc-comment). The freeze-resume
+	--                                  ramp already protects the player
+	--                                  character from being slid off the
+	--                                  deck at high acceleration, so we
+	--                                  no longer need the conservative
+	--                                  `R = 5` here.
+	--
+	-- Non-tutorial dispatches keep the original 60/5 pair so player
+	-- upgrade speed levels still drive perceived progression.
 	if (shipment :: any).ftueTutorialSuppressStraitIncidents == true then
 		local shipState = self._activeShips[shipment.shipmentId]
 		if shipState and shipState.alignPos then
-			shipState.alignPos.MaxVelocity = 240
+			shipState.alignPos.MaxVelocity = 500
+			shipState.alignPos.Responsiveness = 8
+			if RunService:IsStudio() then
+				local nominalSpeed = totalPathLen / shipment.travelSeconds
+				warn(string.format(
+					"[FtueEscort] applied speed override: MaxVelocity=%.0f Responsiveness=%.1f | pathLen=%.0f travelSeconds=%.2f nominalCarrotSpeed=%.1f studs/s | controller_output_ceiling=min(MaxVelocity, R*%d)=%.1f",
+					shipState.alignPos.MaxVelocity,
+					shipState.alignPos.Responsiveness,
+					totalPathLen,
+					shipment.travelSeconds,
+					nominalSpeed,
+					VOYAGE_MAX_LEAD_STUDS,
+					math.min(shipState.alignPos.MaxVelocity, shipState.alignPos.Responsiveness * VOYAGE_MAX_LEAD_STUDS)
+				))
+			end
 		end
 	end
 
