@@ -154,8 +154,11 @@ function OilHeavenRewardClient.start()
 		if payload.kind == "rewardGranted" and typeof(payload.reward) == "table" then
 			currentDoubleItemId = if typeof(payload.doubleItemId) == "string" then payload.doubleItemId else HeavenRewardConfig.DoubleRewardMonetizationItemId
 			local buttonText = string.format("2X REWARD - %d ROBUX", tonumber(payload.doublePriceRobux) or HeavenRewardConfig.DoubleRewardRobuxPrice)
+			local heavenRewardAck = remotes.heavenRewardAcknowledged :: RemoteEvent
 			VeinCrateOpener.OpenHeavenReward(payload.reward, allRewards, {
-				onNext = function() end,
+				onNext = function()
+					heavenRewardAck:FireServer()
+				end,
 				onDoubleReward = function()
 					if currentDoubleItemId then
 						requestPromptRobuxPurchase:FireServer({ itemId = currentDoubleItemId })

@@ -262,6 +262,14 @@ function OilHeavenDrillService:Start()
 		self:_handleToolActivation(player, target)
 	end))
 
+	-- Lootbox dismissed → now safe to show the tile reward visual.
+	local ackRemote = self._remoteService:GetEvent(RemoteNames.HeavenRewardAcknowledged)
+	table.insert(self._connections, ackRemote.OnServerEvent:Connect(function(player: Player)
+		pcall(function()
+			self._oilHeavenPlotService:RefreshUnlocks(player.UserId)
+		end)
+	end))
+
 end
 
 function OilHeavenDrillService:Stop()
@@ -375,9 +383,12 @@ function OilHeavenDrillService:_handleToolActivation(player: Player, target: any
 		end
 
 		self._oilStateService:PushState(player.UserId)
-		pcall(function()
-			self._oilHeavenPlotService:RefreshUnlocks(player.UserId)
-		end)
+		-- NOTE: RefreshUnlocks is deliberately NOT called here. The tile
+		-- reward visual (number + effect on the tile) must stay hidden until
+		-- the lootbox spinner is dismissed — otherwise the player sees the
+		-- 1× value on the tile before deciding whether to pay for 2×.
+		-- The client fires `HeavenRewardAcknowledged` from the lootbox
+		-- `onNext` callback, which triggers `RefreshUnlocks` at that point.
 
 		self._rewardEvent:FireClient(player, {
 			kind = "rewardGranted",

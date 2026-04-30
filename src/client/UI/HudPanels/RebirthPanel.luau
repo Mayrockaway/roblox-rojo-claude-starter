@@ -95,8 +95,8 @@ function RebirthPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelControll
 	local subtitleLabel = screen:FindFirstChild("ConversionRateSubtitle", true)
 	if subtitleLabel and subtitleLabel:IsA("TextLabel") then
 		subtitleLabel.Text = string.format(
-			"%s CASH = 1 REBIRTH TOKEN",
-			formatWithCommas(RebirthShopConfig.CashPerToken)
+			"$%s MIN \194\183 DIMINISHING RETURNS",
+			formatWithCommas(RebirthShopConfig.CashThreshold)
 		)
 	end
 
@@ -174,8 +174,7 @@ function RebirthPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelControll
 
 	local function paintCashAndTokens()
 		local cash = cachedCash or 0
-		local rate = RebirthShopConfig.CashPerToken
-		local tokens = if rate > 0 then math.floor(cash / rate) else 0
+		local tokens = RebirthShopConfig.CalculateTokens(cash)
 		if cashAmount then
 			cashAmount.Text = "$" .. formatWithCommas(cash)
 		end
@@ -271,12 +270,11 @@ function RebirthPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelControll
 	if rebirthButton then
 		rebirthButton.Active = true
 		rebirthButton.Activated:Connect(function()
-			local rate = RebirthShopConfig.CashPerToken
 			local cash = cachedCash or 0
-			if cash < rate then
+			if RebirthShopConfig.CalculateTokens(cash) < 1 then
 				showErrorNotification(string.format(
-					"You need at least $%s for one Rebirth Token.",
-					formatWithCommas(rate)
+					"You need at least $%s to rebirth.",
+					formatWithCommas(RebirthShopConfig.CashThreshold)
 				))
 				UiSfx.playUiDenied()
 				return

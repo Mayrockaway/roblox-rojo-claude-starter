@@ -144,6 +144,8 @@ local RemoteNames = {
 	HeavenRewardEvent = "HeavenRewardEvent",
 	-- Client → server: player activated the Rebirth Drill tool on a target.
 	RequestHeavenDrill = "RequestHeavenDrill",
+	-- Client → server: lootbox dismissed — safe to show tile reward visual.
+	HeavenRewardAcknowledged = "HeavenRewardAcknowledged",
 
 	-- Rebirth Shop (HeavenShop Angel ProximityPrompt → `RebirthShopPanelGui`).
 	-- Client → server: spend rebirth tokens on a `RebirthShopConfig.Items` row

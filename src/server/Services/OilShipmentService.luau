@@ -1764,11 +1764,9 @@ function OilShipmentService:_handleTeleportToOilHeaven(player: Player)
 	local character = player.Character
 	if not character then return end
 
-	local unlocked = player:GetAttribute(Constants.OilHeavenUnlockedAttribute)
-	if not unlocked then
-		self:_sendActionResult(player, false, "ERR_OIL_HEAVEN_LOCKED", "Oil Heaven is not yet unlocked.")
-		return
-	end
+	-- Oil Heaven gate removed — all players can enter to explore, even before
+	-- their first rebirth. Locked sections inside (S2–S5) still require the
+	-- matching rebirth count to drill.
 
 	if not self._oilHeavenPlotService then
 		warn("[OilShipmentService] OilHeavenPlotService not injected")

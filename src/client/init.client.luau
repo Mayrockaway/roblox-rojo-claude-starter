@@ -1464,6 +1464,18 @@ oilActionResult.OnClientEvent:Connect(function(payload)
 	if okOpt == true and payload.action == "BuyChunk" then
 		UiSfx.playKaching()
 	end
+	--- Rebirth success → sweep all client-spawned DrillComplete models from
+	--- Workspace. The server wipes `chunksById` (fresh grid) and cancels
+	--- active drills, but the DrillComplete "shovel" models are client-owned
+	--- and nobody else cleans them up — they'd linger as orphaned props on
+	--- the new plot.
+	if okOpt == true and payload.action == "Rebirth" then
+		for _, child in ipairs(Workspace:GetChildren()) do
+			if child.Name:sub(1, 14) == "DrillComplete_" then
+				child:Destroy()
+			end
+		end
+	end
 end)
 
 StrategicStrikeClient.connect({

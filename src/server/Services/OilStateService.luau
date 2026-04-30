@@ -5562,17 +5562,12 @@ function OilStateService:Rebirth(userId: number): (boolean, string, any)
 		return false, "ERR_NO_PLOT", nil
 	end
 
-	local cashPerToken = RebirthShopConfig.CashPerToken
-	if typeof(cashPerToken) ~= "number" or cashPerToken <= 0 then
-		return false, "ERR_BAD_CONFIG", nil
-	end
-
 	local cash = floorPositive(state.cash or 0)
-	local tokensGranted = math.floor(cash / cashPerToken)
+	local tokensGranted = RebirthShopConfig.CalculateTokens(cash)
 	if tokensGranted < 1 then
 		return false, "ERR_NOT_ENOUGH_CASH", {
 			cash = cash,
-			cashPerToken = cashPerToken,
+			cashThreshold = RebirthShopConfig.CashThreshold,
 		}
 	end
 
