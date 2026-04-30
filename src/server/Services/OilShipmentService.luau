@@ -31,6 +31,21 @@ local DevLog = require(Shared:WaitForChild("DevLog"))
 local Telemetry = require(Shared:WaitForChild("Telemetry"))
 
 local ServerStorage = game:GetService("ServerStorage")
+local HEAVEN_GATE_PROMPT_ATTR = "TeleportsToOilHeaven"
+local HEAVEN_GATE_PORTAL_PART_NAME = "OTS_HeavenPortalFx"
+local HEAVEN_GATE_AUDIO_PART_NAME = "OTS_HeavenGateAudioEmitter"
+local HEAVEN_GATE_PROMPT_HOST_NAME = "OTS_HeavenGatePromptHost"
+local SKY_HOME_GATE_PROMPT_HOST_NAME = "OTS_HomeGatePromptHost"
+local HEAVEN_GATE_OPEN_ANGLE_DEG = 78
+local HEAVEN_GATE_ANIM_SECONDS = 0.42
+local HEAVEN_GATE_PORTAL_BACK_OFFSET = 4.5
+local HEAVEN_GATE_PORTAL_UP_OFFSET = 5.5
+local HEAVEN_GATE_RETURN_DISTANCE = 8
+local HEAVEN_GATE_RETURN_HEIGHT = 4
+local HEAVEN_GATE_AUDIO_ID = "rbxassetid://105341153226678"
+local HEAVEN_GATE_AUDIO_VOLUME = 2.25
+local HEAVEN_GATE_AUDIO_MIN_DISTANCE = 2
+local HEAVEN_GATE_AUDIO_MAX_DISTANCE = 16
 
 local function removeHeavenAccessories(character: Model)
 	for _, child in ipairs(character:GetChildren()) do
@@ -38,6 +53,250 @@ local function removeHeavenAccessories(character: Model)
 			child:Destroy()
 		end
 	end
+end
+
+local function findDescendantNamed(root: Instance?, name: string): Instance?
+	if root == nil then
+		return nil
+	end
+	return root:FindFirstChild(name, true)
+end
+
+local function rotateCFrameAboutWorldY(cf: CFrame, angleDeg: number): CFrame
+	local pivot = cf.Position
+	return CFrame.new(pivot) * CFrame.Angles(0, math.rad(angleDeg), 0) * CFrame.new(-pivot) * cf
+end
+
+local function horizontalUnit(fromPos: Vector3, toPos: Vector3, fallback: Vector3): Vector3
+	local delta = Vector3.new(toPos.X - fromPos.X, 0, toPos.Z - fromPos.Z)
+	if delta.Magnitude < 1e-3 then
+		return fallback
+	end
+	return delta.Unit
+end
+
+local function rotateCFrameAboutWorldYAtPoint(cf: CFrame, pivot: Vector3, angleDeg: number): CFrame
+	return CFrame.new(pivot) * CFrame.Angles(0, math.rad(angleDeg), 0) * CFrame.new(-pivot) * cf
+end
+
+local function computeHingedOpenGateCFrame(closedCf: CFrame, gateWidth: number, angleDeg: number): CFrame
+	local hingeAxis = Vector3.new(closedCf.UpVector.X, 0, closedCf.UpVector.Z)
+	if hingeAxis.Magnitude < 1e-3 then
+		hingeAxis = Vector3.new(closedCf.LookVector.Z, 0, -closedCf.LookVector.X)
+	end
+	hingeAxis = hingeAxis.Unit
+	local hingePoint = closedCf.Position + hingeAxis * (gateWidth * 0.5)
+	return rotateCFrameAboutWorldYAtPoint(closedCf, hingePoint, angleDeg)
+end
+
+local function setPromptLockedVisual(prompt: ProximityPrompt, unlocked: boolean)
+	prompt.ActionText = if unlocked then "Enter" else "Locked"
+	prompt.ObjectText = if unlocked then "Oil Heaven" else "Rebirth Required"
+end
+
+local function setPortalEnabled(portalPart: BasePart?, enabled: boolean)
+	if portalPart == nil then
+		return
+	end
+	for _, descendant in ipairs(portalPart:GetDescendants()) do
+		if descendant:IsA("ParticleEmitter") then
+			descendant.Enabled = enabled
+		end
+	end
+end
+
+local function ensureGatePromptHost(
+	gateRoot: Model,
+	hostName: string,
+	promptName: string,
+	actionText: string,
+	objectText: string
+): ProximityPrompt
+	local cf, size = gateRoot:GetBoundingBox()
+	local host = gateRoot:FindFirstChild(hostName)
+	if not (host and host:IsA("BasePart")) then
+		local part = Instance.new("Part")
+		part.Name = hostName
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanTouch = false
+		part.CanQuery = false
+		part.Transparency = 1
+		part.CastShadow = false
+		part.Parent = gateRoot
+		host = part
+	end
+
+	host.Size = Vector3.new(
+		math.max(8, size.X * 0.9),
+		math.max(10, size.Y * 0.82),
+		math.max(6, size.Z * 0.9)
+	)
+	host.CFrame = cf
+
+	local prompt = host:FindFirstChild(promptName)
+	if not (prompt and prompt:IsA("ProximityPrompt")) then
+		local created = Instance.new("ProximityPrompt")
+		created.Name = promptName
+		created.Parent = host
+		prompt = created
+	end
+
+	prompt.ActionText = actionText
+	prompt.ObjectText = objectText
+	prompt.HoldDuration = 0
+	prompt.RequiresLineOfSight = false
+	prompt.MaxActivationDistance = 28
+	return prompt
+end
+
+local function removeEmbeddedPrompt(root: Instance, promptName: string, hostName: string)
+	for _, descendant in ipairs(root:GetDescendants()) do
+		if descendant:IsA("ProximityPrompt") and descendant.Name == promptName then
+			local parent = descendant.Parent
+			if not (parent and parent.Name == hostName) then
+				descendant:Destroy()
+			end
+		end
+	end
+end
+
+local function ensureHeavenPortalFx(gateRoot: Instance, gatesRoot: Instance?): BasePart?
+	local host = gatesRoot or gateRoot
+	local existing = host:FindFirstChild(HEAVEN_GATE_PORTAL_PART_NAME)
+	if existing and existing:IsA("BasePart") then
+		return existing
+	end
+
+	local cf
+	local size
+	if host:IsA("Model") then
+		cf, size = host:GetBoundingBox()
+	elseif host:IsA("BasePart") then
+		cf = host.CFrame
+		size = host.Size
+	else
+		return nil
+	end
+
+	local gateLook = gateRoot:GetPivot().LookVector
+	local flatLook = Vector3.new(gateLook.X, 0, gateLook.Z)
+	if flatLook.Magnitude < 1e-3 then
+		flatLook = Vector3.new(0, 0, -1)
+	else
+		flatLook = flatLook.Unit
+	end
+
+	local portalPart = Instance.new("Part")
+	portalPart.Name = HEAVEN_GATE_PORTAL_PART_NAME
+	portalPart.Anchored = true
+	portalPart.CanCollide = false
+	portalPart.CanTouch = false
+	portalPart.CanQuery = false
+	portalPart.CastShadow = false
+	portalPart.Transparency = 1
+	portalPart.Size = Vector3.new(math.max(10, size.X * 0.72), math.max(12, size.Y * 0.82), 0.35)
+	local portalPos = cf.Position - flatLook * HEAVEN_GATE_PORTAL_BACK_OFFSET + Vector3.new(0, HEAVEN_GATE_PORTAL_UP_OFFSET, 0)
+	portalPart.CFrame = CFrame.lookAt(portalPos, portalPos + flatLook, Vector3.yAxis)
+	portalPart.Parent = host
+
+	local rootAttachment = Instance.new("Attachment")
+	rootAttachment.Name = "PortalAttachment"
+	rootAttachment.Parent = portalPart
+
+	local mist = Instance.new("ParticleEmitter")
+	mist.Name = "PortalMist"
+	mist.Enabled = false
+	mist.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	mist.Rate = 18
+	mist.Lifetime = NumberRange.new(1.4, 2.1)
+	mist.Speed = NumberRange.new(0.1, 0.55)
+	mist.SpreadAngle = Vector2.new(12, 180)
+	mist.RotSpeed = NumberRange.new(-35, 35)
+	mist.LightEmission = 0.9
+	mist.LightInfluence = 0
+	mist.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1),
+		NumberSequenceKeypoint.new(0.15, 0.22),
+		NumberSequenceKeypoint.new(0.8, 0.35),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	mist.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1.8),
+		NumberSequenceKeypoint.new(0.55, 5.75),
+		NumberSequenceKeypoint.new(1, 8.25),
+	})
+	mist.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 246, 205)),
+		ColorSequenceKeypoint.new(0.45, Color3.fromRGB(118, 244, 255)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 255, 255)),
+	})
+	mist.Parent = rootAttachment
+
+	local spark = Instance.new("ParticleEmitter")
+	spark.Name = "PortalSpark"
+	spark.Enabled = false
+	spark.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	spark.Rate = 28
+	spark.Lifetime = NumberRange.new(0.55, 1.1)
+	spark.Speed = NumberRange.new(2.5, 5.25)
+	spark.Drag = 3
+	spark.SpreadAngle = Vector2.new(24, 24)
+	spark.Rotation = NumberRange.new(0, 360)
+	spark.RotSpeed = NumberRange.new(-80, 80)
+	spark.LightEmission = 1
+	spark.LightInfluence = 0
+	spark.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.08),
+		NumberSequenceKeypoint.new(0.7, 0.25),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	spark.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.9),
+		NumberSequenceKeypoint.new(1, 0.1),
+	})
+	spark.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(129, 250, 255)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 221, 143)),
+	})
+	spark.Parent = rootAttachment
+
+	return portalPart
+end
+
+local function ensureHeavenGateAmbientAudio(gatesRoot: Instance?): BasePart?
+	if gatesRoot == nil then
+		return nil
+	end
+
+	local existing = gatesRoot:FindFirstChild(HEAVEN_GATE_AUDIO_PART_NAME)
+	if existing and existing:IsA("BasePart") then
+		local sound = existing:FindFirstChild(HEAVEN_GATE_AUDIO_SOUND_NAME)
+		if sound and sound:IsA("Sound") then
+			sound:Destroy()
+		end
+		return existing
+	end
+
+	if not gatesRoot:IsA("Model") then
+		return nil
+	end
+
+	local cf, size = gatesRoot:GetBoundingBox()
+	local emitterPart = Instance.new("Part")
+	emitterPart.Name = HEAVEN_GATE_AUDIO_PART_NAME
+	emitterPart.Anchored = true
+	emitterPart.CanCollide = false
+	emitterPart.CanTouch = false
+	emitterPart.CanQuery = false
+	emitterPart.CastShadow = false
+	emitterPart.Transparency = 1
+	emitterPart.Size = Vector3.new(1, 1, 1)
+	emitterPart.CFrame = cf + Vector3.new(0, math.max(0.5, size.Y * 0.08), 0)
+	emitterPart.Parent = gatesRoot
+
+	return emitterPart
 end
 
 local OilShipmentService = {}
@@ -499,6 +758,8 @@ function OilShipmentService:Init(remoteService, oilStateService, plotService, wa
 	self._activeShips = {} -- per-ship runtime state keyed by shipmentId
 	self._activeShipmentByOwner = {} :: { [number]: string }
 	self._shipmentContexts = {} :: { [string]: { [string]: any } }
+	self._heavenGateStateByPlot = {}
+	self._skyHomeGateStateByPlot = {}
 	self._hitContractService = nil
 	self._ftueService = nil :: any
 	self._leaderboardService = nil :: any
@@ -714,6 +975,339 @@ function OilShipmentService:SetOilHeavenPlotService(oilHeavenPlotService: any)
 	self._oilHeavenPlotService = oilHeavenPlotService
 end
 
+function OilShipmentService:_getHeavenGateState(plot: Model): any?
+	local cached = self._heavenGateStateByPlot[plot]
+	if cached then
+		local prompt = cached.prompt
+		if prompt and prompt.Parent and cached.leftGate and cached.rightGate then
+			return cached
+		end
+		self._heavenGateStateByPlot[plot] = nil
+	end
+
+	local gateRoot = plot:FindFirstChild("heavengate")
+	if gateRoot == nil then
+		return nil
+	end
+	if not gateRoot:IsA("Model") then
+		return nil
+	end
+	local gatesRoot = gateRoot:FindFirstChild("Gates") or findDescendantNamed(gateRoot, "Gates")
+	local leftGate = (gatesRoot and gatesRoot:FindFirstChild("LEFT GATE")) or findDescendantNamed(gateRoot, "LEFT GATE")
+	local rightGate = (gatesRoot and gatesRoot:FindFirstChild("RIGHT GATE")) or findDescendantNamed(gateRoot, "RIGHT GATE")
+	if gatesRoot == nil and leftGate and leftGate:IsA("Model") then
+		gatesRoot = leftGate.Parent
+	end
+	removeEmbeddedPrompt(gateRoot, "HeavenGatePrompt", HEAVEN_GATE_PROMPT_HOST_NAME)
+	local prompt = ensureGatePromptHost(gateRoot, HEAVEN_GATE_PROMPT_HOST_NAME, "HeavenGatePrompt", "Enter", "Oil Heaven")
+	if not (leftGate and leftGate:IsA("Model") and rightGate and rightGate:IsA("Model")) then
+		return nil
+	end
+
+	local leftClosed = leftGate:GetPivot()
+	local rightClosed = rightGate:GetPivot()
+	local _, leftSize = leftGate:GetBoundingBox()
+	local _, rightSize = rightGate:GetBoundingBox()
+	local state = {
+		gateRoot = gateRoot,
+		gatesRoot = gatesRoot,
+		leftGate = leftGate,
+		rightGate = rightGate,
+		prompt = prompt,
+		promptLocator = prompt.Parent,
+		portal = ensureHeavenPortalFx(gateRoot, gatesRoot),
+		audioEmitter = ensureHeavenGateAmbientAudio(gatesRoot),
+		leftClosed = leftClosed,
+		rightClosed = rightClosed,
+		leftOpen = computeHingedOpenGateCFrame(leftClosed, leftSize.Y, 72),
+		rightOpen = computeHingedOpenGateCFrame(rightClosed, rightSize.Y, -72),
+		isOpen = false,
+		isAnimating = false,
+	}
+	self._heavenGateStateByPlot[plot] = state
+	return state
+end
+
+function OilShipmentService:_configureHeavenGatePrompt(prompt: ProximityPrompt, ownedByPlayer: boolean, unlocked: boolean)
+	prompt.Enabled = ownedByPlayer
+	prompt.RequiresLineOfSight = false
+	prompt.HoldDuration = 0
+	prompt.MaxActivationDistance = 24
+	prompt:SetAttribute(HEAVEN_GATE_PROMPT_ATTR, ownedByPlayer)
+	setPromptLockedVisual(prompt, unlocked)
+end
+
+function OilShipmentService:_configureSkyHomeGatePrompt(prompt: ProximityPrompt, enabled: boolean)
+	prompt.Enabled = enabled
+	prompt.RequiresLineOfSight = false
+	prompt.HoldDuration = 0
+	prompt.MaxActivationDistance = 24
+	prompt:SetAttribute("TeleportsHome", enabled)
+	prompt.ActionText = "Return"
+	prompt.ObjectText = "Home"
+end
+
+function OilShipmentService:_ensureCenteredMainGatePrompt(plot: Model, ownedByPlayer: boolean, unlocked: boolean): ProximityPrompt?
+	local gateRoot = plot:FindFirstChild("heavengate")
+	if gateRoot == nil or not gateRoot:IsA("Model") then
+		return nil
+	end
+	removeEmbeddedPrompt(gateRoot, "HeavenGatePrompt", HEAVEN_GATE_PROMPT_HOST_NAME)
+	local prompt = ensureGatePromptHost(gateRoot, HEAVEN_GATE_PROMPT_HOST_NAME, "HeavenGatePrompt", "Enter", "Oil Heaven")
+	self:_configureHeavenGatePrompt(prompt, ownedByPlayer, unlocked)
+	return prompt
+end
+
+function OilShipmentService:_ensureCenteredSkyHomePrompt(skyPlot: Model, enabled: boolean): ProximityPrompt?
+	local landing = skyPlot:FindFirstChild("LandingPlotHeaven")
+	local gateRoot = landing and landing:FindFirstChild("ANGELGATE")
+	if gateRoot == nil or not gateRoot:IsA("Model") then
+		return nil
+	end
+	removeEmbeddedPrompt(gateRoot, "HomeGatePrompt", SKY_HOME_GATE_PROMPT_HOST_NAME)
+	local prompt = ensureGatePromptHost(gateRoot, SKY_HOME_GATE_PROMPT_HOST_NAME, "HomeGatePrompt", "Return", "Home")
+	self:_configureSkyHomeGatePrompt(prompt, enabled)
+	return prompt
+end
+
+function OilShipmentService:_setHeavenGateOpen(gateState: any, shouldOpen: boolean, instant: boolean?)
+	if gateState == nil then
+		return
+	end
+
+	if gateState.isAnimating and not instant then
+		while gateState.isAnimating do
+			task.wait()
+		end
+		if gateState.isOpen == shouldOpen then
+			return
+		end
+	end
+
+	local leftTarget = if shouldOpen then gateState.leftOpen else gateState.leftClosed
+	local rightTarget = if shouldOpen then gateState.rightOpen else gateState.rightClosed
+
+	if instant then
+		gateState.isAnimating = false
+		if gateState.leftGate.Parent then
+			gateState.leftGate:PivotTo(leftTarget)
+		end
+		if gateState.rightGate.Parent then
+			gateState.rightGate:PivotTo(rightTarget)
+		end
+		gateState.isOpen = shouldOpen
+		setPortalEnabled(gateState.portal, shouldOpen)
+		return
+	end
+
+	if gateState.isOpen == shouldOpen then
+		setPortalEnabled(gateState.portal, gateState.isOpen == true)
+		return
+	end
+
+	gateState.isAnimating = true
+	if shouldOpen then
+		setPortalEnabled(gateState.portal, true)
+	end
+
+	local leftStart = gateState.leftGate:GetPivot()
+	local rightStart = gateState.rightGate:GetPivot()
+	local startedAt = os.clock()
+	while true do
+		local alpha = math.clamp((os.clock() - startedAt) / HEAVEN_GATE_ANIM_SECONDS, 0, 1)
+		local eased = TweenService:GetValue(alpha, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		if gateState.leftGate.Parent then
+			gateState.leftGate:PivotTo(leftStart:Lerp(leftTarget, eased))
+		end
+		if gateState.rightGate.Parent then
+			gateState.rightGate:PivotTo(rightStart:Lerp(rightTarget, eased))
+		end
+		if alpha >= 1 then
+			break
+		end
+		RunService.Heartbeat:Wait()
+	end
+
+	if gateState.leftGate.Parent then
+		gateState.leftGate:PivotTo(leftTarget)
+	end
+	if gateState.rightGate.Parent then
+		gateState.rightGate:PivotTo(rightTarget)
+	end
+	gateState.isAnimating = false
+	gateState.isOpen = shouldOpen
+	if not shouldOpen then
+		setPortalEnabled(gateState.portal, false)
+	end
+end
+
+function OilShipmentService:_resetHeavenGateForPlot(plot: Model)
+	self:_ensureCenteredMainGatePrompt(plot, false, false)
+	local gateState = self:_getHeavenGateState(plot)
+	if gateState == nil then
+		return
+	end
+	self:_setHeavenGateOpen(gateState, false, true)
+end
+
+function OilShipmentService:_refreshHeavenGateForUser(userId: number, hydrateUnlockedVisual: boolean?)
+	local plot = self._plotService and self._plotService:GetOwnedPlot(userId)
+	if not plot then
+		return
+	end
+	local gateState = self:_getHeavenGateState(plot)
+	if gateState == nil then
+		return
+	end
+
+	local unlocked = false
+	local player = Players:GetPlayerByUserId(userId)
+	if player then
+		unlocked = player:GetAttribute(Constants.OilHeavenUnlockedAttribute) == true
+	end
+	if not unlocked and self._oilStateService and typeof(self._oilStateService.IsOilHeavenUnlocked) == "function" then
+		unlocked = self._oilStateService:IsOilHeavenUnlocked(userId) == true
+	end
+
+	self:_ensureCenteredMainGatePrompt(plot, true, unlocked)
+	self:_setHeavenGateOpen(gateState, false, true)
+end
+
+function OilShipmentService:_getSkyHomeGateState(skyPlot: Model): any?
+	local cached = self._skyHomeGateStateByPlot[skyPlot]
+	if cached then
+		local prompt = cached.prompt
+		if prompt and prompt.Parent and cached.leftGate and cached.rightGate then
+			return cached
+		end
+		self._skyHomeGateStateByPlot[skyPlot] = nil
+	end
+
+	local landing = skyPlot:FindFirstChild("LandingPlotHeaven")
+	local gateRoot = landing and landing:FindFirstChild("ANGELGATE")
+	if gateRoot == nil or not gateRoot:IsA("Model") then
+		return nil
+	end
+	removeEmbeddedPrompt(gateRoot, "HomeGatePrompt", SKY_HOME_GATE_PROMPT_HOST_NAME)
+	local prompt = ensureGatePromptHost(gateRoot, SKY_HOME_GATE_PROMPT_HOST_NAME, "HomeGatePrompt", "Return", "Home")
+
+	local gatesRoot: Model? = nil
+	local doorModels = {}
+	for _, descendant in ipairs(gateRoot:GetDescendants()) do
+		if descendant:IsA("Model") then
+			local childModels = {}
+			for _, child in ipairs(descendant:GetChildren()) do
+				if child:IsA("Model") then
+					table.insert(childModels, child)
+				end
+			end
+			if #childModels >= 2 then
+				gatesRoot = descendant
+				doorModels = childModels
+				break
+			end
+		end
+	end
+	if gatesRoot == nil or #doorModels < 2 then
+		return nil
+	end
+
+	local leftGate = doorModels[1]
+	local rightGate = doorModels[2]
+	-- translateDescendants moves BaseParts but not Model pivots; sync them
+	-- so PivotTo works at the correct sky position.
+	leftGate.WorldPivot = select(1, leftGate:GetBoundingBox())
+	rightGate.WorldPivot = select(1, rightGate:GetBoundingBox())
+	local leftClosed = leftGate:GetPivot()
+	local rightClosed = rightGate:GetPivot()
+	local _, leftSize = leftGate:GetBoundingBox()
+	local _, rightSize = rightGate:GetBoundingBox()
+	local state = {
+		gateRoot = gateRoot,
+		gatesRoot = gatesRoot,
+		leftGate = leftGate,
+		rightGate = rightGate,
+		prompt = prompt,
+		promptLocator = prompt.Parent,
+		portal = ensureHeavenPortalFx(gateRoot, gatesRoot),
+		audioEmitter = ensureHeavenGateAmbientAudio(gatesRoot),
+		leftClosed = leftClosed,
+		rightClosed = rightClosed,
+		leftOpen = computeHingedOpenGateCFrame(leftClosed, leftSize.Y, -72),
+		rightOpen = computeHingedOpenGateCFrame(rightClosed, rightSize.Y, 72),
+		isOpen = false,
+		isAnimating = false,
+	}
+	self._skyHomeGateStateByPlot[skyPlot] = state
+	return state
+end
+
+function OilShipmentService:_refreshSkyHomeGateForUser(userId: number)
+	if not self._oilHeavenPlotService then
+		return
+	end
+	local skyPlot = self._oilHeavenPlotService:GetAssignedPlot(userId)
+	if not skyPlot then
+		return
+	end
+	self:_ensureCenteredSkyHomePrompt(skyPlot, true)
+	local gateState = self:_getSkyHomeGateState(skyPlot)
+	if gateState == nil then
+		return
+	end
+	self:_setHeavenGateOpen(gateState, false, true)
+end
+
+function OilShipmentService:_resetSkyHomeGateForUser(userId: number)
+	if not self._oilHeavenPlotService then
+		return
+	end
+	local skyPlot = self._oilHeavenPlotService:GetAssignedPlot(userId)
+	if not skyPlot then
+		return
+	end
+	self:_ensureCenteredSkyHomePrompt(skyPlot, false)
+	local gateState = self:_getSkyHomeGateState(skyPlot)
+	if gateState == nil then
+		return
+	end
+	self:_setHeavenGateOpen(gateState, false, true)
+end
+
+function OilShipmentService:_getMainPlotHeavenGateReturnCFrame(plot: Model): CFrame?
+	local gateState = self:_getHeavenGateState(plot)
+	if gateState == nil then
+		return nil
+	end
+
+	local gatePivot = gateState.gateRoot:GetPivot()
+	local gatePos = gatePivot.Position
+	local flatLook = Vector3.new(gatePivot.LookVector.X, 0, gatePivot.LookVector.Z)
+	if flatLook.Magnitude < 1e-3 then
+		flatLook = Vector3.new(0, 0, -1)
+	else
+		flatLook = flatLook.Unit
+	end
+	local claimPad = plot:FindFirstChild("ClaimPad")
+	if claimPad and claimPad:IsA("BasePart") then
+		local towardClaimPad = horizontalUnit(gatePos, claimPad.Position, -flatLook)
+		local targetPos = gatePos + towardClaimPad * HEAVEN_GATE_RETURN_DISTANCE + Vector3.new(0, HEAVEN_GATE_RETURN_HEIGHT, 0)
+		local lookTarget = Vector3.new(gatePos.X, targetPos.Y, gatePos.Z)
+		return CFrame.lookAt(targetPos, lookTarget, Vector3.yAxis)
+	end
+	local promptHost = gateState.promptLocator
+	if promptHost and promptHost:IsA("BasePart") then
+		local awayFromGate = horizontalUnit(gatePos, promptHost.Position, -flatLook)
+		local targetPos = promptHost.Position + awayFromGate * HEAVEN_GATE_RETURN_DISTANCE + Vector3.new(0, HEAVEN_GATE_RETURN_HEIGHT, 0)
+		local lookTarget = Vector3.new(gatePos.X, targetPos.Y, gatePos.Z)
+		return CFrame.lookAt(targetPos, lookTarget, Vector3.yAxis)
+	end
+
+	local targetPos = gatePos - flatLook * HEAVEN_GATE_RETURN_DISTANCE + Vector3.new(0, HEAVEN_GATE_RETURN_HEIGHT, 0)
+	local lookTarget = Vector3.new(gatePos.X, targetPos.Y, gatePos.Z)
+	return CFrame.lookAt(targetPos, lookTarget, Vector3.yAxis)
+end
+
 function OilShipmentService:_discoverLanes()
 	self._lanes = {}
 	local Workspace = game:GetService("Workspace")
@@ -924,8 +1518,8 @@ function OilShipmentService:Start()
 	end))
 
 	local teleportHome = self._remoteService:GetEvent(RemoteNames.RequestTeleportHome)
-	table.insert(self._connections, teleportHome.OnServerEvent:Connect(function(player)
-		self:_handleTeleportHome(player)
+	table.insert(self._connections, teleportHome.OnServerEvent:Connect(function(player, source)
+		self:_handleTeleportHome(player, source)
 	end))
 
 	local teleportDocks = self._remoteService:GetEvent(RemoteNames.RequestTeleportToDocks)
@@ -943,6 +1537,24 @@ function OilShipmentService:Start()
 		self:_handleTeleportToOilHeaven(player)
 	end))
 
+	table.insert(self._connections, self._plotService:OnPlotAssigned(function(userId: number, _plot: Model)
+		task.defer(function()
+			self:_refreshHeavenGateForUser(userId, true)
+			self:_refreshSkyHomeGateForUser(userId)
+		end)
+	end))
+
+	table.insert(self._connections, self._plotService:OnPlotReleased(function(_userId: number, plot: Model)
+		self:_resetHeavenGateForPlot(plot)
+	end))
+
+	if self._oilStateService and typeof(self._oilStateService.OnStateChanged) == "function" then
+		table.insert(self._connections, self._oilStateService:OnStateChanged(function(userId: number, _snapshot: any)
+			self:_refreshHeavenGateForUser(userId, false)
+			self:_refreshSkyHomeGateForUser(userId)
+		end))
+	end
+
 	-- Interactive pirate raid: client reports which pirates were slapped
 	local pirateRaidResult = self._remoteService:GetEvent(RemoteNames.PirateRaidInteractiveResult)
 	table.insert(self._connections, pirateRaidResult.OnServerEvent:Connect(function(player, payload)
@@ -951,9 +1563,21 @@ function OilShipmentService:Start()
 
 	-- Clean up module-level userId tables on leave
 	table.insert(self._connections, Players.PlayerRemoving:Connect(function(player)
+		local plot = self._plotService and self._plotService:GetOwnedPlot(player.UserId)
+		if plot then
+			self:_resetHeavenGateForPlot(plot)
+		end
+		self:_resetSkyHomeGateForUser(player.UserId)
 		_firstDispatchedByUserId[player.UserId] = nil
 		_firstDeliveredByUserId[player.UserId] = nil
 	end))
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		task.defer(function()
+			self:_refreshHeavenGateForUser(player.UserId, true)
+			self:_refreshSkyHomeGateForUser(player.UserId)
+		end)
+	end
 end
 
 function OilShipmentService:_handleTeleportToShip(player: Player, payload: any?)
@@ -1052,23 +1676,53 @@ function OilShipmentService:_fireCameraSnap(player: Player, targetCFrame: CFrame
 	end)
 end
 
-function OilShipmentService:_handleTeleportHome(player: Player)
+function OilShipmentService:_handleTeleportHome(player: Player, source: string?)
 	local character = player.Character
 	if not character then return end
 
 	local plot = self._plotService:GetOwnedPlot(player.UserId)
 	if not plot then return end
-	local claimPad = plot:FindFirstChild("ClaimPad")
-	if claimPad and claimPad:IsA("BasePart") then
-		--- Use the pad's full CFrame (not just `.Position`) so the character lands facing whichever
-		--- way the ClaimPad is authored to face — currently 180° so the player ends up looking at
-		--- the Delivery Man. `CFrame + Vector3` translates in world space without touching the
-		--- pad's LookVector.
-		local targetCFrame = claimPad.CFrame + Vector3.new(0, 5, 0)
+
+	local targetCFrame: CFrame? = nil
+	local skyGateState = nil
+	if player:GetAttribute(Constants.CurrentWorldAttribute) == Constants.WorldOilHeaven then
+		if source == "gate" then
+			targetCFrame = self:_getMainPlotHeavenGateReturnCFrame(plot)
+		end
+		if self._oilHeavenPlotService then
+			local skyPlot = self._oilHeavenPlotService:GetAssignedPlot(player.UserId)
+			if skyPlot then
+				skyGateState = self:_getSkyHomeGateState(skyPlot)
+				if skyGateState then
+					self:_configureSkyHomeGatePrompt(skyGateState.prompt, true)
+					if not skyGateState.isOpen then
+						self:_setHeavenGateOpen(skyGateState, true, false)
+						task.wait(0.08)
+					end
+				end
+			end
+		end
+	end
+
+	if targetCFrame == nil then
+		local claimPad = plot:FindFirstChild("ClaimPad")
+		if claimPad and claimPad:IsA("BasePart") then
+			targetCFrame = claimPad.CFrame + Vector3.new(0, 5, 0)
+		end
+	end
+
+	if targetCFrame then
 		removeHeavenAccessories(character)
 		CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportHome")
 		player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
 		self:_fireCameraSnap(player, targetCFrame)
+		self:_refreshHeavenGateForUser(player.UserId, false)
+		if skyGateState then
+			task.defer(function()
+				task.wait(0.05)
+				self:_setHeavenGateOpen(skyGateState, false, true)
+			end)
+		end
 	end
 end
 
@@ -1095,10 +1749,30 @@ function OilShipmentService:_handleTeleportToOilHeaven(player: Player)
 
 	local spawnCFrame = self._oilHeavenPlotService:GetSpawnCFrame(player.UserId)
 	if not spawnCFrame then return end
+	self:_refreshSkyHomeGateForUser(player.UserId)
+
+	local ownedPlot = self._plotService:GetOwnedPlot(player.UserId)
+	local gateState = if ownedPlot then self:_getHeavenGateState(ownedPlot) else nil
+	if gateState then
+		self:_configureHeavenGatePrompt(gateState.prompt, true, true)
+		if not gateState.isOpen then
+			self:_setHeavenGateOpen(gateState, true, false)
+			task.wait(0.08)
+		else
+			setPortalEnabled(gateState.portal, true)
+		end
+	end
 
 	CharacterTeleport.teleportWithUnseat(character, spawnCFrame, "RequestTeleportToOilHeaven")
 	player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldOilHeaven)
 	self:_fireCameraSnap(player, spawnCFrame)
+	self:_refreshSkyHomeGateForUser(player.UserId)
+	if gateState then
+		task.defer(function()
+			task.wait(0.05)
+			self:_setHeavenGateOpen(gateState, false, true)
+		end)
+	end
 
 	-- Equip angel wings + halo
 	local humanoid = character:FindFirstChildWhichIsA("Humanoid")

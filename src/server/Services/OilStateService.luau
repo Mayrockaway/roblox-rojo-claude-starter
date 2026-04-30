@@ -48,7 +48,7 @@ local TIER_ORDER = {
 local HEAVEN_BONUS_KEYS = {
 	"shipSpeedPct",
 	"goldEarnPct",
-	"warehouseCapacityFlat",
+	"warehouseCapacityPct",
 	"luckPct",
 }
 
@@ -175,7 +175,7 @@ local function emptyOilHeavenBonusTotals()
 	return {
 		shipSpeedPct = 0,
 		goldEarnPct = 0,
-		warehouseCapacityFlat = 0,
+		warehouseCapacityPct = 0,
 		luckPct = 0,
 	}
 end
@@ -188,7 +188,13 @@ local function normalizeOilHeavenBonusTotals(raw: any)
 	for _, key in ipairs(HEAVEN_BONUS_KEYS) do
 		local value = raw[key]
 		if typeof(value) == "number" and value > 0 then
-			out[key] = math.floor(value)
+			out[key] = value
+		end
+	end
+	if out.warehouseCapacityPct <= 0 then
+		local legacyWarehouseFlat = raw.warehouseCapacityFlat
+		if typeof(legacyWarehouseFlat) == "number" and legacyWarehouseFlat > 0 then
+			out.warehouseCapacityPct = legacyWarehouseFlat
 		end
 	end
 	return out
@@ -201,7 +207,7 @@ local function normalizePendingHeavenReward(raw: any)
 	local rewardId = raw.rewardId
 	local category = raw.category
 	local rarity = raw.rarity
-	local amount = raw.amount
+	local rebirthRequired = raw.rebirthRequired
 	local tileId = raw.tileId
 	if typeof(rewardId) ~= "string" or rewardId == "" then
 		return nil
@@ -209,20 +215,24 @@ local function normalizePendingHeavenReward(raw: any)
 	if typeof(category) ~= "string" or HeavenRewardConfig.CategoryDisplayNames[category] == nil then
 		return nil
 	end
-	if typeof(rarity) ~= "string" or HeavenRewardConfig.ValuesByRarity[rarity] == nil then
-		return nil
-	end
-	if typeof(amount) ~= "number" or amount <= 0 then
+	if typeof(rarity) ~= "string" then
 		return nil
 	end
 	if typeof(tileId) ~= "string" or tileId == "" then
 		return nil
 	end
+	local ok, reward = pcall(function()
+		return HeavenRewardConfig.BuildReward(category, rarity, rebirthRequired)
+	end)
+	if not ok or typeof(reward) ~= "table" then
+		return nil
+	end
 	return {
-		rewardId = rewardId,
-		category = category,
-		rarity = rarity,
-		amount = math.floor(amount),
+		rewardId = reward.rewardId,
+		category = reward.category,
+		rarity = reward.rarity,
+		rebirthRequired = reward.rebirthRequired,
+		amount = reward.amount,
 		tileId = tileId,
 	}
 end
@@ -233,11 +243,12 @@ local function normalizeStoredHeavenReward(raw: any)
 	end
 	local category = raw.category
 	local rarity = raw.rarity
+	local rebirthRequired = raw.rebirthRequired
 	if typeof(category) ~= "string" or typeof(rarity) ~= "string" then
 		return nil
 	end
 	local ok, reward = pcall(function()
-		return HeavenRewardConfig.BuildReward(category, rarity)
+		return HeavenRewardConfig.BuildReward(category, rarity, rebirthRequired)
 	end)
 	if not ok or typeof(reward) ~= "table" then
 		return nil
@@ -326,10 +337,14 @@ end
 
 local function buildDefaultPersisted()
 	return {
-		--- Profile version. Bumped to **14** — adds `oilHeavenState.tileRewards`
-		--- so each claimed Heaven tile can persist its in-world reward label,
+		--- Profile version. Bumped to **15** — Heaven rewards now persist
+		--- section-aware `rebirthRequired` data and Heaven warehouse bonuses
+		--- use percentage capacity semantics instead of flat capacity,
 		--- while keeping older saves forward-compatible
 		--- through `normalizeOilHeavenState`.
+		---
+		--- Earlier: **14** — adds `oilHeavenState.tileRewards`
+		--- so each claimed Heaven tile can persist its in-world reward label.
 		---
 		--- Earlier: **12** — adds `economicsSessions` for
 		--- rolling net-cash/session-time windows that feed **dynamic Robux cash
@@ -354,7 +369,7 @@ local function buildDefaultPersisted()
 		---     fields.
 		---   * 7 → 8 (Step 3): data-driven starter set.
 		--- v < 8 backfill still runs — see `_applyPersistedIntoState`.
-		version = 14,
+		version = 15,
 		cash = initialStartingCash(),
 		ftueEscortShipmentRemaining = initialFtueEscortShipmentRemaining(),
 		ftueDispatchCashGranted = false,
@@ -3197,7 +3212,7 @@ function OilStateService:_ensurePlayerState(userId: number, plot: Model)
 		pcall(function()
 			local plr = Players:GetPlayerByUserId(userId)
 			Telemetry.Track(plr, "first_join", {
-				oilProfileVersionAtCreate = 14,
+				oilProfileVersionAtCreate = 15,
 			})
 		end)
 	end
@@ -4662,7 +4677,7 @@ function OilStateService:_serializeState(state)
 			end
 		end
 	end
-	persisted.version = 14
+	persisted.version = 15
 
 	local activeDrillIds: { number } = {}
 	local seenActiveDrill: { [number]: boolean } = {}
@@ -5230,14 +5245,14 @@ function OilStateService:_applyOilHeavenRewardToState(state: any, reward: Heaven
 	elseif reward.category == "GoldEarnPct" then
 		bonusTotals.goldEarnPct += reward.amount
 	elseif reward.category == "WarehouseCapacity" then
-		bonusTotals.warehouseCapacityFlat += reward.amount
+		bonusTotals.warehouseCapacityPct += reward.amount
 	elseif reward.category == "LuckPct" then
 		bonusTotals.luckPct += reward.amount
 	end
 	return bonusTotals
 end
 
-function OilStateService:ClaimOilHeavenRewardTile(userId: number, tileId: string): (boolean, string, string, HeavenRewardConfig.HeavenRewardDef?)
+function OilStateService:ClaimOilHeavenRewardTile(userId: number, tileId: string, rebirthRequired: number?): (boolean, string, string, HeavenRewardConfig.HeavenRewardDef?)
 	if typeof(tileId) ~= "string" or tileId == "" then
 		return false, "ERR_HEAVEN_BAD_TILE", "Bad Heaven tile.", nil
 	end
@@ -5255,7 +5270,7 @@ function OilStateService:ClaimOilHeavenRewardTile(userId: number, tileId: string
 
 	local seed = math.floor(workspace:GetServerTimeNow() * 1000) + (userId * 97) + (string.len(tileId) * 31)
 	local rng = Random.new(seed)
-	local reward = HeavenRewardConfig.RollReward(rng)
+	local reward = HeavenRewardConfig.RollReward(rng, rebirthRequired)
 
 	oilHeavenState.drilledTiles[tileId] = true
 	oilHeavenState.tileRewards[tileId] = reward
@@ -5266,6 +5281,7 @@ function OilStateService:ClaimOilHeavenRewardTile(userId: number, tileId: string
 		rewardId = reward.rewardId,
 		category = reward.category,
 		rarity = reward.rarity,
+		rebirthRequired = reward.rebirthRequired,
 		amount = reward.amount,
 		tileId = tileId,
 	}
@@ -5286,7 +5302,7 @@ function OilStateService:ConsumePendingOilHeavenDoubleReward(userId: number): (b
 	if not pending then
 		return false, "ERR_NO_PENDING_HEAVEN_REWARD", nil
 	end
-	local reward = HeavenRewardConfig.BuildReward(pending.category, pending.rarity)
+	local reward = HeavenRewardConfig.BuildReward(pending.category, pending.rarity, pending.rebirthRequired)
 	self:_applyOilHeavenRewardToState(state, reward)
 	oilHeavenState.pendingDoubleReward = nil
 	self:_markDirty(userId)

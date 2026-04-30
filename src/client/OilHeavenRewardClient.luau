@@ -25,6 +25,20 @@ local function setHeavenStatusLocked(message: string, color: Color3, holdSeconds
 	ClientPlotGrid.setStatusLocked(message, color, holdSeconds)
 end
 
+local function stabilizeHeavenDrillVisual(drill: Model)
+	for _, desc in ipairs(drill:GetDescendants()) do
+		if desc:IsA("BasePart") then
+			desc.Anchored = true
+			desc.CanCollide = false
+			desc.CanTouch = false
+			desc.CanQuery = false
+			desc.Massless = true
+		elseif desc:IsA("Weld") and desc.Name == "AccessoryWeld" then
+			desc.Enabled = false
+		end
+	end
+end
+
 function OilHeavenRewardClient.start()
 	if started then
 		return
@@ -81,6 +95,7 @@ function OilHeavenRewardClient.start()
 			if template then
 				local drill = template:Clone()
 				drill.Name = "HeavenDrill_Active"
+				stabilizeHeavenDrillVisual(drill)
 
 				-- Position drill on top of tile surface (pivot offset from bottom)
 				local pivotToBottom = 0

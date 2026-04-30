@@ -351,6 +351,7 @@ function OilHeavenDrillService:_handleToolActivation(player: Player, target: any
 
 	-- Tell client to spawn the drill visual + spin animation
 	local tileTop = tilePart.Position.Y + tilePart.Size.Y / 2
+	local rebirthRequired = tilePart:GetAttribute("RebirthRequired")
 	self._rewardEvent:FireClient(player, {
 		kind = "drillingStarted",
 		tileId = tilePart.Name,
@@ -361,7 +362,7 @@ function OilHeavenDrillService:_handleToolActivation(player: Player, target: any
 	task.delay(3, function()
 		self._activeDrills[drillKey] = nil
 
-		local ok, code, message, reward = self._oilStateService:ClaimOilHeavenRewardTile(player.UserId, tilePart.Name)
+		local ok, code, message, reward = self._oilStateService:ClaimOilHeavenRewardTile(player.UserId, tilePart.Name, rebirthRequired)
 		if not ok or not reward then
 			--- Refund the drill we debited at scheduling time. Realistically
 			--- only `ERR_HEAVEN_TILE_CLAIMED` can fire here (a race with

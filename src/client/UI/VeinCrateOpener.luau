@@ -9,6 +9,7 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local HeavenRewardConfig = require(Shared:WaitForChild("Config"):WaitForChild("HeavenRewardConfig"))
 local VeinCrateConfig = require(Shared:WaitForChild("Config"):WaitForChild("VeinCrateConfig"))
 
 local ClientAudioPreferences = require(script.Parent.Parent:WaitForChild("ClientAudioPreferences"))
@@ -299,9 +300,36 @@ local function createCard(veinType: VeinCrateConfig.VeinTypeDef, groundType: str
 	return card
 end
 
+local HEAVEN_REWARD_BG_RARITY_BY_TIER = {
+	T1 = "Common",
+	T2 = "Rare",
+	T3 = "Epic",
+	T4 = "Legendary",
+}
+
+local function getHeavenRewardBackgroundAsset(rarity: string): string?
+	local tier = HeavenRewardConfig.GetVisualTierForRarity(rarity)
+	local backgroundRarity = HEAVEN_REWARD_BG_RARITY_BY_TIER[tier] or "Common"
+	return VeinCrateConfig.RarityBackgroundAssets[backgroundRarity]
+end
+
+local function getHeavenRewardFallbackText(category: string): string
+	if category == "ShipSpeed" then
+		return "SPD"
+	elseif category == "GoldEarnPct" then
+		return "EARN"
+	elseif category == "WarehouseCapacity" then
+		return "CAP"
+	elseif category == "LuckPct" then
+		return "LUCK"
+	end
+	return "BONUS"
+end
+
 local function createHeavenRewardCard(reward: any, parent: Instance): Frame
 	local rarity = tostring(reward.rarity or "Common")
 	local rarityStyle = VeinCrateConfig.GetRarityStyle(rarity)
+	local category = tostring(reward.category or "")
 
 	local card = Instance.new("Frame")
 	card.Name = "HeavenRewardCard_" .. tostring(reward.rewardId or "Reward")
@@ -313,7 +341,7 @@ local function createHeavenRewardCard(reward: any, parent: Instance): Frame
 	corner.CornerRadius = UDim.new(0, 16)
 	corner.Parent = card
 
-	local bgAssetId = VeinCrateConfig.RarityBackgroundAssets[rarity]
+	local bgAssetId = getHeavenRewardBackgroundAsset(rarity)
 	if bgAssetId and bgAssetId ~= "" and bgAssetId ~= "rbxassetid://0" then
 		local bgImg = Instance.new("ImageLabel")
 		bgImg.Name = "RarityBG"
@@ -325,26 +353,14 @@ local function createHeavenRewardCard(reward: any, parent: Instance): Frame
 		bgImg.Parent = card
 	end
 
-	local iconText = "BONUS"
-	local category = tostring(reward.category or "")
-	if category == "ShipSpeed" then
-		iconText = "SPD"
-	elseif category == "GoldEarnPct" then
-		iconText = "GOLD"
-	elseif category == "WarehouseCapacity" then
-		iconText = "CAP"
-	elseif category == "LuckPct" then
-		iconText = "LUCK"
-	end
-
 	local title = Instance.new("TextLabel")
 	title.Name = "Title"
-	title.Size = UDim2.new(0.92, 0, 0, 30)
+	title.Size = UDim2.new(0.92, 0, 0, 36)
 	title.AnchorPoint = Vector2.new(0.5, 0)
-	title.Position = UDim2.new(0.5, 0, 0.03, 0)
+	title.Position = UDim2.new(0.5, 0, 0.085, 0)
 	title.BackgroundTransparency = 1
 	title.Font = Enum.Font.GothamBold
-	title.TextSize = 24
+	title.TextSize = 30
 	title.TextStrokeTransparency = 0
 	title.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 	title.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -354,12 +370,12 @@ local function createHeavenRewardCard(reward: any, parent: Instance): Frame
 
 	local subtitle = Instance.new("TextLabel")
 	subtitle.Name = "Subtitle"
-	subtitle.Size = UDim2.new(0.9, 0, 0, 24)
+	subtitle.Size = UDim2.new(0.92, 0, 0, 28)
 	subtitle.AnchorPoint = Vector2.new(0.5, 0)
-	subtitle.Position = UDim2.new(0.5, 0, 0.14, 0)
+	subtitle.Position = UDim2.new(0.5, 0, 0.215, 0)
 	subtitle.BackgroundTransparency = 1
 	subtitle.Font = Enum.Font.GothamMedium
-	subtitle.TextSize = 18
+	subtitle.TextSize = 22
 	subtitle.TextStrokeTransparency = 0
 	subtitle.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 	subtitle.TextColor3 = Color3.fromRGB(235, 238, 245)
@@ -367,33 +383,47 @@ local function createHeavenRewardCard(reward: any, parent: Instance): Frame
 	subtitle.ZIndex = 3
 	subtitle.Parent = card
 
-	local icon = Instance.new("TextLabel")
-	icon.Name = "Icon"
-	icon.Size = UDim2.fromOffset(180, 70)
-	icon.AnchorPoint = Vector2.new(0.5, 0.5)
-	icon.Position = UDim2.new(0.5, 0, 0.39, 0)
-	icon.BackgroundTransparency = 1
-	icon.Font = Enum.Font.GothamBlack
-	icon.TextSize = 44
-	icon.TextStrokeTransparency = 0
-	icon.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	icon.TextColor3 = rarityStyle.text
-	icon.Text = iconText
-	icon.ZIndex = 3
-	icon.Parent = card
+	local iconAssetId = HeavenRewardConfig.GetRewardIconAsset(category, rarity)
+	if typeof(iconAssetId) == "string" and iconAssetId ~= "" and iconAssetId ~= "rbxassetid://0" then
+		local icon = Instance.new("ImageLabel")
+		icon.Name = "Icon"
+		icon.Size = UDim2.fromOffset(275, 160)
+		icon.AnchorPoint = Vector2.new(0.5, 0.5)
+		icon.Position = UDim2.new(0.5, 0, 0.53, 0)
+		icon.BackgroundTransparency = 1
+		icon.ScaleType = Enum.ScaleType.Fit
+		icon.Image = iconAssetId
+		icon.ZIndex = 3
+		icon.Parent = card
+	else
+		local icon = Instance.new("TextLabel")
+		icon.Name = "Icon"
+		icon.Size = UDim2.fromOffset(225, 88)
+		icon.AnchorPoint = Vector2.new(0.5, 0.5)
+		icon.Position = UDim2.new(0.5, 0, 0.53, 0)
+		icon.BackgroundTransparency = 1
+		icon.Font = Enum.Font.GothamBlack
+		icon.TextSize = 55
+		icon.TextStrokeTransparency = 0
+		icon.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		icon.TextColor3 = rarityStyle.text
+		icon.Text = getHeavenRewardFallbackText(category)
+		icon.ZIndex = 3
+		icon.Parent = card
+	end
 
 	local rewardLabel = Instance.new("TextLabel")
 	rewardLabel.Name = "RewardText"
-	rewardLabel.Size = UDim2.new(0.84, 0, 0.26, 0)
-	rewardLabel.AnchorPoint = Vector2.new(0.5, 0.5)
-	rewardLabel.Position = UDim2.new(0.5, 0, 0.60, 0)
+	rewardLabel.Size = UDim2.new(0.88, 0, 0.14, 0)
+	rewardLabel.AnchorPoint = Vector2.new(0.5, 0)
+	rewardLabel.Position = UDim2.new(0.5, 0, 0.73, 0)
 	rewardLabel.BackgroundTransparency = 1
 	rewardLabel.Font = Enum.Font.GothamBold
-	rewardLabel.TextSize = 28
+	rewardLabel.TextSize = 25
 	rewardLabel.TextWrapped = true
 	rewardLabel.TextStrokeTransparency = 0
 	rewardLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	rewardLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	rewardLabel.TextColor3 = rarityStyle.text
 	rewardLabel.Text = tostring(reward.displayText or "?")
 	rewardLabel.ZIndex = 3
 	rewardLabel.Parent = card
@@ -422,10 +452,16 @@ local function preloadHeavenRewards(pool: { any })
 	local orderedIds = {}
 	for _, reward in ipairs(pool) do
 		local rarity = tostring(reward.rarity or "Common")
-		local bgId = VeinCrateConfig.RarityBackgroundAssets[rarity]
+		local category = tostring(reward.category or "")
+		local bgId = getHeavenRewardBackgroundAsset(rarity)
 		if typeof(bgId) == "string" and bgId ~= "" and bgId ~= "rbxassetid://0" and not uniqueIds[bgId] then
 			uniqueIds[bgId] = true
 			table.insert(orderedIds, bgId)
+		end
+		local iconAssetId = HeavenRewardConfig.GetRewardIconAsset(category, rarity)
+		if typeof(iconAssetId) == "string" and iconAssetId ~= "" and iconAssetId ~= "rbxassetid://0" and not uniqueIds[iconAssetId] then
+			uniqueIds[iconAssetId] = true
+			table.insert(orderedIds, iconAssetId)
 		end
 	end
 	if #orderedIds == 0 then

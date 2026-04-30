@@ -207,10 +207,10 @@ end
 local function resolvedWarehouseCapacity(self, userId: number, state: any): number
 	local baseCapacity = WarehouseConfig.GetCapacity(state.tier)
 	local bonusTotals = self._oilStateService and self._oilStateService:GetOilHeavenBonusTotals(userId) or nil
-	local bonus = if typeof(bonusTotals) == "table" and typeof(bonusTotals.warehouseCapacityFlat) == "number"
-		then math.max(0, math.floor(bonusTotals.warehouseCapacityFlat))
+	local warehouseCapacityPct = if typeof(bonusTotals) == "table" and typeof(bonusTotals.warehouseCapacityPct) == "number"
+		then math.max(0, bonusTotals.warehouseCapacityPct)
 		else 0
-	return baseCapacity + bonus
+	return math.floor(baseCapacity * (1 + warehouseCapacityPct / 100) + 0.5)
 end
 
 local function totalBarrelsCombined(baseBarrels, overflowBarrels)

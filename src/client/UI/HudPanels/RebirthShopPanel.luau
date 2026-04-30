@@ -37,20 +37,27 @@ local SCREEN_NAME = "RebirthShopPanelGui"
 local PURCHASE_DEBOUNCE_SECONDS = 0.35
 local ERROR_NOTIFICATION_HOLD_SECONDS = 2.5
 
--- Boost row card name → bonusTotals key + display formatter. Warehouse is the
--- only flat (barrels) bonus; the rest are percentages.
+local function formatBoostAmount(amount: number): string
+	local whole = math.round(amount)
+	if math.abs(amount - whole) < 0.001 then
+		return tostring(whole)
+	end
+	return string.format("%.1f", amount)
+end
+
+-- Boost row card name → bonusTotals key + display formatter.
 local BOOST_ROW_FORMATTERS: { [string]: (any) -> string } = {
 	ShipSpeedBoost = function(bonusTotals)
-		return string.format("+%d%%", math.floor((bonusTotals.shipSpeedPct or 0) + 0.5))
+		return string.format("+%s%%", formatBoostAmount(bonusTotals.shipSpeedPct or 0))
 	end,
 	WarehouseBoost = function(bonusTotals)
-		return string.format("+%d", math.floor((bonusTotals.warehouseCapacityFlat or 0) + 0.5))
+		return string.format("+%s%%", formatBoostAmount(bonusTotals.warehouseCapacityPct or 0))
 	end,
 	EarningsBoost = function(bonusTotals)
-		return string.format("+%d%%", math.floor((bonusTotals.goldEarnPct or 0) + 0.5))
+		return string.format("+%s%%", formatBoostAmount(bonusTotals.goldEarnPct or 0))
 	end,
 	LuckBoost = function(bonusTotals)
-		return string.format("+%d%%", math.floor((bonusTotals.luckPct or 0) + 0.5))
+		return string.format("+%s%%", formatBoostAmount(bonusTotals.luckPct or 0))
 	end,
 }
 

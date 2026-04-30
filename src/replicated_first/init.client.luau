@@ -13,7 +13,7 @@ local LoadingManifest = require(Shared:WaitForChild("Config"):WaitForChild("Load
 
 type LoadingGroup = typeof(LoadingManifest.getGroups()[1])
 
-local COVER_ASSET = "rbxassetid://94495457583750"
+local COVER_ASSET = "rbxassetid://75104414262424"
 local BGM_CLONE_NAME = "OTS_ClientBGM"
 local PRELOAD_BATCH_SIZE = 24
 local MIN_SCREEN_TIME_SECONDS = 1.2

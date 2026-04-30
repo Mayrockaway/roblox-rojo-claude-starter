@@ -493,6 +493,10 @@ do
 		return rebirthCount, newDrillCount
 	end
 
+	local function matchesCommandPrefix(cmd: string, prefix: string): boolean
+		return cmd == prefix or cmd:sub(1, #prefix + 1) == prefix .. " "
+	end
+
 	-- Studio: wipe DataStore keys + skip leave-save so old state does not re-write after `RemoveAsync`.
 	_G.__OTS_DEV_WIPE_PLAYER = function(userId: number)
 		devWipePersistedForUser(userId)
@@ -869,25 +873,25 @@ do
 			else
 				warn(string.format("[Dev] /giveboat by %s -> failed for %s boat '%s': %s", player.Name, target.Name, boatIdArg, tostring(code)))
 			end
-		elseif cmd:sub(1, 8) == "/rebirth" then
+		elseif matchesCommandPrefix(cmd, "/giverebirthdrill") or matchesCommandPrefix(cmd, "/rebirthdrill") then
+			--- Optional count: `/giverebirthdrill 5` adds 5 drills (defaults to 1).
+			--- The dev command also unlocks Oil Heaven if needed (since carrying a
+			--- drill without heaven access would be a softlock for QA).
+			local prefix = if matchesCommandPrefix(cmd, "/giverebirthdrill") then "/giverebirthdrill" else "/rebirthdrill"
+			local arg = cmd:sub(#prefix + 1):gsub("^%s+", "")
+			local count = tonumber(arg) or 1
+			local rebirthCount, drillCount = devGiveRebirthDrill(player, count)
+			print(string.format("[Dev] Rebirth Drill +%d for %s -> rebirthCount=%d drills=%d", count, player.Name, rebirthCount, drillCount))
+		elseif matchesCommandPrefix(cmd, "/rebirth") then
 			local arg = cmd:sub(9):gsub("^%s+", "")
 			local count = tonumber(arg) or 1
 			local newCount = devGrantRebirths(player, count)
 			print(string.format("[Dev] /rebirth by %s -> rebirthCount=%d", player.Name, newCount))
-		elseif cmd:sub(1, 12) == "/giverebirth" then
+		elseif matchesCommandPrefix(cmd, "/giverebirth") then
 			local arg = cmd:sub(13):gsub("^%s+", "")
 			local count = tonumber(arg) or 1
 			local newCount = devGrantRebirths(player, count)
 			print(string.format("[Dev] /giverebirth by %s -> rebirthCount=%d", player.Name, newCount))
-		elseif cmd:sub(1, 16) == "/giverebirthdrill" or cmd:sub(1, 12) == "/rebirthdrill" then
-			--- Optional count: `/giverebirthdrill 5` adds 5 drills (defaults to 1).
-			--- The dev command also unlocks Oil Heaven if needed (since carrying a
-			--- drill without heaven access would be a softlock for QA).
-			local prefixLen = if cmd:sub(1, 16) == "/giverebirthdrill" then 17 else 13
-			local arg = cmd:sub(prefixLen):gsub("^%s+", "")
-			local count = tonumber(arg) or 1
-			local rebirthCount, drillCount = devGiveRebirthDrill(player, count)
-			print(string.format("[Dev] Rebirth Drill +%d for %s -> rebirthCount=%d drills=%d", count, player.Name, rebirthCount, drillCount))
 		elseif cmd == "/rebirthnow" then
 			--- Forces the rebirth flow for the calling player, bypassing the
 			--- panel UX (handy for QA without grinding to $1M cash). Mirrors

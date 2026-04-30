@@ -71,7 +71,7 @@ function ProximityPanelOpener.start()
 		if prompt:GetAttribute(TELEPORT_HOME_ATTR) == true then
 			local remotes = getClientRemotes()
 			if remotes and remotes.requestTeleportHome then
-				remotes.requestTeleportHome:FireServer()
+				remotes.requestTeleportHome:FireServer("gate")
 			end
 			return
 		end
