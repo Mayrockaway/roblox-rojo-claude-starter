@@ -5739,6 +5739,28 @@ function OilStateService:Rebirth(userId: number): (boolean, string, any)
 		end)()
 	))
 
+	-- Telemetry: emit `rebirth_completed` (custom Track — carries level +
+	-- tokens granted + balance + cash converted so the dashboard can answer
+	-- "rebirth distribution" / "median tokens accumulated") plus a
+	-- `rebirth_tokens_earned` Economy Source for the conversion. Both pcall'd
+	-- so a telemetry pipeline failure can't roll back the rebirth itself.
+	if plr then
+		pcall(function()
+			Telemetry.Track(plr, "rebirth_completed", {
+				rebirthCount = newRebirthCount,
+				tokensGranted = tokensGranted,
+				tokensBalance = newRebirthTokens,
+				drillsBalance = newRebirthDrills,
+				cashConverted = cash,
+			})
+		end)
+		if tokensGranted > 0 then
+			pcall(function()
+				Telemetry.Economy(plr, "Source", tokensGranted, "rebirth_tokens", "rebirth_tokens_earned")
+			end)
+		end
+	end
+
 	return true, "OK", {
 		rebirthCount = newRebirthCount,
 		rebirthTokens = newRebirthTokens,

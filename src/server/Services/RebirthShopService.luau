@@ -26,6 +26,8 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local RebirthShopConfig = require(Shared:WaitForChild("Config"):WaitForChild("RebirthShopConfig"))
 local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 
+local Telemetry = require(Shared:WaitForChild("Telemetry"))
+
 local PURCHASE_DEBOUNCE_SECONDS = 0.35
 --- Rebirth is a destructive operation; the debounce prevents a fast
 --- double-click from invoking it twice (the first invocation would have
@@ -128,6 +130,24 @@ function RebirthShopService:_handlePurchase(player: Player, payload: any)
 	end
 
 	self._oilStateService:PushState(player.UserId)
+
+	-- Telemetry: economy Sink against `rebirth_tokens` so the dashboard sees
+	-- the spend alongside the cash → tokens Source from `OilStateService:Rebirth`.
+	-- `item` is the catalog item id (`drill`, etc.) so per-item conversion can
+	-- be sliced. pcall'd — a telemetry failure must never block the purchase.
+	if item.tokenCost > 0 then
+		pcall(function()
+			Telemetry.Economy(
+				player,
+				"Sink",
+				item.tokenCost,
+				"rebirth_tokens",
+				"rebirth_tokens_spent",
+				item.id
+			)
+		end)
+	end
+
 	self:_sendActionResult(player, true, "OK", "Purchase complete.", {
 		itemId = item.id,
 		tokens = newTokens,

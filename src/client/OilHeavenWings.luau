@@ -25,8 +25,11 @@ local connections: { RBXScriptConnection } = {}
 local DOUBLE_JUMP_POWER = 110
 local GLIDE_FALL_SPEED = -6
 local GLIDE_FORWARD_BOOST = 20
-local WALK_SPEED_BOOST = 20
-local NORMAL_WALK_SPEED = 16
+-- WALK_SPEED_BOOST / NORMAL_WALK_SPEED were removed. WalkSpeed now stays at
+-- whatever `StarterPlayer.CharacterWalkSpeed` sets (default 16) regardless of
+-- world. The wings mechanic (double jump + glide) is independent of WalkSpeed —
+-- it uses `JumpRequest` + `BodyVelocity`, not movement speed — so removing the
+-- per-world override doesn't change flight feel.
 
 local function createWings(character: Model)
 	-- Visual wings are now handled by server-side Angel accessories
@@ -93,12 +96,8 @@ local function cleanup()
 	removeWings()
 	hasDoubleJumped = false
 	active = false
-
-	local char = LocalPlayer.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	if hum then
-		hum.WalkSpeed = NORMAL_WALK_SPEED
-	end
+	-- WalkSpeed restore was removed alongside the per-world boost. The
+	-- player keeps whatever speed StarterPlayer set; nothing to undo here.
 end
 
 local function activate()
@@ -112,7 +111,9 @@ local function activate()
 	local hrp = character:FindFirstChild("HumanoidRootPart") :: BasePart?
 	if not humanoid or not hrp then return end
 
-	humanoid.WalkSpeed = WALK_SPEED_BOOST
+	-- WalkSpeed deliberately not touched — speed stays at whatever
+	-- `StarterPlayer.CharacterWalkSpeed` sets (default 16) so it's
+	-- consistent across worlds. Wings = jump + glide, not faster running.
 	wingModel = createWings(character)
 
 	-- Reset on landing
@@ -173,38 +174,22 @@ local function activate()
 		cleanup()
 	end))
 
-	-- Sky box exit detection: find the shared SkyBox in Workspace
-	task.spawn(function()
-		local skyBox = Workspace:WaitForChild("SkyBox", 10)
-		if not skyBox then return end
-
-		local floor = skyBox:FindFirstChild("Floor")
-		local ceiling = skyBox:FindFirstChild("Ceiling")
-		local wallPosX = skyBox:FindFirstChild("WallPosX")
-		local wallNegX = skyBox:FindFirstChild("WallNegX")
-		local wallPosZ = skyBox:FindFirstChild("WallPosZ")
-		local wallNegZ = skyBox:FindFirstChild("WallNegZ")
-		if not (floor and ceiling and wallPosX and wallNegX and wallPosZ and wallNegZ) then return end
-
-		local minY = floor.Position.Y
-		local maxY = ceiling.Position.Y
-		local minX = wallNegX.Position.X
-		local maxX = wallPosX.Position.X
-		local minZ = wallNegZ.Position.Z
-		local maxZ = wallPosZ.Position.Z
-
-		while active and hrp and hrp.Parent do
-			local pos = hrp.Position
-			if pos.X < minX or pos.X > maxX
-				or pos.Y < minY or pos.Y > maxY
-				or pos.Z < minZ or pos.Z > maxZ
-			then
-				LocalPlayer:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
-				break
-			end
-			task.wait(0.2)
-		end
-	end)
+	-- SkyBox exit detection was REMOVED. It polled HRP position against the
+	-- shared SkyBox bounds and locally set `CurrentWorld = Main` on exit —
+	-- which on the server (and via the world-changed listener above) ran
+	-- `cleanup()`, snapping `WalkSpeed` back to 16 and stripping wings.
+	-- Two problems:
+	--   1. `DOUBLE_JUMP_POWER = 110` easily punches the player above the
+	--      ceiling for a frame on every double-jump, triggering the exit
+	--      and resetting walk speed mid-flight.
+	--   2. The check writes the attribute client-side only, leaving the
+	--      server's view inconsistent (server still thinks the player is
+	--      in OilHeaven; client thinks they left).
+	-- World transitions are now driven exclusively by explicit teleport
+	-- remotes (`RequestTeleportToOilHeaven`, `RequestTeleportHome`,
+	-- `RequestTeleportToRebirthTarget`), which set `CurrentWorld` server-
+	-- side authoritatively. Falling out of OilHeaven is handled by the
+	-- KillZone layer the same way as falling off any plot.
 end
 
 function OilHeavenWings.start()

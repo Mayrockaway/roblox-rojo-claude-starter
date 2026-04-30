@@ -147,7 +147,11 @@ local BUTTON_TO_REMOTE: { [string]: RemoteEvent } = {
 	HomeButton = ClientRemotes.requestTeleportHome,
 	ShipButton = ClientRemotes.requestTeleportToShip,
 	HireButton = ClientRemotes.requestTeleportToHire,         -- Workspace.HireTeleportTarget
-	RebirthButton = ClientRemotes.requestTeleportToOilHeaven, -- sky-island rebirth plot
+	-- HUD `RebirthButton` now lands at the player's plot's
+	-- `RebirthTeleportTarget` Part (placed near Jesus2 + heavengate). Use
+	-- `RequestTeleportToOilHeaven` only via the heavengate world prompt —
+	-- the HUD button doesn't warp straight to the sky plot anymore.
+	RebirthButton = ClientRemotes.requestTeleportToRebirthTarget,
 }
 
 local HudTeleportRouter = {}
@@ -244,16 +248,12 @@ function HudTeleportRouter.start(playerGui: PlayerGui)
 				continue
 			end
 
-			-- Oil Heaven button: hidden until OilHeavenUnlocked attribute is true.
-			local ohBtn = findTrigger("RebirthButton")
-			if ohBtn and ohBtn:IsA("GuiObject") then
-				local function updateOHVisibility()
-					local unlocked = LocalPlayer:GetAttribute("OilHeavenUnlocked")
-					ohBtn.Visible = unlocked == true
-				end
-				updateOHVisibility()
-				LocalPlayer:GetAttributeChangedSignal("OilHeavenUnlocked"):Connect(updateOHVisibility)
-			end
+			-- RebirthButton is always visible now — the HUD teleport lands at
+			-- the player's `RebirthTeleportTarget` (next to Jesus2 + heavengate)
+			-- inside their own plot, not the sky plot, so first-timers need it
+			-- too in order to find Jesus2 and start their first rebirth.
+			-- Previously this was gated on `OilHeavenUnlocked` because the
+			-- button warped straight to the sky plot; that gate is gone.
 
 			started = true
 			if RunService:IsStudio() then

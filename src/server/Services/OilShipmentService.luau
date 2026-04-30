@@ -1537,6 +1537,11 @@ function OilShipmentService:Start()
 		self:_handleTeleportToOilHeaven(player)
 	end))
 
+	local teleportRebirthTarget = self._remoteService:GetEvent(RemoteNames.RequestTeleportToRebirthTarget)
+	table.insert(self._connections, teleportRebirthTarget.OnServerEvent:Connect(function(player)
+		self:_handleTeleportToRebirthTarget(player)
+	end))
+
 	table.insert(self._connections, self._plotService:OnPlotAssigned(function(userId: number, _plot: Model)
 		task.defer(function()
 			self:_refreshHeavenGateForUser(userId, true)
@@ -1724,6 +1729,35 @@ function OilShipmentService:_handleTeleportHome(player: Player, source: string?)
 			end)
 		end
 	end
+end
+
+--- HUD `RebirthButton` lands the player at their plot's
+--- `RebirthTeleportTarget` Part — placed near Jesus2 + heavengate as the
+--- "rebirth area" anchor. Uses the part's CFrame directly so the player
+--- spawns facing the same direction the part was authored at. Returns
+--- silently if the part is missing (warned once for diagnosis); no
+--- `OilActionResult` payload because the HUD button doesn't surface errors
+--- — it just no-ops when the plot isn't ready.
+function OilShipmentService:_handleTeleportToRebirthTarget(player: Player)
+	local character = player.Character
+	if not character then return end
+	local plot = self._plotService:GetOwnedPlot(player.UserId)
+	if not plot then return end
+	local target = plot:FindFirstChild("RebirthTeleportTarget")
+	if not (target and target:IsA("BasePart")) then
+		warn(string.format(
+			"[OilShipmentService] Plot %s has no RebirthTeleportTarget Part — HUD Rebirth button no-oped",
+			plot.Name
+		))
+		return
+	end
+	-- 5-stud lift mirrors the Home / Docks teleports so the player doesn't
+	-- spawn flush with the floor.
+	local targetCFrame = target.CFrame + Vector3.new(0, 5, 0)
+	removeHeavenAccessories(character)
+	CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportToRebirthTarget")
+	player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
+	self:_fireCameraSnap(player, targetCFrame)
 end
 
 function OilShipmentService:_handleTeleportToOilHeaven(player: Player)

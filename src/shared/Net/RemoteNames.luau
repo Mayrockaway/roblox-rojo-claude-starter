@@ -133,6 +133,12 @@ local RemoteNames = {
 	-- player's personal sky island at Y=3000 above their main plot.
 	-- Server generates the plot on first visit (`OilHeavenPlotService`).
 	RequestTeleportToOilHeaven = "RequestTeleportToOilHeaven",
+	-- Client → server: HUD `RebirthButton` teleports the player to their plot's
+	-- `RebirthTeleportTarget` Part (placed near Jesus2 + heavengate). Distinct
+	-- from `RequestTeleportToOilHeaven` (which fires from the heavengate
+	-- prompt and lands in the sky plot) — the HUD button now lands in the
+	-- player's main plot near the rebirth NPC instead of warping straight up.
+	RequestTeleportToRebirthTarget = "RequestTeleportToRebirthTarget",
 	-- Server → one client: Heaven drill reward flow (prompt success →
 	-- spinner payload, double-reward resolution).
 	HeavenRewardEvent = "HeavenRewardEvent",

@@ -134,6 +134,9 @@ Telemetry.SetWalletReader(function(player: Player, currency: string): number?
 	if currency == "cash" then
 		return OilStateService:GetCash(player.UserId)
 	end
+	if currency == "rebirth_tokens" then
+		return OilStateService:GetRebirthTokens(player.UserId)
+	end
 	return nil
 end)
 OilVisualService:Init(OilStateService, PlotService)

@@ -144,6 +144,20 @@ EventCatalog.Events = {
 	daily_reward_claimed    = { category = "custom",  gaCategory = "design",   sampleRate = 1.0 },
 	daily_reward_cash       = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
 
+	-- Rebirth (`OilStateService:Rebirth` + `RebirthShopService`). One custom
+	-- `rebirth_completed` event per successful rebirth (carries the new
+	-- rebirthCount, tokens granted, balance after) so the dashboard can answer
+	-- "rebirth distribution per player" and "how many tokens does the median
+	-- player accumulate over a session". The two `rebirth_tokens_*` rows are
+	-- the soft-currency flow on the `rebirth_tokens` currency — Source on the
+	-- cash → tokens conversion at rebirth time, Sink on shop purchase. Each
+	-- routes through `Telemetry.Economy` and the `endingBalance` is auto-
+	-- attached by the wallet reader (registered for `cash`; the rebirth
+	-- balance reader is registered alongside in `init.server.luau`).
+	rebirth_completed         = { category = "custom",  gaCategory = "design",   sampleRate = 1.0 },
+	rebirth_tokens_earned     = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
+	rebirth_tokens_spent      = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
+
 	--==========================================================================
 	-- 6.5 Strait / world events
 	--==========================================================================

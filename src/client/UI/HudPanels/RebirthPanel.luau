@@ -113,6 +113,65 @@ function RebirthPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelControll
 	-- session.
 	local cachedCash: number? = nil
 
+	---------------------------------------------------------------------------
+	-- Affordability chrome on the Rebirth Now button. We snapshot the
+	-- Studio-authored colors at bind time and blend toward grey when the
+	-- player can't afford one token. CtaSheen + AutoButtonColor are tied
+	-- off too so the button reads as inert. Click handler keeps its own
+	-- gate (the cash check + error toast) so this is purely visual.
+	local DISABLED_TINT = Color3.fromRGB(120, 120, 120)
+	local DISABLED_LERP = 0.65
+	local rebirthChromeAuthored: { bgColor: Color3, imgColor: Color3, textColor: Color3, ctaSheenVisible: boolean } = {
+		bgColor = Color3.fromRGB(255, 255, 255),
+		imgColor = Color3.fromRGB(255, 255, 255),
+		textColor = Color3.fromRGB(255, 255, 255),
+		ctaSheenVisible = true,
+	}
+	local rebirthTextLabel: TextLabel? = nil
+	local ctaSheen: GuiObject? = nil
+	if rebirthButton then
+		rebirthChromeAuthored.bgColor = rebirthButton.BackgroundColor3
+		if rebirthButton:IsA("ImageButton") then
+			rebirthChromeAuthored.imgColor = (rebirthButton :: ImageButton).ImageColor3
+		end
+		local txt = rebirthButton:FindFirstChild("Text")
+		if txt and txt:IsA("TextLabel") then
+			rebirthTextLabel = txt
+			rebirthChromeAuthored.textColor = txt.TextColor3
+		end
+		local sheen = rebirthButton:FindFirstChild("CtaSheen")
+		if sheen and sheen:IsA("GuiObject") then
+			ctaSheen = sheen
+			rebirthChromeAuthored.ctaSheenVisible = sheen.Visible
+		end
+	end
+
+	local function paintAffordability()
+		if not rebirthButton then return end
+		local cash = cachedCash or 0
+		local rate = RebirthShopConfig.CashPerToken
+		local affordable = cash >= rate
+		local target = if affordable
+			then rebirthChromeAuthored.bgColor
+			else rebirthChromeAuthored.bgColor:Lerp(DISABLED_TINT, DISABLED_LERP)
+		rebirthButton.BackgroundColor3 = target
+		if rebirthButton:IsA("ImageButton") then
+			local ib = rebirthButton :: ImageButton
+			ib.ImageColor3 = if affordable
+				then rebirthChromeAuthored.imgColor
+				else rebirthChromeAuthored.imgColor:Lerp(DISABLED_TINT, DISABLED_LERP * 0.6)
+			ib.AutoButtonColor = affordable
+		end
+		if rebirthTextLabel then
+			rebirthTextLabel.TextColor3 = if affordable
+				then rebirthChromeAuthored.textColor
+				else rebirthChromeAuthored.textColor:Lerp(DISABLED_TINT, DISABLED_LERP)
+		end
+		if ctaSheen then
+			ctaSheen.Visible = affordable and rebirthChromeAuthored.ctaSheenVisible
+		end
+	end
+
 	local function paintCashAndTokens()
 		local cash = cachedCash or 0
 		local rate = RebirthShopConfig.CashPerToken
@@ -123,6 +182,7 @@ function RebirthPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelControll
 		if tokenCount then
 			tokenCount.Text = formatWithCommas(tokens)
 		end
+		paintAffordability()
 	end
 
 	local function paintTokensBalance()

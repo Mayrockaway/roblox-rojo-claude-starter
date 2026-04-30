@@ -484,12 +484,17 @@ function OilHeavenPlotService:_applyLockState(plot: Model, userId: number)
 		end
 	end
 
-	-- Rebuild barriers
+	-- Section barriers were removed — the ForceField walls between rebirth-
+	-- gated tile sections were visually disruptive (always tinted green by
+	-- the ForceField material regardless of `BarrierColor`). We still nuke
+	-- any pre-existing `Barriers` folder on each refresh so plots cloned
+	-- from saves with the old barrier layout get cleaned up. `_buildBarriers`
+	-- is left below as dead code in case the gating visual returns later;
+	-- remove it if the design lands.
 	local oldBarriers = plot:FindFirstChild("Barriers")
 	if oldBarriers then
 		oldBarriers:Destroy()
 	end
-	self:_buildBarriers(plot, rebirthCount)
 end
 
 function OilHeavenPlotService:_applyTileRewardVisual(tile: BasePart, userId: number)

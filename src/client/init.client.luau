@@ -909,9 +909,16 @@ do
 		local char = player.Character
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
 		if hum then
-			hum.WalkSpeed = savedWalkSpeed or 16
-			hum.JumpHeight = savedJumpHeight or 7.2
-			hum.JumpPower = savedJumpPower or 50
+			--- Fallbacks read live `StarterPlayer.Character*` values rather than
+			--- hardcoded engine defaults (was 16 / 7.2 / 50). The project sets
+			--- `CharacterWalkSpeed = 35` in World Settings; restoring to 16 on
+			--- a missing save would snap the player to the engine default
+			--- instead of the project default. Read at call time so designer
+			--- changes in Studio are picked up without a code edit.
+			local StarterPlayer = game:GetService("StarterPlayer")
+			hum.WalkSpeed = savedWalkSpeed or StarterPlayer.CharacterWalkSpeed
+			hum.JumpHeight = savedJumpHeight or StarterPlayer.CharacterJumpHeight
+			hum.JumpPower = savedJumpPower or StarterPlayer.CharacterJumpPower
 		end
 		locked = false
 		savedWalkSpeed = nil
