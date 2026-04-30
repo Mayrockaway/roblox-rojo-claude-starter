@@ -15,6 +15,12 @@ local OilHeavenRewardClient = {}
 
 local started = false
 local currentDoubleItemId: string? = nil
+--- Controller returned by the most recent `VeinCrateOpener.OpenHeavenReward`.
+--- We hold it across the async Robux-prompt round-trip so when the
+--- `rewardDoubled` event lands we can call `setDoubled()` on the SAME open
+--- lootbox to render the " x2!" suffix + gold stamp on the winner card.
+--- Cleared when a new lootbox opens or when the player closes the current one.
+local currentLootboxController: { setDoubled: () -> () }? = nil
 local allRewards = HeavenRewardConfig.GetAllRewards()
 
 local function setHeavenStatus(message: string, ok: boolean?)
@@ -155,8 +161,9 @@ function OilHeavenRewardClient.start()
 			currentDoubleItemId = if typeof(payload.doubleItemId) == "string" then payload.doubleItemId else HeavenRewardConfig.DoubleRewardMonetizationItemId
 			local buttonText = string.format("2X REWARD - %d ROBUX", tonumber(payload.doublePriceRobux) or HeavenRewardConfig.DoubleRewardRobuxPrice)
 			local heavenRewardAck = remotes.heavenRewardAcknowledged :: RemoteEvent
-			VeinCrateOpener.OpenHeavenReward(payload.reward, allRewards, {
+			currentLootboxController = VeinCrateOpener.OpenHeavenReward(payload.reward, allRewards, {
 				onNext = function()
+					currentLootboxController = nil
 					heavenRewardAck:FireServer()
 				end,
 				onDoubleReward = function()
@@ -170,9 +177,18 @@ function OilHeavenRewardClient.start()
 		end
 
 		if payload.kind == "rewardDoubled" and typeof(payload.reward) == "table" then
+			-- Reveal lives on the lootbox itself, not the shared shipment-
+			-- status banner. The lootbox is still open at this point (the
+			-- player paid the Robux prompt while the lootbox sat behind the
+			-- modal) — `setDoubled()` appends " x2!" to the winner card text
+			-- and plants a gold "x2!" stamp on top. The world tile billboard
+			-- separately picks up the suffix via `RefreshUnlocks` on the
+			-- server, so the doubled state is visible both transiently
+			-- (lootbox) and persistently (world tile).
 			currentDoubleItemId = nil
-			local msg = "Heaven reward doubled: " .. tostring(payload.reward.displayText or "Bonus applied.")
-			setHeavenStatusLocked(msg, Color3.fromRGB(255, 215, 120), 4)
+			if currentLootboxController then
+				currentLootboxController.setDoubled()
+			end
 		end
 	end)
 

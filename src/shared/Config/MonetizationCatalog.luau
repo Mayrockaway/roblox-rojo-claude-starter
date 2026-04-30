@@ -499,15 +499,18 @@ MonetizationCatalog.Items = {
 		grant = { kind = "Consumable", consumable = { id = "cargo_hauler", quantity = 1 } },
 	},
 
-	-- Oil Heaven reward doubler. Phase 1 uses a placeholder `productId = 0`
-	-- until the real DevProduct exists in the Roblox dashboard. The
-	-- consumable handler reads the player's single pending Heaven reward and
-	-- applies the exact same amount once more.
+	-- Oil Heaven reward doubler. The 2x button on the Heaven reward lootbox
+	-- (`OilHeavenRewardClient` → `VeinCrateOpener.OpenHeavenReward`) prompts
+	-- this DevProduct. On a successful Robux receipt, `MonetizationService`
+	-- routes through `OilHeavenDrillService:SetMonetizationService`'s
+	-- `heaven_reward_x2` consumable handler, which calls
+	-- `OilStateService:ConsumePendingOilHeavenDoubleReward` to apply the
+	-- pending Heaven tile bonus once more to `oilHeavenState.bonusTotals`.
 	{
 		id = "consumable.heaven_reward_x2",
 		productKind = "DevProduct",
-		productId = 0,
-		robuxPrice = 100,
+		productId = 3583597749,
+		robuxPrice = 99,
 		displayName = "2x Heaven Reward",
 		subtitle = "Doubles your last Heaven tile bonus",
 		category = "Boosts",

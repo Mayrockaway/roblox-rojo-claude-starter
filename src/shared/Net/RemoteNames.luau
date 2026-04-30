@@ -144,6 +144,16 @@ local RemoteNames = {
 	HeavenRewardEvent = "HeavenRewardEvent",
 	-- Client → server: player activated the Rebirth Drill tool on a target.
 	RequestHeavenDrill = "RequestHeavenDrill",
+	-- Client → server: strip the angel-wings + halo accessories from the
+	-- player's character. Fired by `OilHeavenAmbient.transitionToMain` when
+	-- the SkyBox-bounds polling detects the player has physically exited
+	-- OilHeaven (typically by falling off a cloud edge) without going
+	-- through an explicit teleport remote. Without this signal the server
+	-- never gets told to remove the accessories — they were equipped by
+	-- `_handleTeleportToOilHeaven` and only the explicit teleport-out
+	-- handlers (`removeHeavenAccessories`) clear them. The remote takes no
+	-- payload; the server reads `player.Character` directly.
+	RequestRemoveHeavenAccessories = "RequestRemoveHeavenAccessories",
 	-- Client → server: lootbox dismissed — safe to show tile reward visual.
 	HeavenRewardAcknowledged = "HeavenRewardAcknowledged",
 

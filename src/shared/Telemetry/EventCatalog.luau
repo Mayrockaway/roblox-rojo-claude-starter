@@ -158,6 +158,22 @@ EventCatalog.Events = {
 	rebirth_tokens_earned     = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
 	rebirth_tokens_spent      = { category = "economy", gaCategory = "resource", sampleRate = 1.0 },
 
+	-- Oil Heaven tile drilling (`OilHeavenDrillService` + `OilStateService:ClaimOilHeavenRewardTile`).
+	-- One row per drilled tile so the dashboard can answer "what's the
+	-- distribution of category x rarity x rebirthRequired across all
+	-- drills?" — and trace per-tier conversion (drillers who hit S1 vs S5).
+	-- `heaven_tile_doubled` fires only when a player buys the 2x DevProduct
+	-- and the consumable handler resolves. The Robux receipt itself flows
+	-- through `monetization_purchased` for revenue tracking; this event
+	-- adds the gameplay-side context (which tile / category got doubled).
+	-- `heaven_drill_consumed` fires every time a rebirth drill is spent on
+	-- a tile drill (one per `ConsumeRebirthDrill` call). Useful for
+	-- per-session drill velocity vs the existing `rebirth_drills` attribute,
+	-- which only shows the wallet snapshot.
+	heaven_tile_drilled       = { category = "custom",  gaCategory = "design",   sampleRate = 1.0 },
+	heaven_tile_doubled       = { category = "custom",  gaCategory = "design",   sampleRate = 1.0 },
+	heaven_drill_consumed     = { category = "custom",  gaCategory = "design",   sampleRate = 1.0 },
+
 	--==========================================================================
 	-- 6.5 Strait / world events
 	--==========================================================================

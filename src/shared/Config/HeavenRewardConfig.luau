@@ -16,7 +16,7 @@ export type HeavenRewardDef = {
 local HeavenRewardConfig = {}
 
 HeavenRewardConfig.DoubleRewardMonetizationItemId = "consumable.heaven_reward_x2"
-HeavenRewardConfig.DoubleRewardRobuxPrice = 100
+HeavenRewardConfig.DoubleRewardRobuxPrice = 99
 
 HeavenRewardConfig.RebirthRequiredOrder = { 1, 3, 5, 7, 9 }
 HeavenRewardConfig.RarityOrder = { "Common", "Rare", "Epic", "Legendary", "Mythic" }
@@ -281,6 +281,31 @@ end
 function HeavenRewardConfig.BuildReward(category: HeavenRewardCategory, rarity: HeavenRewardRarity, rebirthRequired: number?): HeavenRewardDef
 	local resolvedRebirthRequired = normalizeRebirthRequired(rebirthRequired)
 	local amount = HeavenRewardConfig.ValuesByRebirthRequired[resolvedRebirthRequired][rarity][category]
+	return {
+		rewardId = rewardIdFor(category, rarity, resolvedRebirthRequired),
+		category = category,
+		rarity = rarity,
+		rebirthRequired = resolvedRebirthRequired,
+		amount = amount,
+		title = HeavenRewardConfig.CategoryDisplayNames[category],
+		displayText = displayTextFor(category, amount),
+	}
+end
+
+--- Build a reward with an EXPLICIT amount (skipping the rebirthRequired
+--- table lookup). Used by the doubler / cumulative-display paths where the
+--- desired amount doesn't come from the tier tables — e.g. when applying
+--- the same `pending.amount` again, or when the post-drilled tile billboard
+--- needs to show "original + doubled = 2x" as a single combined number.
+--- `rebirthRequired` is only used for the rewardId so the row stays
+--- unique on telemetry / event payloads; the lookup table is bypassed.
+function HeavenRewardConfig.BuildRewardFromAmount(
+	category: HeavenRewardCategory,
+	rarity: HeavenRewardRarity,
+	amount: number,
+	rebirthRequired: number?
+): HeavenRewardDef
+	local resolvedRebirthRequired = normalizeRebirthRequired(rebirthRequired)
 	return {
 		rewardId = rewardIdFor(category, rarity, resolvedRebirthRequired),
 		category = category,

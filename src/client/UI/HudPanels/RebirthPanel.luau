@@ -197,7 +197,7 @@ function RebirthPanel.bind(playerGui: PlayerGui): HudPanelTypes.HudPanelControll
 		local plr = Players.LocalPlayer
 		local count = plr and plr:GetAttribute(Constants.RebirthCountAttribute) or 0
 		if typeof(count) ~= "number" then count = 0 end
-		levelValue.Text = tostring(math.floor(count))
+		levelValue.Text = "Level " .. tostring(math.floor(count))
 	end
 
 	---------------------------------------------------------------------------

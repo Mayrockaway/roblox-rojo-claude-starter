@@ -155,6 +155,7 @@ RebirthShopService:SetWarehouseService(WarehouseService)
 RebirthShopService:SetDrillingService(DrillingService)
 RebirthShopService:SetEquipmentShopService(EquipmentShopService)
 RebirthShopService:SetOilShipmentService(OilShipmentService)
+RebirthShopService:SetOilHeavenPlotService(OilHeavenPlotService)
 OilHeavenPlotService:SetHeavenDrillService(OilHeavenDrillService)
 OilShipmentService:SetOilHeavenPlotService(OilHeavenPlotService)
 OilShipmentService:SetHitContractService(HitContractService)
@@ -230,6 +231,20 @@ OilStateService:SetStateReadyForTimersCallback(function(userId: number, drillDon
 	for _, done in ipairs(drillDone) do
 		FtueService:OnFtueTutorialDrillFinished(userId, done)
 	end
+	--- OilHeaven tile visuals (drilled-tile reward labels + locked-section
+	--- styling) need to run AFTER state has fully loaded. The `OnPlotAssigned`
+	--- listener in `OilHeavenPlotService` also calls `_applyLockState`, but
+	--- it fires in parallel with `OilStateService`'s own OnPlotAssigned
+	--- (which yields on a DataStore read) — so on rejoin, the heaven visuals
+	--- can run before `state.oilHeavenState` is populated, with the result
+	--- that previously-drilled tiles render with their default question-mark
+	--- visuals until the next refresh (e.g. after a rebirth). Calling
+	--- `RefreshUnlocks` here from inside the state-ready callback guarantees
+	--- the visual pass runs against a fully-loaded `oilHeavenState`. pcall'd
+	--- so a heaven-side bug can't break the regular drill replay above.
+	pcall(function()
+		OilHeavenPlotService:RefreshUnlocks(userId)
+	end)
 end)
 OilTankService:Init(RemoteService, OilStateService)
 ToolService:Init()
@@ -908,6 +923,7 @@ do
 				pcall(function() DrillingService:CancelDrillsForUser(player.UserId) end)
 				pcall(function() EquipmentShopService:ReconcileForUser(player) end)
 				pcall(function() OilShipmentService:CancelShipmentsForUser(player.UserId) end)
+				pcall(function() OilHeavenPlotService:RefreshUnlocks(player.UserId) end)
 				pcall(function() OilStateService:PushState(player.UserId) end)
 				print(string.format(
 					"[Dev] /rebirthnow %s -> rebirthCount=%d tokens=%d (+%d) drills=%d",

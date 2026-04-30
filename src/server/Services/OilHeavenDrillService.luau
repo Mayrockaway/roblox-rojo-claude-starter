@@ -83,6 +83,16 @@ function OilHeavenDrillService:SetMonetizationService(monetizationService: any)
 			lastReward = reward
 		end
 		self._oilStateService:PushState(userId)
+		-- Re-paint the world tile billboard against the cumulative reward
+		-- now stored in `tileRewards` (see `ConsumePendingOilHeavenDoubleReward`).
+		-- Without this the world tile keeps showing the original "+5.5%"
+		-- until the next refresh path runs (rebirth, plot reassign, state-
+		-- ready callback).
+		if self._oilHeavenPlotService and typeof(self._oilHeavenPlotService.RefreshUnlocks) == "function" then
+			pcall(function()
+				self._oilHeavenPlotService:RefreshUnlocks(userId)
+			end)
+		end
 		local player = Players:GetPlayerByUserId(userId)
 		if player and lastReward then
 			self._rewardEvent:FireClient(player, {

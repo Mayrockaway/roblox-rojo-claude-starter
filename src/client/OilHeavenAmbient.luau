@@ -11,6 +11,8 @@ local ContentProvider = game:GetService("ContentProvider")
 local Workspace = game:GetService("Workspace")
 
 local HeavenPillarFloat = require(script.Parent:WaitForChild("HeavenPillarFloat"))
+local OilHeavenWings = require(script.Parent:WaitForChild("OilHeavenWings"))
+local getClientRemotes = require(script.Parent:WaitForChild("GetClientRemotes")) :: () -> any
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
@@ -38,11 +40,24 @@ local HEAVEN_SKY_PROPS = {
 	SunTextureId = "rbxasset://sky/sun.jpg",
 }
 
+--- Lighting overrides applied while in OilHeaven. The project's
+--- `OutdoorAmbient = (221, 255, 225)` + neon-white clouds + bright skybox
+--- combine to wash out the scene; these values knock the overall exposure
+--- down to a more readable level without changing the heavenly aesthetic.
+--- Restored on exit so the main world keeps its authored look.
+local HEAVEN_LIGHTING_OVERRIDES = {
+	Brightness = 0.9,
+	ExposureCompensation = -0.25,
+	OutdoorAmbient = Color3.fromRGB(155, 165, 180),
+	EnvironmentDiffuseScale = 0.85,
+}
+
 local OilHeavenAmbient = {}
 
 local heavenSound: Sound? = nil
 local currentWorld: string = Constants.WorldMain
 local savedSkies: { Sky } = {}
+local savedLighting: { [string]: any } = {}
 local heavenVisualActive = false
 local boundsLoopToken = 0
 local preloadStarted = false
@@ -81,6 +96,37 @@ local function fadeSound(sound: Sound?, targetVolume: number, duration: number, 
 			sound.Playing = false
 		end
 	end)
+end
+
+--- Snapshot current Lighting properties + apply OilHeaven overrides. The
+--- snapshot lives across the whole heaven session and is restored verbatim
+--- on exit. Idempotent — re-entering heaven without exiting won't double-
+--- snapshot (we only save on the first transition into heaven).
+local function snapshotAndApplyLighting()
+	if next(savedLighting) ~= nil then
+		-- Already snapshotted — re-apply the overrides in case something
+		-- else (a strait event, a boat skin tween, etc.) clobbered them.
+		for prop, value in pairs(HEAVEN_LIGHTING_OVERRIDES) do
+			(Lighting :: any)[prop] = value
+		end
+		return
+	end
+	for prop, _ in pairs(HEAVEN_LIGHTING_OVERRIDES) do
+		savedLighting[prop] = (Lighting :: any)[prop]
+	end
+	for prop, value in pairs(HEAVEN_LIGHTING_OVERRIDES) do
+		(Lighting :: any)[prop] = value
+	end
+end
+
+local function restoreLighting()
+	if next(savedLighting) == nil then
+		return
+	end
+	for prop, value in pairs(savedLighting) do
+		(Lighting :: any)[prop] = value
+	end
+	table.clear(savedLighting)
 end
 
 local function snapshotAndClearCurrentSkies()
@@ -156,6 +202,12 @@ local function transitionToHeaven()
 	local mainBgm = getMainBgm()
 	local heavenBgm = getOrCreateHeavenBgm()
 	ensureHeavenSky()
+	snapshotAndApplyLighting()
+	-- Wings track the same bounds state as visuals + BGM. Activating here
+	-- (instead of in OilHeavenWings on world-attribute change) means falling
+	-- off the cloud edge cleanly removes wings — the bounds loop sees HRP
+	-- outside, calls transitionToMain, wings cleanup runs.
+	OilHeavenWings.activate()
 
 	-- Fade out main BGM
 	if mainBgm and mainBgm:IsA("Sound") and mainBgm.Playing then
@@ -176,6 +228,22 @@ local function transitionToMain()
 	local mainBgm = getMainBgm()
 	local heavenBgm = SoundService:FindFirstChild(HEAVEN_BGM_NAME) :: Sound?
 	restoreSavedSkies()
+	restoreLighting()
+	OilHeavenWings.cleanup()
+	-- Tell the server to strip the angel-wings + halo accessories so they
+	-- don't linger visually after the player has fallen out of bounds.
+	-- Explicit teleport-out paths (HUD Home button, ANGELGATE return prompt)
+	-- already remove accessories server-side; this fires for the falling-
+	-- off-the-edge case where no teleport remote runs. Idempotent on the
+	-- server (removeHeavenAccessories iterates and destroys; if there are
+	-- none to destroy it's a no-op). pcall'd so a remote-load failure
+	-- doesn't break the visual transition.
+	pcall(function()
+		local remotes = getClientRemotes()
+		if remotes and remotes.requestRemoveHeavenAccessories then
+			remotes.requestRemoveHeavenAccessories:FireServer()
+		end
+	end)
 
 	-- Fade out heaven BGM
 	if heavenBgm and heavenBgm:IsA("Sound") and heavenBgm.Playing then

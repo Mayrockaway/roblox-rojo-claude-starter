@@ -51,6 +51,7 @@ function RebirthShopService:Init(remoteService, oilStateService)
 	self._drillingService = nil :: any?
 	self._equipmentShopService = nil :: any?
 	self._oilShipmentService = nil :: any?
+	self._oilHeavenPlotService = nil :: any?
 end
 
 function RebirthShopService:SetWarehouseService(svc: any)
@@ -67,6 +68,10 @@ end
 
 function RebirthShopService:SetOilShipmentService(svc: any)
 	self._oilShipmentService = svc
+end
+
+function RebirthShopService:SetOilHeavenPlotService(svc: any)
+	self._oilHeavenPlotService = svc
 end
 
 function RebirthShopService:_sendActionResult(player: Player, ok: boolean, code: string, message: string, data: any?, action: string?)
@@ -205,6 +210,17 @@ function RebirthShopService:_handleRebirth(player: Player)
 	if self._oilShipmentService and typeof(self._oilShipmentService.CancelShipmentsForUser) == "function" then
 		pcall(function()
 			self._oilShipmentService:CancelShipmentsForUser(player.UserId)
+		end)
+	end
+	-- Refresh OilHeaven tile lock attributes against the new rebirth count.
+	-- Without this, workspace tiles keep their stale `Locked` attribute from
+	-- before the rebirth — `OilHeavenDrillService` reads that attribute at
+	-- drill-time and refuses with `ERR_HEAVEN_TILE_LOCKED` even though
+	-- `state.rebirthCount` is now high enough to unlock them. Mirrors the
+	-- `/rebirth` dev command flow.
+	if self._oilHeavenPlotService and typeof(self._oilHeavenPlotService.RefreshUnlocks) == "function" then
+		pcall(function()
+			self._oilHeavenPlotService:RefreshUnlocks(player.UserId)
 		end)
 	end
 

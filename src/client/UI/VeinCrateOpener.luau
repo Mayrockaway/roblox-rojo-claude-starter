@@ -814,11 +814,22 @@ function VeinCrateOpener.Open(winnerId: string, groundType: string, callback: ((
 	end)
 end
 
+--- The lootbox returns this controller so the caller can react to events
+--- that fire AFTER `OpenHeavenReward` returns — specifically, the
+--- `heavenRewardEvent` `kind = "rewardDoubled"` packet that lands when the
+--- player buys the 2x DevProduct. `setDoubled` updates the on-screen
+--- presentation: appends " x2!" to the winner card's reward text, plants a
+--- prominent gold "x2!" stamp over the winner card, and disables the 2x
+--- button (purchase is one-shot per drill).
+export type OpenHeavenRewardController = {
+	setDoubled: () -> (),
+}
+
 function VeinCrateOpener.OpenHeavenReward(
 	winnerReward: any,
 	allRewards: { any }?,
 	options: { onNext: (() -> ())?, onDoubleReward: (() -> ())?, doubleButtonText: string? }?
-)
+): OpenHeavenRewardController?
 	local existing = playerGui:FindFirstChild("VeinCrateGui")
 	if existing then existing:Destroy() end
 
@@ -827,7 +838,7 @@ function VeinCrateOpener.OpenHeavenReward(
 		if options and options.onNext then
 			options.onNext()
 		end
-		return
+		return nil
 	end
 
 	local pool = if typeof(allRewards) == "table" and #allRewards > 0 then allRewards else { winnerReward }
@@ -1141,6 +1152,67 @@ function VeinCrateOpener.OpenHeavenReward(
 			options.onNext()
 		end
 	end)
+
+	---------------------------------------------------------------------------
+	-- Controller exposed to the caller so it can react to the `rewardDoubled`
+	-- event AFTER this function has returned. setDoubled is idempotent — the
+	-- " x2!" suffix is only appended once via a string.find guard, and the 2x
+	-- button hides on first call.
+	---------------------------------------------------------------------------
+	local doubledApplied = false
+	local function setDoubled()
+		if doubledApplied or not gui.Parent then
+			return
+		end
+		doubledApplied = true
+
+		-- Append " x2!" to the winner card's reward text.
+		local winnerCard = cards[WINNER_INDEX]
+		if winnerCard and winnerCard.frame and winnerCard.frame.Parent then
+			local rewardLabel = winnerCard.frame:FindFirstChild("RewardText")
+			if rewardLabel and rewardLabel:IsA("TextLabel") then
+				local current = tostring(rewardLabel.Text or "")
+				if not string.find(current, " x2!", 1, true) then
+					rewardLabel.Text = current .. " x2!"
+				end
+			end
+		end
+
+		-- Plant a prominent gold "x2!" stamp on top of the winner card. Bumps
+		-- in via a Size tween so the eye catches it during the prompt-resolved
+		-- transition. Anchored centre + ZIndex above the card glow so it
+		-- reads cleanly.
+		if winnerCard and winnerCard.frame and winnerCard.frame.Parent then
+			local stamp = Instance.new("TextLabel")
+			stamp.Name = "DoubledStamp"
+			stamp.Size = UDim2.fromOffset(0, 0)
+			stamp.AnchorPoint = Vector2.new(0.5, 0.5)
+			stamp.Position = UDim2.fromScale(0.5, 0.5)
+			stamp.BackgroundTransparency = 1
+			stamp.Font = Enum.Font.GothamBlack
+			stamp.TextSize = 64
+			stamp.TextColor3 = Color3.fromRGB(255, 220, 90)
+			stamp.TextStrokeTransparency = 0
+			stamp.TextStrokeColor3 = Color3.fromRGB(80, 30, 0)
+			stamp.Rotation = -12
+			stamp.Text = "x2!"
+			stamp.ZIndex = 10
+			stamp.Parent = winnerCard.frame
+			TweenService:Create(
+				stamp,
+				TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+				{ Size = UDim2.fromOffset(120, 90) }
+			):Play()
+		end
+
+		-- 2x is one-shot — hide the button so the player can't re-trigger
+		-- the prompt for an already-doubled reward.
+		if doubleBtn then
+			doubleBtn.Visible = false
+		end
+	end
+
+	return { setDoubled = setDoubled }
 end
 
 return VeinCrateOpener

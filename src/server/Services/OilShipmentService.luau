@@ -89,9 +89,14 @@ local function computeHingedOpenGateCFrame(closedCf: CFrame, gateWidth: number, 
 	return rotateCFrameAboutWorldYAtPoint(closedCf, hingePoint, angleDeg)
 end
 
-local function setPromptLockedVisual(prompt: ProximityPrompt, unlocked: boolean)
-	prompt.ActionText = if unlocked then "Enter" else "Locked"
-	prompt.ObjectText = if unlocked then "Oil Heaven" else "Rebirth Required"
+local function setPromptLockedVisual(prompt: ProximityPrompt, _unlocked: boolean)
+	-- Heaven is always accessible now — even rebirth 0 players can enter to
+	-- preview what they'd unlock. The `unlocked` flag is kept on the
+	-- function signature because callers still pass it (and a future
+	-- "preview-only" gate could re-key off it without touching call sites),
+	-- but the visual is unconditionally the unlocked label.
+	prompt.ActionText = "Enter"
+	prompt.ObjectText = "Oil Heaven"
 end
 
 local function setPortalEnabled(portalPart: BasePart?, enabled: boolean)
@@ -1540,6 +1545,19 @@ function OilShipmentService:Start()
 	local teleportRebirthTarget = self._remoteService:GetEvent(RemoteNames.RequestTeleportToRebirthTarget)
 	table.insert(self._connections, teleportRebirthTarget.OnServerEvent:Connect(function(player)
 		self:_handleTeleportToRebirthTarget(player)
+	end))
+
+	-- Client-fired bounds-exit signal — see `RequestRemoveHeavenAccessories`
+	-- comment in RemoteNames. The handler is intentionally tiny: just strip
+	-- the accessories. No validation, no rate limit, no payload — worst case
+	-- a player exploits to remove their own accessories early, which is
+	-- purely cosmetic and has no gameplay impact.
+	local removeAccessoriesEvent = self._remoteService:GetEvent(RemoteNames.RequestRemoveHeavenAccessories)
+	table.insert(self._connections, removeAccessoriesEvent.OnServerEvent:Connect(function(player: Player)
+		local character = player.Character
+		if character then
+			removeHeavenAccessories(character)
+		end
 	end))
 
 	table.insert(self._connections, self._plotService:OnPlotAssigned(function(userId: number, _plot: Model)

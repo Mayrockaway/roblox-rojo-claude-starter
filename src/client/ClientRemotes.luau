@@ -118,6 +118,7 @@ export type ClientRemotes = {
 	requestTeleportToRebirthTarget: RemoteEvent,
 	heavenRewardEvent: RemoteEvent,
 	requestHeavenDrill: RemoteEvent,
+	requestRemoveHeavenAccessories: RemoteEvent,
 	heavenRewardAcknowledged: RemoteEvent,
 	--- Rebirth shop (`RebirthShopPanelGui`). `requestRebirthShopPurchase` is
 	--- the buy click; `requestRebirthShopSnapshot` is the open-time fetch for
@@ -206,6 +207,7 @@ local Remotes: ClientRemotes = {
 	requestTeleportToRebirthTarget = waitRemote(RemoteNames.RequestTeleportToRebirthTarget) :: RemoteEvent,
 	heavenRewardEvent = waitRemote(RemoteNames.HeavenRewardEvent) :: RemoteEvent,
 	requestHeavenDrill = waitRemote(RemoteNames.RequestHeavenDrill) :: RemoteEvent,
+	requestRemoveHeavenAccessories = waitRemote(RemoteNames.RequestRemoveHeavenAccessories) :: RemoteEvent,
 	heavenRewardAcknowledged = waitRemote(RemoteNames.HeavenRewardAcknowledged) :: RemoteEvent,
 	requestRebirthShopPurchase = waitRemote(RemoteNames.RequestRebirthShopPurchase) :: RemoteEvent,
 	requestRebirthShopSnapshot = waitRemote(RemoteNames.RequestRebirthShopSnapshot) :: RemoteFunction,

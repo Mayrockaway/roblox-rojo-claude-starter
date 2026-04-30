@@ -237,6 +237,12 @@ local function normalizePendingHeavenReward(raw: any)
 	}
 end
 
+--- Suffix appended to a tile reward's displayText after the player paid for
+--- the 2x doubler. Lives in the normalizer (not on the raw stored reward) so
+--- a future change to the suffix doesn't require re-saving every player's
+--- profile — the suffix is recomputed every time the reward is read.
+local DOUBLED_SUFFIX = " x2!"
+
 local function normalizeStoredHeavenReward(raw: any)
 	if typeof(raw) ~= "table" then
 		return nil
@@ -252,6 +258,17 @@ local function normalizeStoredHeavenReward(raw: any)
 	end)
 	if not ok or typeof(reward) ~= "table" then
 		return nil
+	end
+	-- Persist the `doubled` flag through normalization. `BuildReward` always
+	-- returns a fresh reward (no provenance), so without this the
+	-- "I paid for the doubler" signal is wiped on every read — that's the
+	-- bug that makes the world tile billboard keep showing the un-suffixed
+	-- "+5.5%" indefinitely. We append the suffix to the freshly-built
+	-- displayText here so callers see "+5.5% Ship Speed x2!" without having
+	-- to know about the flag.
+	if raw.doubled == true then
+		(reward :: any).doubled = true
+		reward.displayText = tostring(reward.displayText) .. DOUBLED_SUFFIX
 	end
 	return reward
 end
@@ -5286,6 +5303,27 @@ function OilStateService:ClaimOilHeavenRewardTile(userId: number, tileId: string
 		tileId = tileId,
 	}
 	self:_markDirty(userId)
+
+	-- Telemetry: one row per drilled tile so the dashboard can slice
+	-- category x rarity x rebirthRequired across the whole player base.
+	-- `bonusTotalsAfter` carries the post-application snapshot so we can
+	-- correlate "this drill" with the player's running stat without a
+	-- second query. pcall'd — telemetry pipeline failure must never
+	-- reverse a successful drill.
+	local plr = Players:GetPlayerByUserId(userId)
+	if plr then
+		pcall(function()
+			Telemetry.Track(plr, "heaven_tile_drilled", {
+				tileId = tileId,
+				category = reward.category,
+				rarity = reward.rarity,
+				rebirthRequired = reward.rebirthRequired,
+				amount = reward.amount,
+				bonusTotalsAfter = normalizeOilHeavenBonusTotals(currentOilHeavenState.bonusTotals),
+			})
+		end)
+	end
+
 	return true, "OK", reward.displayText, reward
 end
 
@@ -5302,11 +5340,64 @@ function OilStateService:ConsumePendingOilHeavenDoubleReward(userId: number): (b
 	if not pending then
 		return false, "ERR_NO_PENDING_HEAVEN_REWARD", nil
 	end
-	local reward = HeavenRewardConfig.BuildReward(pending.category, pending.rarity, pending.rebirthRequired)
-	self:_applyOilHeavenRewardToState(state, reward)
+	-- Apply the doubler: a second copy of the original tier amount lands on
+	-- bonusTotals (so the player's permanent stat goes from `amount` to
+	-- `2 * amount`).
+	local secondApplication = HeavenRewardConfig.BuildReward(pending.category, pending.rarity, pending.rebirthRequired)
+	self:_applyOilHeavenRewardToState(state, secondApplication)
+	-- `_applyOilHeavenRewardToState` calls `normalizeOilHeavenState(state.oilHeavenState)`
+	-- and reassigns `state.oilHeavenState`, so our local `oilHeavenState` now
+	-- points at the OLD (orphaned) table. Mutations on it (clearing the
+	-- pending pointer, stamping `doubled`) wouldn't reach the live state on
+	-- the next push. Re-bind to the fresh table before any further writes.
+	-- Same workaround `ClaimOilHeavenRewardTile` does — both call sites have
+	-- to live with this side-effect of the apply helper.
+	oilHeavenState = state.oilHeavenState
 	oilHeavenState.pendingDoubleReward = nil
+
+	-- Stamp the tile's stored reward with a `doubled` flag. The displayText
+	-- suffix (" x2!") is appended at read-time by `normalizeStoredHeavenReward`,
+	-- so we don't need to mutate displayText here — the next read picks up
+	-- the suffix automatically. This also means the flag survives the
+	-- DataStore round-trip without any new persisted field on the catalog
+	-- side: a `doubled = true` row in `tileRewards[tileId]` is preserved
+	-- through `normalizeOilHeavenState` and reproduced on load.
+	if pending.tileId then
+		local existing = oilHeavenState.tileRewards[pending.tileId]
+		if existing then
+			(existing :: any).doubled = true
+		end
+	end
+
 	self:_markDirty(userId)
-	return true, nil, reward
+
+	-- Telemetry: one row per doubler resolution. The Robux receipt is
+	-- separately tracked by `monetization_purchased`; this event adds the
+	-- gameplay-side context (which tile + category + cumulative bonus
+	-- after the doubler). pcall'd so a telemetry hiccup can't reverse the
+	-- already-applied doubler.
+	local plr = Players:GetPlayerByUserId(userId)
+	if plr then
+		pcall(function()
+			Telemetry.Track(plr, "heaven_tile_doubled", {
+				tileId = pending.tileId,
+				category = pending.category,
+				rarity = pending.rarity,
+				rebirthRequired = pending.rebirthRequired,
+				amountAdded = secondApplication.amount,
+				bonusTotalsAfter = normalizeOilHeavenBonusTotals(oilHeavenState.bonusTotals),
+			})
+		end)
+	end
+
+	-- Return a reward whose displayText already carries the " x2!" suffix
+	-- so the lootbox-resolve screen / any other immediate UI consumer can
+	-- render the badge without having to know about the flag. This event
+	-- reward is one-shot (not stored); it never goes through normalization.
+	local eventReward = HeavenRewardConfig.BuildReward(pending.category, pending.rarity, pending.rebirthRequired)
+	eventReward.displayText = tostring(eventReward.displayText) .. " x2!"
+	;(eventReward :: any).doubled = true
+	return true, nil, eventReward
 end
 
 --- Increments the rebirth counter by 1 and returns the new count.
@@ -5415,6 +5506,17 @@ function OilStateService:ConsumeRebirthDrill(userId: number): boolean
 	local plr = Players:GetPlayerByUserId(userId)
 	if plr then
 		plr:SetAttribute(Constants.RebirthDrillsAttribute, state.rebirthDrills)
+		-- Telemetry: per-consume event so analytics can compute per-session
+		-- drill velocity (vs the `rebirth_drills` attribute, which is just a
+		-- live wallet snapshot and not a stream of deltas). Emits the
+		-- post-decrement balance so the dashboard can derive "how often does
+		-- a player drill themselves down to zero?" pcall'd — telemetry must
+		-- never block a successful consume.
+		pcall(function()
+			Telemetry.Track(plr, "heaven_drill_consumed", {
+				drillsRemaining = state.rebirthDrills,
+			})
+		end)
 	end
 	return true
 end

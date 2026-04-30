@@ -39,7 +39,7 @@ RebirthShopConfig.Items = {
 		displayName = "Rebirth Drill",
 		description = "One-time-use drill for Oil Heaven tiles. Reveals a permanent rebirth boost (Ship Speed, Warehouse, Earnings, or Luck).",
 		heroGlyph = "⛏",
-		tokenCost = 1,
+		tokenCost = 2,
 		available = true,
 		grantsDrillCount = 1,
 	} :: RebirthShopItem,
