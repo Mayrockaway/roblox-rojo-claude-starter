@@ -2,13 +2,17 @@
 -- Continuous spatial pump-collect SFX.
 --
 -- Listens for `DrillProgressUpdate { kind = "pumpCollected", ownerUserId,
--- pumpId }` packets fired by `OilProductionService:_runTick` (one per
--- successfully-producing pump per tick). The first ping for a pump creates a
--- single looped, spatial `Sound` parented to the pump model under
+-- pumpIds = { ... } }` packets fired by `OilProductionService:_runTick` (one
+-- coalesced packet per player per tick carrying every pump that produced).
+-- The first ping for a pump creates a single looped, spatial `Sound` parented
+-- to the pump model under
 -- `Workspace.Map.Plots.<plot>.OilVisuals.Drills.Drill_<pumpId>`. Subsequent
 -- pings refresh a "last seen" timestamp; a Heartbeat-driven sweep tears the
 -- Sound down if the pump stops producing (no ping for `LIVENESS_TIMEOUT_SEC`),
 -- e.g. tank full, no drilled tiles, plot unloaded, pump destroyed.
+--
+-- Back-compat: legacy `{ pumpId = X }` (singular) payloads are still accepted
+-- so a half-deployed server doesn't break client SFX during the rollover.
 --
 -- Net effect: audio plays continuously while a pump is producing (as soon as
 -- the first tile is hooked up) and stops when production stops. No START/STOP
@@ -189,14 +193,35 @@ function PumpCollectSpatialSfx.start(drillProgressUpdate: RemoteEvent)
 			return
 		end
 		local ownerUserId = tonumber(data.ownerUserId)
-		local pumpId = tonumber(data.pumpId)
-		if not ownerUserId or not pumpId then
+		if not ownerUserId then
 			return
 		end
-		--- SFX-disabled: tear down any active loops for this packet's pump
-		--- so the user actually goes silent the moment they toggle SFX off
-		--- mid-session, not just on the next sweep cycle.
-		if not isSfxEnabled() then
+		local sfxOn = isSfxEnabled()
+		--- New coalesced shape: `pumpIds = { id, id, ... }`. Iterate and treat
+		--- each id the same way the legacy single-pumpId path did. Sweep loop
+		--- is unchanged — each `ensureLoop` refreshes the last-seen timestamp.
+		local pumpIdsRaw = data.pumpIds
+		if typeof(pumpIdsRaw) == "table" then
+			for _, raw in ipairs(pumpIdsRaw) do
+				local pumpId = tonumber(raw)
+				if pumpId then
+					if not sfxOn then
+						stopAndClear(pumpKey(ownerUserId, pumpId))
+					else
+						ensureLoop(ownerUserId, pumpId)
+					end
+				end
+			end
+			return
+		end
+		--- Legacy back-compat: a half-deployed server may still send
+		--- `pumpId = X`. Treat as a one-element list so the client behaves
+		--- identically to the new shape.
+		local pumpId = tonumber(data.pumpId)
+		if not pumpId then
+			return
+		end
+		if not sfxOn then
 			stopAndClear(pumpKey(ownerUserId, pumpId))
 			return
 		end

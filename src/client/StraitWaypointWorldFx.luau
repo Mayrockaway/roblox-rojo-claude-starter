@@ -3673,14 +3673,13 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 			local punchSession: any = nil
 
 			local lp = Players.LocalPlayer
-			local savedMinZoom: number? = nil
-			local savedMaxZoom: number? = nil
-			if lp then
-				savedMinZoom = lp.CameraMinZoomDistance
-				savedMaxZoom = lp.CameraMaxZoomDistance
-				lp.CameraMinZoomDistance = 0.5
-				lp.CameraMaxZoomDistance = 0.5
-			end
+			-- Forced first-person was removed — the original design clamped the
+			-- camera to 0.5 studs so the FirstPersonFists viewmodel was visible
+			-- during the punch flow, but players found it disorienting and
+			-- jarring to be yanked out of their preferred camera distance every
+			-- time a pirate raid fired. Punch input still works in any camera
+			-- mode (the overlay listens to mouse/touch independently); the
+			-- viewmodel just won't render in third-person, which is fine.
 
 			-- Per-pirate punch state (layered on top of the legacy flow)
 			local slappedSet: { [number]: boolean } = {}
@@ -4035,10 +4034,9 @@ function StraitWaypointWorldFx.OnPirateRaidPayload(data: { [string]: any })
 				punchSession:Disconnect()
 				punchSession = nil
 			end
-			if lp then
-				lp.CameraMinZoomDistance = savedMinZoom or 0.5
-				lp.CameraMaxZoomDistance = savedMaxZoom or 400
-			end
+			-- Camera zoom restore was removed alongside the forced-first-person
+			-- clamp at raid start — there's nothing to undo since we no longer
+			-- mutate the player's camera at all.
 
 			-- Report to server
 			if reportInteractiveResult then reportInteractiveResult() end

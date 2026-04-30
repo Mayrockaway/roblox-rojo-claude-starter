@@ -157,20 +157,21 @@ function OilProductionService:_runTick(deltaSeconds: number)
 			if pushHandle then
 				perf:CloseSpan("Production.push", pushHandle)
 			end
-			--- Fire one `pumpCollected` packet per pump that produced this tick
-			--- (after `ApplyProduction` confirmed at least some of the additions
-			--- persisted). Broadcast to all clients so visiting friends hear the
-			--- spatial audio with normal rolloff. The client treats the per-tick
-			--- stream as a heartbeat for a continuous looped Sound — see
-			--- `PumpCollectSpatialSfx` on the client.
-			if producingPumpIds and self._progressEvent then
-				for _, pumpId in ipairs(producingPumpIds) do
-					self._progressEvent:FireAllClients({
-						kind = "pumpCollected",
-						ownerUserId = userId,
-						pumpId = pumpId,
-					})
-				end
+			--- Fire ONE `pumpCollected` packet per player per tick carrying the
+			--- list of producing pumpIds, instead of N broadcasts of one pumpId
+			--- each. With P pumps × N players the old shape produced P×N
+			--- broadcasts/sec on the network, each delivered to every client —
+			--- a per-second stutter on every client even before they had any
+			--- pumps of their own. Coalescing collapses that to N packets/sec.
+			--- The client (`PumpCollectSpatialSfx`) iterates the `pumpIds`
+			--- array; legacy single-`pumpId` payloads are still accepted for
+			--- back-compat in case any callers haven't been migrated.
+			if producingPumpIds and self._progressEvent and #producingPumpIds > 0 then
+				self._progressEvent:FireAllClients({
+					kind = "pumpCollected",
+					ownerUserId = userId,
+					pumpIds = producingPumpIds,
+				})
 			end
 			-- Telemetry §6.4 `oil_pumped` (sample 0.05) — one row per
 			-- producing tick per user, aggregating barrel flow by tier.
