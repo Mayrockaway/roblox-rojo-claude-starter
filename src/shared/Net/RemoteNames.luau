@@ -142,6 +142,9 @@ local RemoteNames = {
 	-- Server → one client: Heaven drill reward flow (prompt success →
 	-- spinner payload, double-reward resolution).
 	HeavenRewardEvent = "HeavenRewardEvent",
+	-- Server → one client: flotsam crate claimed — payload:
+	-- { crateTier: string, reward: { kind, amount?, drillId?, qty?, oilType? } }
+	FlotsamCrateReward = "FlotsamCrateReward",
 	-- Client → server: player activated the Rebirth Drill tool on a target.
 	RequestHeavenDrill = "RequestHeavenDrill",
 	-- Client → server: strip the angel-wings + halo accessories from the

@@ -212,6 +212,7 @@ local Remotes: ClientRemotes = {
 	requestRebirthShopPurchase = waitRemote(RemoteNames.RequestRebirthShopPurchase) :: RemoteEvent,
 	requestRebirthShopSnapshot = waitRemote(RemoteNames.RequestRebirthShopSnapshot) :: RemoteFunction,
 	requestRebirth = waitRemote(RemoteNames.RequestRebirth) :: RemoteEvent,
+	flotsamCrateReward = waitRemote(RemoteNames.FlotsamCrateReward) :: RemoteEvent,
 }
 
 local devLogEvent = waitRemote(RemoteNames.DevLog) :: RemoteEvent

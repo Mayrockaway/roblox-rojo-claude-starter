@@ -26,12 +26,14 @@
 --- `EquipmentShopService:GrantFreeOwnedEquipment` is the canonical
 --- equipment grant API.
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local FlotsamConfig = require(Shared:WaitForChild("Config"):WaitForChild("FlotsamConfig"))
+local RemoteNames = require(Shared:WaitForChild("Net"):WaitForChild("RemoteNames"))
 local DevLog = require(Shared:WaitForChild("DevLog"))
 
 local FlotsamService = {}
@@ -40,10 +42,13 @@ type CrateInfo = {
 	model: Model,
 	position: Vector3,
 	spawnedAt: number,
+	templateName: string,
+	connection: RBXScriptConnection?,
 }
 
 function FlotsamService:Init(oilStateService)
 	self._oilStateService = oilStateService
+	self._straitStateService = nil
 	self._activeCrates = {} :: { [number]: CrateInfo }
 	self._nextCrateId = 1
 	self._connections = {} :: { RBXScriptConnection }
@@ -57,6 +62,36 @@ function FlotsamService:Init(oilStateService)
 	self._runtimeFolder = nil :: Folder?
 	self._rng = Random.new()
 	self._running = false
+	self._currentTargetCrates = FlotsamConfig.MaxActiveCrates
+end
+
+function FlotsamService:SetStraitStateService(straitStateService)
+	self._straitStateService = straitStateService
+end
+
+--- Roll a random crate count for the current strait state.
+function FlotsamService:_rollTargetCrateCount(): number
+	local state = "Open"
+	if self._straitStateService then
+		state = self._straitStateService:GetCurrentState() or "Open"
+	end
+	local range = FlotsamConfig.CrateCountRanges and FlotsamConfig.CrateCountRanges[state]
+	if range then
+		return self._rng:NextInteger(range.min, range.max)
+	end
+	return FlotsamConfig.MaxActiveCrates
+end
+
+function FlotsamService:SetEquipmentShopService(equipmentShopService)
+	self._equipmentShopService = equipmentShopService
+end
+
+function FlotsamService:SetWarehouseService(warehouseService)
+	self._warehouseService = warehouseService
+end
+
+function FlotsamService:SetRemoteService(remoteService)
+	self._remoteService = remoteService
 end
 
 function FlotsamService:Start()
@@ -87,6 +122,9 @@ function FlotsamService:Start()
 	self._runtimeFolder = folder
 
 	self._running = true
+	self._recycling = false
+	self._currentTargetCrates = self:_rollTargetCrateCount()
+	self._lastRecycledState = nil :: string? -- debounce: don't recycle if state didn't change
 
 	-- Maintenance loop: keeps `MaxActiveCrates` alive at all times. Lazily
 	-- tops up after pickups instead of pre-scheduling per-crate respawn
@@ -94,14 +132,49 @@ function FlotsamService:Start()
 	-- "swim, grab, swim back to next" pacing.
 	task.spawn(function()
 		while self._running do
-			self:_maintainSpawns()
+			if not self._recycling then
+				self:_maintainSpawns()
+			end
 			task.wait(FlotsamConfig.MaintenanceTickSeconds)
 		end
 	end)
 
+	-- Listen for strait state changes — despawn all crates (sink animation)
+	-- and respawn with new tier weights.
+	-- Record initial state so first broadcast doesn't trigger a recycle
+	self._lastRecycledState = self._straitStateService and self._straitStateService:GetCurrentState() or "Open"
+
+	if self._straitStateService then
+		self._straitStateService:OnStateChanged(function(snapshot)
+			local newState = snapshot and snapshot.state or "?"
+
+			-- Debounce: skip if state hasn't actually changed
+			if newState == self._lastRecycledState then
+				return
+			end
+			if self._recycling then
+				return
+			end
+
+			self._recycling = true
+			self._lastRecycledState = newState
+			self._currentTargetCrates = self:_rollTargetCrateCount()
+			DevLog.log("[FlotsamService] Strait changed to " .. tostring(newState) .. " — recycling. New target: " .. self._currentTargetCrates .. " crates.")
+
+			self:_destroyAllCrates()
+			task.wait(1)
+			self:_maintainSpawns()
+
+			local newCount = 0
+			for _ in pairs(self._activeCrates) do newCount += 1 end
+			DevLog.log("[FlotsamService] Recycle complete. Active crates: " .. newCount)
+			self._recycling = false
+		end)
+	end
+
 	DevLog.log(string.format(
 		"[FlotsamService] Started. Target crates: %d. Ocean center: %s",
-		FlotsamConfig.MaxActiveCrates, tostring(ocean.Position)))
+		self._currentTargetCrates, tostring(ocean.Position)))
 end
 
 ------------------------------------------------------------------------------
@@ -114,7 +187,7 @@ function FlotsamService:_maintainSpawns()
 		count += 1
 	end
 
-	local target = FlotsamConfig.MaxActiveCrates
+	local target = self._currentTargetCrates or FlotsamConfig.MaxActiveCrates
 	while count < target do
 		local ok = self:_spawnOneCrate()
 		if not ok then
@@ -127,15 +200,40 @@ function FlotsamService:_maintainSpawns()
 	end
 end
 
+--- Pick a crate tier based on the current strait state and configured weights.
+function FlotsamService:_rollCrateTier(): (string, string)
+	local state = "Open"
+	if self._straitStateService then
+		state = self._straitStateService:GetCurrentState() or "Open"
+	end
+	local weights = FlotsamConfig.CrateSpawnWeights[state] or FlotsamConfig.CrateSpawnWeights.Open
+	local tiers = FlotsamConfig.CrateTiers
+
+	local totalWeight = 0
+	for _, w in ipairs(weights) do
+		totalWeight += w
+	end
+	local pick = self._rng:NextNumber() * totalWeight
+	local acc = 0
+	for i, w in ipairs(weights) do
+		acc += w
+		if pick <= acc and tiers[i] then
+			return tiers[i].templateName, tiers[i].displayName
+		end
+	end
+	return tiers[1].templateName, tiers[1].displayName
+end
+
 function FlotsamService:_spawnOneCrate(): boolean
 	local position = self:_findRandomSpawnPoint()
 	if not position then
 		return false
 	end
 
-	local model = self:_buildCrateModel()
+	local templateName, displayName = self:_rollCrateTier()
+	local model = self:_buildCrateModel(templateName)
 	if not model then
-		warn("[FlotsamService] Failed to build crate model.")
+		warn("[FlotsamService] Failed to build crate model for " .. templateName)
 		return false
 	end
 
@@ -159,12 +257,11 @@ function FlotsamService:_spawnOneCrate(): boolean
 	-- the minimum viable loop — players see the prompt automatically because
 	-- the prompt instance replicates with the rest of the model.
 	local prompt = self:_attachProximityPrompt(model)
+	local promptConn: RBXScriptConnection? = nil
 	if prompt then
-		local conn
-		conn = prompt.Triggered:Connect(function(player)
+		promptConn = prompt.Triggered:Connect(function(player)
 			self:_handleClaim(crateId, player)
 		end)
-		table.insert(self._connections, conn)
 	end
 
 	model.Parent = self._runtimeFolder
@@ -173,10 +270,12 @@ function FlotsamService:_spawnOneCrate(): boolean
 		model = model,
 		position = position,
 		spawnedAt = workspace:GetServerTimeNow(),
+		templateName = templateName,
+		connection = promptConn,
 	}
 
 	if FlotsamConfig.VerboseLogging then
-		DevLog.log(string.format("[FlotsamService] Spawned crate %d at %s", crateId, tostring(position)))
+		DevLog.log(string.format("[FlotsamService] Spawned %s (crate %d) at %s", displayName, crateId, tostring(position)))
 	end
 	return true
 end
@@ -225,15 +324,36 @@ function FlotsamService:_findRandomSpawnPoint(): Vector3?
 	return nil
 end
 
---- Clone the designer-authored crate template if present, else build a
---- visible placeholder so the loop is testable without an asset.
-function FlotsamService:_buildCrateModel(): Model?
-	local template = ServerStorage:FindFirstChild("FlotsamCrateTemplate")
+--- Destroy all active crates instantly. Called on strait state change.
+function FlotsamService:_destroyAllCrates()
+	for _, info in pairs(self._activeCrates) do
+		if info.connection then
+			info.connection:Disconnect()
+		end
+		if info.model and info.model.Parent then
+			info.model:Destroy()
+		end
+	end
+	self._activeCrates = {}
+end
+
+--- Clone the named crate template from ServerStorage.FlotsamCrates.
+--- Falls back to old FlotsamCrateTemplate, then to a placeholder box.
+function FlotsamService:_buildCrateModel(templateName: string?): Model?
+	local name = templateName or "BaseCrate"
+
+	-- Primary: look in FlotsamCrates folder
+	local folder = ServerStorage:FindFirstChild("FlotsamCrates")
+	local template = folder and folder:FindFirstChild(name)
+
+	-- Fallback: legacy single-template location
+	if not template then
+		template = ServerStorage:FindFirstChild("FlotsamCrateTemplate")
+	end
+
 	if template and template:IsA("Model") then
 		local clone = template:Clone()
-		clone.Name = "FlotsamCrate"
-		-- Force-anchor every BasePart so the crate sits where we put it
-		-- (designers sometimes leave parts unanchored in the template).
+		clone.Name = "FlotsamCrate_" .. name
 		for _, d in ipairs(clone:GetDescendants()) do
 			if d:IsA("BasePart") then
 				d.Anchored = true
@@ -243,11 +363,9 @@ function FlotsamService:_buildCrateModel(): Model?
 		return clone
 	end
 
-	-- Placeholder: a single brown wood cube. Easy to spot in playtest, easy
-	-- to swap out later by dropping a Model into ServerStorage.
+	-- Placeholder: brown wood cube for testing
 	local model = Instance.new("Model")
 	model.Name = "FlotsamCrate_Placeholder"
-
 	local part = Instance.new("Part")
 	part.Name = "Crate"
 	part.Size = Vector3.new(4, 4, 4)
@@ -258,7 +376,6 @@ function FlotsamService:_buildCrateModel(): Model?
 	part.TopSurface = Enum.SurfaceType.Smooth
 	part.BottomSurface = Enum.SurfaceType.Smooth
 	part.Parent = model
-
 	model.PrimaryPart = part
 	return model
 end
@@ -269,8 +386,15 @@ function FlotsamService:_attachProximityPrompt(model: Model): ProximityPrompt?
 		return nil
 	end
 	local prompt = Instance.new("ProximityPrompt")
+	local tierInfo = nil
+	for _, t in ipairs(FlotsamConfig.CrateTiers) do
+		if model.Name == "FlotsamCrate_" .. t.templateName then
+			tierInfo = t
+			break
+		end
+	end
 	prompt.ActionText = "Open"
-	prompt.ObjectText = "Flotsam"
+	prompt.ObjectText = tierInfo and tierInfo.displayName or "Crate"
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
 	prompt.GamepadKeyCode = Enum.KeyCode.ButtonX
 	prompt.HoldDuration = FlotsamConfig.PromptHoldDuration
@@ -317,31 +441,44 @@ function FlotsamService:_handleClaim(crateId: number, player: Player)
 		end
 	end
 
-	-- Roll + grant
-	local reward = self:_rollReward()
+	-- Roll + grant using tier-specific reward table
+	local reward = self:_rollReward(info.templateName)
 	local granted = self:_grantReward(player, reward)
+
+	-- Fire client UI for the crate opening carousel
+	if granted then
+		self:_fireClientReward(player, info.templateName, reward)
+		-- Mark first crate claimed so the "FREE LOOT!" pointer never shows again
+		pcall(function()
+			self._oilStateService:MarkFlotsamCratePointerDone(player.UserId)
+		end)
+	end
 
 	if FlotsamConfig.VerboseLogging then
 		DevLog.log(string.format(
-			"[FlotsamService] Claimed crate %d by %s -> %s%s",
-			crateId, player.Name, self:_describeReward(reward),
+			"[FlotsamService] Claimed %s (crate %d) by %s -> %s%s",
+			info.templateName, crateId, player.Name, self:_describeReward(reward),
 			granted and "" or " (grant FAILED)"))
 	end
 
 	-- Despawn the crate. Maintenance loop will respawn a replacement.
+	if info.connection then
+		info.connection:Disconnect()
+	end
 	self._activeCrates[crateId] = nil
 	model:Destroy()
 end
 
---- Weighted-random pick from the configured reward table.
-function FlotsamService:_rollReward()
-	local rewards = FlotsamConfig.Rewards
+--- Weighted-random pick from the tier-specific reward table.
+function FlotsamService:_rollReward(templateName: string?)
+	local name = templateName or "BaseCrate"
+	local rewards = FlotsamConfig.Rewards[name] or FlotsamConfig.Rewards.BaseCrate
 	local totalWeight = 0
 	for _, r in ipairs(rewards) do
 		totalWeight += r.weight
 	end
 	if totalWeight <= 0 then
-		return rewards[1] -- defensive fallback
+		return rewards[1]
 	end
 	local pick = self._rng:NextNumber() * totalWeight
 	local acc = 0
@@ -360,21 +497,59 @@ function FlotsamService:_grantReward(player: Player, reward: any): boolean
 	local kind = reward.kind
 	if kind == "Cash" then
 		local amount = tonumber(reward.amount) or 0
-		if amount <= 0 then
-			return false
-		end
+		if amount <= 0 then return false end
 		self._oilStateService:AddCash(player.UserId, amount)
 		self._oilStateService:PushState(player.UserId)
 		return true
+	elseif kind == "Drill" then
+		if not self._equipmentShopService then
+			warn("[FlotsamService] EquipmentShopService not injected — cannot grant drill.")
+			return false
+		end
+		local drillId = reward.drillId
+		local qty = tonumber(reward.qty) or 1
+		self._equipmentShopService:GrantFreeOwnedEquipment(player, drillId, qty)
+		return true
+	elseif kind == "Oil" then
+		if not self._warehouseService then
+			warn("[FlotsamService] WarehouseService not injected — cannot grant oil.")
+			return false
+		end
+		local oilType = reward.oilType
+		local qty = tonumber(reward.qty) or 1
+		local manifest = { [oilType] = qty }
+		self._warehouseService:DeliverHitBarrels(player.UserId, manifest)
+		return true
 	end
-	-- Future: "Equipment" -> EquipmentShopService:GrantFreeOwnedEquipment, etc.
 	warn(string.format("[FlotsamService] Unknown reward kind %q — no grant performed.", tostring(kind)))
 	return false
+end
+
+--- Fire the client remote so the crate opener UI shows the reward.
+function FlotsamService:_fireClientReward(player: Player, crateTier: string, reward: any)
+	if not self._remoteService then
+		warn("[FlotsamService] _remoteService not injected — cannot fire client reward.")
+		return
+	end
+	local ok, err = pcall(function()
+		local event = self._remoteService:GetEvent(RemoteNames.FlotsamCrateReward)
+		event:FireClient(player, {
+			crateTier = crateTier,
+			reward = reward,
+		})
+	end)
+	if not ok then
+		warn("[FlotsamService] Failed to fire FlotsamCrateReward: " .. tostring(err))
+	end
 end
 
 function FlotsamService:_describeReward(reward: any): string
 	if reward.kind == "Cash" then
 		return string.format("$%d cash", tonumber(reward.amount) or 0)
+	elseif reward.kind == "Drill" then
+		return string.format("%dx %s", tonumber(reward.qty) or 1, tostring(reward.drillId))
+	elseif reward.kind == "Oil" then
+		return string.format("%dx %s oil", tonumber(reward.qty) or 1, tostring(reward.oilType))
 	end
 	return tostring(reward.kind)
 end

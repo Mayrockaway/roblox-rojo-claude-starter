@@ -484,6 +484,7 @@ local function buildDefaultPersisted()
 		--- for GamePasses). Once true, the auto-open never fires again for this
 		--- profile, so a paying customer is not nagged on every login.
 		robuxShopAutoOpenDismissed = false,
+		flotsamCratePointerDone = false,
 		--- Persisted per-profile set of `MonetizationCatalog` item ids that
 		--- were marketed as `oneTimePurchase = true` (e.g. the Featured
 		--- "Starter Pack" bundle) and have already been bought. Drives:
@@ -1679,6 +1680,7 @@ function OilStateService:GetStateForClient(userId: number)
 		--- flips it to `true` on the first successful Robux purchase via
 		--- `MonetizationService` → `OilStateService:MarkRobuxShopAutoOpenDismissed`.
 		robuxShopAutoOpenDismissed = (state :: any).robuxShopAutoOpenDismissed == true,
+		flotsamCratePointerDone = (state :: any).flotsamCratePointerDone == true,
 		--- Per-profile one-time-purchase set (e.g. Featured Starter Pack).
 		--- Drives `RobuxShopPanel`'s decision to hide the entire Featured
 		--- row once the buyer's flag is set; without this snapshot field
@@ -3500,6 +3502,8 @@ function OilStateService:_applyPersistedIntoState(state, persisted, plot: Model)
 		(state :: any).robuxShopAutoOpenDismissed = false
 	end
 
+	(state :: any).flotsamCratePointerDone = (pFtue :: any).flotsamCratePointerDone == true
+
 	-- One-time-purchase set (e.g. Featured Starter Pack). Same legacy-save
 	-- handling as `robuxShopAutoOpenDismissed` above: missing key == empty
 	-- set, so existing profiles can still buy any one-time SKU on next login.
@@ -4580,6 +4584,7 @@ function OilStateService:_serializeState(state)
 	(persisted :: any).ftueCompleted = (state :: any).ftueCompleted == true
 	(persisted :: any).ftueDoneScreenAcknowledged = (state :: any).ftueDoneScreenAcknowledged == true
 	(persisted :: any).robuxShopAutoOpenDismissed = (state :: any).robuxShopAutoOpenDismissed == true
+	(persisted :: any).flotsamCratePointerDone = (state :: any).flotsamCratePointerDone == true
 	-- Mirror the per-profile one-time-purchase set verbatim. Only string
 	-- keys with `true` values are kept (matches the load-side filter in
 	-- `_applyPersistedIntoState`). `nil` / `false` values are skipped so
@@ -4835,6 +4840,16 @@ end
 ---   * `PromptGamePassPurchaseFinished` when `wasPurchased == true` (GamePasses)
 --- Returns `true` if the flag was newly flipped this call (and a state push
 --- was queued), `false` otherwise (no state, or already dismissed).
+function OilStateService:MarkFlotsamCratePointerDone(userId: number): boolean
+	local state = self._statesByUserId[userId]
+	if not state then return false end
+	if (state :: any).flotsamCratePointerDone == true then return false end
+	(state :: any).flotsamCratePointerDone = true
+	self:_markDirty(userId)
+	pcall(function() self:PushState(userId) end)
+	return true
+end
+
 function OilStateService:MarkRobuxShopAutoOpenDismissed(userId: number): boolean
 	local state = self._statesByUserId[userId]
 	if not state then

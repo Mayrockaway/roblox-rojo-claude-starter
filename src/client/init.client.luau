@@ -1583,6 +1583,22 @@ DrillReplicationClient.connect({
 	VeinCrateOpener = VeinCrateOpener,
 })
 
+-- Flotsam crate reward: open carousel UI when server grants a crate reward.
+do
+	local FlotsamCrateOpener = require(script:WaitForChild("UI"):WaitForChild("FlotsamCrateOpener"))
+	local flotsamRemote = Remotes and Remotes.flotsamCrateReward
+	if flotsamRemote then
+		flotsamRemote.OnClientEvent:Connect(function(data)
+			if typeof(data) ~= "table" then return end
+			local crateTier = data.crateTier
+			local reward = data.reward
+			if crateTier and reward then
+				FlotsamCrateOpener.Open(crateTier, reward)
+			end
+		end)
+	end
+end
+
 -- Barrel pickup: listen for PickupPrompt ProximityPrompts that appear on conveyor barrels
 Workspace.DescendantAdded:Connect(function(descendant)
 	if descendant:IsA("ProximityPrompt") and descendant.Name == "PickupPrompt" then
