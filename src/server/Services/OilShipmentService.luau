@@ -1736,6 +1736,9 @@ function OilShipmentService:_handleTeleportHome(player: Player, source: string?)
 
 	if targetCFrame then
 		removeHeavenAccessories(character)
+		pcall(function()
+			player:RequestStreamAroundAsync(targetCFrame.Position)
+		end)
 		CharacterTeleport.teleportWithUnseat(character, targetCFrame, "RequestTeleportHome")
 		player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldMain)
 		self:_fireCameraSnap(player, targetCFrame)
@@ -1812,6 +1815,13 @@ function OilShipmentService:_handleTeleportToOilHeaven(player: Player)
 			setPortalEnabled(gateState.portal, true)
 		end
 	end
+
+	-- Pre-stream the heaven area so parts are loaded before the player arrives.
+	-- Without this, the client may not have geometry at Y≈10000 yet, causing
+	-- the player to fall through or see pop-in.
+	pcall(function()
+		player:RequestStreamAroundAsync(spawnCFrame.Position)
+	end)
 
 	CharacterTeleport.teleportWithUnseat(character, spawnCFrame, "RequestTeleportToOilHeaven")
 	player:SetAttribute(Constants.CurrentWorldAttribute, Constants.WorldOilHeaven)
@@ -1968,6 +1978,14 @@ function OilShipmentService:CancelShipmentsForUser(userId: number)
 	local shipmentId = self._activeShipmentByOwner[userId]
 	if not shipmentId then
 		return
+	end
+	-- Signal the voyage loop to abort. The loop captured ctx as a local,
+	-- so setting the flag on the shared table reaches it even after we
+	-- remove it from _shipmentContexts.
+	local ctx = self._shipmentContexts[shipmentId]
+	if ctx then
+		ctx._forceDestroyed = true
+		ctx._forceDestroyReason = "CancelShipmentsForUser"
 	end
 	self._activeShipmentByOwner[userId] = nil
 	self._shipmentContexts[shipmentId] = nil
@@ -6192,6 +6210,16 @@ function OilShipmentService:ForceDestroyShipment(shipmentId: string, reason: str
 	-- Set a flag that the voyage loop checks to abort
 	ctx._forceDestroyed = true
 	ctx._forceDestroyReason = reason or "External destruction"
+end
+
+function OilShipmentService:ForceAbortForUser(userId: number)
+	local shipmentId = self._activeShipmentByOwner[userId]
+	if not shipmentId then return end
+	local ctx = self._shipmentContexts[shipmentId]
+	if ctx then
+		ctx._forceDestroyed = true
+		ctx._forceDestroyReason = "Owner left server"
+	end
 end
 
 return OilShipmentService

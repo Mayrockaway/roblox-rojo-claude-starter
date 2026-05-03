@@ -360,6 +360,10 @@ function BoatDockService:Init(remoteService, oilStateService)
 	self:_discoverSlots()
 end
 
+function BoatDockService:SetOilShipmentService(oilShipmentService)
+	self._oilShipmentService = oilShipmentService
+end
+
 function BoatDockService:_discoverSlots()
 	local docks = getDocksRoot()
 	if not docks then
@@ -1491,10 +1495,29 @@ function BoatDockService:_onPlayerRemoving(player: Player)
 
 	local st = self._stateByUser[userId]
 	if st == "sailing" then
-		-- Voyage owns the model; it will destroy at CheckinBoat. Just drop table refs.
+		-- Signal the voyage loop to abort so it exits promptly.
+		if self._oilShipmentService then
+			pcall(function()
+				self._oilShipmentService:ForceAbortForUser(userId)
+			end)
+		end
+		-- Safety net: force-destroy if still in world after 10s.
+		local boatRef = self._boatsByUser[userId]
 		self._boatsByUser[userId] = nil
 		self._stateByUser[userId] = nil
 		self._cooldownEnds[userId] = nil
+		if boatRef then
+			task.delay(10, function()
+				if boatRef.Parent then
+					pcall(function()
+						for _, desc in ipairs(boatRef:GetDescendants()) do
+							if desc:IsA("BasePart") then desc:Destroy() end
+						end
+						boatRef:Destroy()
+					end)
+				end
+			end)
+		end
 		return
 	end
 	-- idle | cooldown | swapping — destroy now (if a boat is present).
@@ -1527,6 +1550,40 @@ function BoatDockService:Start()
 			end)
 		end
 	end
+
+	-- Periodic GC: destroy orphaned boats whose owner is offline.
+	task.spawn(function()
+		while true do
+			task.wait(30)
+			self:_gcSweepOrphanedBoats()
+		end
+	end)
+end
+
+function BoatDockService:_gcSweepOrphanedBoats()
+	local ok, boatsFolder = pcall(function() return self:_ensureBoatsFolder() end)
+	if not ok or not boatsFolder then return end
+	for _, child in ipairs(boatsFolder:GetChildren()) do
+		if not child:IsA("Model") then continue end
+		local ownerUserId = child:GetAttribute("OwnerUserId")
+		if not ownerUserId then
+			-- Untagged model in boats folder — destroy.
+			pcall(function() child:Destroy() end)
+			continue
+		end
+		-- Owner is online — boat is managed by the normal lifecycle.
+		if Players:GetPlayerByUserId(ownerUserId) then continue end
+		-- Owner is offline but we still track the boat (safety-net delay may be running).
+		if self._boatsByUser[ownerUserId] then continue end
+		-- Orphan: owner offline, not tracked. Destroy.
+		warn(string.format("[BoatDockService GC] Destroying orphaned boat for offline userId=%d", ownerUserId))
+		pcall(function()
+			for _, desc in ipairs(child:GetDescendants()) do
+				if desc:IsA("BasePart") then desc:Destroy() end
+			end
+			child:Destroy()
+		end)
+	end
 end
 
 function BoatDockService:Stop()
@@ -1536,6 +1593,13 @@ function BoatDockService:Stop()
 	self._connections = {}
 	for userId, _ in pairs(self._boatsByUser) do
 		self:_destroyBoat(userId)
+	end
+	-- Sweep the folder for any untracked stragglers.
+	local ok, boatsFolder = pcall(function() return self:_ensureBoatsFolder() end)
+	if ok and boatsFolder then
+		for _, child in ipairs(boatsFolder:GetChildren()) do
+			pcall(function() child:Destroy() end)
+		end
 	end
 	self._slotsByIndex = {}
 	self._slotOwner = {}

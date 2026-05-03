@@ -185,6 +185,7 @@ local function reshapeTileGrid(plot: Model)
 				end
 			end
 		end
+
 	end
 end
 

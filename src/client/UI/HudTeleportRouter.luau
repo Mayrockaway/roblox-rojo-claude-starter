@@ -208,7 +208,7 @@ function HudTeleportRouter.start(playerGui: PlayerGui)
 				return nil
 			end
 
-			local function wireTrigger(btn: GuiButton, remote: RemoteEvent)
+			local function wireTrigger(btn: GuiButton, remote: RemoteEvent, buttonName: string)
 				passthroughDecorationsToTrigger(btn)
 				local armed = false
 				local function onPress()
@@ -236,7 +236,7 @@ function HudTeleportRouter.start(playerGui: PlayerGui)
 					warn("[Client] HudTeleportRouter: missing button", buttonName)
 					continue
 				end
-				wireTrigger(btn, remote)
+				wireTrigger(btn, remote, buttonName)
 				wired += 1
 			end
 

@@ -36,6 +36,8 @@ local OPENS_PANEL_ATTR = "OpensPanel"
 --- `RebirthButton` uses (see `HudTeleportRouter.luau`). Mutually exclusive
 --- with `OpensPanel` — opening a panel and teleporting at the same time is
 --- almost never what you want, so we short-circuit on the panel path first.
+local TeleportFade = require(script.Parent:WaitForChild("TeleportFade"))
+local gateFadePending = false
 local TELEPORT_OIL_HEAVEN_ATTR = "TeleportsToOilHeaven"
 --- Symmetric attribute for return-to-home teleports — wired on the OilHeaven
 --- ANGELGATE so a player in their sky plot can step through to teleport
@@ -54,6 +56,19 @@ function ProximityPanelOpener.start()
 	end
 	started = true
 
+	-- Fade from black when server confirms a gate teleport completed.
+	local remotes = getClientRemotes()
+	if remotes and remotes.teleportHomeApplied then
+		remotes.teleportHomeApplied.OnClientEvent:Connect(function()
+			if gateFadePending then
+				gateFadePending = false
+				task.spawn(function()
+					TeleportFade.fadeFromBlack()
+				end)
+			end
+		end)
+	end
+
 	ProximityPromptService.PromptTriggered:Connect(function(prompt: ProximityPrompt, playerWhoTriggered: Player)
 		if playerWhoTriggered ~= Players.LocalPlayer then
 			return
@@ -64,14 +79,22 @@ function ProximityPanelOpener.start()
 		if prompt:GetAttribute(TELEPORT_OIL_HEAVEN_ATTR) == true then
 			local remotes = getClientRemotes()
 			if remotes and remotes.requestTeleportToOilHeaven then
-				remotes.requestTeleportToOilHeaven:FireServer()
+				task.spawn(function()
+					TeleportFade.fadeToBlack()
+					gateFadePending = true
+					remotes.requestTeleportToOilHeaven:FireServer()
+				end)
 			end
 			return
 		end
 		if prompt:GetAttribute(TELEPORT_HOME_ATTR) == true then
 			local remotes = getClientRemotes()
 			if remotes and remotes.requestTeleportHome then
-				remotes.requestTeleportHome:FireServer("gate")
+				task.spawn(function()
+					TeleportFade.fadeToBlack()
+					gateFadePending = true
+					remotes.requestTeleportHome:FireServer("gate")
+				end)
 			end
 			return
 		end

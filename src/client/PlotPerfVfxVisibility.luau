@@ -75,7 +75,6 @@ local function refreshPlot(plot: Instance)
 
 	local barrels = visuals:FindFirstChild("Barrels")
 	local sprays = visuals:FindFirstChild("OilSprays")
-	local drills = visuals:FindFirstChild("Drills")
 	local activeDrills = visuals:FindFirstChild("ActiveDrills")
 
 	if barrels then
@@ -90,9 +89,9 @@ local function refreshPlot(plot: Instance)
 		end
 	end
 
-	if drills then
-		applyBranchVisibility(drills, visible)
-	end
+	-- Static pumps (Drills folder) are NOT toggled — they're inert meshes
+	-- with zero per-frame cost. Players upgrade these; hiding them just
+	-- makes the plot look broken for no FPS benefit.
 
 	if activeDrills then
 		applyBranchVisibility(activeDrills, visible)
@@ -127,7 +126,7 @@ end
 local function isManagedHeavyVfxInstance(inst: Instance): boolean
 	local cursor: Instance? = inst
 	while cursor and cursor ~= plotsFolder do
-		if cursor.Name == "Barrels" or cursor.Name == "Drills" or cursor.Name == "ActiveDrills" then
+		if cursor.Name == "Barrels" or cursor.Name == "ActiveDrills" then
 			return true
 		end
 		if cursor:IsA("Folder") and cursor.Name:sub(1, 8) == "OilTube_" then

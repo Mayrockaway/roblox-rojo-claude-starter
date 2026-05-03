@@ -19,8 +19,8 @@ local MY_PLOT_VFX_ROW_NAME = "MyPlotVfxRow"
 local MY_PLOT_VFX_TITLE = "My Plot FX"
 local MY_PLOT_VFX_DESC = "Show my tubes and conveyor"
 local OTHER_PLAYERS_VFX_ROW_NAME = "OtherPlayersPlotVfxRow"
-local OTHER_PLAYERS_VFX_TITLE = "Other Players Plot FX"
-local OTHER_PLAYERS_VFX_DESC = "Show other players' tubes and conveyor"
+local OTHER_PLAYERS_VFX_TITLE = "Lite Mode"
+local OTHER_PLAYERS_VFX_DESC = "Reduce visuals for better FPS"
 local TOGGLE_ROW_WIRED_ATTR = "SettingsToggleRowWired"
 
 local clickDebugConnection: RBXScriptConnection? = nil
@@ -658,13 +658,14 @@ local function wireSettingsToggles(screen: ScreenGui)
 
 	local otherPlayersVfxRow = resolveOtherPlayersPlotVfxRow(screen)
 	if otherPlayersVfxRow then
+		-- "Lite Mode" toggle: ON = reduced visuals (other players VFX off + shadows/post-processing off)
 		wireToggleRow(otherPlayersVfxRow, function()
-			return ClientPlotVfxPreferences.isOtherPlayersPlotVfxEnabled()
+			return not ClientPlotVfxPreferences.isOtherPlayersPlotVfxEnabled()
 		end, function(on: boolean)
-			ClientPlotVfxPreferences.setOtherPlayersPlotVfxEnabled(on)
+			ClientPlotVfxPreferences.setOtherPlayersPlotVfxEnabled(not on)
 		end)
 	else
-		warn("[SettingsPanel] Could not find authored OtherPlayersPlotVfxRow.")
+		warn("[SettingsPanel] Could not find authored OtherPlayersPlotVfxRow (Lite Mode).")
 	end
 
 	local myPlotVfxRow = resolveMyPlotVfxRow(screen)

@@ -753,6 +753,12 @@ local function startHudModalWiring()
 			ProximityPanelOpener.start()
 		end
 
+		-- Performance Mode: apply rendering changes based on choice made during loading screen.
+		task.spawn(function()
+			local PerformanceModeApply = require(script:WaitForChild("PerformanceModeApply"))
+			PerformanceModeApply.start()
+		end)
+
 		local freeDrillMod = uiFolder:FindFirstChild("FreeDailyDrillController")
 		if freeDrillMod and freeDrillMod:IsA("ModuleScript") then
 			local FreeDailyDrillController = require(freeDrillMod) :: { start: (PlayerGui) -> () }

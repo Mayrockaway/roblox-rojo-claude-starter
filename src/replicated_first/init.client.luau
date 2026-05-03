@@ -7,6 +7,7 @@ local ContentProvider = game:GetService("ContentProvider")
 local TweenService = game:GetService("TweenService")
 local SoundService = game:GetService("SoundService")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local LoadingManifest = require(Shared:WaitForChild("Config"):WaitForChild("LoadingManifest"))
@@ -542,6 +543,154 @@ local function runGroup(
 	return failureCount, missingOptional
 end
 
+--- Performance Mode: prompt shown over the splash screen while loading runs behind it.
+--- Loading continues in the background; screen holds at 100% until a choice is made.
+local perfModeChosen = player:GetAttribute("PerformanceModeChosen") == true
+task.spawn(function()
+	local PERF_CHOSEN_ATTR = "PerformanceModeChosen"
+	local OTHER_PLAYERS_ATTR = "OtherPlayersPlotVfxEnabled"
+	if not perfModeChosen then
+		local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+		local promptGui = Instance.new("ScreenGui")
+		promptGui.Name = "PerfModePromptGui"
+		promptGui.DisplayOrder = 1_000_001
+		promptGui.IgnoreGuiInset = true
+		promptGui.ResetOnSpawn = false
+		promptGui.Parent = playerGui
+
+		-- Semi-transparent tint over the loading screen
+		local tint = Instance.new("Frame")
+		tint.Name = "Tint"
+		tint.Size = UDim2.fromScale(1, 1)
+		tint.BackgroundColor3 = Color3.new(0, 0, 0)
+		tint.BackgroundTransparency = 0.4
+		tint.BorderSizePixel = 0
+		tint.Parent = promptGui
+
+		-- Title text floating over the tint
+		local title = Instance.new("TextLabel")
+		title.Name = "Title"
+		title.Size = UDim2.new(1, 0, 0, 36)
+		title.Position = UDim2.new(0, 0, 0.35, 0)
+		title.AnchorPoint = Vector2.new(0, 0)
+		title.BackgroundTransparency = 1
+		title.Font = Enum.Font.GothamBold
+		title.TextSize = 26
+		title.TextColor3 = Color3.new(1, 1, 1)
+		title.Text = "Choose Your Experience"
+		title.Parent = promptGui
+
+		local titleStroke = Instance.new("UIStroke")
+		titleStroke.Color = Color3.new(0, 0, 0)
+		titleStroke.Thickness = 1.5
+		titleStroke.Transparency = 0.3
+		titleStroke.Parent = title
+
+		-- Subtitle
+		local sub = Instance.new("TextLabel")
+		sub.Name = "Sub"
+		sub.Size = UDim2.new(1, 0, 0, 20)
+		sub.Position = UDim2.new(0, 0, 0.35, 40)
+		sub.BackgroundTransparency = 1
+		sub.Font = Enum.Font.Gotham
+		sub.TextSize = 14
+		sub.TextColor3 = Color3.fromRGB(200, 200, 200)
+		sub.Text = "You can change this anytime in Settings."
+		sub.Parent = promptGui
+
+		-- Pill buttons centered below text
+		local btnContainer = Instance.new("Frame")
+		btnContainer.Name = "Buttons"
+		btnContainer.Size = UDim2.new(0, 320, 0, 50)
+		btnContainer.Position = UDim2.new(0.5, 0, 0.35, 80)
+		btnContainer.AnchorPoint = Vector2.new(0.5, 0)
+		btnContainer.BackgroundTransparency = 1
+		btnContainer.Parent = promptGui
+
+		local layout = Instance.new("UIListLayout")
+		layout.FillDirection = Enum.FillDirection.Horizontal
+		layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		layout.Padding = UDim.new(0, 20)
+		layout.Parent = btnContainer
+
+		local function makePill(name: string, desc: string, color: Color3): TextButton
+			local btn = Instance.new("TextButton")
+			btn.Name = name
+			btn.Size = UDim2.new(0, 150, 0, 56)
+			btn.BackgroundColor3 = color
+			btn.BackgroundTransparency = 0
+			btn.BorderSizePixel = 0
+			btn.Font = Enum.Font.GothamBold
+			btn.TextSize = 18
+			btn.TextColor3 = Color3.new(1, 1, 1)
+			btn.Text = ""
+			btn.AutoButtonColor = true
+			btn.Parent = btnContainer
+
+			Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 28)
+
+			local btnStroke = Instance.new("UIStroke")
+			btnStroke.Color = Color3.new(1, 1, 1)
+			btnStroke.Transparency = 0.7
+			btnStroke.Thickness = 1
+			btnStroke.Parent = btn
+
+			local nameLabel = Instance.new("TextLabel")
+			nameLabel.Name = "NameLabel"
+			nameLabel.Size = UDim2.new(1, 0, 0, 22)
+			nameLabel.Position = UDim2.new(0, 0, 0, 10)
+			nameLabel.BackgroundTransparency = 1
+			nameLabel.Font = Enum.Font.GothamBold
+			nameLabel.TextSize = 18
+			nameLabel.TextColor3 = Color3.new(1, 1, 1)
+			nameLabel.Text = name
+			nameLabel.Parent = btn
+
+			local d = Instance.new("TextLabel")
+			d.Name = "Desc"
+			d.Size = UDim2.new(1, 0, 0, 14)
+			d.Position = UDim2.new(0, 0, 0, 34)
+			d.BackgroundTransparency = 1
+			d.Font = Enum.Font.Gotham
+			d.TextSize = 12
+			d.TextColor3 = Color3.new(1, 1, 1)
+			d.TextTransparency = 0.25
+			d.Text = desc
+			d.Parent = btn
+
+			return btn
+		end
+
+		local stdBtn = makePill("Standard", "Full visuals", Color3.fromRGB(50, 120, 200))
+		local liteBtn = makePill("Lite", "Better FPS", Color3.fromRGB(40, 170, 80))
+
+		if isMobile then
+			local highlight = liteBtn:FindFirstChildOfClass("UIStroke")
+			if highlight then
+				highlight.Transparency = 0
+				highlight.Thickness = 2
+			end
+		end
+
+		local chosen: string? = nil
+		local c1 = stdBtn.Activated:Connect(function() chosen = "standard" end)
+		local c2 = liteBtn.Activated:Connect(function() chosen = "lite" end)
+
+		while chosen == nil do
+			task.wait()
+		end
+
+		c1:Disconnect()
+		c2:Disconnect()
+		promptGui:Destroy()
+
+		player:SetAttribute(OTHER_PLAYERS_ATTR, chosen == "standard")
+		player:SetAttribute(PERF_CHOSEN_ATTR, true)
+	end
+	perfModeChosen = true
+end)
+
 startBgmAsync()
 setProgress("Starting...", 0)
 
@@ -615,6 +764,11 @@ while currentRatio < 0.999 and os.clock() < barDeadline do
 end
 
 task.wait(FINAL_GRACE_SECONDS)
+
+-- Hold at 100% until player has chosen a performance mode.
+while not perfModeChosen do
+	task.wait(0.05)
+end
 
 if progressLoopThread then
 	pcall(task.cancel, progressLoopThread)

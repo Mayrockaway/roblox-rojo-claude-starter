@@ -26,15 +26,23 @@ local savedJumpHeight: number? = nil
 local DOUBLE_JUMP_POWER = 110
 local GLIDE_FALL_SPEED = -6
 local GLIDE_FORWARD_BOOST = 20
+local IS_MOBILE = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 --- Heaven gives a 10% jump-height boost on top of `StarterPlayer.CharacterJumpHeight`.
 --- Saved at activate-time so cleanup restores the player's authored value
 --- (in case the project's StarterPlayer setting changes mid-session).
 local HEAVEN_JUMP_HEIGHT_MULTIPLIER = 1.1
 -- WALK_SPEED_BOOST / NORMAL_WALK_SPEED were removed. WalkSpeed now stays at
 -- whatever `StarterPlayer.CharacterWalkSpeed` sets (default 16) regardless of
--- world. The wings mechanic (double jump + glide) is independent of WalkSpeed —
--- it uses `JumpRequest` + `BodyVelocity`, not movement speed — so removing the
+-- world. The wings mechanic (double jump + glide) is independent of WalkSpeed -
+-- it uses `JumpRequest` + `BodyVelocity`, not movement speed - so removing the
 -- per-world override doesn't change flight feel.
+
+--- Returns true if the jump/glide button is held (desktop Space or mobile jump button).
+local function isJumpHeld(humanoid: Humanoid?): boolean
+	if UserInputService:IsKeyDown(Enum.KeyCode.Space) then return true end
+	-- On mobile, the jump button sets humanoid.Jump to true while held.
+	return humanoid ~= nil and humanoid.Jump == true
+end
 
 local function createWings(character: Model)
 	-- Visual wings are now handled by server-side Angel accessories
@@ -54,7 +62,7 @@ local function removeWings()
 	end
 end
 
-local function stopGlide()
+local function stopGlide(source: string?)
 	if glideForce then
 		glideForce:Destroy()
 		glideForce = nil
@@ -63,7 +71,9 @@ local function stopGlide()
 end
 
 local function startGlide(hrp: BasePart)
-	if isGliding then return end
+	if isGliding then
+		return
+	end
 	isGliding = true
 	local bv = Instance.new("BodyVelocity")
 	bv.Name = "GlideForce"
@@ -92,8 +102,16 @@ local function startGlide(hrp: BasePart)
 	end)
 end
 
+local function applyDoubleJumpBoost(hrp: BasePart)
+	hrp.AssemblyLinearVelocity = Vector3.new(
+		hrp.AssemblyLinearVelocity.X,
+		DOUBLE_JUMP_POWER,
+		hrp.AssemblyLinearVelocity.Z
+	)
+end
+
 --- Lifecycle is now driven externally by `OilHeavenAmbient` based on the
---- player's HRP position relative to the SkyBox bounds — wings activate when
+--- player's HRP position relative to the SkyBox bounds - wings activate when
 --- the player is *physically inside* OilHeaven, not just when the world
 --- attribute is set. That way falling off the cloud edge instantly removes
 --- wings (cleanup runs), preventing players from gliding indefinitely back
@@ -104,13 +122,13 @@ function OilHeavenWings.cleanup()
 		conn:Disconnect()
 	end
 	table.clear(connections)
-	stopGlide()
+	stopGlide("cleanup")
 	removeWings()
 	hasDoubleJumped = false
 	active = false
 	-- Restore saved JumpHeight from before the heaven boost. Read from the
 	-- live humanoid (might have respawned since activate); if no save exists,
-	-- skip — the new humanoid spawned with StarterPlayer's value already.
+	-- skip - the new humanoid spawned with StarterPlayer's value already.
 	if savedJumpHeight ~= nil then
 		local char = LocalPlayer.Character
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -125,20 +143,24 @@ end
 
 function OilHeavenWings.activate()
 	if active then return end
-	active = true
 
 	local character = LocalPlayer.Character
-	if not character then return end
+	if not character then
+		return
+	end
 
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local hrp = character:FindFirstChild("HumanoidRootPart") :: BasePart?
-	if not humanoid or not hrp then return end
+	if not humanoid or not hrp then
+		return
+	end
+	active = true
 
-	-- WalkSpeed deliberately not touched — speed stays at whatever
+	-- WalkSpeed deliberately not touched - speed stays at whatever
 	-- `StarterPlayer.CharacterWalkSpeed` sets (default 16) so it's
 	-- consistent across worlds. Wings = jump + glide, not faster running.
 	-- JumpHeight gets a +10% boost while in heaven. Saved here, restored on
-	-- cleanup. Idempotent — re-activate without prior cleanup keeps the
+	-- cleanup. Idempotent - re-activate without prior cleanup keeps the
 	-- earlier saved baseline so we never compound the multiplier.
 	if savedJumpHeight == nil then
 		savedJumpHeight = humanoid.JumpHeight
@@ -146,66 +168,87 @@ function OilHeavenWings.activate()
 	humanoid.JumpHeight = savedJumpHeight * HEAVEN_JUMP_HEIGHT_MULTIPLIER
 	wingModel = createWings(character)
 
-	-- Reset on landing
+	-- Reset on landing / auto-glide on mobile
 	table.insert(connections, humanoid.StateChanged:Connect(function(oldState, newState)
 		if newState == Enum.HumanoidStateType.Landed then
 			hasDoubleJumped = false
-			stopGlide()
-		elseif newState == Enum.HumanoidStateType.Freefall and hasDoubleJumped then
-			-- After double jump, auto-start glide if space is held
-			if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
-				startGlide(hrp)
+			stopGlide("Landed")
+		elseif newState == Enum.HumanoidStateType.Freefall then
+			if IS_MOBILE then
+				-- Mobile now mirrors desktop's boost-first path, but triggers
+				-- it automatically on the first jump instead of needing a
+				-- second airborne tap.
+				if not hasDoubleJumped then
+					hasDoubleJumped = true
+					applyDoubleJumpBoost(hrp)
+					task.delay(0.3, function()
+						if active and hasDoubleJumped and not isGliding and humanoid:GetState() == Enum.HumanoidStateType.Freefall and hrp then
+							startGlide(hrp)
+						end
+					end)
+				end
+			elseif hasDoubleJumped then
+				if isJumpHeld(humanoid) then
+					startGlide(hrp)
+				end
 			end
 		end
 	end))
 
-	-- Double jump via JumpRequest (fires even when gameProcessed)
+	-- Jump handling
 	table.insert(connections, UserInputService.JumpRequest:Connect(function()
 		if not active then return end
 		if not humanoid or not hrp then return end
 		if humanoid:GetState() == Enum.HumanoidStateType.Dead then return end
 
-		if humanoid:GetState() == Enum.HumanoidStateType.Freefall and not hasDoubleJumped then
-			hasDoubleJumped = true
-			hrp.AssemblyLinearVelocity = Vector3.new(
-				hrp.AssemblyLinearVelocity.X,
-				DOUBLE_JUMP_POWER,
-				hrp.AssemblyLinearVelocity.Z
-			)
-			-- Start glide immediately since player is holding space
-			task.delay(0.3, function()
-				if active and hasDoubleJumped and humanoid:GetState() == Enum.HumanoidStateType.Freefall then
-					if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
-						startGlide(hrp)
+		if IS_MOBILE then
+			-- Mobile: first tap does a normal jump. The Freefall handler
+			-- auto-applies the desktop boost and starts glide. Another tap
+			-- while already gliding toggles glide off.
+			if isGliding then
+				stopGlide("JumpRequestMobileToggle")
+			end
+		else
+			-- Desktop: double jump in air, hold space to glide
+			if humanoid:GetState() == Enum.HumanoidStateType.Freefall and not hasDoubleJumped then
+				hasDoubleJumped = true
+				applyDoubleJumpBoost(hrp)
+				task.delay(0.3, function()
+					if active and hasDoubleJumped and humanoid:GetState() == Enum.HumanoidStateType.Freefall then
+						if isJumpHeld(humanoid) then
+							startGlide(hrp)
+						end
 					end
-				end
-			end)
-		end
-	end))
-
-	-- Also start glide if space pressed while falling after double jump
-	table.insert(connections, UserInputService.InputBegan:Connect(function(input, gpe)
-		if gpe then return end
-		if input.KeyCode == Enum.KeyCode.Space and hasDoubleJumped then
-			if humanoid:GetState() == Enum.HumanoidStateType.Freefall and hrp then
-				startGlide(hrp)
+				end)
 			end
 		end
 	end))
 
-	-- Stop glide on space release
-	table.insert(connections, UserInputService.InputEnded:Connect(function(input)
-		if input.KeyCode == Enum.KeyCode.Space then
-			stopGlide()
-		end
-	end))
+	if not IS_MOBILE then
+		-- Desktop: space pressed while falling after double jump starts glide
+		table.insert(connections, UserInputService.InputBegan:Connect(function(input, gpe)
+			if gpe then return end
+			if input.KeyCode == Enum.KeyCode.Space and hasDoubleJumped then
+				if humanoid:GetState() == Enum.HumanoidStateType.Freefall and hrp then
+					startGlide(hrp)
+				end
+			end
+		end))
+
+		-- Desktop: release space to stop glide
+		table.insert(connections, UserInputService.InputEnded:Connect(function(input)
+			if input.KeyCode == Enum.KeyCode.Space then
+				stopGlide("InputEndedSpace")
+			end
+		end))
+	end
 
 	table.insert(connections, humanoid.Died:Connect(function()
 		OilHeavenWings.cleanup()
 	end))
 
 	-- SkyBox exit detection was REMOVED. It polled HRP position against the
-	-- shared SkyBox bounds and locally set `CurrentWorld = Main` on exit —
+	-- shared SkyBox bounds and locally set `CurrentWorld = Main` on exit -
 	-- which on the server (and via the world-changed listener above) ran
 	-- `cleanup()`, snapping `WalkSpeed` back to 16 and stripping wings.
 	-- Two problems:
@@ -222,13 +265,11 @@ function OilHeavenWings.activate()
 	-- KillZone layer the same way as falling off any plot.
 end
 
---- Bootstrap stub — kept for back-compat with `OilHeavenWingsBootstrap.client.luau`
+--- Bootstrap stub - kept for back-compat with `OilHeavenWingsBootstrap.client.luau`
 --- so the require + start() call there doesn't error. The actual lifecycle
 --- (activate / cleanup) is now driven by `OilHeavenAmbient`'s bounds polling,
 --- which already runs `transitionToHeaven` / `transitionToMain` based on HRP
 --- vs SkyBox bounds. No listeners to install here anymore.
-function OilHeavenWings.start()
-	-- intentional no-op
-end
+function OilHeavenWings.start() end
 
 return OilHeavenWings
